@@ -217,7 +217,7 @@ describe("buildDashboardModel", () => {
               name: "lane-a",
               owner: "worker-a",
               targets: ["4010"],
-              dependsOn: [],
+              dependsOn: ["batch-1:lane-b"],
               status: "queued",
               liveness: "no-heartbeat",
               blockedOn: []
@@ -243,6 +243,7 @@ describe("buildDashboardModel", () => {
     expect(model.batches[0].lanes).toHaveLength(1);
     expect(model.batches[0].lanes[0].status).toBe("in_progress");
     expect(model.batches[0].lanes[0].liveness).toBe("live");
+    expect(model.batches[0].lanes[0].blockedOn).toEqual(["outside TARGET_REPOS"]);
     expect(model.agents[0].agentId).toBe("worker-a");
     expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
   });

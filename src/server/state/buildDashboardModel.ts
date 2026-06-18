@@ -12,6 +12,7 @@ import type {
 } from "../../shared/types";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
+const REDACTED_DEPENDENCY_REF = "outside TARGET_REPOS";
 
 interface BuildInput {
   stateRoot: string;
@@ -171,7 +172,10 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             ...batch,
             lanes: lanes.map((lane) => ({
               ...lane,
-              dependsOn: lane.dependsOn.filter((dependency) => keptLaneRefs.has(dependency))
+              dependsOn: [
+                ...lane.dependsOn.filter((dependency) => keptLaneRefs.has(dependency)),
+                ...(lane.dependsOn.some((dependency) => !keptLaneRefs.has(dependency)) ? [REDACTED_DEPENDENCY_REF] : [])
+              ]
             }))
           }
         ]
