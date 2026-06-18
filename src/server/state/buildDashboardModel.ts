@@ -67,7 +67,7 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
   }
 
   const sameBatch = heartbeat.batchId === batch.batchId;
-  const sameRepo = batch.repo ? heartbeat.repo === batch.repo : !heartbeat.repo || heartbeat.repo === batch.repo;
+  const sameRepo = batch.repo ? heartbeat.repo === batch.repo : true;
   const sameTarget = Boolean(heartbeat.target && lane.targets.includes(heartbeat.target));
 
   if (heartbeat.target) {

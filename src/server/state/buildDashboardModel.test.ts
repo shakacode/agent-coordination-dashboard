@@ -248,6 +248,39 @@ describe("buildDashboardModel", () => {
     expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
   });
 
+  it("matches repo-scoped targeted heartbeats to retained repo-less batch lanes", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, batchId: "batch-1", target: "4010", status: "in_progress" }],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [preview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches[0].lanes[0].status).toBe("in_progress");
+    expect(model.batches[0].lanes[0].liveness).toBe("live");
+  });
+
   it("does not override batch lanes with unrelated owner heartbeats", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
