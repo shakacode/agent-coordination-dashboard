@@ -109,7 +109,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         github,
         schedulingState,
         warnings,
-        selected: schedulingState === "ready_for_batch"
+        selected: false
       };
     });
 
@@ -175,4 +175,3 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     warnings: [...input.warnings, ...workItems.flatMap((item) => item.warnings)]
   };
 }
-
