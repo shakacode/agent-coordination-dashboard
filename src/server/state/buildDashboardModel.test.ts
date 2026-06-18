@@ -285,4 +285,49 @@ describe("buildDashboardModel", () => {
       expect.arrayContaining([expect.stringContaining("owner heartbeat points at")])
     );
   });
+
+  it("matches batch heartbeats with targets to the correct lane", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, batchId: "batch-1", target: "4010", status: "in_progress" }],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4005"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            },
+            {
+              name: "lane-b",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [preview, { ...preview, target: "4005" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches[0].lanes[0].status).toBe("queued");
+    expect(model.batches[0].lanes[0].liveness).toBe("no-heartbeat");
+    expect(model.batches[0].lanes[1].status).toBe("in_progress");
+    expect(model.batches[0].lanes[1].liveness).toBe("live");
+  });
 });

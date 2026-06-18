@@ -58,7 +58,11 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
   const sameRepo = !batch.repo || !heartbeat.repo || heartbeat.repo === batch.repo;
   const sameTarget = Boolean(heartbeat.target && lane.targets.includes(heartbeat.target));
 
-  return sameBatch || (sameRepo && sameTarget);
+  if (heartbeat.target) {
+    return sameRepo && sameTarget && (!heartbeat.batchId || sameBatch);
+  }
+
+  return sameBatch;
 }
 
 function appendSkippedWarning(warnings: CoordinationWarning[], count: number, label: string) {
