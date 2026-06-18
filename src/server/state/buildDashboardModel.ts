@@ -137,10 +137,30 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const scopeWarnings: CoordinationWarning[] = [];
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
   const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
-  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
-  const scopedBatches = input.batches.filter((batch) => Boolean(batch.repo && targetRepoSet.has(batch.repo)));
+  const repoScopedHeartbeats = input.heartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
-  const scopedInputWarnings = input.warnings.filter((warning) => !warning.repo || targetRepoSet.has(warning.repo));
+  const knownScopedTargets = new Set([
+    ...currentClaims.map((claim) => claim.target),
+    ...repoScopedHeartbeats.map((heartbeat) => heartbeat.target).filter((target): target is string => Boolean(target)),
+    ...scopedGithubItems.map((item) => item.target)
+  ]);
+  const scopedBatches = input.batches.filter((batch) => {
+    if (batch.repo) {
+      return targetRepoSet.has(batch.repo);
+    }
+    return (
+      input.targetRepos.length === 1 &&
+      batch.lanes.some((lane) => lane.targets.some((target) => knownScopedTargets.has(target)))
+    );
+  });
+  const scopedBatchIds = new Set(scopedBatches.map((batch) => batch.batchId));
+  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
+    if (heartbeat.repo) {
+      return targetRepoSet.has(heartbeat.repo);
+    }
+    return Boolean(heartbeat.batchId && scopedBatchIds.has(heartbeat.batchId));
+  });
+  const scopedInputWarnings = input.warnings.filter((warning) => Boolean(warning.repo && targetRepoSet.has(warning.repo)));
 
   appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
   appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");
@@ -240,7 +260,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       if (ownerHeartbeat && !heartbeat) {
         batchWarnings.push({
           severity: "warning",
-          repo: batch.repo,
+          repo: batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined),
           agentId: lane.owner,
           message: `Lane ${ref} owner heartbeat points at ${ownerHeartbeat.repo || "UNKNOWN repo"}#${
             ownerHeartbeat.target || "UNKNOWN target"

@@ -17,6 +17,7 @@ export function BatchesTab({ batches }: { batches: BatchRecord[] }) {
                 <strong>{lane.name}</strong>
                 <p>{lane.targets.join(", ") || "No targets"}</p>
               </div>
+              <StatusBadge value={lane.status} />
               <StatusBadge value={lane.liveness} />
               <span>{lane.blockedOn.length ? `Blocked on ${lane.blockedOn.join(", ")}` : "Unblocked"}</span>
             </div>
@@ -26,4 +27,3 @@ export function BatchesTab({ batches }: { batches: BatchRecord[] }) {
     </section>
   );
 }
-

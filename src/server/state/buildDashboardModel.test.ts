@@ -160,7 +160,10 @@ describe("buildDashboardModel", () => {
       ],
       batches: [],
       githubItems: [preview, { ...preview, repo: "other/repo", target: "12" }],
-      warnings: [{ severity: "warning", repo: "other/repo", message: "Malformed JSON in claims/other/repo/12.json" }],
+      warnings: [
+        { severity: "warning", repo: "other/repo", message: "Malformed JSON in claims/other/repo/12.json" },
+        { severity: "warning", message: "Malformed JSON in heartbeats/idle-worker.json" }
+      ],
       now: new Date("2026-06-17T20:00:00Z")
     });
 
@@ -168,14 +171,59 @@ describe("buildDashboardModel", () => {
     expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
     expect(model.agents.some((agent) => agent.agentId === "idle-worker")).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
+    expect(model.warnings.some((warning) => warning.message.includes("heartbeats/idle-worker"))).toBe(false);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
         "Skipped 1 claim records outside TARGET_REPOS.",
         "Skipped 2 heartbeat records outside TARGET_REPOS.",
         "Skipped 1 GitHub preview records outside TARGET_REPOS.",
-        "Skipped 1 warning records outside TARGET_REPOS."
+        "Skipped 2 warning records outside TARGET_REPOS."
       ])
     );
+  });
+
+  it("keeps repo-less batches and batch-id heartbeats when lane targets are scoped", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [
+        {
+          ...heartbeat,
+          repo: undefined,
+          target: undefined,
+          batchId: "batch-1",
+          status: "in_progress"
+        }
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          updatedAt: "2026-06-17T20:00:00Z",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [preview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches).toHaveLength(1);
+    expect(model.batches[0].lanes[0].status).toBe("in_progress");
+    expect(model.batches[0].lanes[0].liveness).toBe("live");
+    expect(model.agents[0].agentId).toBe("worker-a");
   });
 
   it("does not override batch lanes with unrelated owner heartbeats", () => {
