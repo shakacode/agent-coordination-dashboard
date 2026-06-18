@@ -228,7 +228,7 @@ describe("buildDashboardModel", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
       targetRepos: ["shakacode/react_on_rails"],
-      claims: [],
+      claims: [{ ...claim, target: "4010", batchId: "batch-1" }],
       heartbeats: [
         {
           ...heartbeat,

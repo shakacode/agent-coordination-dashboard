@@ -199,10 +199,13 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
   const repoScopedHeartbeats = input.heartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
-  const knownScopedTargets = new Set([
-    ...currentClaims.map((claim) => claim.target),
-    ...repoScopedHeartbeats.map((heartbeat) => heartbeat.target).filter((target): target is string => Boolean(target)),
-    ...scopedGithubItems.map((item) => item.target)
+  const repoScopedBatchTargets = new Set([
+    ...currentClaims
+      .filter((claim) => Boolean(claim.batchId))
+      .map((claim) => `${claim.batchId}:${claim.target}`),
+    ...repoScopedHeartbeats
+      .filter((heartbeat) => Boolean(heartbeat.batchId && heartbeat.target))
+      .map((heartbeat) => `${heartbeat.batchId}:${heartbeat.target}`)
   ]);
   const scopedBatchesRaw = input.batches.flatMap((batch) => {
     if (batch.repo) {
@@ -216,7 +219,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     const lanes = batch.lanes
       .map((lane) => ({
         ...lane,
-        targets: lane.targets.filter((target) => knownScopedTargets.has(target))
+        targets: lane.targets.filter((target) => repoScopedBatchTargets.has(`${batch.batchId}:${target}`))
       }))
       .filter((lane) => lane.targets.length > 0);
 
@@ -244,11 +247,19 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const repoLessScopedBatchOwners = new Set(
     scopedBatches.filter((batch) => !batch.repo).flatMap((batch) => batch.lanes.map((lane) => `${batch.batchId}:${lane.owner}`))
   );
+  const repoLessScopedBatchOwnerTargets = new Set(
+    scopedBatches
+      .filter((batch) => !batch.repo)
+      .flatMap((batch) => batch.lanes.flatMap((lane) => lane.targets.map((target) => `${batch.batchId}:${lane.owner}:${target}`)))
+  );
   const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
     if (heartbeat.repo) {
       return targetRepoSet.has(heartbeat.repo);
     }
-    return Boolean(heartbeat.batchId && repoLessScopedBatchOwners.has(`${heartbeat.batchId}:${heartbeat.agentId}`));
+    if (!heartbeat.batchId || !repoLessScopedBatchOwners.has(`${heartbeat.batchId}:${heartbeat.agentId}`)) {
+      return false;
+    }
+    return heartbeat.target ? repoLessScopedBatchOwnerTargets.has(`${heartbeat.batchId}:${heartbeat.agentId}:${heartbeat.target}`) : true;
   });
   const scopedInputWarnings = input.warnings
     .map((warning) => scopedInputWarning(warning, targetRepoSet))
@@ -270,8 +281,47 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
   const previewsByWork = new Map(scopedGithubItems.map((item) => [workId(item.repo, item.target), item]));
   const claimsByWork = new Map(currentClaims.map((claim) => [workId(claim.repo, claim.target), claim]));
-  const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
+
+  const laneStatusByRef = new Map<string, string>();
+  const laneHeartbeatByRef = new Map<string, HeartbeatRecord | undefined>();
+  const batchWarnings: CoordinationWarning[] = [];
   for (const batch of scopedBatches) {
+    for (const lane of batch.lanes) {
+      const ownerHeartbeat = heartbeatsByAgent.get(lane.owner);
+      const heartbeat = ownerHeartbeat && heartbeatMatchesLane(batch, lane, ownerHeartbeat) ? ownerHeartbeat : undefined;
+      const ref = laneRef(batch, lane);
+
+      if (ownerHeartbeat && !heartbeat) {
+        batchWarnings.push({
+          severity: "warning",
+          repo: batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined),
+          agentId: lane.owner,
+          message: `Lane ${ref} owner heartbeat points at ${ownerHeartbeat.repo || "UNKNOWN repo"}#${
+            ownerHeartbeat.target || "UNKNOWN target"
+          } and was not applied.`
+        });
+      }
+
+      laneHeartbeatByRef.set(laneKey(batch, lane), heartbeat);
+      laneStatusByRef.set(laneKey(batch, lane), heartbeat?.status || lane.status);
+    }
+  }
+
+  const batches = scopedBatches.map((batch) => ({
+    ...batch,
+    lanes: batch.lanes.map((lane) => {
+      const heartbeat = laneHeartbeatByRef.get(laneKey(batch, lane));
+      return {
+        ...lane,
+        status: heartbeat?.status || lane.status,
+        liveness: heartbeat?.liveness || "no-heartbeat",
+        blockedOn: lane.dependsOn.filter((dependency) => !TERMINAL_STATUSES.has(laneStatusByRef.get(dependencyKey(batch, dependency)) || ""))
+      };
+    })
+  }));
+
+  const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
+  for (const batch of batches) {
     const repo = batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined);
     if (!repo) {
       continue;
@@ -285,7 +335,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             batchId: batch.batchId,
             laneName: lane.name,
             status: lane.status,
-            blockedOn: lane.dependsOn
+            blockedOn: lane.blockedOn
           }
         ]);
       }
@@ -362,44 +412,6 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         warnings
       };
     });
-
-  const laneStatusByRef = new Map<string, string>();
-  const laneHeartbeatByRef = new Map<string, HeartbeatRecord | undefined>();
-  const batchWarnings: CoordinationWarning[] = [];
-  for (const batch of scopedBatches) {
-    for (const lane of batch.lanes) {
-      const ownerHeartbeat = heartbeatsByAgent.get(lane.owner);
-      const heartbeat = ownerHeartbeat && heartbeatMatchesLane(batch, lane, ownerHeartbeat) ? ownerHeartbeat : undefined;
-      const ref = laneRef(batch, lane);
-
-      if (ownerHeartbeat && !heartbeat) {
-        batchWarnings.push({
-          severity: "warning",
-          repo: batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined),
-          agentId: lane.owner,
-          message: `Lane ${ref} owner heartbeat points at ${ownerHeartbeat.repo || "UNKNOWN repo"}#${
-            ownerHeartbeat.target || "UNKNOWN target"
-          } and was not applied.`
-        });
-      }
-
-      laneHeartbeatByRef.set(laneKey(batch, lane), heartbeat);
-      laneStatusByRef.set(laneKey(batch, lane), heartbeat?.status || lane.status);
-    }
-  }
-
-  const batches = scopedBatches.map((batch) => ({
-    ...batch,
-    lanes: batch.lanes.map((lane) => {
-      const heartbeat = laneHeartbeatByRef.get(laneKey(batch, lane));
-      return {
-        ...lane,
-        status: heartbeat?.status || lane.status,
-        liveness: heartbeat?.liveness || "no-heartbeat",
-        blockedOn: lane.dependsOn.filter((dependency) => !TERMINAL_STATUSES.has(laneStatusByRef.get(dependencyKey(batch, dependency)) || ""))
-      };
-    })
-  }));
 
   return {
     generatedAt: input.now.toISOString(),
