@@ -96,7 +96,8 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
     return targetRepoSet.has(warning.repo) ? warning : undefined;
   }
 
-  if (/^Could not read coordination directory (claims|heartbeats|batches|\.)(:|$)/.test(warning.message)) {
+  const directoryRead = warning.message.match(/^Could not read coordination directory ([^:]+):/);
+  if (directoryRead && ["claims", "heartbeats", "batches", "."].includes(directoryRead[1])) {
     return warning;
   }
 

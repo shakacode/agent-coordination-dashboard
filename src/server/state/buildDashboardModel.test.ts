@@ -163,7 +163,8 @@ describe("buildDashboardModel", () => {
       warnings: [
         { severity: "warning", repo: "other/repo", message: "Malformed JSON in claims/other/repo/12.json" },
         { severity: "warning", message: "Malformed JSON in heartbeats/idle-worker.json" },
-        { severity: "warning", message: "Could not read coordination directory heartbeats: ENOENT" }
+        { severity: "warning", message: "Could not read coordination directory heartbeats: ENOENT" },
+        { severity: "warning", message: "Could not read coordination directory batches/private-batch-dir: EACCES" }
       ],
       now: new Date("2026-06-17T20:00:00Z")
     });
@@ -173,6 +174,7 @@ describe("buildDashboardModel", () => {
     expect(model.agents.some((agent) => agent.agentId === "idle-worker")).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("heartbeats/idle-worker"))).toBe(false);
+    expect(model.warnings.some((warning) => warning.message.includes("private-batch-dir"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("Could not read coordination directory heartbeats"))).toBe(true);
     expect(model.warnings.some((warning) => warning.message === "Malformed JSON in an unscoped heartbeats record.")).toBe(true);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
@@ -180,7 +182,7 @@ describe("buildDashboardModel", () => {
         "Skipped 1 claim records outside TARGET_REPOS.",
         "Skipped 2 heartbeat records outside TARGET_REPOS.",
         "Skipped 1 GitHub preview records outside TARGET_REPOS.",
-        "Skipped 1 warning records outside TARGET_REPOS."
+        "Skipped 2 warning records outside TARGET_REPOS."
       ])
     );
   });
