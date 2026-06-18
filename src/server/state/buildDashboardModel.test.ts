@@ -351,7 +351,7 @@ describe("buildDashboardModel", () => {
           path: "batches/other-batch-1.json",
           lanes: [
             {
-              name: "lane-b",
+              name: "lane-a",
               owner: "worker-a",
               targets: ["12"],
               dependsOn: [],
@@ -369,6 +369,40 @@ describe("buildDashboardModel", () => {
 
     expect(model.batches.find((batch) => batch.repo === "shakacode/react_on_rails")?.lanes[0].status).toBe("in_progress");
     expect(model.batches.find((batch) => batch.repo === "other/repo")?.lanes[0].status).toBe("queued");
+  });
+
+  it("does not apply repo-less batch-only heartbeats to repo-scoped batches", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, repo: undefined, target: undefined, batchId: "batch-1", status: "in_progress" }],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4005"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [{ ...preview, target: "4005" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches[0].lanes[0].status).toBe("queued");
+    expect(model.batches[0].lanes[0].liveness).toBe("no-heartbeat");
   });
 
   it("matches batch heartbeats with targets to the correct lane", () => {

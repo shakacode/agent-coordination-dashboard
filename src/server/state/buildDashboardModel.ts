@@ -33,6 +33,18 @@ function laneRef(batch: BatchRecord, lane: BatchLane): string {
   return `${batch.batchId}:${lane.name}`;
 }
 
+function batchScope(batch: BatchRecord): string {
+  return batch.repo || batch.path;
+}
+
+function laneKey(batch: BatchRecord, lane: BatchLane): string {
+  return `${batchScope(batch)}:${laneRef(batch, lane)}`;
+}
+
+function dependencyKey(batch: BatchRecord, dependency: string): string {
+  return `${batchScope(batch)}:${dependency}`;
+}
+
 function isLiveOrStale(heartbeat: HeartbeatRecord | undefined): boolean {
   return Boolean(heartbeat && ["live", "stale"].includes(heartbeat.liveness));
 }
@@ -55,7 +67,7 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
   }
 
   const sameBatch = heartbeat.batchId === batch.batchId;
-  const sameRepo = !batch.repo || !heartbeat.repo || heartbeat.repo === batch.repo;
+  const sameRepo = batch.repo ? heartbeat.repo === batch.repo : !heartbeat.repo || heartbeat.repo === batch.repo;
   const sameTarget = Boolean(heartbeat.target && lane.targets.includes(heartbeat.target));
 
   if (heartbeat.target) {
@@ -178,25 +190,26 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         ]
       : [];
   });
-  const scopedLaneRefs = new Set(scopedBatchesRaw.flatMap((batch) => batch.lanes.map((lane) => laneRef(batch, lane))));
+  const scopedLaneRefs = new Set(scopedBatchesRaw.flatMap((batch) => batch.lanes.map((lane) => laneKey(batch, lane))));
   const scopedBatches = scopedBatchesRaw.map((batch) => ({
     ...batch,
     lanes: batch.lanes.map((lane) => {
-      const keptDependencies = lane.dependsOn.filter((dependency) => scopedLaneRefs.has(dependency));
-      const hasHiddenDependencies = lane.dependsOn.some((dependency) => !scopedLaneRefs.has(dependency));
+      const keptDependencies = lane.dependsOn.filter((dependency) => scopedLaneRefs.has(dependencyKey(batch, dependency)));
+      const hasHiddenDependencies = lane.dependsOn.some((dependency) => !scopedLaneRefs.has(dependencyKey(batch, dependency)));
       return {
         ...lane,
         dependsOn: hasHiddenDependencies ? [...keptDependencies, REDACTED_DEPENDENCY_REF] : keptDependencies
       };
     })
   }));
-  const scopedBatchIds = new Set(scopedBatches.map((batch) => batch.batchId));
-  const scopedBatchOwners = new Set(scopedBatches.flatMap((batch) => batch.lanes.map((lane) => `${batch.batchId}:${lane.owner}`)));
+  const repoLessScopedBatchOwners = new Set(
+    scopedBatches.filter((batch) => !batch.repo).flatMap((batch) => batch.lanes.map((lane) => `${batch.batchId}:${lane.owner}`))
+  );
   const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
     if (heartbeat.repo) {
       return targetRepoSet.has(heartbeat.repo);
     }
-    return Boolean(heartbeat.batchId && scopedBatchIds.has(heartbeat.batchId) && scopedBatchOwners.has(`${heartbeat.batchId}:${heartbeat.agentId}`));
+    return Boolean(heartbeat.batchId && repoLessScopedBatchOwners.has(`${heartbeat.batchId}:${heartbeat.agentId}`));
   });
   const scopedInputWarnings = input.warnings.filter(
     (warning) => Boolean(warning.repo && targetRepoSet.has(warning.repo)) || (!warning.repo && safeUnscopedWarning(warning))
@@ -308,20 +321,20 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         });
       }
 
-      laneHeartbeatByRef.set(ref, heartbeat);
-      laneStatusByRef.set(ref, heartbeat?.status || lane.status);
+      laneHeartbeatByRef.set(laneKey(batch, lane), heartbeat);
+      laneStatusByRef.set(laneKey(batch, lane), heartbeat?.status || lane.status);
     }
   }
 
   const batches = scopedBatches.map((batch) => ({
     ...batch,
     lanes: batch.lanes.map((lane) => {
-      const heartbeat = laneHeartbeatByRef.get(laneRef(batch, lane));
+      const heartbeat = laneHeartbeatByRef.get(laneKey(batch, lane));
       return {
         ...lane,
         status: heartbeat?.status || lane.status,
         liveness: heartbeat?.liveness || "no-heartbeat",
-        blockedOn: lane.dependsOn.filter((dependency) => !TERMINAL_STATUSES.has(laneStatusByRef.get(dependency) || ""))
+        blockedOn: lane.dependsOn.filter((dependency) => !TERMINAL_STATUSES.has(laneStatusByRef.get(dependencyKey(batch, dependency)) || ""))
       };
     })
   }));
