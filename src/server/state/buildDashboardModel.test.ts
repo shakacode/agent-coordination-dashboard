@@ -153,20 +153,27 @@ describe("buildDashboardModel", () => {
       stateRoot: "/state",
       targetRepos: ["shakacode/react_on_rails"],
       claims: [claim, { ...claim, repo: "other/repo", target: "12", agentId: "other-worker" }],
-      heartbeats: [heartbeat, { ...heartbeat, repo: "other/repo", target: "12", agentId: "other-worker" }],
+      heartbeats: [
+        heartbeat,
+        { ...heartbeat, repo: "other/repo", target: "12", agentId: "other-worker" },
+        { ...heartbeat, repo: undefined, target: undefined, agentId: "idle-worker" }
+      ],
       batches: [],
       githubItems: [preview, { ...preview, repo: "other/repo", target: "12" }],
-      warnings: [],
+      warnings: [{ severity: "warning", repo: "other/repo", message: "Malformed JSON in claims/other/repo/12.json" }],
       now: new Date("2026-06-17T20:00:00Z")
     });
 
     expect(model.workItems.some((item) => item.repo === "other/repo")).toBe(false);
     expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
+    expect(model.agents.some((agent) => agent.agentId === "idle-worker")).toBe(false);
+    expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
         "Skipped 1 claim records outside TARGET_REPOS.",
-        "Skipped 1 heartbeat records outside TARGET_REPOS.",
-        "Skipped 1 GitHub preview records outside TARGET_REPOS."
+        "Skipped 2 heartbeat records outside TARGET_REPOS.",
+        "Skipped 1 GitHub preview records outside TARGET_REPOS.",
+        "Skipped 1 warning records outside TARGET_REPOS."
       ])
     );
   });

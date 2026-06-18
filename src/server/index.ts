@@ -53,7 +53,7 @@ async function configureFrontend() {
 
   const vite = await createViteServer({
     appType: "spa",
-    server: { middlewareMode: true }
+    server: { allowedHosts: config.allowedHosts, middlewareMode: true }
   });
   app.use(vite.middlewares);
 }

@@ -24,9 +24,11 @@ async function listJsonFiles(directory: string, root: string, warnings: Coordina
     );
     return nested.flat().sort();
   } catch (error) {
+    const path = relative(root, directory);
     warnings.push({
       severity: "warning",
-      message: `Could not read coordination directory ${relative(root, directory) || "."}: ${
+      ...warningContextFromPath(path),
+      message: `Could not read coordination directory ${path || "."}: ${
         error instanceof Error ? error.message : "unknown error"
       }`
     });
@@ -45,6 +47,17 @@ function repoFromClaimPath(path: string): string {
 
 function targetFromPath(path: string): string {
   return basename(path, ".json");
+}
+
+function warningContextFromPath(path: string): Pick<CoordinationWarning, "repo" | "target"> {
+  const parts = path.split("/");
+  if (parts[0] === "claims" && parts.length >= 3) {
+    return {
+      repo: `${parts[1]}/${parts[2]}`,
+      target: parts[3] ? basename(parts[3], ".json") : undefined
+    };
+  }
+  return {};
 }
 
 function normalizeClaim(raw: Record<string, unknown>, path: string): ClaimRecord {
@@ -136,6 +149,7 @@ export async function readCoordinationState(root: string, now = new Date()): Pro
       } catch (error) {
         warnings.push({
           severity: "warning",
+          ...warningContextFromPath(path),
           message: `Malformed JSON in ${path}: ${error instanceof Error ? error.message : "unknown error"}`
         });
       }

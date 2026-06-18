@@ -121,11 +121,11 @@ function warningsForWork(
     });
   } else if (claim?.status === "active" && !heartbeat) {
     warnings.push({
-        severity: "warning",
-        repo,
-        target,
-        agentId: claim.agentId,
-        message: "Active claim has no matching heartbeat."
+      severity: "warning",
+      repo,
+      target,
+      agentId: claim.agentId,
+      message: "Active claim has no matching heartbeat."
     });
   }
 
@@ -137,19 +137,16 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const scopeWarnings: CoordinationWarning[] = [];
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
   const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
-  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
-    if (heartbeat.repo) {
-      return targetRepoSet.has(heartbeat.repo);
-    }
-    return !heartbeat.target;
-  });
+  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedBatches = input.batches.filter((batch) => Boolean(batch.repo && targetRepoSet.has(batch.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
+  const scopedInputWarnings = input.warnings.filter((warning) => !warning.repo || targetRepoSet.has(warning.repo));
 
   appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
   appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");
   appendSkippedWarning(scopeWarnings, input.batches.length - scopedBatches.length, "batch records");
   appendSkippedWarning(scopeWarnings, input.githubItems.length - scopedGithubItems.length, "GitHub preview records");
+  appendSkippedWarning(scopeWarnings, input.warnings.length - scopedInputWarnings.length, "warning records");
 
   const heartbeatsByAgent = new Map(scopedHeartbeats.map((heartbeat) => [heartbeat.agentId, heartbeat]));
   const heartbeatsByWork = new Map<string, HeartbeatRecord[]>();
@@ -276,6 +273,6 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     agents,
     workItems,
     batches,
-    warnings: [...input.warnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
+    warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
   };
 }

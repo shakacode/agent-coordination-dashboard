@@ -23,6 +23,7 @@ describe("readCoordinationState", () => {
         expires_at: "2026-06-17T23:50:00Z"
       })
     );
+    await writeFile(join(root, "claims", "shakacode", "react_on_rails", "broken.json"), "{");
     await writeFile(
       join(root, "heartbeats", "worker-a.json"),
       JSON.stringify({
@@ -51,7 +52,15 @@ describe("readCoordinationState", () => {
     expect(state.claims[0].agentId).toBe("worker-a");
     expect(state.heartbeats[0].liveness).toBe("live");
     expect(state.batches[0].lanes[0].dependsOn).toEqual(["batch-1:backend"]);
-    expect(state.warnings[0].message).toContain("Malformed JSON");
+    expect(state.warnings.map((warning) => warning.message)).toEqual(expect.arrayContaining([expect.stringContaining("Malformed JSON")]));
+    expect(state.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          repo: "shakacode/react_on_rails",
+          target: "broken"
+        })
+      ])
+    );
   });
 
   it("warns when expected coordination directories cannot be read", async () => {
