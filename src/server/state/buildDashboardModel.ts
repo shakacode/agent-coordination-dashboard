@@ -208,19 +208,34 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       .filter((heartbeat) => Boolean(heartbeat.batchId && heartbeat.target))
       .map((heartbeat) => `${heartbeat.batchId}:${heartbeat.target}`)
   ]);
+  const reposByBatchTarget = new Map<string, Set<string>>();
+  for (const claim of currentClaims) {
+    if (claim.batchId) {
+      const key = `${claim.batchId}:${claim.target}`;
+      reposByBatchTarget.set(key, new Set([...(reposByBatchTarget.get(key) || []), claim.repo]));
+    }
+  }
+  for (const heartbeat of repoScopedHeartbeats) {
+    if (heartbeat.batchId && heartbeat.target && heartbeat.repo) {
+      const key = `${heartbeat.batchId}:${heartbeat.target}`;
+      reposByBatchTarget.set(key, new Set([...(reposByBatchTarget.get(key) || []), heartbeat.repo]));
+    }
+  }
+  function uniqueRepoForBatchTarget(batchId: string, target: string): string | undefined {
+    const repos = reposByBatchTarget.get(`${batchId}:${target}`);
+    return repos?.size === 1 ? Array.from(repos)[0] : undefined;
+  }
   const scopedBatchesRaw = input.batches.flatMap((batch) => {
     if (batch.repo) {
       return targetRepoSet.has(batch.repo) ? [batch] : [];
     }
 
-    if (input.targetRepos.length !== 1) {
-      return [];
-    }
-
     const lanes = batch.lanes
       .map((lane) => ({
         ...lane,
-        targets: lane.targets.filter((target) => repoScopedBatchTargets.has(`${batch.batchId}:${target}`))
+        targets: lane.targets.filter(
+          (target) => repoScopedBatchTargets.has(`${batch.batchId}:${target}`) && Boolean(uniqueRepoForBatchTarget(batch.batchId, target))
+        )
       }))
       .filter((lane) => lane.targets.length > 0);
 
@@ -323,12 +338,12 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
   for (const batch of batches) {
-    const repo = batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined);
-    if (!repo) {
-      continue;
-    }
     for (const lane of batch.lanes) {
       for (const target of lane.targets) {
+        const repo = batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
+        if (!repo) {
+          continue;
+        }
         const id = workId(repo, target);
         batchSignalsByWork.set(id, [
           ...(batchSignalsByWork.get(id) || []),

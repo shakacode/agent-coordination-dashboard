@@ -323,6 +323,41 @@ describe("buildDashboardModel", () => {
     expect(model.batches[0].lanes[0].liveness).toBe("live");
   });
 
+  it("keeps corroborated repo-less batch lanes in multi-repo dashboards", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails", "other/repo"],
+      claims: [{ ...claim, target: "4010", batchId: "batch-1" }],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [preview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches).toHaveLength(1);
+    expect(model.workItems.find((item) => item.repo === "shakacode/react_on_rails" && item.target === "4010")?.batchSignals).toEqual([
+      { batchId: "batch-1", laneName: "lane-a", status: "queued", blockedOn: [] }
+    ]);
+  });
+
   it("does not override batch lanes with unrelated owner heartbeats", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
