@@ -18,7 +18,8 @@ npm run dev
 
 The dev server listens on <http://127.0.0.1:4317> by default. Keep that
 loopback default unless the user explicitly asks to expose the dashboard on the
-network.
+network. When using `HOST=0.0.0.0`, also require a specific `ALLOWED_HOSTS`
+value for the browser hostnames or IP addresses.
 
 ## Product Boundary
 

@@ -4,12 +4,15 @@ import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { readConfig } from "./config";
 import { loadOpenGitHubItems } from "./github/githubClient";
+import { createHostGuard } from "./security/hostGuard";
 import { buildDashboardModel } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 
 const app = express();
 const config = readConfig();
 const dirname = fileURLToPath(new URL(".", import.meta.url));
+
+app.use(createHostGuard(config.allowedHosts));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });

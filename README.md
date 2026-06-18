@@ -15,7 +15,8 @@ Open <http://localhost:4317>.
 
 The server binds to `127.0.0.1` by default because it exposes private local
 coordination metadata. Set `HOST=0.0.0.0` only when you intentionally want to
-make it reachable from another machine on the network.
+make it reachable from another machine on the network, and set `ALLOWED_HOSTS`
+to the exact hostnames or IP addresses you will use in the browser.
 
 ## What It Shows
 
@@ -40,6 +41,7 @@ The dashboard does not launch Codex agents or edit coordination state.
 | --- | --- |
 | `PORT` | `4317` |
 | `HOST` | `127.0.0.1` |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` plus non-wildcard `HOST` |
 | `AGENT_COORD_STATE_ROOT` | `/Users/justin/Documents/agent-coordination/agent-coordination-pr2` |
 | `TARGET_REPOS` | `shakacode/react_on_rails` |
 
