@@ -69,6 +69,10 @@ function appendSkippedWarning(warnings: CoordinationWarning[], count: number, la
   }
 }
 
+function safeUnscopedWarning(warning: CoordinationWarning): boolean {
+  return /^Could not read coordination directory (claims|heartbeats|batches|\.)(:|$)/.test(warning.message);
+}
+
 function warningsForWork(
   repo: string,
   target: string,
@@ -144,23 +148,46 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     ...repoScopedHeartbeats.map((heartbeat) => heartbeat.target).filter((target): target is string => Boolean(target)),
     ...scopedGithubItems.map((item) => item.target)
   ]);
-  const scopedBatches = input.batches.filter((batch) => {
+  const scopedBatches = input.batches.flatMap((batch) => {
     if (batch.repo) {
-      return targetRepoSet.has(batch.repo);
+      return targetRepoSet.has(batch.repo) ? [batch] : [];
     }
-    return (
-      input.targetRepos.length === 1 &&
-      batch.lanes.some((lane) => lane.targets.some((target) => knownScopedTargets.has(target)))
-    );
+
+    if (input.targetRepos.length !== 1) {
+      return [];
+    }
+
+    const lanes = batch.lanes
+      .map((lane) => ({
+        ...lane,
+        targets: lane.targets.filter((target) => knownScopedTargets.has(target))
+      }))
+      .filter((lane) => lane.targets.length > 0);
+    const keptLaneRefs = new Set(lanes.map((lane) => laneRef(batch, lane)));
+
+    return lanes.length > 0
+      ? [
+          {
+            ...batch,
+            lanes: lanes.map((lane) => ({
+              ...lane,
+              dependsOn: lane.dependsOn.filter((dependency) => keptLaneRefs.has(dependency))
+            }))
+          }
+        ]
+      : [];
   });
   const scopedBatchIds = new Set(scopedBatches.map((batch) => batch.batchId));
+  const scopedBatchOwners = new Set(scopedBatches.flatMap((batch) => batch.lanes.map((lane) => `${batch.batchId}:${lane.owner}`)));
   const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
     if (heartbeat.repo) {
       return targetRepoSet.has(heartbeat.repo);
     }
-    return Boolean(heartbeat.batchId && scopedBatchIds.has(heartbeat.batchId));
+    return Boolean(heartbeat.batchId && scopedBatchIds.has(heartbeat.batchId) && scopedBatchOwners.has(`${heartbeat.batchId}:${heartbeat.agentId}`));
   });
-  const scopedInputWarnings = input.warnings.filter((warning) => Boolean(warning.repo && targetRepoSet.has(warning.repo)));
+  const scopedInputWarnings = input.warnings.filter(
+    (warning) => Boolean(warning.repo && targetRepoSet.has(warning.repo)) || (!warning.repo && safeUnscopedWarning(warning))
+  );
 
   appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
   appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");

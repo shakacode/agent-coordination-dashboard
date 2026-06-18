@@ -162,7 +162,8 @@ describe("buildDashboardModel", () => {
       githubItems: [preview, { ...preview, repo: "other/repo", target: "12" }],
       warnings: [
         { severity: "warning", repo: "other/repo", message: "Malformed JSON in claims/other/repo/12.json" },
-        { severity: "warning", message: "Malformed JSON in heartbeats/idle-worker.json" }
+        { severity: "warning", message: "Malformed JSON in heartbeats/idle-worker.json" },
+        { severity: "warning", message: "Could not read coordination directory heartbeats: ENOENT" }
       ],
       now: new Date("2026-06-17T20:00:00Z")
     });
@@ -172,6 +173,7 @@ describe("buildDashboardModel", () => {
     expect(model.agents.some((agent) => agent.agentId === "idle-worker")).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("heartbeats/idle-worker"))).toBe(false);
+    expect(model.warnings.some((warning) => warning.message.includes("Could not read coordination directory heartbeats"))).toBe(true);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
         "Skipped 1 claim records outside TARGET_REPOS.",
@@ -194,6 +196,14 @@ describe("buildDashboardModel", () => {
           target: undefined,
           batchId: "batch-1",
           status: "in_progress"
+        },
+        {
+          ...heartbeat,
+          agentId: "other-worker",
+          repo: undefined,
+          target: undefined,
+          batchId: "batch-1",
+          status: "in_progress"
         }
       ],
       batches: [
@@ -211,6 +221,15 @@ describe("buildDashboardModel", () => {
               status: "queued",
               liveness: "no-heartbeat",
               blockedOn: []
+            },
+            {
+              name: "lane-b",
+              owner: "other-worker",
+              targets: ["9999"],
+              dependsOn: ["batch-1:lane-a"],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
             }
           ]
         }
@@ -221,9 +240,11 @@ describe("buildDashboardModel", () => {
     });
 
     expect(model.batches).toHaveLength(1);
+    expect(model.batches[0].lanes).toHaveLength(1);
     expect(model.batches[0].lanes[0].status).toBe("in_progress");
     expect(model.batches[0].lanes[0].liveness).toBe("live");
     expect(model.agents[0].agentId).toBe("worker-a");
+    expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
   });
 
   it("does not override batch lanes with unrelated owner heartbeats", () => {
