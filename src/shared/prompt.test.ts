@@ -40,5 +40,11 @@ describe("generatePrBatchPrompt", () => {
     expect(prompt).toContain("No selected items");
     expect(prompt).not.toContain("PR #4005");
   });
-});
 
+  it("excludes selected in-process work", () => {
+    const prompt = generatePrBatchPrompt([{ ...baseItem, schedulingState: "in_process", selected: true }]);
+
+    expect(prompt).toContain("No selected items");
+    expect(prompt).not.toContain("PR #4005");
+  });
+});

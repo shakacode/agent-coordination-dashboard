@@ -12,11 +12,17 @@ export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id:
       {items.map((item) => {
         const Icon = item.type === "pull_request" ? GitPullRequest : CircleDot;
         const itemKind = item.type === "pull_request" ? "PR" : item.type === "issue" ? "Issue" : "Target";
+        const canSelect = item.schedulingState !== "in_process";
 
         return (
           <article className="work-row" key={item.id}>
-            <label className="check-cell" title="Include in PR-batch prompt">
-              <input checked={item.selected} onChange={() => onToggle(item.id)} type="checkbox" />
+            <label className="check-cell" title={canSelect ? "Include in PR-batch prompt" : "Currently in process"}>
+              <input
+                checked={canSelect ? item.selected : false}
+                disabled={!canSelect}
+                onChange={() => onToggle(item.id)}
+                type="checkbox"
+              />
             </label>
             <Icon size={18} aria-hidden="true" />
             <div className="work-main">
@@ -42,4 +48,3 @@ export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id:
     </section>
   );
 }
-

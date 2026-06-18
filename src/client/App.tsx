@@ -31,7 +31,9 @@ export function App() {
       }
       return {
         ...current,
-        workItems: current.workItems.map((item) => (item.id === id ? { ...item, selected: !item.selected } : item))
+        workItems: current.workItems.map((item) =>
+          item.id === id && item.schedulingState !== "in_process" ? { ...item, selected: !item.selected } : item
+        )
       };
     });
   }

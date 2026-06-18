@@ -11,7 +11,7 @@ function itemLabel(item: WorkItem): string {
 }
 
 export function generatePrBatchPrompt(items: WorkItem[]): string {
-  const selected = items.filter((item) => item.selected);
+  const selected = items.filter((item) => item.selected && item.schedulingState !== "in_process");
 
   if (selected.length === 0) {
     return "No selected items. Check issues or pull requests to generate a $pr-batch prompt.";
@@ -57,4 +57,3 @@ export function generatePrBatchPrompt(items: WorkItem[]): string {
     "- Final handoff must include links, tests, blockers, next action, and ready/blocked/deferred/UNKNOWN sections."
   ].join("\n");
 }
-

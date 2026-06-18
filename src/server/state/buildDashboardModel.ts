@@ -27,8 +27,12 @@ function workId(repo: string, target: string): string {
   return `${repo}#${target}`;
 }
 
+function isLiveOrStale(heartbeat: HeartbeatRecord | undefined): boolean {
+  return Boolean(heartbeat && ["live", "stale"].includes(heartbeat.liveness));
+}
+
 function classifyWork(claim: ClaimRecord | undefined, heartbeat: HeartbeatRecord | undefined): SchedulingState {
-  if (claim?.status === "active" && heartbeat && ["live", "stale"].includes(heartbeat.liveness)) {
+  if (isLiveOrStale(heartbeat)) {
     return "in_process";
   }
 
@@ -44,38 +48,74 @@ function warningsForWork(
   target: string,
   claim: ClaimRecord | undefined,
   heartbeat: HeartbeatRecord | undefined,
+  workHeartbeats: HeartbeatRecord[],
+  claimAgentHeartbeat: HeartbeatRecord | undefined,
   schedulingState: SchedulingState
 ): CoordinationWarning[] {
-  if (schedulingState === "started_not_processing") {
-    return [
-      {
-        severity: "warning",
-        repo,
-        target,
-        agentId: claim?.agentId || heartbeat?.agentId,
-        message: "Work was started but the holder is not currently live or stale."
-      }
-    ];
+  const warnings: CoordinationWarning[] = [];
+
+  if (claim && claimAgentHeartbeat && (claimAgentHeartbeat.repo !== repo || claimAgentHeartbeat.target !== target)) {
+    warnings.push({
+      severity: "warning",
+      repo,
+      target,
+      agentId: claim.agentId,
+      message: `Claim holder heartbeat currently points at ${claimAgentHeartbeat.repo || "UNKNOWN repo"}#${
+        claimAgentHeartbeat.target || "UNKNOWN target"
+      }.`
+    });
   }
 
-  if (claim?.status === "active" && !heartbeat) {
-    return [
-      {
+  for (const otherHeartbeat of workHeartbeats.filter((item) => claim && item.agentId !== claim.agentId)) {
+    warnings.push({
+      severity: "warning",
+      repo,
+      target,
+      agentId: otherHeartbeat.agentId,
+      message: `Work has a heartbeat from ${otherHeartbeat.agentId} but the claim is held by ${claim?.agentId}.`
+    });
+  }
+
+  if (workHeartbeats.length > 1) {
+    warnings.push({
+      severity: "warning",
+      repo,
+      target,
+      message: `Work has ${workHeartbeats.length} heartbeat records for the same target.`
+    });
+  }
+
+  if (schedulingState === "started_not_processing") {
+    warnings.push({
+      severity: "warning",
+      repo,
+      target,
+      agentId: claim?.agentId || heartbeat?.agentId,
+      message: "Work was started but the holder is not currently live or stale."
+    });
+  } else if (claim?.status === "active" && !heartbeat) {
+    warnings.push({
         severity: "warning",
         repo,
         target,
         agentId: claim.agentId,
         message: "Active claim has no matching heartbeat."
-      }
-    ];
+    });
   }
 
-  return [];
+  return warnings;
 }
 
 export function buildDashboardModel(input: BuildInput): DashboardModel {
   const currentClaims = input.claims.filter((claim) => claim.status !== "released");
   const heartbeatsByAgent = new Map(input.heartbeats.map((heartbeat) => [heartbeat.agentId, heartbeat]));
+  const heartbeatsByWork = new Map<string, HeartbeatRecord[]>();
+  for (const heartbeat of input.heartbeats) {
+    if (heartbeat.repo && heartbeat.target) {
+      const id = workId(heartbeat.repo, heartbeat.target);
+      heartbeatsByWork.set(id, [...(heartbeatsByWork.get(id) || []), heartbeat]);
+    }
+  }
   const previewsByWork = new Map(input.githubItems.map((item) => [workId(item.repo, item.target), item]));
   const claimsByWork = new Map(currentClaims.map((claim) => [workId(claim.repo, claim.target), claim]));
   const workKeys = new Set<string>([...claimsByWork.keys(), ...previewsByWork.keys()]);
@@ -93,12 +133,15 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const repo = id.slice(0, hashIndex);
       const target = id.slice(hashIndex + 1);
       const claim = claimsByWork.get(id);
-      const heartbeat = claim
-        ? heartbeatsByAgent.get(claim.agentId)
-        : input.heartbeats.find((item) => item.repo === repo && item.target === target);
+      const workHeartbeats = heartbeatsByWork.get(id) || [];
+      const claimAgentHeartbeat = claim ? heartbeatsByAgent.get(claim.agentId) : undefined;
+      const heartbeat =
+        (claim && workHeartbeats.find((item) => item.agentId === claim.agentId)) ||
+        workHeartbeats.find(isLiveOrStale) ||
+        workHeartbeats[0];
       const github = previewsByWork.get(id);
       const schedulingState = classifyWork(claim, heartbeat);
-      const warnings = warningsForWork(repo, target, claim, heartbeat, schedulingState);
+      const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, schedulingState);
 
       return {
         id,
@@ -116,11 +159,10 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const workByAgent = new Map<string, WorkItem[]>();
   for (const item of workItems) {
-    const agentId = item.claim?.agentId || item.heartbeat?.agentId;
-    if (!agentId) {
-      continue;
+    const agentIds = new Set([item.claim?.agentId, item.heartbeat?.agentId].filter((agentId): agentId is string => Boolean(agentId)));
+    for (const agentId of agentIds) {
+      workByAgent.set(agentId, [...(workByAgent.get(agentId) || []), item]);
     }
-    workByAgent.set(agentId, [...(workByAgent.get(agentId) || []), item]);
   }
 
   const agentIds = new Set<string>([

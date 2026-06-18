@@ -201,6 +201,10 @@ input {
   justify-content: center;
 }
 
+.check-cell input:disabled {
+  cursor: not-allowed;
+}
+
 .labels {
   font-size: 12px;
 }

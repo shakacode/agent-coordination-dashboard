@@ -70,6 +70,45 @@ describe("buildDashboardModel", () => {
     expect(model.workItems[0].warnings[0].message).toContain("not currently live or stale");
   });
 
+  it("does not attach a claim holder heartbeat from a different target", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [claim],
+      heartbeats: [{ ...heartbeat, target: "4010" }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    const claimedItem = model.workItems.find((item) => item.target === "4005");
+    const movedHeartbeatItem = model.workItems.find((item) => item.target === "4010");
+
+    expect(claimedItem?.schedulingState).toBe("started_not_processing");
+    expect(claimedItem?.heartbeat).toBeUndefined();
+    expect(claimedItem?.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining("heartbeat currently points at")])
+    );
+    expect(movedHeartbeatItem?.schedulingState).toBe("in_process");
+  });
+
+  it("classifies live heartbeat-only work as in process", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [heartbeat],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].schedulingState).toBe("in_process");
+    expect(model.agents[0].currentWork[0].target).toBe("4005");
+  });
+
   it("does not let released claims block ready GitHub work", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
