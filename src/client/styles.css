@@ -47,6 +47,7 @@ input {
 }
 
 .topbar p,
+.batch-scope,
 .work-main p,
 .lane-row p {
   margin: 4px 0 0;

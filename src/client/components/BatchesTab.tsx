@@ -9,8 +9,9 @@ export function BatchesTab({ batches }: { batches: BatchRecord[] }) {
   return (
     <section className="panel-grid">
       {batches.map((batch) => (
-        <article className="panel" key={batch.batchId}>
+        <article className="panel" key={`${batch.repo || batch.path}:${batch.batchId}`}>
           <h2>{batch.batchId}</h2>
+          <p className="batch-scope">{batch.repo || batch.path}</p>
           {batch.lanes.map((lane) => (
             <div className="lane-row" key={lane.name}>
               <div>
