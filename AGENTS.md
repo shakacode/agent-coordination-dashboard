@@ -16,7 +16,9 @@ TARGET_REPOS=shakacode/react_on_rails \
 npm run dev
 ```
 
-The dev server listens on <http://localhost:4317>.
+The dev server listens on <http://127.0.0.1:4317> by default. Keep that
+loopback default unless the user explicitly asks to expose the dashboard on the
+network.
 
 ## Product Boundary
 
@@ -35,4 +37,3 @@ The dev server listens on <http://localhost:4317>.
   - `in_process`: active claim with live or stale heartbeat.
   - `started_not_processing`: claim or heartbeat exists but no live/stale holder.
   - `ready_for_batch`: open GitHub item with no current coordination signal.
-

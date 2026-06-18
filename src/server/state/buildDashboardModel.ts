@@ -74,9 +74,10 @@ function warningsForWork(
 }
 
 export function buildDashboardModel(input: BuildInput): DashboardModel {
+  const currentClaims = input.claims.filter((claim) => claim.status !== "released");
   const heartbeatsByAgent = new Map(input.heartbeats.map((heartbeat) => [heartbeat.agentId, heartbeat]));
   const previewsByWork = new Map(input.githubItems.map((item) => [workId(item.repo, item.target), item]));
-  const claimsByWork = new Map(input.claims.map((claim) => [workId(claim.repo, claim.target), claim]));
+  const claimsByWork = new Map(currentClaims.map((claim) => [workId(claim.repo, claim.target), claim]));
   const workKeys = new Set<string>([...claimsByWork.keys(), ...previewsByWork.keys()]);
 
   for (const heartbeat of input.heartbeats) {
@@ -123,14 +124,14 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
 
   const agentIds = new Set<string>([
-    ...input.claims.map((claim) => claim.agentId),
+    ...currentClaims.map((claim) => claim.agentId),
     ...input.heartbeats.map((heartbeat) => heartbeat.agentId)
   ]);
   const agents: AgentSummary[] = Array.from(agentIds)
     .sort()
     .map((agentId) => {
       const heartbeat = heartbeatsByAgent.get(agentId);
-      const claims = input.claims.filter((claim) => claim.agentId === agentId);
+      const claims = currentClaims.filter((claim) => claim.agentId === agentId);
       const currentWork = workByAgent.get(agentId) || [];
       const warnings = currentWork.flatMap((item) => item.warnings);
 

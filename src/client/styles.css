@@ -34,6 +34,7 @@ input {
 }
 
 .topbar h1,
+.warnings-heading,
 .panel h2,
 .work-main h2,
 .prompt-drawer h2 {
@@ -66,6 +67,39 @@ input {
   border-radius: 6px;
   background: #f8fafc;
   padding: 4px 7px;
+}
+
+.warnings-panel {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid #fedf89;
+  background: #fffaeb;
+  color: #713f12;
+  padding: 10px 18px;
+}
+
+.warnings-heading {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.warnings-panel ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.warnings-panel li {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.warnings-panel strong {
+  text-transform: uppercase;
 }
 
 .dashboard-layout {

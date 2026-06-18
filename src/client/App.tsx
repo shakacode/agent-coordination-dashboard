@@ -60,6 +60,20 @@ export function App() {
         </div>
       </header>
 
+      {dashboard.warnings.length > 0 && (
+        <section className="warnings-panel" aria-label="Coordination warnings">
+          <div className="warnings-heading">Warnings</div>
+          <ul>
+            {dashboard.warnings.map((warning, index) => (
+              <li key={`${warning.message}-${index}`}>
+                <strong>{warning.severity}</strong>
+                <span>{warning.message}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <div className="dashboard-layout">
         <section className="content-region">
           <nav className="tabs" aria-label="Dashboard views">

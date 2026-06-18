@@ -69,5 +69,21 @@ describe("buildDashboardModel", () => {
     expect(model.workItems[0].schedulingState).toBe("started_not_processing");
     expect(model.workItems[0].warnings[0].message).toContain("not currently live or stale");
   });
-});
 
+  it("does not let released claims block ready GitHub work", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [{ ...claim, status: "released" }],
+      heartbeats: [],
+      batches: [],
+      githubItems: [{ ...preview, target: "4005" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].schedulingState).toBe("ready_for_batch");
+    expect(model.workItems[0].claim).toBeUndefined();
+    expect(model.agents).toEqual([]);
+  });
+});

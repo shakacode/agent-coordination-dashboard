@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { GitHubPreview } from "../../shared/types";
+import type { CoordinationWarning, GitHubPreview } from "../../shared/types";
 import type { GhRunner } from "./types";
 
 interface GhAuthor {
@@ -29,6 +29,13 @@ interface GhIssue {
   author?: GhAuthor;
   labels?: GhLabel[];
 }
+
+interface GitHubLoadResult {
+  items: GitHubPreview[];
+  warnings: CoordinationWarning[];
+}
+
+const GITHUB_LIST_LIMIT = 1000;
 
 export const childProcessGhRunner: GhRunner = {
   run(args) {
@@ -92,35 +99,65 @@ export function parseIssueList(repo: string, stdout: string): GitHubPreview[] {
 export async function loadOpenGitHubItems(
   repo: string,
   runner: GhRunner = childProcessGhRunner
-): Promise<GitHubPreview[]> {
-  const prResult = await runner.run([
-    "pr",
-    "list",
-    "--repo",
-    repo,
-    "--state",
-    "open",
-    "--json",
-    "number,title,url,state,author,labels,headRefName,reviewDecision"
-  ]);
-  const issueResult = await runner.run([
-    "issue",
-    "list",
-    "--repo",
-    repo,
-    "--state",
-    "open",
-    "--json",
-    "number,title,url,state,author,labels"
+): Promise<GitHubLoadResult> {
+  const warnings: CoordinationWarning[] = [];
+
+  async function loadKind(
+    kind: "pr" | "issue",
+    fields: string,
+    parse: (repo: string, stdout: string) => GitHubPreview[]
+  ): Promise<GitHubPreview[]> {
+    const result = await runner.run([
+      kind,
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--limit",
+      String(GITHUB_LIST_LIMIT),
+      "--json",
+      fields
+    ]);
+
+    if (result.exitCode !== 0) {
+      warnings.push({
+        severity: "warning",
+        repo,
+        message: `GitHub ${kind} list failed for ${repo}: ${result.stderr || `exit ${result.exitCode}`}`
+      });
+      return [];
+    }
+
+    try {
+      const items = parse(repo, result.stdout);
+      if (items.length >= GITHUB_LIST_LIMIT) {
+        warnings.push({
+          severity: "warning",
+          repo,
+          message: `GitHub ${kind} list for ${repo} reached the ${GITHUB_LIST_LIMIT} item limit and may be truncated.`
+        });
+      }
+      return items;
+    } catch (error) {
+      warnings.push({
+        severity: "warning",
+        repo,
+        message: `GitHub ${kind} list returned unreadable JSON for ${repo}: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`
+      });
+      return [];
+    }
+  }
+
+  const [prs, issues] = await Promise.all([
+    loadKind("pr", "number,title,url,state,author,labels,headRefName,reviewDecision", parsePrList),
+    loadKind("issue", "number,title,url,state,author,labels", parseIssueList)
   ]);
 
-  const previews: GitHubPreview[] = [];
-  if (prResult.exitCode === 0) {
-    previews.push(...parsePrList(repo, prResult.stdout));
-  }
-  if (issueResult.exitCode === 0) {
-    previews.push(...parseIssueList(repo, issueResult.stdout));
-  }
-  return previews;
+  return {
+    items: [...prs, ...issues],
+    warnings
+  };
 }
-

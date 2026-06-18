@@ -53,5 +53,21 @@ describe("readCoordinationState", () => {
     expect(state.batches[0].lanes[0].dependsOn).toEqual(["batch-1:backend"]);
     expect(state.warnings[0].message).toContain("Malformed JSON");
   });
-});
 
+  it("warns when expected coordination directories cannot be read", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-missing-"));
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.claims).toEqual([]);
+    expect(state.heartbeats).toEqual([]);
+    expect(state.batches).toEqual([]);
+    expect(state.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("claims"),
+        expect.stringContaining("heartbeats"),
+        expect.stringContaining("batches")
+      ])
+    );
+  });
+});

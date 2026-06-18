@@ -19,14 +19,10 @@ app.get("/api/dashboard", async (_req, res) => {
   const now = new Date();
   const state = await readCoordinationState(config.stateRoot, now);
   const githubResults = await Promise.all(
-    config.targetRepos.map(async (repo) => {
-      try {
-        return await loadOpenGitHubItems(repo);
-      } catch {
-        return [];
-      }
-    })
+    config.targetRepos.map((repo) => loadOpenGitHubItems(repo))
   );
+  const githubItems = githubResults.flatMap((result) => result.items);
+  const githubWarnings = githubResults.flatMap((result) => result.warnings);
 
   res.json(
     buildDashboardModel({
@@ -35,8 +31,8 @@ app.get("/api/dashboard", async (_req, res) => {
       claims: state.claims,
       heartbeats: state.heartbeats,
       batches: state.batches,
-      githubItems: githubResults.flat(),
-      warnings: state.warnings,
+      githubItems,
+      warnings: [...state.warnings, ...githubWarnings],
       now
     })
   );
@@ -61,6 +57,6 @@ async function configureFrontend() {
 
 await configureFrontend();
 
-app.listen(config.port, () => {
-  console.log(`agents-coordination-dashboard listening on http://localhost:${config.port}`);
+app.listen(config.port, config.host, () => {
+  console.log(`agents-coordination-dashboard listening on http://${config.host}:${config.port}`);
 });

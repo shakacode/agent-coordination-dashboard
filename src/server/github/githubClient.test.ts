@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseIssueList, parsePrList } from "./githubClient";
+import { loadOpenGitHubItems, parseIssueList, parsePrList } from "./githubClient";
 
 describe("github list parsers", () => {
   it("normalizes open PRs", () => {
@@ -51,5 +51,30 @@ describe("github list parsers", () => {
       labels: ["bug"]
     });
   });
-});
 
+  it("requests an explicit high limit for GitHub lists", async () => {
+    const calls: string[][] = [];
+    const result = await loadOpenGitHubItems("shakacode/react_on_rails", {
+      run: async (args) => {
+        calls.push(args);
+        return { stdout: "[]", stderr: "", exitCode: 0 };
+      }
+    });
+
+    expect(result.items).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((args) => args.includes("--limit"))).toBe(true);
+    expect(calls.every((args) => args[args.indexOf("--limit") + 1] === "1000")).toBe(true);
+  });
+
+  it("surfaces GitHub command failures as warnings", async () => {
+    const result = await loadOpenGitHubItems("shakacode/react_on_rails", {
+      run: async () => ({ stdout: "", stderr: "auth required", exitCode: 1 })
+    });
+
+    expect(result.items).toEqual([]);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings[0].message).toContain("auth required");
+  });
+});

@@ -10,20 +10,26 @@ interface RawState {
   warnings: CoordinationWarning[];
 }
 
-async function listJsonFiles(directory: string): Promise<string[]> {
+async function listJsonFiles(directory: string, root: string, warnings: CoordinationWarning[]): Promise<string[]> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
     const nested = await Promise.all(
       entries.map(async (entry) => {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
-          return listJsonFiles(path);
+          return listJsonFiles(path, root, warnings);
         }
         return entry.isFile() && entry.name.endsWith(".json") ? [path] : [];
       })
     );
     return nested.flat().sort();
-  } catch {
+  } catch (error) {
+    warnings.push({
+      severity: "warning",
+      message: `Could not read coordination directory ${relative(root, directory) || "."}: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`
+    });
     return [];
   }
 }
@@ -114,9 +120,9 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 
 export async function readCoordinationState(root: string, now = new Date()): Promise<RawState> {
   const warnings: CoordinationWarning[] = [];
-  const claimFiles = await listJsonFiles(join(root, "claims"));
-  const heartbeatFiles = await listJsonFiles(join(root, "heartbeats"));
-  const batchFiles = await listJsonFiles(join(root, "batches"));
+  const claimFiles = await listJsonFiles(join(root, "claims"), root, warnings);
+  const heartbeatFiles = await listJsonFiles(join(root, "heartbeats"), root, warnings);
+  const batchFiles = await listJsonFiles(join(root, "batches"), root, warnings);
 
   async function readMany<T>(
     files: string[],
@@ -144,4 +150,3 @@ export async function readCoordinationState(root: string, now = new Date()): Pro
     warnings
   };
 }
-

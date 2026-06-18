@@ -13,6 +13,10 @@ npm run dev
 
 Open <http://localhost:4317>.
 
+The server binds to `127.0.0.1` by default because it exposes private local
+coordination metadata. Set `HOST=0.0.0.0` only when you intentionally want to
+make it reachable from another machine on the network.
+
 ## What It Shows
 
 - **Machines**: agents, heartbeats, claims, liveness, warnings, and current work.
@@ -35,6 +39,7 @@ The dashboard does not launch Codex agents or edit coordination state.
 | Variable | Default |
 | --- | --- |
 | `PORT` | `4317` |
+| `HOST` | `127.0.0.1` |
 | `AGENT_COORD_STATE_ROOT` | `/Users/justin/Documents/agent-coordination/agent-coordination-pr2` |
 | `TARGET_REPOS` | `shakacode/react_on_rails` |
 
@@ -54,4 +59,3 @@ npm run dev
 
 The npm scripts call package entrypoints through `node` directly to avoid local
 shell shim issues.
-

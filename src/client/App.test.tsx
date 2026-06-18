@@ -57,7 +57,7 @@ const model = {
     }
   ],
   batches: [],
-  warnings: []
+  warnings: [{ severity: "warning", message: "GitHub issue list failed for shakacode/react_on_rails: auth required" }]
 };
 
 describe("App", () => {
@@ -88,6 +88,7 @@ describe("App", () => {
 
     expect(screen.getByText("Ready for batch")).toBeInTheDocument();
     expect(screen.getByText("Started, not processing")).toBeInTheDocument();
+    expect(screen.getByText(/auth required/)).toBeInTheDocument();
     expect(screen.getByText(/Use \$pr-batch/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
   });
