@@ -7,7 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "dev": "tsx src/server/index.ts",
-    "build": "tsc -p tsconfig.node.json && vite build",
+    "build": "tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "NODE_ENV=production tsx src/server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -38,4 +38,3 @@
     "node": ">=24.0.0"
   }
 }
-
