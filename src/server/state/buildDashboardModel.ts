@@ -62,7 +62,7 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
     return sameRepo && sameTarget && (!heartbeat.batchId || sameBatch);
   }
 
-  return sameBatch;
+  return sameBatch && sameRepo;
 }
 
 function appendSkippedWarning(warnings: CoordinationWarning[], count: number, label: string) {
@@ -153,7 +153,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     ...repoScopedHeartbeats.map((heartbeat) => heartbeat.target).filter((target): target is string => Boolean(target)),
     ...scopedGithubItems.map((item) => item.target)
   ]);
-  const scopedBatches = input.batches.flatMap((batch) => {
+  const scopedBatchesRaw = input.batches.flatMap((batch) => {
     if (batch.repo) {
       return targetRepoSet.has(batch.repo) ? [batch] : [];
     }
@@ -168,23 +168,28 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         targets: lane.targets.filter((target) => knownScopedTargets.has(target))
       }))
       .filter((lane) => lane.targets.length > 0);
-    const keptLaneRefs = new Set(lanes.map((lane) => laneRef(batch, lane)));
 
     return lanes.length > 0
       ? [
           {
             ...batch,
-            lanes: lanes.map((lane) => ({
-              ...lane,
-              dependsOn: [
-                ...lane.dependsOn.filter((dependency) => keptLaneRefs.has(dependency)),
-                ...(lane.dependsOn.some((dependency) => !keptLaneRefs.has(dependency)) ? [REDACTED_DEPENDENCY_REF] : [])
-              ]
-            }))
+            lanes
           }
         ]
       : [];
   });
+  const scopedLaneRefs = new Set(scopedBatchesRaw.flatMap((batch) => batch.lanes.map((lane) => laneRef(batch, lane))));
+  const scopedBatches = scopedBatchesRaw.map((batch) => ({
+    ...batch,
+    lanes: batch.lanes.map((lane) => {
+      const keptDependencies = lane.dependsOn.filter((dependency) => scopedLaneRefs.has(dependency));
+      const hasHiddenDependencies = lane.dependsOn.some((dependency) => !scopedLaneRefs.has(dependency));
+      return {
+        ...lane,
+        dependsOn: hasHiddenDependencies ? [...keptDependencies, REDACTED_DEPENDENCY_REF] : keptDependencies
+      };
+    })
+  }));
   const scopedBatchIds = new Set(scopedBatches.map((batch) => batch.batchId));
   const scopedBatchOwners = new Set(scopedBatches.flatMap((batch) => batch.lanes.map((lane) => `${batch.batchId}:${lane.owner}`)));
   const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
