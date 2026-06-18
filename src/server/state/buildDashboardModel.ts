@@ -1,5 +1,6 @@
 import type {
   AgentSummary,
+  BatchLane,
   BatchRecord,
   ClaimRecord,
   CoordinationWarning,
@@ -27,6 +28,10 @@ function workId(repo: string, target: string): string {
   return `${repo}#${target}`;
 }
 
+function laneRef(batch: BatchRecord, lane: BatchLane): string {
+  return `${batch.batchId}:${lane.name}`;
+}
+
 function isLiveOrStale(heartbeat: HeartbeatRecord | undefined): boolean {
   return Boolean(heartbeat && ["live", "stale"].includes(heartbeat.liveness));
 }
@@ -41,6 +46,18 @@ function classifyWork(claim: ClaimRecord | undefined, heartbeat: HeartbeatRecord
   }
 
   return "ready_for_batch";
+}
+
+function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: HeartbeatRecord): boolean {
+  if (heartbeat.batchId && heartbeat.batchId !== batch.batchId) {
+    return false;
+  }
+
+  const sameBatch = heartbeat.batchId === batch.batchId;
+  const sameRepo = !batch.repo || !heartbeat.repo || heartbeat.repo === batch.repo;
+  const sameTarget = Boolean(heartbeat.target && lane.targets.includes(heartbeat.target));
+
+  return sameBatch || (sameRepo && sameTarget);
 }
 
 function warningsForWork(
@@ -136,8 +153,9 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const workHeartbeats = heartbeatsByWork.get(id) || [];
       const claimAgentHeartbeat = claim ? heartbeatsByAgent.get(claim.agentId) : undefined;
       const heartbeat =
-        (claim && workHeartbeats.find((item) => item.agentId === claim.agentId)) ||
+        (claim && workHeartbeats.find((item) => item.agentId === claim.agentId && isLiveOrStale(item))) ||
         workHeartbeats.find(isLiveOrStale) ||
+        (claim && workHeartbeats.find((item) => item.agentId === claim.agentId)) ||
         workHeartbeats[0];
       const github = previewsByWork.get(id);
       const schedulingState = classifyWork(claim, heartbeat);
@@ -188,17 +206,34 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     });
 
   const laneStatusByRef = new Map<string, string>();
+  const laneHeartbeatByRef = new Map<string, HeartbeatRecord | undefined>();
+  const batchWarnings: CoordinationWarning[] = [];
   for (const batch of input.batches) {
     for (const lane of batch.lanes) {
-      const heartbeat = heartbeatsByAgent.get(lane.owner);
-      laneStatusByRef.set(`${batch.batchId}:${lane.name}`, heartbeat?.status || lane.status);
+      const ownerHeartbeat = heartbeatsByAgent.get(lane.owner);
+      const heartbeat = ownerHeartbeat && heartbeatMatchesLane(batch, lane, ownerHeartbeat) ? ownerHeartbeat : undefined;
+      const ref = laneRef(batch, lane);
+
+      if (ownerHeartbeat && !heartbeat) {
+        batchWarnings.push({
+          severity: "warning",
+          repo: batch.repo,
+          agentId: lane.owner,
+          message: `Lane ${ref} owner heartbeat points at ${ownerHeartbeat.repo || "UNKNOWN repo"}#${
+            ownerHeartbeat.target || "UNKNOWN target"
+          } and was not applied.`
+        });
+      }
+
+      laneHeartbeatByRef.set(ref, heartbeat);
+      laneStatusByRef.set(ref, heartbeat?.status || lane.status);
     }
   }
 
   const batches = input.batches.map((batch) => ({
     ...batch,
     lanes: batch.lanes.map((lane) => {
-      const heartbeat = heartbeatsByAgent.get(lane.owner);
+      const heartbeat = laneHeartbeatByRef.get(laneRef(batch, lane));
       return {
         ...lane,
         status: heartbeat?.status || lane.status,
@@ -215,6 +250,6 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     agents,
     workItems,
     batches,
-    warnings: [...input.warnings, ...workItems.flatMap((item) => item.warnings)]
+    warnings: [...input.warnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
   };
 }

@@ -93,6 +93,28 @@ describe("buildDashboardModel", () => {
     expect(movedHeartbeatItem?.schedulingState).toBe("in_process");
   });
 
+  it("treats any live heartbeat for the same work as in process", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [claim],
+      heartbeats: [
+        { ...heartbeat, liveness: "dead" },
+        { ...heartbeat, agentId: "worker-b", liveness: "live" }
+      ],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].schedulingState).toBe("in_process");
+    expect(model.workItems[0].heartbeat?.agentId).toBe("worker-b");
+    expect(model.workItems[0].warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining("heartbeat from worker-b")])
+    );
+  });
+
   it("classifies live heartbeat-only work as in process", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
@@ -124,5 +146,43 @@ describe("buildDashboardModel", () => {
     expect(model.workItems[0].schedulingState).toBe("ready_for_batch");
     expect(model.workItems[0].claim).toBeUndefined();
     expect(model.agents).toEqual([]);
+  });
+
+  it("does not override batch lanes with unrelated owner heartbeats", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, batchId: "other-batch", target: "9999", status: "complete" }],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          updatedAt: "2026-06-17T20:00:00Z",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4005"],
+              dependsOn: [],
+              status: "blocked",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches[0].lanes[0].status).toBe("blocked");
+    expect(model.batches[0].lanes[0].liveness).toBe("no-heartbeat");
+    expect(model.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining("owner heartbeat points at")])
+    );
   });
 });
