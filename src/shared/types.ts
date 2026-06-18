@@ -51,6 +51,13 @@ export interface BatchRecord {
   path: string;
 }
 
+export interface BatchWorkSignal {
+  batchId: string;
+  laneName: string;
+  status: string;
+  blockedOn: string[];
+}
+
 export interface GitHubPreview {
   repo: string;
   target: string;
@@ -80,6 +87,7 @@ export interface WorkItem {
   type: WorkItemType;
   claim?: ClaimRecord;
   heartbeat?: HeartbeatRecord;
+  batchSignals?: BatchWorkSignal[];
   github?: GitHubPreview;
   schedulingState: SchedulingState;
   warnings: CoordinationWarning[];
@@ -104,4 +112,3 @@ export interface DashboardModel {
   batches: BatchRecord[];
   warnings: CoordinationWarning[];
 }
-

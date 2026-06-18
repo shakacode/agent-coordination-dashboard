@@ -47,4 +47,16 @@ describe("generatePrBatchPrompt", () => {
     expect(prompt).toContain("No selected items");
     expect(prompt).not.toContain("PR #4005");
   });
+
+  it("excludes selected work already scheduled in a batch", () => {
+    const prompt = generatePrBatchPrompt([
+      {
+        ...baseItem,
+        batchSignals: [{ batchId: "batch-1", laneName: "lane-a", status: "queued", blockedOn: [] }]
+      }
+    ]);
+
+    expect(prompt).toContain("No selected items");
+    expect(prompt).not.toContain("PR #4005");
+  });
 });

@@ -11,7 +11,9 @@ function itemLabel(item: WorkItem): string {
 }
 
 export function generatePrBatchPrompt(items: WorkItem[]): string {
-  const selected = items.filter((item) => item.selected && item.schedulingState !== "in_process");
+  const selected = items.filter(
+    (item) => item.selected && item.schedulingState !== "in_process" && !(item.batchSignals?.length)
+  );
 
   if (selected.length === 0) {
     return "No selected items. Check issues or pull requests to generate a $pr-batch prompt.";

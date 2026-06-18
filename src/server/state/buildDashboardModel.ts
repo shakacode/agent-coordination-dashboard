@@ -2,6 +2,7 @@ import type {
   AgentSummary,
   BatchLane,
   BatchRecord,
+  BatchWorkSignal,
   ClaimRecord,
   CoordinationWarning,
   DashboardModel,
@@ -49,12 +50,16 @@ function isLiveOrStale(heartbeat: HeartbeatRecord | undefined): boolean {
   return Boolean(heartbeat && ["live", "stale"].includes(heartbeat.liveness));
 }
 
-function classifyWork(claim: ClaimRecord | undefined, heartbeat: HeartbeatRecord | undefined): SchedulingState {
+function classifyWork(
+  claim: ClaimRecord | undefined,
+  heartbeat: HeartbeatRecord | undefined,
+  batchSignals: BatchWorkSignal[]
+): SchedulingState {
   if (isLiveOrStale(heartbeat)) {
     return "in_process";
   }
 
-  if (claim || heartbeat) {
+  if (claim || heartbeat || batchSignals.length > 0) {
     return "started_not_processing";
   }
 
@@ -86,8 +91,24 @@ function appendSkippedWarning(warnings: CoordinationWarning[], count: number, la
   }
 }
 
-function safeUnscopedWarning(warning: CoordinationWarning): boolean {
-  return /^Could not read coordination directory (claims|heartbeats|batches|\.)(:|$)/.test(warning.message);
+function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<string>): CoordinationWarning | undefined {
+  if (warning.repo) {
+    return targetRepoSet.has(warning.repo) ? warning : undefined;
+  }
+
+  if (/^Could not read coordination directory (claims|heartbeats|batches|\.)(:|$)/.test(warning.message)) {
+    return warning;
+  }
+
+  const malformed = warning.message.match(/^Malformed JSON in (heartbeats|batches)\//);
+  if (malformed) {
+    return {
+      severity: warning.severity,
+      message: `Malformed JSON in an unscoped ${malformed[1]} record.`
+    };
+  }
+
+  return undefined;
 }
 
 function warningsForWork(
@@ -97,6 +118,7 @@ function warningsForWork(
   heartbeat: HeartbeatRecord | undefined,
   workHeartbeats: HeartbeatRecord[],
   claimAgentHeartbeat: HeartbeatRecord | undefined,
+  batchSignals: BatchWorkSignal[],
   schedulingState: SchedulingState
 ): CoordinationWarning[] {
   const warnings: CoordinationWarning[] = [];
@@ -130,6 +152,23 @@ function warningsForWork(
       target,
       message: `Work has ${workHeartbeats.length} heartbeat records for the same target.`
     });
+  }
+
+  for (const signal of batchSignals) {
+    warnings.push({
+      severity: "warning",
+      repo,
+      target,
+      message: `Work is already scheduled in batch ${signal.batchId}:${signal.laneName} (${signal.status}).`
+    });
+    if (signal.blockedOn.length > 0) {
+      warnings.push({
+        severity: "warning",
+        repo,
+        target,
+        message: `Batch lane ${signal.batchId}:${signal.laneName} is blocked on ${signal.blockedOn.join(", ")}.`
+      });
+    }
   }
 
   if (schedulingState === "started_not_processing") {
@@ -211,9 +250,9 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
     return Boolean(heartbeat.batchId && repoLessScopedBatchOwners.has(`${heartbeat.batchId}:${heartbeat.agentId}`));
   });
-  const scopedInputWarnings = input.warnings.filter(
-    (warning) => Boolean(warning.repo && targetRepoSet.has(warning.repo)) || (!warning.repo && safeUnscopedWarning(warning))
-  );
+  const scopedInputWarnings = input.warnings
+    .map((warning) => scopedInputWarning(warning, targetRepoSet))
+    .filter((warning): warning is CoordinationWarning => Boolean(warning));
 
   appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
   appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");
@@ -231,7 +270,28 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
   const previewsByWork = new Map(scopedGithubItems.map((item) => [workId(item.repo, item.target), item]));
   const claimsByWork = new Map(currentClaims.map((claim) => [workId(claim.repo, claim.target), claim]));
-  const workKeys = new Set<string>([...claimsByWork.keys(), ...previewsByWork.keys()]);
+  const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
+  for (const batch of scopedBatches) {
+    const repo = batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined);
+    if (!repo) {
+      continue;
+    }
+    for (const lane of batch.lanes) {
+      for (const target of lane.targets) {
+        const id = workId(repo, target);
+        batchSignalsByWork.set(id, [
+          ...(batchSignalsByWork.get(id) || []),
+          {
+            batchId: batch.batchId,
+            laneName: lane.name,
+            status: lane.status,
+            blockedOn: lane.dependsOn
+          }
+        ]);
+      }
+    }
+  }
+  const workKeys = new Set<string>([...claimsByWork.keys(), ...previewsByWork.keys(), ...batchSignalsByWork.keys()]);
 
   for (const heartbeat of scopedHeartbeats) {
     if (heartbeat.repo && heartbeat.target) {
@@ -248,14 +308,15 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const claim = claimsByWork.get(id);
       const workHeartbeats = heartbeatsByWork.get(id) || [];
       const claimAgentHeartbeat = claim ? heartbeatsByAgent.get(claim.agentId) : undefined;
+      const batchSignals = batchSignalsByWork.get(id) || [];
       const heartbeat =
         (claim && workHeartbeats.find((item) => item.agentId === claim.agentId && isLiveOrStale(item))) ||
         workHeartbeats.find(isLiveOrStale) ||
         (claim && workHeartbeats.find((item) => item.agentId === claim.agentId)) ||
         workHeartbeats[0];
       const github = previewsByWork.get(id);
-      const schedulingState = classifyWork(claim, heartbeat);
-      const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, schedulingState);
+      const schedulingState = classifyWork(claim, heartbeat, batchSignals);
+      const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, batchSignals, schedulingState);
 
       return {
         id,
@@ -264,6 +325,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         type: github?.type || "unknown",
         claim,
         heartbeat,
+        batchSignals,
         github,
         schedulingState,
         warnings,

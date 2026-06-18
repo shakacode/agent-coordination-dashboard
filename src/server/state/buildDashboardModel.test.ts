@@ -174,13 +174,53 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("heartbeats/idle-worker"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("Could not read coordination directory heartbeats"))).toBe(true);
+    expect(model.warnings.some((warning) => warning.message === "Malformed JSON in an unscoped heartbeats record.")).toBe(true);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
         "Skipped 1 claim records outside TARGET_REPOS.",
         "Skipped 2 heartbeat records outside TARGET_REPOS.",
         "Skipped 1 GitHub preview records outside TARGET_REPOS.",
-        "Skipped 2 warning records outside TARGET_REPOS."
+        "Skipped 1 warning records outside TARGET_REPOS."
       ])
+    );
+  });
+
+  it("does not mark open work as ready when it is already in a retained batch lane", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: ["outside TARGET_REPOS"],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [preview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].schedulingState).toBe("started_not_processing");
+    expect(model.workItems[0].batchSignals).toEqual([
+      { batchId: "batch-1", laneName: "lane-a", status: "queued", blockedOn: ["outside TARGET_REPOS"] }
+    ]);
+    expect(model.workItems[0].warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining("already scheduled in batch")])
     );
   });
 
