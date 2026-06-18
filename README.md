@@ -50,6 +50,9 @@ The dashboard does not launch Codex agents or edit coordination state.
 GitHub enrichment uses the local `gh` CLI. If `gh` is unavailable or
 unauthenticated, local coordination state still renders.
 
+Local coordination records are scoped to `TARGET_REPOS`; records outside those
+repos are skipped with count-based warnings.
+
 ## Scripts
 
 ```bash

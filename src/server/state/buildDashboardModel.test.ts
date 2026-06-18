@@ -148,6 +148,29 @@ describe("buildDashboardModel", () => {
     expect(model.agents).toEqual([]);
   });
 
+  it("scopes coordination records to target repositories", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [claim, { ...claim, repo: "other/repo", target: "12", agentId: "other-worker" }],
+      heartbeats: [heartbeat, { ...heartbeat, repo: "other/repo", target: "12", agentId: "other-worker" }],
+      batches: [],
+      githubItems: [preview, { ...preview, repo: "other/repo", target: "12" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems.some((item) => item.repo === "other/repo")).toBe(false);
+    expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
+    expect(model.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([
+        "Skipped 1 claim records outside TARGET_REPOS.",
+        "Skipped 1 heartbeat records outside TARGET_REPOS.",
+        "Skipped 1 GitHub preview records outside TARGET_REPOS."
+      ])
+    );
+  });
+
   it("does not override batch lanes with unrelated owner heartbeats", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",

@@ -29,6 +29,8 @@ value for the browser hostnames or IP addresses.
 - Do not edit code, merge PRs, resolve reviews, or mutate coordination records
   from this app.
 - Use `UNKNOWN` or visible warnings when GitHub or local state cannot be read.
+- Scope displayed coordination records to `TARGET_REPOS`; do not expose
+  unrelated repo state from a shared coordination root.
 
 ## Implementation Notes
 

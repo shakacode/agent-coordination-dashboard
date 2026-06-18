@@ -60,6 +60,15 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
   return sameBatch || (sameRepo && sameTarget);
 }
 
+function appendSkippedWarning(warnings: CoordinationWarning[], count: number, label: string) {
+  if (count > 0) {
+    warnings.push({
+      severity: "info",
+      message: `Skipped ${count} ${label} outside TARGET_REPOS.`
+    });
+  }
+}
+
 function warningsForWork(
   repo: string,
   target: string,
@@ -124,20 +133,37 @@ function warningsForWork(
 }
 
 export function buildDashboardModel(input: BuildInput): DashboardModel {
-  const currentClaims = input.claims.filter((claim) => claim.status !== "released");
-  const heartbeatsByAgent = new Map(input.heartbeats.map((heartbeat) => [heartbeat.agentId, heartbeat]));
+  const targetRepoSet = new Set(input.targetRepos);
+  const scopeWarnings: CoordinationWarning[] = [];
+  const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
+  const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
+  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
+    if (heartbeat.repo) {
+      return targetRepoSet.has(heartbeat.repo);
+    }
+    return !heartbeat.target;
+  });
+  const scopedBatches = input.batches.filter((batch) => Boolean(batch.repo && targetRepoSet.has(batch.repo)));
+  const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
+
+  appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
+  appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");
+  appendSkippedWarning(scopeWarnings, input.batches.length - scopedBatches.length, "batch records");
+  appendSkippedWarning(scopeWarnings, input.githubItems.length - scopedGithubItems.length, "GitHub preview records");
+
+  const heartbeatsByAgent = new Map(scopedHeartbeats.map((heartbeat) => [heartbeat.agentId, heartbeat]));
   const heartbeatsByWork = new Map<string, HeartbeatRecord[]>();
-  for (const heartbeat of input.heartbeats) {
+  for (const heartbeat of scopedHeartbeats) {
     if (heartbeat.repo && heartbeat.target) {
       const id = workId(heartbeat.repo, heartbeat.target);
       heartbeatsByWork.set(id, [...(heartbeatsByWork.get(id) || []), heartbeat]);
     }
   }
-  const previewsByWork = new Map(input.githubItems.map((item) => [workId(item.repo, item.target), item]));
+  const previewsByWork = new Map(scopedGithubItems.map((item) => [workId(item.repo, item.target), item]));
   const claimsByWork = new Map(currentClaims.map((claim) => [workId(claim.repo, claim.target), claim]));
   const workKeys = new Set<string>([...claimsByWork.keys(), ...previewsByWork.keys()]);
 
-  for (const heartbeat of input.heartbeats) {
+  for (const heartbeat of scopedHeartbeats) {
     if (heartbeat.repo && heartbeat.target) {
       workKeys.add(workId(heartbeat.repo, heartbeat.target));
     }
@@ -185,7 +211,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const agentIds = new Set<string>([
     ...currentClaims.map((claim) => claim.agentId),
-    ...input.heartbeats.map((heartbeat) => heartbeat.agentId)
+    ...scopedHeartbeats.map((heartbeat) => heartbeat.agentId)
   ]);
   const agents: AgentSummary[] = Array.from(agentIds)
     .sort()
@@ -208,7 +234,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const laneStatusByRef = new Map<string, string>();
   const laneHeartbeatByRef = new Map<string, HeartbeatRecord | undefined>();
   const batchWarnings: CoordinationWarning[] = [];
-  for (const batch of input.batches) {
+  for (const batch of scopedBatches) {
     for (const lane of batch.lanes) {
       const ownerHeartbeat = heartbeatsByAgent.get(lane.owner);
       const heartbeat = ownerHeartbeat && heartbeatMatchesLane(batch, lane, ownerHeartbeat) ? ownerHeartbeat : undefined;
@@ -230,7 +256,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
   }
 
-  const batches = input.batches.map((batch) => ({
+  const batches = scopedBatches.map((batch) => ({
     ...batch,
     lanes: batch.lanes.map((lane) => {
       const heartbeat = laneHeartbeatByRef.get(laneRef(batch, lane));
@@ -250,6 +276,6 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     agents,
     workItems,
     batches,
-    warnings: [...input.warnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
+    warnings: [...input.warnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
   };
 }
