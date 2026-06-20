@@ -8,7 +8,7 @@ writing coordination records that make their work observable.
 Every claim, heartbeat, and batch event should include:
 
 - `agent_id`: stable worker/session id.
-- `machine_id`: short machine label, such as `m1` or `m5`.
+- `machine_id`: short machine label, such as `workstation-1` or `buildbox-a`.
 - `batch_id`: stable batch id when the work belongs to a batch.
 - `repo`: `owner/repo`.
 - `target`: issue number, PR number, or other repo-scoped target id.
@@ -17,8 +17,8 @@ Every claim, heartbeat, and batch event should include:
 - `updated_at`: ISO-8601 timestamp for claims and heartbeats.
 - `expires_at`: ISO-8601 timestamp for heartbeats and active claims.
 
-Use `AGENT_COORD_MACHINE_ID=m1` or `AGENT_COORD_MACHINE_ID=m5` in batch launch
-environments so every worker writes the same machine label consistently.
+Use a stable `AGENT_COORD_MACHINE_ID` value in batch launch environments so
+every worker writes the same machine label consistently.
 
 ## History Events
 
@@ -32,8 +32,8 @@ object per line is easiest to write safely from multiple batch phases.
   "batch_id": "batch-20260619-a",
   "lane_name": "lane-a",
   "agent_id": "worker-a",
-  "machine_id": "m5",
-  "repo": "shakacode/react_on_rails",
+  "machine_id": "workstation-1",
+  "repo": "owner/repo",
   "target": "4010",
   "status": "in_progress",
   "timestamp": "2026-06-19T20:00:00Z",

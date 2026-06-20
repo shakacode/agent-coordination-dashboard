@@ -627,7 +627,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: "machine",
           title: "Heartbeat missing machine id",
-          detail: `${heartbeat.agentId} does not report machine_id, so m1/m5 ownership cannot be shown reliably.`,
+          detail: `${heartbeat.agentId} does not report machine_id, so machine ownership cannot be shown reliably.`,
           agentId: heartbeat.agentId,
           repo: heartbeat.repo,
           target: heartbeat.target,

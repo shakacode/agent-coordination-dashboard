@@ -1,12 +1,13 @@
 # Agents Coordination Dashboard
 
-Local dashboard for the `agent-coordination` state backend.
+Local dashboard for agent coordination state, machine/lane visibility, and
+batch prompt planning.
 
 ## Run
 
 ```bash
 npm install
-AGENT_COORD_STATE_ROOT=/Users/justin/Documents/agent-coordination/agent-coordination-pr2 \
+AGENT_COORD_STATE_ROOT="$HOME/.local/state/agent-coordination" \
 npm run dev
 ```
 
@@ -44,8 +45,8 @@ The dashboard does not launch Codex agents or edit coordination state.
 | `PORT` | `4317` |
 | `HOST` | `127.0.0.1` |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` plus non-wildcard `HOST` |
-| `AGENT_COORD_STATE_ROOT` | `/Users/justin/Documents/agent-coordination/agent-coordination-pr2` |
-| `TARGET_REPOS` | `shakacode/react_on_rails` first-run fallback |
+| `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
+| `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
 Target repositories are edited in the dashboard and persisted across restarts.

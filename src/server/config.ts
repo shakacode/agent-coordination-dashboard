@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -37,8 +40,8 @@ export function readConfig(env = process.env): ServerConfig {
     port: Number(env.PORT || 4317),
     host,
     allowedHosts: env.ALLOWED_HOSTS ? listFromEnv(env.ALLOWED_HOSTS) : defaultAllowedHosts(host),
-    stateRoot: env.AGENT_COORD_STATE_ROOT || "/Users/justin/Documents/agent-coordination/agent-coordination-pr2",
-    targetRepos: listFromEnv(env.TARGET_REPOS || "shakacode/react_on_rails"),
+    stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),
+    targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",
     nodeEnv: env.NODE_ENV || "development"
   };

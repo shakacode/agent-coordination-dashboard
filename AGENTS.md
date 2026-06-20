@@ -1,8 +1,8 @@
 # Agent Instructions
 
-This repository is a local dashboard for the private `agent-coordination` state
-backend. Keep the dashboard read-only for coordination state unless the user
-explicitly asks for a write feature.
+This repository is a local dashboard for agent coordination state. Keep the
+dashboard read-only for coordination state unless the user explicitly asks for a
+write feature.
 
 ## Commands
 
@@ -11,7 +11,7 @@ npm install
 npm test
 npm run typecheck
 npm run build
-AGENT_COORD_STATE_ROOT=/Users/justin/Documents/agent-coordination/agent-coordination-pr2 \
+AGENT_COORD_STATE_ROOT="$HOME/.local/state/agent-coordination" \
 npm run dev
 ```
 

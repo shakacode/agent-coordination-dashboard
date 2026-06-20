@@ -52,7 +52,7 @@ export function generatePrBatchPrompt(items: WorkItem[]): string {
     "Execution rules:",
     "- Verify current GitHub state before edits and report UNKNOWN for unverifiable facts.",
     "- Run agent-coord status before lane start, before rebase, and before push.",
-    "- Use agent-coord claim before creating worktrees or branches when the private backend is available.",
+    "- Use agent-coord claim before creating worktrees or branches when the coordination backend is available.",
     "- Heartbeat at phase transitions: start, branch update, review pass, blocked, done.",
     "- Stop on live or stale claim holders and report holder/liveness instead of competing.",
     "- If a lane shows blocked_on refs, set heartbeat status blocked and move to independent work.",

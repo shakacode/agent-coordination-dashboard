@@ -5,6 +5,14 @@
   "description": "Local dashboard for viewing agent coordination state and preparing pr-batch prompts.",
   "type": "module",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shakacode/agent-coordination-dashboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shakacode/agent-coordination-dashboard/issues"
+  },
+  "homepage": "https://github.com/shakacode/agent-coordination-dashboard#readme",
   "scripts": {
     "dev": "node node_modules/tsx/dist/cli.mjs src/server/index.ts",
     "build": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json && node node_modules/vite/bin/vite.js build",
