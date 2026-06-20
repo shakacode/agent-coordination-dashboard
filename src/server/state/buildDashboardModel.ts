@@ -151,6 +151,109 @@ function eventMatchesBatch(
   return false;
 }
 
+function inferredBatchPath(repo: string, batchId: string): string {
+  return `inferred-batches/${repo.replace("/", "__")}/${batchId}.json`;
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
+}
+
+function inferBatchesFromSignals(claims: ClaimRecord[], heartbeats: HeartbeatRecord[], manifestedBatches: BatchRecord[]): BatchRecord[] {
+  const manifestedRepoBatchKeys = new Set(
+    manifestedBatches.filter((batch) => batch.repo).map((batch) => `${batch.repo}:${batch.batchId}`)
+  );
+  const lanesByBatch = new Map<
+    string,
+    {
+      batchId: string;
+      repo: string;
+      lanesByOwner: Map<string, { targets: string[]; status: string; updatedAt?: string }>;
+    }
+  >();
+
+  function signalHasManifest(signal: { batchId: string; repo: string; target: string }): boolean {
+    if (manifestedRepoBatchKeys.has(`${signal.repo}:${signal.batchId}`)) {
+      return true;
+    }
+
+    return manifestedBatches.some(
+      (batch) =>
+        batch.batchId === signal.batchId &&
+        !batch.repo &&
+        batch.lanes.some((lane) => lane.targets.includes(signal.target))
+    );
+  }
+
+  function addSignal(signal: { batchId?: string; repo?: string; target?: string; agentId: string; status: string; updatedAt?: string }) {
+    if (!signal.batchId || !signal.repo || !signal.target || signalHasManifest(signal as { batchId: string; repo: string; target: string })) {
+      return;
+    }
+
+    const batchKey = `${signal.repo}:${signal.batchId}`;
+    const batch = lanesByBatch.get(batchKey) || {
+      batchId: signal.batchId,
+      repo: signal.repo,
+      lanesByOwner: new Map<string, { targets: string[]; status: string; updatedAt?: string }>()
+    };
+    const lane = batch.lanesByOwner.get(signal.agentId) || { targets: [], status: signal.status, updatedAt: signal.updatedAt };
+    lane.targets = uniqueSorted([...lane.targets, signal.target]);
+    if (!lane.updatedAt || timestampValue(signal.updatedAt) > timestampValue(lane.updatedAt)) {
+      lane.status = signal.status;
+      lane.updatedAt = signal.updatedAt;
+    }
+    batch.lanesByOwner.set(signal.agentId, lane);
+    lanesByBatch.set(batchKey, batch);
+  }
+
+  for (const claim of claims) {
+    addSignal({
+      agentId: claim.agentId,
+      batchId: claim.batchId,
+      repo: claim.repo,
+      target: claim.target,
+      status: claim.status,
+      updatedAt: claim.updatedAt
+    });
+  }
+  for (const heartbeat of heartbeats) {
+    addSignal({
+      agentId: heartbeat.agentId,
+      batchId: heartbeat.batchId,
+      repo: heartbeat.repo,
+      target: heartbeat.target,
+      status: heartbeat.status,
+      updatedAt: heartbeat.updatedAt
+    });
+  }
+
+  return Array.from(lanesByBatch.values())
+    .sort((left, right) => `${left.repo}:${left.batchId}`.localeCompare(`${right.repo}:${right.batchId}`))
+    .map((batch) => ({
+      schemaVersion: 1,
+      batchId: batch.batchId,
+      repo: batch.repo,
+      source: "inferred",
+      updatedAt: Array.from(batch.lanesByOwner.values())
+        .map((lane) => lane.updatedAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1),
+      path: inferredBatchPath(batch.repo, batch.batchId),
+      lanes: Array.from(batch.lanesByOwner.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([owner, lane]) => ({
+          name: owner,
+          owner,
+          targets: lane.targets,
+          dependsOn: [],
+          status: lane.status,
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }))
+    }));
+}
+
 function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<string>): CoordinationWarning | undefined {
   if (warning.repo) {
     return targetRepoSet.has(warning.repo) ? warning : undefined;
@@ -286,9 +389,9 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     const repos = reposByBatchTarget.get(`${batchId}:${target}`);
     return repos?.size === 1 ? Array.from(repos)[0] : undefined;
   }
-  const scopedBatchesRaw = input.batches.flatMap((batch) => {
+  const scopedManifestBatchesRaw = input.batches.flatMap((batch) => {
     if (batch.repo) {
-      return targetRepoSet.has(batch.repo) ? [batch] : [];
+      return targetRepoSet.has(batch.repo) ? [{ ...batch, source: batch.source || "manifest" }] : [];
     }
 
     const lanes = batch.lanes
@@ -304,13 +407,16 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       ? [
           {
             ...batch,
+            source: batch.source || "manifest",
             lanes
           }
         ]
       : [];
   });
-  const scopedLaneRefs = new Set(scopedBatchesRaw.flatMap((batch) => batch.lanes.map((lane) => laneKey(batch, lane))));
-  const scopedBatches = scopedBatchesRaw.map((batch) => ({
+  const inferredBatches = inferBatchesFromSignals(currentClaims, repoScopedHeartbeats, scopedManifestBatchesRaw);
+  const sourceBatches = [...scopedManifestBatchesRaw, ...inferredBatches];
+  const scopedLaneRefs = new Set(sourceBatches.flatMap((batch) => batch.lanes.map((lane) => laneKey(batch, lane))));
+  const scopedBatches = sourceBatches.map((batch) => ({
     ...batch,
     lanes: batch.lanes.map((lane) => {
       const keptDependencies = lane.dependsOn.filter((dependency) => scopedLaneRefs.has(dependencyKey(batch, dependency)));
@@ -364,7 +470,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
   appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");
-  appendSkippedWarning(scopeWarnings, input.batches.length - scopedBatches.length, "batch records");
+  appendSkippedWarning(scopeWarnings, input.batches.length - scopedManifestBatchesRaw.length, "batch records");
   appendSkippedWarning(scopeWarnings, inputEvents.length - scopedEvents.length, "batch history records");
   appendSkippedWarning(scopeWarnings, input.githubItems.length - scopedGithubItems.length, "GitHub preview records");
   appendSkippedWarning(scopeWarnings, input.warnings.length - scopedInputWarnings.length, "warning records");
@@ -591,13 +697,29 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
 
   for (const batch of batches) {
+    if (batch.source === "inferred") {
+      healthItems.push(
+        healthItem({
+          severity: "warning",
+          category: "batch",
+          title: "Batch manifest missing",
+          detail: `${batch.batchId} was inferred from claim/heartbeat batch_id fields because no retained batch manifest was found.`,
+          repo: batch.repo,
+          batchId: batch.batchId
+        })
+      );
+    }
+
     if (!eventsByBatchPath.has(batch.path)) {
       healthItems.push(
         healthItem({
           severity: "info",
           category: "history",
           title: "Batch has no history events",
-          detail: `${batch.batchId} has a batch file, but no events/history records were found.`,
+          detail:
+            batch.source === "inferred"
+              ? `${batch.batchId} has inferred lanes, but no events/history records were found.`
+              : `${batch.batchId} has a batch file, but no events/history records were found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })

@@ -252,6 +252,22 @@ input {
   gap: 8px;
 }
 
+.batch-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.source-badge {
+  border: 1px solid #fedf89;
+  border-radius: 6px;
+  background: #fffaeb;
+  color: #92400e;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
 .panel h2,
 .work-main h2,
 .prompt-drawer h2 {

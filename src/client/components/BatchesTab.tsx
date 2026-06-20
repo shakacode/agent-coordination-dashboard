@@ -36,7 +36,10 @@ export function BatchesTab({ batches, events }: { batches: BatchRecord[]; events
           .slice(0, 5);
         return (
           <article className="panel" key={`${batch.repo || batch.path}:${batch.batchId}`}>
-            <h2>{batch.batchId}</h2>
+            <header className="batch-card-header">
+              <h2>{batch.batchId}</h2>
+              {batch.source === "inferred" ? <span className="source-badge">Inferred</span> : null}
+            </header>
             <p className="batch-scope">{batch.repo || batch.path}</p>
             {batch.lanes.map((lane) => (
               <div className="lane-row" key={lane.name}>

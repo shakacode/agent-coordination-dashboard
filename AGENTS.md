@@ -42,6 +42,8 @@ saved target repository scope.
   `TARGET_REPOS` is only a first-run fallback when settings have not been saved.
 - Coordination history is read from optional `events` and `history` directories;
   prefer JSONL append-only event files for batch telemetry.
+- If batch manifests are missing, the dashboard infers batch cards from scoped
+  claim/heartbeat `batch_id` fields and marks them with Health warnings.
 - Scheduling states are:
   - `in_process`: active claim with live or stale heartbeat.
   - `started_not_processing`: claim or heartbeat exists but no live/stale holder.

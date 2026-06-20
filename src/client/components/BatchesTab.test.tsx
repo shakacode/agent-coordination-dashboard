@@ -50,4 +50,10 @@ describe("BatchesTab", () => {
     expect(screen.getByRole("heading", { name: "Recent history" })).toBeInTheDocument();
     expect(screen.getByText("Resumed after token-limit pause.")).toBeInTheDocument();
   });
+
+  it("labels inferred batches", () => {
+    render(<BatchesTab batches={[{ ...batch, source: "inferred" }]} events={[]} />);
+
+    expect(screen.getByText("Inferred")).toBeInTheDocument();
+  });
 });

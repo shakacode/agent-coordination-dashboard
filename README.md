@@ -22,7 +22,8 @@ Changing target repositories through the UI remains loopback-only.
 
 - **Machines**: machines, agents, heartbeats, claims, liveness, warnings, and current work.
 - **Work**: open GitHub issues and pull requests joined to coordination state.
-- **Batches**: lanes, dependencies, liveness, blocked-on refs, and recent history events.
+- **Batches**: manifest batches, inferred batches from `batch_id` claims/heartbeats,
+  lanes, dependencies, liveness, blocked-on refs, and recent history events.
 - **Health**: missing machine IDs, missing heartbeats, missing history, and other coordination data gaps.
 - **Prompt drawer**: copyable `$pr-batch` prompt for checked work items.
 
@@ -56,6 +57,11 @@ unauthenticated, local coordination state still renders.
 
 Local coordination records are scoped to the saved target repositories; records
 outside those repos are skipped with count-based warnings.
+
+When no retained `batches/<batch-id>.json` manifest exists, the dashboard infers
+batch cards from scoped claims and heartbeats that include `batch_id`. Inferred
+batches are labeled and produce Health warnings because they do not replace real
+manifests.
 
 Batch history is read from optional `events/**/*.json`, `events/**/*.jsonl`,
 `history/**/*.json`, and `history/**/*.jsonl` files. See

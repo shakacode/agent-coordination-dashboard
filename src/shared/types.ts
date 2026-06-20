@@ -52,6 +52,7 @@ export interface BatchRecord {
   schemaVersion: number;
   batchId: string;
   repo?: string;
+  source?: "manifest" | "inferred";
   lanes: BatchLane[];
   updatedAt?: string;
   path: string;
