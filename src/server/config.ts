@@ -4,6 +4,7 @@ export interface ServerConfig {
   allowedHosts: string[];
   stateRoot: string;
   targetRepos: string[];
+  settingsPath: string;
   nodeEnv: string;
 }
 
@@ -38,6 +39,7 @@ export function readConfig(env = process.env): ServerConfig {
     allowedHosts: env.ALLOWED_HOSTS ? listFromEnv(env.ALLOWED_HOSTS) : defaultAllowedHosts(host),
     stateRoot: env.AGENT_COORD_STATE_ROOT || "/Users/justin/Documents/agent-coordination/agent-coordination-pr2",
     targetRepos: listFromEnv(env.TARGET_REPOS || "shakacode/react_on_rails"),
+    settingsPath: env.DASHBOARD_SETTINGS_PATH || "",
     nodeEnv: env.NODE_ENV || "development"
   };
 }

@@ -1,5 +1,6 @@
 import type {
   AgentSummary,
+  BatchEvent,
   BatchLane,
   BatchRecord,
   BatchWorkSignal,
@@ -8,6 +9,7 @@ import type {
   DashboardModel,
   GitHubPreview,
   HeartbeatRecord,
+  HealthItem,
   SchedulingState,
   WorkItem
 } from "../../shared/types";
@@ -21,6 +23,7 @@ interface BuildInput {
   claims: ClaimRecord[];
   heartbeats: HeartbeatRecord[];
   batches: BatchRecord[];
+  events?: BatchEvent[];
   githubItems: GitHubPreview[];
   warnings: CoordinationWarning[];
   now: Date;
@@ -91,17 +94,74 @@ function appendSkippedWarning(warnings: CoordinationWarning[], count: number, la
   }
 }
 
+function timestampValue(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function healthItem(input: Omit<HealthItem, "id">): HealthItem {
+  const parts = [
+    input.category,
+    input.severity,
+    input.machineId,
+    input.agentId,
+    input.repo,
+    input.target,
+    input.batchId,
+    input.laneName,
+    input.title
+  ].filter(Boolean);
+  return {
+    id: parts.join(":"),
+    ...input
+  };
+}
+
+function batchTargets(batch: BatchRecord): Set<string> {
+  return new Set(batch.lanes.flatMap((lane) => lane.targets));
+}
+
+function eventMatchesBatch(
+  event: BatchEvent,
+  batch: BatchRecord,
+  inferredRepoForBatchTarget: (batchId: string, target: string) => string | undefined
+): boolean {
+  if (!event.batchId || event.batchId !== batch.batchId) {
+    return false;
+  }
+
+  if (!event.repo) {
+    return false;
+  }
+
+  if (event.repo && batch.repo) {
+    return event.repo === batch.repo;
+  }
+
+  if (event.repo && !batch.repo) {
+    if (!event.target || !batchTargets(batch).has(event.target)) {
+      return false;
+    }
+    return inferredRepoForBatchTarget(batch.batchId, event.target) === event.repo;
+  }
+
+  return false;
+}
+
 function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<string>): CoordinationWarning | undefined {
   if (warning.repo) {
     return targetRepoSet.has(warning.repo) ? warning : undefined;
   }
 
   const directoryRead = warning.message.match(/^Could not read coordination directory ([^:]+):/);
-  if (directoryRead && ["claims", "heartbeats", "batches", "."].includes(directoryRead[1])) {
+  if (directoryRead && ["claims", "heartbeats", "batches", "events", "history", "."].includes(directoryRead[1])) {
     return warning;
   }
 
-  const malformed = warning.message.match(/^Malformed JSON in (heartbeats|batches)\//);
+  const malformed = warning.message.match(/^Malformed JSON in (heartbeats|batches|events|history)\//);
   if (malformed) {
     return {
       severity: warning.severity,
@@ -195,6 +255,7 @@ function warningsForWork(
 
 export function buildDashboardModel(input: BuildInput): DashboardModel {
   const targetRepoSet = new Set(input.targetRepos);
+  const inputEvents = input.events || [];
   const scopeWarnings: CoordinationWarning[] = [];
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
   const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
@@ -277,6 +338,26 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
     return heartbeat.target ? repoLessScopedBatchOwnerTargets.has(`${heartbeat.batchId}:${heartbeat.agentId}:${heartbeat.target}`) : true;
   });
+  const batchesById = new Map<string, BatchRecord[]>();
+  for (const batch of scopedBatches) {
+    batchesById.set(batch.batchId, [...(batchesById.get(batch.batchId) || []), batch]);
+  }
+  const scopedEvents = inputEvents
+    .flatMap((event) => {
+      const batchId = event.batchId;
+      if (!batchId) {
+        return event.repo && targetRepoSet.has(event.repo) ? [event] : [];
+      }
+      const batchesWithSameId = batchesById.get(batchId) || [];
+      const matchingBatches = batchesWithSameId.filter((batch) =>
+        eventMatchesBatch(event, batch, uniqueRepoForBatchTarget)
+      );
+      if (matchingBatches.length > 0) {
+        return matchingBatches.map((batch) => ({ ...event, batchPath: batch.path }));
+      }
+      return event.repo && targetRepoSet.has(event.repo) ? [event] : [];
+    })
+    .sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp) || left.path.localeCompare(right.path));
   const scopedInputWarnings = input.warnings
     .map((warning) => scopedInputWarning(warning, targetRepoSet))
     .filter((warning): warning is CoordinationWarning => Boolean(warning));
@@ -284,6 +365,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   appendSkippedWarning(scopeWarnings, nonReleasedClaims.length - currentClaims.length, "claim records");
   appendSkippedWarning(scopeWarnings, input.heartbeats.length - scopedHeartbeats.length, "heartbeat records");
   appendSkippedWarning(scopeWarnings, input.batches.length - scopedBatches.length, "batch records");
+  appendSkippedWarning(scopeWarnings, inputEvents.length - scopedEvents.length, "batch history records");
   appendSkippedWarning(scopeWarnings, input.githubItems.length - scopedGithubItems.length, "GitHub preview records");
   appendSkippedWarning(scopeWarnings, input.warnings.length - scopedInputWarnings.length, "warning records");
 
@@ -418,9 +500,11 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const claims = currentClaims.filter((claim) => claim.agentId === agentId);
       const currentWork = workByAgent.get(agentId) || [];
       const warnings = currentWork.flatMap((item) => item.warnings);
+      const machineId = heartbeat?.machineId || claims.find((item) => item.machineId)?.machineId;
 
       return {
         agentId,
+        machineId,
         heartbeat,
         claims,
         currentWork,
@@ -429,6 +513,115 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       };
     });
 
+  const healthItems: HealthItem[] = [];
+  for (const heartbeat of scopedHeartbeats) {
+    if (!heartbeat.machineId) {
+      healthItems.push(
+        healthItem({
+          severity: "warning",
+          category: "machine",
+          title: "Heartbeat missing machine id",
+          detail: `${heartbeat.agentId} does not report machine_id, so m1/m5 ownership cannot be shown reliably.`,
+          agentId: heartbeat.agentId,
+          repo: heartbeat.repo,
+          target: heartbeat.target,
+          batchId: heartbeat.batchId
+        })
+      );
+    }
+  }
+
+  for (const claim of currentClaims) {
+    if (!claim.machineId) {
+      healthItems.push(
+        healthItem({
+          severity: "info",
+          category: "machine",
+          title: "Claim missing machine id",
+          detail: `${claim.agentId} claimed ${claim.repo}#${claim.target} without machine_id.`,
+          agentId: claim.agentId,
+          repo: claim.repo,
+          target: claim.target,
+          batchId: claim.batchId
+        })
+      );
+    }
+
+    if (claim.status === "active" && !heartbeatsByWork.get(workId(claim.repo, claim.target))?.some((item) => item.agentId === claim.agentId)) {
+      healthItems.push(
+        healthItem({
+          severity: "warning",
+          category: "heartbeat",
+          title: "Active claim has no matching heartbeat",
+          detail: `${claim.agentId} holds ${claim.repo}#${claim.target}, but no heartbeat currently points at that work.`,
+          machineId: claim.machineId,
+          agentId: claim.agentId,
+          repo: claim.repo,
+          target: claim.target,
+          batchId: claim.batchId
+        })
+      );
+    }
+  }
+
+  for (const item of workItems) {
+    if (item.schedulingState === "started_not_processing") {
+      healthItems.push(
+        healthItem({
+          severity: "warning",
+          category: item.batchSignals?.length ? "batch" : "heartbeat",
+          title: "Work started but not currently processing",
+          detail: `${item.repo}#${item.target} has coordination state but no live/stale holder.`,
+          machineId: item.heartbeat?.machineId || item.claim?.machineId,
+          agentId: item.heartbeat?.agentId || item.claim?.agentId,
+          repo: item.repo,
+          target: item.target,
+          batchId: item.batchSignals?.[0]?.batchId,
+          laneName: item.batchSignals?.[0]?.laneName
+        })
+      );
+    }
+  }
+
+  const eventsByBatchPath = new Map<string, BatchEvent[]>();
+  for (const event of scopedEvents) {
+    if (event.batchPath) {
+      eventsByBatchPath.set(event.batchPath, [...(eventsByBatchPath.get(event.batchPath) || []), event]);
+    }
+  }
+
+  for (const batch of batches) {
+    if (!eventsByBatchPath.has(batch.path)) {
+      healthItems.push(
+        healthItem({
+          severity: "info",
+          category: "history",
+          title: "Batch has no history events",
+          detail: `${batch.batchId} has a batch file, but no events/history records were found.`,
+          repo: batch.repo,
+          batchId: batch.batchId
+        })
+      );
+    }
+
+    for (const lane of batch.lanes) {
+      if (lane.liveness === "no-heartbeat" && !TERMINAL_STATUSES.has(lane.status)) {
+        healthItems.push(
+          healthItem({
+            severity: "warning",
+            category: "batch",
+            title: "Batch lane has no heartbeat",
+            detail: `${batch.batchId}:${lane.name} is ${lane.status}, but owner ${lane.owner} has no matching heartbeat.`,
+            repo: batch.repo,
+            batchId: batch.batchId,
+            laneName: lane.name,
+            agentId: lane.owner
+          })
+        );
+      }
+    }
+  }
+
   return {
     generatedAt: input.now.toISOString(),
     stateRoot: input.stateRoot,
@@ -436,6 +629,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     agents,
     workItems,
     batches,
+    events: scopedEvents,
+    healthItems,
     warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
   };
 }

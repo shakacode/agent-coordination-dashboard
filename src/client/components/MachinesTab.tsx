@@ -7,35 +7,55 @@ export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
     return <p className="empty-state">No agents or heartbeats found.</p>;
   }
 
+  const agentsByMachine = agents.reduce<Map<string, AgentSummary[]>>((groups, agent) => {
+    const machineId = agent.machineId || "UNKNOWN machine";
+    groups.set(machineId, [...(groups.get(machineId) || []), agent]);
+    return groups;
+  }, new Map());
+
   return (
-    <section className="panel-grid">
-      {agents.map((agent) => (
-        <article className="panel" key={agent.agentId}>
-          <header className="panel-header">
+    <section className="machine-groups">
+      {Array.from(agentsByMachine.entries()).map(([machineId, machineAgents]) => (
+        <section className="machine-group" key={machineId}>
+          <header className="machine-heading">
             <Monitor size={18} aria-hidden="true" />
-            <div>
-              <h2>{agent.agentId}</h2>
-              <StatusBadge value={agent.liveness} />
-            </div>
+            <h2>{machineId}</h2>
+            <span>{machineAgents.length} agents</span>
           </header>
-          <dl className="detail-list">
-            <div>
-              <dt>Claims</dt>
-              <dd>{agent.claims.length}</dd>
-            </div>
-            <div>
-              <dt>Current work</dt>
-              <dd>{agent.currentWork.map((item) => `${item.repo}#${item.target}`).join(", ") || "None"}</dd>
-            </div>
-          </dl>
-          {agent.warnings.map((warning) => (
-            <p className="warning" key={warning.message}>
-              {warning.message}
-            </p>
-          ))}
-        </article>
+          <div className="panel-grid">
+            {machineAgents.map((agent) => (
+              <article className="panel" key={agent.agentId}>
+                <header className="panel-header">
+                  <Monitor size={18} aria-hidden="true" />
+                  <div>
+                    <h2>{agent.agentId}</h2>
+                    <StatusBadge value={agent.liveness} />
+                  </div>
+                </header>
+                <dl className="detail-list">
+                  <div>
+                    <dt>Machine</dt>
+                    <dd>{agent.machineId || "UNKNOWN"}</dd>
+                  </div>
+                  <div>
+                    <dt>Claims</dt>
+                    <dd>{agent.claims.length}</dd>
+                  </div>
+                  <div>
+                    <dt>Current work</dt>
+                    <dd>{agent.currentWork.map((item) => `${item.repo}#${item.target}`).join(", ") || "None"}</dd>
+                  </div>
+                </dl>
+                {agent.warnings.map((warning) => (
+                  <p className="warning" key={warning.message}>
+                    {warning.message}
+                  </p>
+                ))}
+              </article>
+            ))}
+          </div>
+        </section>
       ))}
     </section>
   );
 }
-

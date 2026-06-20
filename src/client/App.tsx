@@ -1,28 +1,74 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
-import type { DashboardModel } from "../shared/types";
-import { fetchDashboard } from "./api";
+import type { DashboardModel, DashboardSettings } from "../shared/types";
+import { fetchDashboard, fetchSettings, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
+import { HealthTab } from "./components/HealthTab";
 import { MachinesTab } from "./components/MachinesTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { WorkTab } from "./components/WorkTab";
 
-type Tab = "machines" | "work" | "batches";
+type Tab = "machines" | "work" | "batches" | "health";
 
 export function App() {
   const [dashboard, setDashboard] = useState<DashboardModel | null>(null);
+  const [settings, setSettings] = useState<DashboardSettings | null>(null);
+  const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("machines");
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
-    fetchDashboard()
-      .then(setDashboard)
-      .catch((caught: unknown) => {
-        setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
-      });
+    void loadDashboard();
   }, []);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
+
+  async function loadDashboard() {
+    setError(null);
+    setIsRefreshing(true);
+    try {
+      const loadedSettings = await fetchSettings();
+      setSettings(loadedSettings);
+      setDashboard(await fetchDashboard());
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  async function persistRepos(nextRepos: string[]) {
+    setError(null);
+    setIsRefreshing(true);
+    try {
+      const saved = await saveSettings({ targetRepos: nextRepos });
+      setSettings(saved);
+      setDashboard(await fetchDashboard());
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : "Settings failed to save");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  function addRepo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextRepo = repoDraft.trim();
+    if (!nextRepo || settings?.targetRepos.includes(nextRepo)) {
+      return;
+    }
+    setRepoDraft("");
+    void persistRepos([...(settings?.targetRepos || []), nextRepo]);
+  }
+
+  function removeRepo(repo: string) {
+    const remaining = (settings?.targetRepos || []).filter((item) => item !== repo);
+    if (remaining.length > 0) {
+      void persistRepos(remaining);
+    }
+  }
 
   function toggleWorkItem(id: string) {
     setDashboard((current) => {
@@ -32,7 +78,9 @@ export function App() {
       return {
         ...current,
         workItems: current.workItems.map((item) =>
-          item.id === id && item.schedulingState !== "in_process" ? { ...item, selected: !item.selected } : item
+          item.id === id && item.schedulingState !== "in_process" && !item.batchSignals?.length
+            ? { ...item, selected: !item.selected }
+            : item
         )
       };
     });
@@ -42,7 +90,7 @@ export function App() {
     return <main className="app-shell error-state">{error}</main>;
   }
 
-  if (!dashboard) {
+  if (!dashboard || !settings) {
     return <main className="app-shell loading-state">Loading coordination dashboard...</main>;
   }
 
@@ -57,10 +105,52 @@ export function App() {
         </div>
         <div className="summary-strip">
           <span>{dashboard.agents.length} agents</span>
+          <span>{dashboard.events.length} events</span>
+          <span>{dashboard.healthItems.length} health</span>
           <span>{dashboard.warnings.length} warnings</span>
           <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
+          <button
+            aria-label="Refresh dashboard"
+            className="icon-button"
+            disabled={isRefreshing}
+            onClick={() => void loadDashboard()}
+            title="Refresh"
+            type="button"
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+          </button>
         </div>
       </header>
+
+      <section className="repo-filter" aria-label="Target repositories">
+        <div className="repo-chips">
+          {settings.targetRepos.map((repo) => (
+            <span className="repo-chip" key={repo}>
+              {repo}
+              <button
+                aria-label={`Remove ${repo}`}
+                disabled={settings.targetRepos.length === 1 || isRefreshing}
+                onClick={() => removeRepo(repo)}
+                title={`Remove ${repo}`}
+                type="button"
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+        <form className="repo-add-form" onSubmit={addRepo}>
+          <input
+            aria-label="Add target repository"
+            onChange={(event) => setRepoDraft(event.target.value)}
+            placeholder="owner/repo"
+            value={repoDraft}
+          />
+          <button aria-label="Add repository" disabled={isRefreshing} title="Add repository" type="submit">
+            <Plus size={16} aria-hidden="true" />
+          </button>
+        </form>
+      </section>
 
       {dashboard.warnings.length > 0 && (
         <section className="warnings-panel" aria-label="Coordination warnings">
@@ -88,11 +178,15 @@ export function App() {
             <button className={activeTab === "batches" ? "active" : ""} onClick={() => setActiveTab("batches")} type="button">
               Batches
             </button>
+            <button className={activeTab === "health" ? "active" : ""} onClick={() => setActiveTab("health")} type="button">
+              Health
+            </button>
           </nav>
 
           {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
-          {activeTab === "batches" && <BatchesTab batches={dashboard.batches} />}
+          {activeTab === "batches" && <BatchesTab batches={dashboard.batches} events={dashboard.events} />}
+          {activeTab === "health" && <HealthTab items={dashboard.healthItems} />}
         </section>
 
         <PromptDrawer prompt={prompt} />

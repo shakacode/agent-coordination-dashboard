@@ -57,17 +57,41 @@ const model = {
     }
   ],
   batches: [],
+  events: [],
+  healthItems: [
+    {
+      id: "machine:warning:worker-a:Heartbeat missing machine id",
+      severity: "warning",
+      category: "machine",
+      title: "Heartbeat missing machine id",
+      detail: "worker-a does not report machine_id.",
+      agentId: "worker-a"
+    }
+  ],
   warnings: [{ severity: "warning", message: "GitHub issue list failed for shakacode/react_on_rails: auth required" }]
+};
+
+const settings = {
+  targetRepos: ["shakacode/react_on_rails"]
 };
 
 describe("App", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => model
-      }))
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/settings" && init?.method === "PUT") {
+          return {
+            ok: true,
+            json: async () => JSON.parse(String(init.body))
+          };
+        }
+        return {
+          ok: true,
+          json: async () => (url === "/api/settings" ? settings : model)
+        };
+      })
     );
     Object.assign(navigator, {
       clipboard: {
@@ -91,5 +115,21 @@ describe("App", () => {
     expect(screen.getByText(/auth required/)).toBeInTheDocument();
     expect(screen.getByText(/Use \$pr-batch/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+  });
+
+  it("saves target repository filters and reloads the dashboard", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("shakacode/react_on_rails")).toBeInTheDocument());
+    await userEvent.type(screen.getByLabelText("Add target repository"), "other/repo");
+    await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings",
+      expect.objectContaining({
+        body: JSON.stringify({ targetRepos: ["shakacode/react_on_rails", "other/repo"] }),
+        method: "PUT"
+      })
+    );
   });
 });

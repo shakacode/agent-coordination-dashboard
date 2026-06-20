@@ -12,11 +12,12 @@ export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id:
       {items.map((item) => {
         const Icon = item.type === "pull_request" ? GitPullRequest : CircleDot;
         const itemKind = item.type === "pull_request" ? "PR" : item.type === "issue" ? "Issue" : "Target";
-        const canSelect = item.schedulingState !== "in_process";
+        const batchSignal = item.batchSignals?.[0];
+        const canSelect = item.schedulingState !== "in_process" && !item.batchSignals?.length;
 
         return (
           <article className="work-row" key={item.id}>
-            <label className="check-cell" title={canSelect ? "Include in PR-batch prompt" : "Currently in process"}>
+            <label className="check-cell" title={canSelect ? "Include in PR-batch prompt" : "Already coordinated"}>
               <input
                 checked={canSelect ? item.selected : false}
                 disabled={!canSelect}
@@ -34,8 +35,9 @@ export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id:
             </div>
             <StatusBadge value={item.schedulingState} />
             <div className="work-meta">
-              <span>{item.claim?.agentId || "Unclaimed"}</span>
+              <span>{item.claim?.agentId || item.heartbeat?.agentId || batchSignal?.laneName || "Unclaimed"}</span>
               <span>{item.heartbeat?.liveness || "no heartbeat"}</span>
+              {batchSignal ? <span>{`${batchSignal.batchId}:${batchSignal.laneName}`}</span> : null}
               {item.github?.url ? (
                 <a href={item.github.url} rel="noreferrer" target="_blank">
                   Open

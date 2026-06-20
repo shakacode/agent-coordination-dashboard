@@ -163,7 +163,9 @@ describe("buildDashboardModel", () => {
       warnings: [
         { severity: "warning", repo: "other/repo", message: "Malformed JSON in claims/other/repo/12.json" },
         { severity: "warning", message: "Malformed JSON in heartbeats/idle-worker.json" },
+        { severity: "warning", message: "Malformed JSON in events/batch-1.jsonl:2: Unexpected end of JSON input" },
         { severity: "warning", message: "Could not read coordination directory heartbeats: ENOENT" },
+        { severity: "warning", message: "Could not read coordination directory events: EACCES" },
         { severity: "warning", message: "Could not read coordination directory batches/private-batch-dir: EACCES" }
       ],
       now: new Date("2026-06-17T20:00:00Z")
@@ -176,7 +178,9 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.some((warning) => warning.message.includes("heartbeats/idle-worker"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("private-batch-dir"))).toBe(false);
     expect(model.warnings.some((warning) => warning.message.includes("Could not read coordination directory heartbeats"))).toBe(true);
+    expect(model.warnings.some((warning) => warning.message.includes("Could not read coordination directory events"))).toBe(true);
     expect(model.warnings.some((warning) => warning.message === "Malformed JSON in an unscoped heartbeats record.")).toBe(true);
+    expect(model.warnings.some((warning) => warning.message === "Malformed JSON in an unscoped events record.")).toBe(true);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
         "Skipped 1 claim records outside TARGET_REPOS.",
@@ -558,5 +562,213 @@ describe("buildDashboardModel", () => {
     expect(model.batches[0].lanes[0].liveness).toBe("no-heartbeat");
     expect(model.batches[0].lanes[1].status).toBe("in_progress");
     expect(model.batches[0].lanes[1].liveness).toBe("live");
+  });
+
+  it("surfaces machine ids and scoped batch history events", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [{ ...claim, machineId: "m5", batchId: "batch-1" }],
+      heartbeats: [{ ...heartbeat, machineId: "m5", batchId: "batch-1" }],
+      batches: [],
+      events: [
+        {
+          eventId: "event-1",
+          type: "lane.started",
+          batchId: "batch-1",
+          machineId: "m5",
+          agentId: "worker-a",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          timestamp: "2026-06-17T20:00:00Z",
+          path: "events/batch-1.jsonl"
+        },
+        {
+          eventId: "event-2",
+          type: "lane.started",
+          batchId: "batch-2",
+          repo: "other/repo",
+          timestamp: "2026-06-17T20:00:00Z",
+          path: "events/batch-2.jsonl"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0].machineId).toBe("m5");
+    expect(model.events).toHaveLength(1);
+    expect(model.events[0].eventId).toBe("event-1");
+    expect(model.healthItems.some((item) => item.title.includes("missing machine id"))).toBe(false);
+  });
+
+  it("attaches history to the matching retained batch path", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails", "other/repo"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          path: "batches/react-batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4005"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "other/repo",
+          path: "batches/other-batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-b",
+              targets: ["12"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "react-event",
+          type: "lane.started",
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          timestamp: "2026-06-17T20:00:00Z",
+          path: "events/batch-1.jsonl#1"
+        },
+        {
+          eventId: "other-event",
+          type: "lane.started",
+          batchId: "batch-1",
+          repo: "other/repo",
+          target: "12",
+          timestamp: "2026-06-17T20:00:01Z",
+          path: "events/batch-1.jsonl#2"
+        },
+        {
+          eventId: "ambiguous-event",
+          type: "lane.started",
+          batchId: "batch-1",
+          target: "4005",
+          timestamp: "2026-06-17T20:00:02Z",
+          path: "events/batch-1.jsonl#3"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.events.map((event) => [event.eventId, event.batchPath])).toEqual([
+      ["other-event", "batches/other-batch-1.json"],
+      ["react-event", "batches/react-batch-1.json"]
+    ]);
+  });
+
+  it("does not attach repo-scoped events to repo-less batches by target number alone", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails", "other/repo"],
+      claims: [{ ...claim, target: "4010", batchId: "batch-1" }],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "other-event",
+          type: "lane.started",
+          batchId: "batch-1",
+          repo: "other/repo",
+          target: "4010",
+          timestamp: "2026-06-17T20:00:00Z",
+          path: "events/batch-1.jsonl"
+        },
+        {
+          eventId: "react-event",
+          type: "lane.started",
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          target: "4010",
+          timestamp: "2026-06-17T20:00:01Z",
+          path: "events/batch-1.jsonl"
+        }
+      ],
+      githubItems: [preview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.events.find((event) => event.eventId === "react-event")?.batchPath).toBe("batches/batch-1.json");
+    expect(model.events.find((event) => event.eventId === "other-event")?.batchPath).toBeUndefined();
+  });
+
+  it("reports batch lanes without heartbeats or history", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "shakacode/react_on_rails",
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "lane-a",
+              owner: "worker-a",
+              targets: ["4010"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      githubItems: [preview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.healthItems.map((item) => item.title)).toEqual(
+      expect.arrayContaining(["Batch lane has no heartbeat", "Batch has no history events"])
+    );
   });
 });

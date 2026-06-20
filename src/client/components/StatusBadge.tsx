@@ -12,10 +12,12 @@ const labels: Record<string, string> = {
   "no-heartbeat": "No heartbeat",
   in_process: "In process",
   started_not_processing: "Started, not processing",
-  ready_for_batch: "Ready for batch"
+  ready_for_batch: "Ready for batch",
+  info: "Info",
+  warning: "Warning",
+  critical: "Critical"
 };
 
 export function StatusBadge({ value }: StatusBadgeProps) {
   return <span className={`status-badge status-${value}`}>{labels[value] || value}</span>;
 }
-

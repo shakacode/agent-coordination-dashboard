@@ -4,11 +4,16 @@ export type SchedulingState = "in_process" | "started_not_processing" | "ready_f
 export type WorkItemType = "issue" | "pull_request" | "unknown";
 export type WarningSeverity = "info" | "warning" | "critical";
 
+export interface DashboardSettings {
+  targetRepos: string[];
+}
+
 export interface ClaimRecord {
   schemaVersion: number;
   repo: string;
   target: string;
   agentId: string;
+  machineId?: string;
   batchId?: string;
   branch?: string;
   status: ClaimStatus;
@@ -21,6 +26,7 @@ export interface ClaimRecord {
 export interface HeartbeatRecord {
   schemaVersion: number;
   agentId: string;
+  machineId?: string;
   repo?: string;
   target?: string;
   batchId?: string;
@@ -48,6 +54,22 @@ export interface BatchRecord {
   repo?: string;
   lanes: BatchLane[];
   updatedAt?: string;
+  path: string;
+}
+
+export interface BatchEvent {
+  eventId: string;
+  type: string;
+  batchId?: string;
+  batchPath?: string;
+  laneName?: string;
+  machineId?: string;
+  agentId?: string;
+  repo?: string;
+  target?: string;
+  status?: string;
+  message?: string;
+  timestamp?: string;
   path: string;
 }
 
@@ -96,11 +118,26 @@ export interface WorkItem {
 
 export interface AgentSummary {
   agentId: string;
+  machineId?: string;
   heartbeat?: HeartbeatRecord;
   claims: ClaimRecord[];
   currentWork: WorkItem[];
   liveness: Liveness;
   warnings: CoordinationWarning[];
+}
+
+export interface HealthItem {
+  id: string;
+  severity: WarningSeverity;
+  category: "machine" | "heartbeat" | "claim" | "batch" | "history" | "repo" | "state";
+  title: string;
+  detail: string;
+  machineId?: string;
+  agentId?: string;
+  repo?: string;
+  target?: string;
+  batchId?: string;
+  laneName?: string;
 }
 
 export interface DashboardModel {
@@ -110,5 +147,7 @@ export interface DashboardModel {
   agents: AgentSummary[];
   workItems: WorkItem[];
   batches: BatchRecord[];
+  events: BatchEvent[];
+  healthItems: HealthItem[];
   warnings: CoordinationWarning[];
 }

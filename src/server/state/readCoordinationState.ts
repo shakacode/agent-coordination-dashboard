@@ -1,29 +1,40 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
-import type { BatchRecord, ClaimRecord, CoordinationWarning, HeartbeatRecord } from "../../shared/types";
+import type { BatchEvent, BatchRecord, ClaimRecord, CoordinationWarning, HeartbeatRecord } from "../../shared/types";
 
 interface RawState {
   claims: ClaimRecord[];
   heartbeats: HeartbeatRecord[];
   batches: BatchRecord[];
+  events: BatchEvent[];
   warnings: CoordinationWarning[];
 }
 
-async function listJsonFiles(directory: string, root: string, warnings: CoordinationWarning[]): Promise<string[]> {
+async function listStateFiles(
+  directory: string,
+  root: string,
+  warnings: CoordinationWarning[],
+  extensions = [".json"],
+  warnMissing = true
+): Promise<string[]> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
     const nested = await Promise.all(
       entries.map(async (entry) => {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
-          return listJsonFiles(path, root, warnings);
+          return listStateFiles(path, root, warnings, extensions, warnMissing);
         }
-        return entry.isFile() && entry.name.endsWith(".json") ? [path] : [];
+        return entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [];
       })
     );
     return nested.flat().sort();
   } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT" && !warnMissing) {
+      return [];
+    }
     const path = relative(root, directory);
     warnings.push({
       severity: "warning",
@@ -40,6 +51,16 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function machineIdFrom(raw: Record<string, unknown>): string | undefined {
+  return (
+    stringValue(raw.machine_id) ||
+    stringValue(raw.machine) ||
+    stringValue(raw.host) ||
+    stringValue(raw.hostname) ||
+    undefined
+  );
+}
+
 function repoFromClaimPath(path: string): string {
   const parts = path.split("/");
   return parts.length >= 4 ? `${parts[1]}/${parts[2]}` : "";
@@ -47,6 +68,10 @@ function repoFromClaimPath(path: string): string {
 
 function targetFromPath(path: string): string {
   return basename(path, ".json");
+}
+
+function idFromPath(path: string): string {
+  return basename(path).replace(/\.(json|jsonl)$/i, "");
 }
 
 function warningContextFromPath(path: string): Pick<CoordinationWarning, "repo" | "target"> {
@@ -66,6 +91,7 @@ function normalizeClaim(raw: Record<string, unknown>, path: string): ClaimRecord
     repo: stringValue(raw.repo) || repoFromClaimPath(path),
     target: raw.target ? String(raw.target) : targetFromPath(path),
     agentId: stringValue(raw.agent_id, "UNKNOWN"),
+    machineId: machineIdFrom(raw),
     batchId: stringValue(raw.batch_id) || undefined,
     branch: stringValue(raw.branch) || undefined,
     status: raw.status === "released" ? "released" : raw.status === "active" ? "active" : "unknown",
@@ -83,6 +109,7 @@ function normalizeHeartbeat(raw: Record<string, unknown>, path: string, now: Dat
   return {
     schemaVersion: Number(raw.schema_version || 1),
     agentId: stringValue(raw.agent_id, targetFromPath(path)),
+    machineId: machineIdFrom(raw),
     repo: stringValue(raw.repo) || undefined,
     target: raw.target ? String(raw.target) : undefined,
     batchId: stringValue(raw.batch_id) || undefined,
@@ -127,15 +154,40 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
   };
 }
 
+function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchEvent {
+  const timestamp = stringValue(raw.timestamp) || stringValue(raw.created_at) || stringValue(raw.updated_at) || undefined;
+  const batchId = stringValue(raw.batch_id) || undefined;
+  const laneName = stringValue(raw.lane_name) || stringValue(raw.lane_id) || stringValue(raw.lane) || undefined;
+
+  return {
+    eventId: stringValue(raw.event_id) || stringValue(raw.id) || `${path}:${timestamp || idFromPath(path)}`,
+    type: stringValue(raw.type) || stringValue(raw.event_type) || stringValue(raw.name, "unknown"),
+    batchId,
+    laneName,
+    machineId: machineIdFrom(raw),
+    agentId: stringValue(raw.agent_id) || undefined,
+    repo: stringValue(raw.repo) || undefined,
+    target: raw.target ? String(raw.target) : undefined,
+    status: stringValue(raw.status) || undefined,
+    message: stringValue(raw.message) || undefined,
+    timestamp,
+    path
+  };
+}
+
 async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
 }
 
 export async function readCoordinationState(root: string, now = new Date()): Promise<RawState> {
   const warnings: CoordinationWarning[] = [];
-  const claimFiles = await listJsonFiles(join(root, "claims"), root, warnings);
-  const heartbeatFiles = await listJsonFiles(join(root, "heartbeats"), root, warnings);
-  const batchFiles = await listJsonFiles(join(root, "batches"), root, warnings);
+  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings);
+  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings);
+  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings);
+  const eventFiles = [
+    ...(await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false)),
+    ...(await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false))
+  ];
 
   async function readMany<T>(
     files: string[],
@@ -157,10 +209,59 @@ export async function readCoordinationState(root: string, now = new Date()): Pro
     return records;
   }
 
+  async function readEvents(files: string[]): Promise<BatchEvent[]> {
+    const records: BatchEvent[] = [];
+    for (const file of files) {
+      const path = relative(root, file);
+      try {
+        const text = await readFile(file, "utf8");
+        if (file.endsWith(".jsonl")) {
+          const lines = text
+            .split("\n")
+            .map((line, index) => ({ index, line: line.trim() }))
+            .filter(({ line }) => Boolean(line));
+
+          for (const { index, line } of lines) {
+            try {
+              const event = JSON.parse(line) as Record<string, unknown>;
+              if (event && typeof event === "object" && !Array.isArray(event)) {
+                records.push(normalizeBatchEvent(event, `${path}:${index + 1}`));
+              }
+            } catch (error) {
+              warnings.push({
+                severity: "warning",
+                ...warningContextFromPath(path),
+                message: `Malformed JSON in ${path}:${index + 1}: ${error instanceof Error ? error.message : "unknown error"}`
+              });
+            }
+          }
+          continue;
+        }
+
+        const rawEvents = JSON.parse(text);
+        const events = Array.isArray(rawEvents) ? rawEvents : [rawEvents];
+
+        for (const [index, event] of events.entries()) {
+          if (event && typeof event === "object" && !Array.isArray(event)) {
+            records.push(normalizeBatchEvent(event as Record<string, unknown>, events.length > 1 ? `${path}#${index + 1}` : path));
+          }
+        }
+      } catch (error) {
+        warnings.push({
+          severity: "warning",
+          ...warningContextFromPath(path),
+          message: `Malformed JSON in ${path}: ${error instanceof Error ? error.message : "unknown error"}`
+        });
+      }
+    }
+    return records;
+  }
+
   return {
     claims: await readMany(claimFiles, normalizeClaim),
     heartbeats: await readMany(heartbeatFiles, (raw, path) => normalizeHeartbeat(raw, path, now)),
     batches: await readMany(batchFiles, normalizeBatch),
+    events: await readEvents(eventFiles),
     warnings
   };
 }
