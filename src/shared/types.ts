@@ -3,6 +3,8 @@ export type ClaimStatus = "active" | "released" | "unknown";
 export type SchedulingState = "in_process" | "started_not_processing" | "ready_for_batch";
 export type WorkItemType = "issue" | "pull_request" | "unknown";
 export type WarningSeverity = "info" | "warning" | "critical";
+export type BatchControlStatus = "running" | "stop_requested" | "stopped";
+export type QaValidationStatus = "missing" | "requested" | "in_progress" | "passed" | "failed" | "unknown";
 
 export interface DashboardSettings {
   targetRepos: string[];
@@ -48,11 +50,34 @@ export interface BatchLane {
   blockedOn: string[];
 }
 
+export interface BatchTarget {
+  type: WorkItemType;
+  target: string;
+  url?: string;
+  title?: string;
+  repo?: string;
+}
+
+export interface BatchReservation {
+  type: WorkItemType;
+  target: string;
+  reason?: string;
+  owner?: string;
+  laneName?: string;
+  repo?: string;
+}
+
 export interface BatchRecord {
   schemaVersion: number;
   batchId: string;
   repo?: string;
+  objective?: string;
+  targets?: BatchTarget[];
   source?: "manifest" | "inferred";
+  reservations?: BatchReservation[];
+  createdAt?: string;
+  createdByMachine?: string;
+  launchPrompt?: string;
   lanes: BatchLane[];
   updatedAt?: string;
   path: string;
@@ -79,6 +104,41 @@ export interface BatchWorkSignal {
   laneName: string;
   status: string;
   blockedOn: string[];
+}
+
+export interface QaValidationItem {
+  id: string;
+  repo: string;
+  target: string;
+  type: WorkItemType;
+  title?: string;
+  url?: string;
+  batchId?: string;
+  laneName?: string;
+  status: QaValidationStatus;
+  detail: string;
+  latestEvent?: BatchEvent;
+}
+
+export interface BatchOperation {
+  batchId: string;
+  repo?: string;
+  batchPath?: string;
+  controlStatus: BatchControlStatus;
+  eventCount: number;
+  latestEventAt?: string;
+  latestEventType?: string;
+  stopRequestedAt?: string;
+  stoppedAt?: string;
+  qa: {
+    total: number;
+    missing: number;
+    requested: number;
+    inProgress: number;
+    passed: number;
+    failed: number;
+    unknown: number;
+  };
 }
 
 export interface GitHubPreview {
@@ -149,6 +209,8 @@ export interface DashboardModel {
   workItems: WorkItem[];
   batches: BatchRecord[];
   events: BatchEvent[];
+  batchOperations: BatchOperation[];
+  qaValidations: QaValidationItem[];
   healthItems: HealthItem[];
   warnings: CoordinationWarning[];
 }

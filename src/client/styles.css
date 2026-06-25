@@ -15,7 +15,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -209,6 +210,103 @@ input {
   gap: 10px;
 }
 
+.batches-view {
+  display: grid;
+  gap: 12px;
+}
+
+.overview-view {
+  display: grid;
+  gap: 12px;
+}
+
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 10px;
+}
+
+.summary-card {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #d8e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.summary-card strong {
+  font-size: 18px;
+}
+
+.summary-card span {
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.overview-wide {
+  grid-column: 1 / -1;
+}
+
+.overview-panel {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.overview-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.overview-panel-header h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.overview-list {
+  display: grid;
+  gap: 8px;
+}
+
+.overview-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid #edf1f5;
+  padding-top: 8px;
+}
+
+.overview-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.overview-row div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.overview-row strong,
+.overview-row span {
+  overflow-wrap: anywhere;
+}
+
+.overview-row span {
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
 .machine-groups,
 .health-list {
   display: grid;
@@ -268,6 +366,178 @@ input {
   font-size: 12px;
 }
 
+.batch-prompt {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid #edf1f5;
+  margin-top: 10px;
+  padding-top: 10px;
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.batch-operation {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #edf1f5;
+  margin-top: 10px;
+  padding-top: 10px;
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.batch-operation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.batch-stop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.batch-operation p {
+  margin: 0;
+}
+
+.secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  gap: 6px;
+  border: 1px solid #cdd6e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #172026;
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.batch-prompt-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.batch-prompt p {
+  margin: 0;
+}
+
+.prompt-status {
+  border: 1px solid #d8e0e8;
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+.prompt-status.retained {
+  border-color: #9bd6ae;
+  background: #ecfdf3;
+  color: #05603a;
+}
+
+.prompt-status.missing {
+  border-color: #fedf89;
+  background: #fffaeb;
+  color: #92400e;
+}
+
+.batch-prompt details {
+  min-width: 0;
+}
+
+.batch-prompt summary {
+  cursor: pointer;
+  color: #175cd3;
+}
+
+.batch-prompt pre,
+.manifest-review textarea,
+.batch-import-form textarea {
+  overflow: auto;
+  width: 100%;
+  border: 1px solid #cdd6e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #172026;
+  padding: 8px;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.batch-prompt pre {
+  max-height: 220px;
+}
+
+.batch-import-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-import-form,
+.manifest-review {
+  display: grid;
+  gap: 8px;
+}
+
+.batch-import-form label,
+.manifest-review label {
+  display: grid;
+  gap: 4px;
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.batch-import-form textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.manifest-review {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.manifest-review input {
+  min-width: 0;
+  border: 1px solid #cdd6e1;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 6px 8px;
+  color: #172026;
+}
+
+.manifest-review label:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.manifest-review textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.batch-import-form button,
+.manifest-review button {
+  justify-self: start;
+  border: 1px solid #cdd6e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #172026;
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.batch-import-status {
+  margin: 0;
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
 .panel h2,
 .work-main h2,
 .prompt-drawer h2 {
@@ -295,9 +565,54 @@ input {
   margin: 0;
 }
 
+.work-queue,
 .work-list {
   display: grid;
   gap: 8px;
+}
+
+.work-section {
+  display: grid;
+  gap: 8px;
+}
+
+.work-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #344054;
+}
+
+.work-section-header h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.work-section-header span {
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
+  border: 1px solid #cdd6e1;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 7px 9px;
+  color: #5f6b7a;
+}
+
+.search-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: #172026;
 }
 
 .health-row {
@@ -430,7 +745,9 @@ input {
 }
 
 .status-live,
-.status-in_process {
+.status-in_process,
+.status-running,
+.status-passed {
   border-color: #9bd6ae;
   background: #ecfdf3;
   color: #05603a;
@@ -439,6 +756,8 @@ input {
 .status-stale,
 .status-started_not_processing,
 .status-info,
+.status-missing,
+.status-requested,
 .warning {
   border-color: #fedf89;
   background: #fffaeb;
@@ -447,13 +766,17 @@ input {
 
 .status-dead,
 .status-warning,
-.status-critical {
+.status-critical,
+.status-stop_requested,
+.status-stopped,
+.status-failed {
   border-color: #fda29b;
   background: #fef3f2;
   color: #912018;
 }
 
-.status-ready_for_batch {
+.status-ready_for_batch,
+.status-in_progress {
   border-color: #a6d8ff;
   background: #eff8ff;
   color: #175cd3;
@@ -514,6 +837,14 @@ input {
   }
 
   .event-row {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .manifest-review {
     grid-template-columns: 1fr;
   }
 }
