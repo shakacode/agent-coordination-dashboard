@@ -264,6 +264,10 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
     return warning;
   }
 
+  if (warning.message.startsWith("No coordination state found at ")) {
+    return warning;
+  }
+
   const malformed = warning.message.match(/^Malformed JSON in (heartbeats|batches|events|history)\//);
   if (malformed) {
     return {

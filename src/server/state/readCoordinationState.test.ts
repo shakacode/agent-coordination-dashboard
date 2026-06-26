@@ -86,8 +86,27 @@ describe("readCoordinationState", () => {
     );
   });
 
-  it("warns when expected coordination directories cannot be read", async () => {
+  it("shows a setup notice instead of missing-directory warnings for empty roots", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-state-missing-"));
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.claims).toEqual([]);
+    expect(state.heartbeats).toEqual([]);
+    expect(state.batches).toEqual([]);
+    expect(state.events).toEqual([]);
+    expect(state.warnings).toEqual([
+      expect.objectContaining({
+        severity: "info",
+        message: expect.stringContaining("No coordination state found")
+      })
+    ]);
+    expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("Could not read coordination directory");
+  });
+
+  it("warns when partially initialized expected coordination directories cannot be read", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-partial-"));
+    await mkdir(join(root, "claims"), { recursive: true });
 
     const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
 
@@ -97,10 +116,11 @@ describe("readCoordinationState", () => {
     expect(state.events).toEqual([]);
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("claims"),
         expect.stringContaining("heartbeats"),
         expect.stringContaining("batches")
       ])
     );
+    expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("No coordination state found");
+    expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("claims");
   });
 });

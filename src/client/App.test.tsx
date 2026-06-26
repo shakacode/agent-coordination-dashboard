@@ -117,6 +117,40 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
   });
 
+  it("labels info-only coordination messages as notices", async () => {
+    vi.mocked(fetch).mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/settings" && init?.method === "PUT") {
+          return {
+            ok: true,
+            json: async () => JSON.parse(String(init.body))
+          } as Response;
+        }
+        return {
+          ok: true,
+          json: async () =>
+            url === "/api/settings"
+              ? settings
+              : {
+                  ...model,
+                  agents: [],
+                  workItems: [],
+                  healthItems: [],
+                  warnings: [{ severity: "info", message: "No coordination state found at /state." }]
+                }
+        } as Response;
+      }
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Notices")).toBeInTheDocument());
+    expect(screen.getByText("1 notices")).toBeInTheDocument();
+    expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
+    expect(screen.getByText(/No coordination state found/)).toBeInTheDocument();
+  });
+
   it("saves target repository filters and reloads the dashboard", async () => {
     render(<App />);
 

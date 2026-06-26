@@ -11,6 +11,35 @@ interface RawState {
   warnings: CoordinationWarning[];
 }
 
+const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown error";
+}
+
+async function hasInitializedCoordinationRoot(root: string, warnings: CoordinationWarning[]): Promise<boolean> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const directoryNames = new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
+    const hasRequiredDirectory = REQUIRED_STATE_DIRECTORIES.some((directory) => directoryNames.has(directory));
+    if (!hasRequiredDirectory) {
+      warnings.push({
+        severity: "info",
+        message: `No coordination state found at ${root}. Set AGENT_COORD_STATE_ROOT to an existing state root, or initialize this root with claims/, heartbeats/, and batches/ directories.`
+      });
+    }
+    return hasRequiredDirectory;
+  } catch (error) {
+    warnings.push({
+      severity: "info",
+      message: `No coordination state found at ${root}: ${errorMessage(
+        error
+      )}. Set AGENT_COORD_STATE_ROOT to an existing state root, or initialize this root with claims/, heartbeats/, and batches/ directories.`
+    });
+    return false;
+  }
+}
+
 async function listStateFiles(
   directory: string,
   root: string,
@@ -39,9 +68,7 @@ async function listStateFiles(
     warnings.push({
       severity: "warning",
       ...warningContextFromPath(path),
-      message: `Could not read coordination directory ${path || "."}: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`
+      message: `Could not read coordination directory ${path || "."}: ${errorMessage(error)}`
     });
     return [];
   }
@@ -181,9 +208,10 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 
 export async function readCoordinationState(root: string, now = new Date()): Promise<RawState> {
   const warnings: CoordinationWarning[] = [];
-  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings);
-  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings);
-  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings);
+  const hasInitializedRoot = await hasInitializedCoordinationRoot(root, warnings);
+  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
+  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings, [".json"], hasInitializedRoot);
+  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings, [".json"], hasInitializedRoot);
   const eventFiles = [
     ...(await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false)),
     ...(await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false))
