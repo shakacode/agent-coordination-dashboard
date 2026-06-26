@@ -13,6 +13,17 @@ npm run dev
 
 Open <http://localhost:4317>.
 
+The default `~/.local/state/agent-coordination` path is a safe local sandbox.
+If it has not been populated yet, the dashboard shows a setup notice rather
+than coordination data. To inspect an existing coordination run, point
+`AGENT_COORD_STATE_ROOT` at the data root that already contains `claims/`,
+`heartbeats/`, and `batches/`:
+
+```bash
+AGENT_COORD_STATE_ROOT="$HOME/Documents/agent-coordination/agent-coordination-pr2" \
+npm run dev
+```
+
 The server binds to `127.0.0.1` by default because it exposes private local
 coordination metadata. Set `HOST=0.0.0.0` only when you intentionally want to
 make it reachable from another machine on the network, and set `ALLOWED_HOSTS`
@@ -55,6 +66,10 @@ when no settings file exists yet.
 
 GitHub enrichment uses the local `gh` CLI. If `gh` is unavailable or
 unauthenticated, local coordination state still renders.
+
+The coordination root is data only. This repo owns the dashboard code; the
+coordination data root owns runtime records such as `claims/`, `heartbeats/`,
+`batches/`, `events/`, and `history/`.
 
 Local coordination records are scoped to the saved target repositories; records
 outside those repos are skipped with count-based warnings.

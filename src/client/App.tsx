@@ -94,6 +94,9 @@ export function App() {
     return <main className="app-shell loading-state">Loading coordination dashboard...</main>;
   }
 
+  const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
+  const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -107,7 +110,9 @@ export function App() {
           <span>{dashboard.agents.length} agents</span>
           <span>{dashboard.events.length} events</span>
           <span>{dashboard.healthItems.length} health</span>
-          <span>{dashboard.warnings.length} warnings</span>
+          <span>
+            {dashboard.warnings.length} {warningLabel}
+          </span>
           <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
           <button
             aria-label="Refresh dashboard"
@@ -153,8 +158,8 @@ export function App() {
       </section>
 
       {dashboard.warnings.length > 0 && (
-        <section className="warnings-panel" aria-label="Coordination warnings">
-          <div className="warnings-heading">Warnings</div>
+        <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`}>
+          <div className="warnings-heading">{warningsHeading}</div>
           <ul>
             {dashboard.warnings.map((warning, index) => (
               <li key={`${warning.message}-${index}`}>
