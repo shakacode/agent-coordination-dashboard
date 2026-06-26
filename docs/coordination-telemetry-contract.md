@@ -1,7 +1,20 @@
 # Coordination Telemetry Contract
 
-The dashboard is read-only. Agents and batch runners remain responsible for
-writing coordination records that make their work observable.
+The dashboard is observability-first. Agents and batch runners remain
+responsible for writing coordination records that make their work observable.
+
+The exception is an explicit dashboard import action that saves a retained batch
+manifest from a pasted launch prompt. That action only writes
+`batches/<batch-id>.json` from loopback clients; it must not launch agents or
+mutate claims, heartbeats, events, or history.
+
+The second explicit dashboard write is a loopback-only batch stop request. It
+appends `batch.stop_requested` to `events/batches/<batch-id>.jsonl`. It is an
+audit/control signal only; it must not kill processes, release claims, edit
+heartbeats, or spawn replacement workers.
+
+For diagrams of the full data flow, join keys, update cadence, and state-root
+layout, see [Coordination Architecture](coordination-architecture.md).
 
 ## Required Identity Fields
 
@@ -19,6 +32,89 @@ Every claim, heartbeat, and batch event should include:
 
 Use a stable `AGENT_COORD_MACHINE_ID` value in batch launch environments so
 every worker writes the same machine label consistently.
+
+## Retained Batch Manifests
+
+Coordinators should create a private retained manifest before spawning workers.
+The manifest lives at `batches/<batch-id>.json` under `AGENT_COORD_STATE_ROOT`.
+It gives the dashboard enough context to show a batch immediately, before
+workers create claims, heartbeats, or history events.
+
+Required fields:
+
+- `schema_version`: `1`.
+- `batch_id`: stable batch id copied from the launch prompt.
+- `repo`: `owner/repo`.
+- `objective`: short operator-facing batch goal.
+- `targets`: PR/issue targets represented by the manifest.
+- `lanes`: planned lane names, owners, targets, dependencies, and status.
+- `created_at`: ISO-8601 timestamp.
+- `created_by_machine`: machine id that created the manifest.
+- `launch_prompt`: exact original `$pr-batch` launch prompt.
+
+Optional fields:
+
+- `reservations`: deferred or reserved PR/issue targets that were mentioned in
+  the prompt but are not active lane targets.
+
+Example:
+
+```json
+{
+  "schema_version": 1,
+  "batch_id": "batch-shakacode-react-on-rails-p93s1v",
+  "repo": "shakacode/react_on_rails",
+  "objective": "Process selected ready pull requests.",
+  "targets": [
+    {
+      "type": "pull_request",
+      "target": "4005",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4005",
+      "title": "Fix FOUC integration tests"
+    },
+    {
+      "type": "issue",
+      "target": "4010",
+      "url": "https://github.com/shakacode/react_on_rails/issues/4010",
+      "title": "Document flaky installer behavior"
+    }
+  ],
+  "lanes": [
+    {
+      "name": "tests",
+      "owner": "worker-a",
+      "targets": ["4005"],
+      "depends_on": [],
+      "status": "queued"
+    },
+    {
+      "name": "docs",
+      "owner": "worker-b",
+      "targets": ["4010"],
+      "depends_on": ["batch-shakacode-react-on-rails-p93s1v:tests"],
+      "status": "queued"
+    }
+  ],
+  "reservations": [
+    {
+      "type": "pull_request",
+      "target": "3999",
+      "reason": "Deferred for release owner review."
+    }
+  ],
+  "created_at": "2026-06-20T10:00:00.000Z",
+  "created_by_machine": "workstation-1",
+  "launch_prompt": "Use $pr-batch to complete this batch with subagents.\n\nRepository: shakacode/react_on_rails\nBatch id: batch-shakacode-react-on-rails-p93s1v\nBatch objective: Process selected ready pull requests.\n..."
+}
+```
+
+The launch prompt should include:
+
+- `Batch id: <stable-id>`.
+- A coordinator instruction to create the retained private batch manifest before
+  spawning workers.
+- A worker instruction to include the same `batch_id` in claims, heartbeats,
+  events/history, and final handoff.
 
 ## History Events
 
@@ -44,6 +140,8 @@ object per line is easiest to write safely from multiple batch phases.
 Recommended event types:
 
 - `batch.created`
+- `batch.stop_requested`
+- `batch.stopped`
 - `lane.started`
 - `heartbeat`
 - `token_limit_pause`
@@ -51,6 +149,61 @@ Recommended event types:
 - `blocked`
 - `ready`
 - `done`
+- `qa.validation_requested`
+- `qa.validation_started`
+- `qa.validation_passed`
+- `qa.validation_failed`
+
+## Batch Stop And Restart
+
+When a coordinator decides a running batch should stop before restart, append a
+stop-request event:
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "batch-20260619-a:stop-requested:2026-06-19T20:05:00Z",
+  "type": "batch.stop_requested",
+  "batch_id": "batch-20260619-a",
+  "repo": "owner/repo",
+  "status": "stop_requested",
+  "timestamp": "2026-06-19T20:05:00Z",
+  "machine_id": "workstation-1",
+  "message": "Restart with smaller lanes."
+}
+```
+
+Workers that understand stop requests should finish their current safe
+checkpoint, write a final heartbeat/event, and stop claiming new lane work for
+that batch. Once stopped, append `batch.stopped`. Restarted work should use a
+new batch id unless the coordinator intentionally continues the same batch and
+records that decision in history.
+
+## Separate QA Validation
+
+QA validation is separate telemetry from GitHub review state and from worker
+completion. For every PR that needs a separate validation pass, append a QA
+event with the same `batch_id`, `repo`, and `target`:
+
+```json
+{
+  "event_id": "batch-20260619-a:4010:qa-passed:2026-06-19T21:00:00Z",
+  "type": "qa.validation_passed",
+  "batch_id": "batch-20260619-a",
+  "lane_name": "qa",
+  "agent_id": "qa-worker-a",
+  "machine_id": "workstation-1",
+  "repo": "owner/repo",
+  "target": "4010",
+  "status": "passed",
+  "timestamp": "2026-06-19T21:00:00Z",
+  "message": "Validated install, smoke tests, and documented manual checks."
+}
+```
+
+Use `qa.validation_failed` with a message containing blockers when validation
+does not pass. The dashboard treats a PR as missing separate QA until a QA or
+validation event exists for that repo/target.
 
 ## Token Limit Recovery
 
@@ -68,6 +221,12 @@ When a worker hits a token/time limit:
 ## Dashboard Health Signals
 
 The Health tab warns when records omit `machine_id`, active claims lack matching
-heartbeats, batch lanes have no heartbeat, or batch files have no history
-events. Treat those as telemetry bugs in the batch runner or worker prompt, not
-as proof the dashboard failed to read the coordination state.
+heartbeats, claims or heartbeats mention a missing batch manifest, retained
+manifests omit `launch_prompt`, launch prompt targets drift from manifest
+targets, batch lanes have no heartbeat, or batch files have no history events.
+Treat those as telemetry bugs in the batch runner or worker prompt, not as proof
+the dashboard failed to read the coordination state.
+
+The Overview also tracks separate QA validation status for PRs. A PR with no
+matching QA/validation event is shown as missing QA, while the latest QA event
+sets the displayed status to requested, in progress, passed, failed, or unknown.

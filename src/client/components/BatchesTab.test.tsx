@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import type { BatchEvent, BatchRecord } from "../../shared/types";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import type { BatchEvent, BatchOperation, BatchRecord } from "../../shared/types";
 import { BatchesTab } from "./BatchesTab";
 
 const event: BatchEvent = {
@@ -21,6 +22,9 @@ const batch: BatchRecord = {
   schemaVersion: 1,
   batchId: "batch-1",
   repo: "shakacode/react_on_rails",
+  objective: "Stabilize a retained batch.",
+  targets: [{ type: "pull_request", target: "4010" }],
+  launchPrompt: "Use $pr-batch to complete batch-1.\nBatch id: batch-1\nItems:\n- PR #4010",
   path: "batches/batch-1.json",
   lanes: [
     {
@@ -33,6 +37,26 @@ const batch: BatchRecord = {
       blockedOn: []
     }
   ]
+};
+
+const operation: BatchOperation = {
+  batchId: "batch-1",
+  repo: "shakacode/react_on_rails",
+  batchPath: "batches/batch-1.json",
+  controlStatus: "stop_requested",
+  eventCount: 2,
+  latestEventAt: "2026-06-17T20:00:00Z",
+  latestEventType: "batch.stop_requested",
+  stopRequestedAt: "2026-06-17T20:00:00Z",
+  qa: {
+    total: 1,
+    missing: 0,
+    requested: 0,
+    inProgress: 0,
+    passed: 1,
+    failed: 0,
+    unknown: 0
+  }
 };
 
 describe("BatchesTab", () => {
@@ -55,5 +79,153 @@ describe("BatchesTab", () => {
     render(<BatchesTab batches={[{ ...batch, source: "inferred" }]} events={[]} />);
 
     expect(screen.getByText("Inferred")).toBeInTheDocument();
+  });
+
+  it("shows, expands, and copies retained launch prompts", async () => {
+    const clipboard = { writeText: vi.fn() };
+    Object.assign(navigator, { clipboard });
+    render(<BatchesTab batches={[batch]} events={[]} />);
+
+    expect(screen.getByText("Launch prompt retained")).toBeInTheDocument();
+    expect(screen.getByText("Use $pr-batch to complete batch-1.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy launch prompt for batch-1" }));
+
+    expect(clipboard.writeText).toHaveBeenCalledWith(batch.launchPrompt);
+  });
+
+  it("shows audit/control status and requests a local stop explicitly", async () => {
+    const onRequestStop = vi.fn().mockResolvedValue(undefined);
+    render(<BatchesTab batches={[batch]} events={[event]} operations={[operation]} onRequestStop={onRequestStop} />);
+
+    expect(screen.getByText("Stop requested")).toBeInTheDocument();
+    expect(screen.getByText("2 events")).toBeInTheDocument();
+    expect(screen.getByText("QA 1 passed / 0 missing")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-1 in shakacode/react_on_rails" }));
+
+    expect(onRequestStop).toHaveBeenCalledWith({
+      batchId: "batch-1",
+      repo: "shakacode/react_on_rails",
+      reason: "Stop requested from dashboard so this batch can be restarted."
+    });
+  });
+
+  it("requests repo-scoped stops for repo-less multi-repo batches", async () => {
+    const onRequestStop = vi.fn().mockResolvedValue(undefined);
+    render(
+      <BatchesTab
+        batches={[
+          {
+            ...batch,
+            repo: undefined,
+            targets: [
+              { type: "pull_request", target: "12", repo: "repo-a/app" },
+              { type: "pull_request", target: "34", repo: "repo-b/api" }
+            ]
+          }
+        ]}
+        events={[]}
+        operations={[{ ...operation, repo: undefined }]}
+        onRequestStop={onRequestStop}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-1 in repo-b/api" }));
+
+    expect(onRequestStop).toHaveBeenCalledWith({
+      batchId: "batch-1",
+      repo: "repo-b/api",
+      reason: "Stop requested from dashboard so this batch can be restarted."
+    });
+  });
+
+  it("includes per-target stop scopes for mixed top-level repo batches", async () => {
+    const onRequestStop = vi.fn().mockResolvedValue(undefined);
+    render(
+      <BatchesTab
+        batches={[
+          {
+            ...batch,
+            repo: "repo-a/app",
+            targets: [
+              { type: "pull_request", target: "12", repo: "repo-a/app" },
+              { type: "pull_request", target: "34", repo: "repo-b/api" }
+            ]
+          }
+        ]}
+        events={[]}
+        operations={[{ ...operation, repo: "repo-a/app" }]}
+        onRequestStop={onRequestStop}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-1 in repo-b/api" }));
+
+    expect(onRequestStop).toHaveBeenCalledWith({
+      batchId: "batch-1",
+      repo: "repo-b/api",
+      reason: "Stop requested from dashboard so this batch can be restarted."
+    });
+  });
+
+  it("surfaces failed and active QA counts in the batch summary", () => {
+    render(
+      <BatchesTab
+        batches={[batch]}
+        events={[]}
+        operations={[
+          {
+            ...operation,
+            qa: {
+              total: 4,
+              missing: 0,
+              requested: 1,
+              inProgress: 1,
+              passed: 0,
+              failed: 1,
+              unknown: 1
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(screen.getByText("QA 0 passed / 1 failed / 1 in progress / 1 requested / 1 unknown / 0 missing")).toBeInTheDocument();
+  });
+
+  it("parses pasted launch prompts for review before saving imports", async () => {
+    const onImportBatch = vi.fn().mockResolvedValue(undefined);
+    render(<BatchesTab batches={[]} events={[]} onImportBatch={onImportBatch} />);
+
+    await userEvent.type(
+      screen.getByLabelText("Paste PR-batch launch prompt"),
+      [
+        "Use $pr-batch to complete this batch with subagents.",
+        "Repository: shakacode/react_on_rails",
+        "Batch id: batch-import-1",
+        "Batch objective: Import retained metadata.",
+        "Items:",
+        "- PR #4005: https://github.com/shakacode/react_on_rails/pull/4005",
+        "Suggested lanes:",
+        "- tests (owner: worker-a): PR #4005"
+      ].join("\n")
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Parse launch prompt" }));
+
+    expect(screen.getByDisplayValue("batch-import-1")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/\"repo\": \"shakacode\/react_on_rails\"/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save imported batch manifest" }));
+
+    expect(onImportBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: "batch-import-1",
+        repo: "shakacode/react_on_rails",
+        objective: "Import retained metadata.",
+        targets: [expect.objectContaining({ target: "4005", type: "pull_request" })],
+        launchPrompt: expect.stringContaining("Batch id: batch-import-1")
+      })
+    );
   });
 });

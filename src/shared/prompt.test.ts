@@ -28,8 +28,11 @@ describe("generatePrBatchPrompt", () => {
 
     expect(prompt).toContain("Use $pr-batch");
     expect(prompt).toContain("Repository: shakacode/react_on_rails");
+    expect(prompt).toMatch(/Batch id: batch-shakacode-react-on-rails-[a-z0-9]+/);
     expect(prompt).toContain("PR #4005");
     expect(prompt).toContain("Fix FOUC integration tests");
+    expect(prompt).toContain("Before spawning workers, create the private retained batch manifest");
+    expect(prompt).toContain("Every worker must include this exact batch_id");
     expect(prompt).toContain("agent-coord status");
     expect(prompt.length).toBeLessThan(4000);
   });
@@ -58,5 +61,42 @@ describe("generatePrBatchPrompt", () => {
 
     expect(prompt).toContain("No selected items");
     expect(prompt).not.toContain("PR #4005");
+  });
+
+  it("refuses ambiguous multi-repo prompts with duplicate PR or issue numbers", () => {
+    const prompt = generatePrBatchPrompt([
+      {
+        ...baseItem,
+        id: "repo-a/app#12",
+        repo: "repo-a/app",
+        target: "12",
+        type: "pull_request",
+        github: {
+          ...baseItem.github!,
+          repo: "repo-a/app",
+          target: "12",
+          type: "pull_request",
+          url: "https://github.com/repo-a/app/pull/12"
+        }
+      },
+      {
+        ...baseItem,
+        id: "repo-b/api#12",
+        repo: "repo-b/api",
+        target: "12",
+        type: "issue",
+        github: {
+          ...baseItem.github!,
+          repo: "repo-b/api",
+          target: "12",
+          type: "issue",
+          url: "https://github.com/repo-b/api/issues/12"
+        }
+      }
+    ]);
+
+    expect(prompt).toContain("Cannot generate a single $pr-batch prompt");
+    expect(prompt).toContain("#12 in repo-a/app, repo-b/api");
+    expect(prompt).not.toContain("Suggested lanes:");
   });
 });

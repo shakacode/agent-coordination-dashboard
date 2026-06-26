@@ -1,0 +1,261 @@
+import express from "express";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
+import type { BatchRecord, DashboardSettings } from "../shared/types";
+import type { ServerConfig } from "./config";
+import { loadOpenGitHubItems as defaultLoadOpenGitHubItems } from "./github/githubClient";
+import { createHostGuard } from "./security/hostGuard";
+import { isLoopbackAddress } from "./security/loopback";
+import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
+import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
+import { writeBatchStopRequest } from "./state/batchControl";
+import { buildDashboardModel } from "./state/buildDashboardModel";
+import { readCoordinationState } from "./state/readCoordinationState";
+import { repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
+
+type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
+
+interface CreateDashboardAppOptions {
+  serveFrontend?: boolean;
+  loadOpenGitHubItems?: LoadOpenGitHubItems;
+}
+
+export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
+  const app = express();
+  const persistedSettingsPath = settingsPath(config.settingsPath);
+  const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
+
+  app.use(createHostGuard(config.allowedHosts));
+  app.use(express.json({ limit: "256kb" }));
+
+  app.get("/api/health", (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  async function currentSettings() {
+    return readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
+  }
+
+  function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
+    return batch.repo === repo || Boolean(batch.targets?.some((target) => target.repo === repo));
+  }
+
+  function uniqueTargetRepo(batch: BatchRecord): string | undefined {
+    const repos = new Set((batch.targets || []).map((target) => target.repo).filter((targetRepo): targetRepo is string => Boolean(targetRepo)));
+    return repos.size === 1 ? Array.from(repos)[0] : undefined;
+  }
+
+  function repoForStop(batch: BatchRecord, requestedRepo: string): string {
+    const repo = requestedRepo || batch.repo || uniqueTargetRepo(batch);
+    if (!repo) {
+      throw new BatchManifestImportError(`Batch ${batch.batchId} spans multiple scoped repos; include repo.`, 409);
+    }
+    return repo;
+  }
+
+  async function resolveScopedBatchForStop(batchId: unknown, repo: string, settings: DashboardSettings): Promise<BatchRecord> {
+    const normalizedBatchId = typeof batchId === "string" ? batchId.trim() : "";
+    if (!normalizedBatchId) {
+      throw new BatchManifestImportError("Batch id is required.");
+    }
+
+    const now = new Date();
+    const state = await readCoordinationState(config.stateRoot, now);
+    const model = buildDashboardModel({
+      stateRoot: config.stateRoot,
+      targetRepos: settings.targetRepos,
+      claims: state.claims,
+      heartbeats: state.heartbeats,
+      batches: state.batches,
+      events: state.events,
+      githubItems: [],
+      warnings: state.warnings,
+      now
+    });
+    const candidates = model.batches.filter(
+      (batch) => batch.batchId === normalizedBatchId && (!repo || batchContainsRepo(batch, repo))
+    );
+
+    if (candidates.length === 0) {
+      throw new BatchManifestImportError(`Batch ${normalizedBatchId} is not visible in the scoped dashboard model.`, 404);
+    }
+    if (!repo && candidates.length > 1) {
+      throw new BatchManifestImportError(`Batch ${normalizedBatchId} matches multiple scoped repos; include repo.`, 409);
+    }
+    return candidates[0];
+  }
+
+  app.get("/api/settings", async (_req, res) => {
+    res.json(await currentSettings());
+  });
+
+  app.put("/api/settings", async (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.status(403).json({ error: "Settings updates are only allowed from loopback clients." });
+      return;
+    }
+
+    const targetRepos = normalizeTargetRepos(req.body?.targetRepos);
+    if (targetRepos.length === 0) {
+      res.status(400).json({ error: "At least one owner/repo target is required." });
+      return;
+    }
+
+    res.json(await writeDashboardSettings(persistedSettingsPath, { targetRepos }));
+  });
+
+  app.post("/api/batches/import", async (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.status(403).json({ error: "Batch manifest imports are only allowed from loopback clients." });
+      return;
+    }
+
+    try {
+      const settings = await currentSettings();
+      const draft = normalizeBatchManifestDraft(req.body);
+      assertImportWithinTargetRepos(draft, settings.targetRepos);
+      const result = await writeImportedBatchManifest(config.stateRoot, draft);
+      res.status(201).json(result);
+    } catch (error) {
+      const status = error instanceof BatchManifestImportError ? error.statusCode : 400;
+      res.status(status).json({ error: error instanceof Error ? error.message : "Batch manifest import failed." });
+    }
+  });
+
+  app.post("/api/batches/stop", async (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.status(403).json({ error: "Batch stop requests are only allowed from loopback clients." });
+      return;
+    }
+
+    try {
+      const settings = await currentSettings();
+      const repo = typeof req.body?.repo === "string" ? req.body.repo.trim() : "";
+      if (repo && !settings.targetRepos.includes(repo)) {
+        throw new BatchManifestImportError(`Batch stop repo outside TARGET_REPOS: ${repo}.`);
+      }
+      const batch = await resolveScopedBatchForStop(req.body?.batchId, repo, settings);
+      const stopRepo = repoForStop(batch, repo);
+      const result = await writeBatchStopRequest(config.stateRoot, {
+        batchId: batch.batchId,
+        repo: stopRepo,
+        reason: typeof req.body?.reason === "string" ? req.body.reason : undefined
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      const status = error instanceof BatchManifestImportError ? error.statusCode : 400;
+      res.status(status).json({ error: error instanceof Error ? error.message : "Batch stop request failed." });
+    }
+  });
+
+  app.get("/api/dashboard", async (_req, res) => {
+    const now = new Date();
+    const settings = await currentSettings();
+    const state = await readCoordinationState(config.stateRoot, now);
+    const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
+    const githubItems = githubResults.flatMap((result) => result.items);
+    const githubWarnings = githubResults.flatMap((result) => result.warnings);
+
+    res.json(
+      buildDashboardModel({
+        stateRoot: config.stateRoot,
+        targetRepos: settings.targetRepos,
+        claims: state.claims,
+        heartbeats: state.heartbeats,
+        batches: state.batches,
+        events: state.events,
+        githubItems,
+        warnings: [...state.warnings, ...githubWarnings],
+        now
+      })
+    );
+  });
+
+  if (options.serveFrontend !== false) {
+    if (config.nodeEnv === "production") {
+      const dirname = fileURLToPath(new URL(".", import.meta.url));
+      const dist = join(dirname, "../../dist");
+      app.use(express.static(dist));
+      app.get(/.*/, (_req, res) => {
+        res.sendFile(join(dist, "index.html"));
+      });
+    } else {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        appType: "spa",
+        server: { allowedHosts: config.allowedHosts, middlewareMode: true }
+      });
+      app.use(vite.middlewares);
+    }
+  }
+
+  return app;
+}
+
+function assertImportWithinTargetRepos(draft: BatchManifestDraft, targetRepos: string[]) {
+  const targetRepoSet = new Set(targetRepos);
+  const repos = new Set<string>();
+  if (draft.repo) {
+    repos.add(draft.repo);
+  }
+  for (const target of draft.targets) {
+    if (target.repo) {
+      repos.add(target.repo);
+    }
+    for (const repo of repoRefsFromText(target.url)) {
+      repos.add(repo);
+    }
+    for (const repo of repoRefsFromText(target.title)) {
+      repos.add(repo);
+    }
+  }
+  for (const reservation of draft.reservations) {
+    if (reservation.repo) {
+      repos.add(reservation.repo);
+    }
+    for (const repo of repoRefsFromText(reservation.reason)) {
+      repos.add(repo);
+    }
+    for (const repo of repoRefsFromText(reservation.owner)) {
+      repos.add(repo);
+    }
+    for (const repo of repoRefsFromText(reservation.laneName)) {
+      repos.add(repo);
+    }
+  }
+  for (const lane of draft.lanes) {
+    for (const repo of repoRefsFromText(lane.name)) {
+      repos.add(repo);
+    }
+    for (const repo of repoRefsFromText(lane.owner)) {
+      repos.add(repo);
+    }
+    for (const repo of repoRefsFromText(lane.status)) {
+      repos.add(repo);
+    }
+    for (const dependency of lane.dependsOn) {
+      for (const repo of repoRefsFromText(dependency)) {
+        repos.add(repo);
+      }
+    }
+    for (const blockedOn of lane.blockedOn) {
+      for (const repo of repoRefsFromText(blockedOn)) {
+        repos.add(repo);
+      }
+    }
+  }
+  for (const repo of repoRefsFromText(draft.objective)) {
+    repos.add(repo);
+  }
+  for (const repo of repoRefsFromText(draft.launchPrompt)) {
+    repos.add(repo);
+  }
+  for (const repo of repoRefsFromPromptHeaders(draft.launchPrompt)) {
+    repos.add(repo);
+  }
+  const outOfScopeRepos = Array.from(repos).filter((repo) => !targetRepoSet.has(repo));
+  if (outOfScopeRepos.length > 0) {
+    throw new BatchManifestImportError(`Batch manifest repos outside TARGET_REPOS: ${outOfScopeRepos.join(", ")}.`);
+  }
+}

@@ -44,7 +44,14 @@ describe("readCoordinationState", () => {
       JSON.stringify({
         schema_version: 1,
         batch_id: "batch-1",
-        lanes: [{ name: "docs", owner: "worker-a", targets: ["4005"], depends_on: ["batch-1:backend"] }]
+        repo: "shakacode/react_on_rails",
+        objective: "Stabilize the docs workflow.",
+        targets: [{ type: "pull_request", target: "4005", title: "Docs workflow" }],
+        lanes: [{ name: "docs", owner: "worker-a", targets: ["4005"], depends_on: ["batch-1:backend"] }],
+        reservations: [{ type: "issue", target: "4010", reason: "Waiting for issue owner." }],
+        created_at: "2026-06-17T19:40:00Z",
+        created_by_machine: "m5",
+        launch_prompt: "Use $pr-batch to complete batch-1."
       })
     );
     await writeFile(join(root, "heartbeats", "broken.json"), "{");
@@ -70,6 +77,16 @@ describe("readCoordinationState", () => {
     expect(state.claims[0].machineId).toBe("m5");
     expect(state.heartbeats[0].liveness).toBe("live");
     expect(state.heartbeats[0].machineId).toBe("m5");
+    expect(state.batches[0]).toMatchObject({
+      batchId: "batch-1",
+      repo: "shakacode/react_on_rails",
+      objective: "Stabilize the docs workflow.",
+      targets: [{ type: "pull_request", target: "4005", title: "Docs workflow" }],
+      reservations: [{ type: "issue", target: "4010", reason: "Waiting for issue owner." }],
+      createdAt: "2026-06-17T19:40:00Z",
+      createdByMachine: "m5",
+      launchPrompt: "Use $pr-batch to complete batch-1."
+    });
     expect(state.batches[0].lanes[0].dependsOn).toEqual(["batch-1:backend"]);
     expect(state.events[0]).toMatchObject({ eventId: "event-1", type: "lane.started", machineId: "m5" });
     expect(state.warnings.map((warning) => warning.message)).toEqual(

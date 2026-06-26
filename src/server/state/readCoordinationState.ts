@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
+import { normalizeBatchReservations, normalizeBatchTargets } from "../../shared/batchManifest";
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
 import type { BatchEvent, BatchRecord, ClaimRecord, CoordinationWarning, HeartbeatRecord } from "../../shared/types";
 
@@ -157,6 +158,12 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
     schemaVersion: Number(raw.schema_version || 1),
     batchId,
     repo: stringValue(raw.repo) || undefined,
+    objective: stringValue(raw.objective) || undefined,
+    targets: normalizeBatchTargets(raw.targets),
+    reservations: normalizeBatchReservations(raw.reservations),
+    createdAt: stringValue(raw.created_at) || undefined,
+    createdByMachine: stringValue(raw.created_by_machine) || undefined,
+    launchPrompt: stringValue(raw.launch_prompt) || undefined,
     updatedAt: stringValue(raw.updated_at) || undefined,
     path,
     lanes: lanes.map((laneRaw) => {
