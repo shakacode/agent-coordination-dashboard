@@ -26,7 +26,7 @@ async function hasInitializedCoordinationRoot(root: string, warnings: Coordinati
     if (!hasRequiredDirectory) {
       warnings.push({
         severity: "info",
-        message: `No coordination state found at ${root}. Set AGENT_COORD_STATE_ROOT to an existing state root, or initialize this root with claims/, heartbeats/, and batches/ directories.`
+        message: `No coordination state found at ${root}. Start the dashboard with an existing coordination workspace, or initialize this workspace with claims/, heartbeats/, and batches/ directories.`
       });
     }
     return hasRequiredDirectory;
@@ -35,7 +35,7 @@ async function hasInitializedCoordinationRoot(root: string, warnings: Coordinati
       severity: "info",
       message: `No coordination state found at ${root}: ${errorMessage(
         error
-      )}. Set AGENT_COORD_STATE_ROOT to an existing state root, or initialize this root with claims/, heartbeats/, and batches/ directories.`
+      )}. Start the dashboard with an existing coordination workspace, or initialize this workspace with claims/, heartbeats/, and batches/ directories.`
     });
     return false;
   }

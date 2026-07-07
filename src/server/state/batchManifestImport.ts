@@ -44,12 +44,12 @@ function validateImportedManifest(draft: BatchManifestDraft): void {
     throw new BatchManifestImportError("Objective is required.");
   }
   if (!draft.launchPrompt) {
-    throw new BatchManifestImportError("Launch prompt is required.");
+    throw new BatchManifestImportError("Coordination prompt is required.");
   }
   const parsedPrompt = parsePrBatchLaunchPrompt(draft.launchPrompt);
   if (parsedPrompt.batchId !== draft.batchId) {
     throw new BatchManifestImportError(
-      `Launch prompt batch id ${parsedPrompt.batchId} does not match manifest batch id ${draft.batchId}.`
+      `Coordination prompt batch id ${parsedPrompt.batchId} does not match batch plan id ${draft.batchId}.`
     );
   }
   if (draft.targets.length === 0) {
@@ -66,7 +66,7 @@ function validateImportedManifest(draft: BatchManifestDraft): void {
   const ambiguousTarget = Array.from(reposByTarget.entries()).find(([, repos]) => repos.size > 1);
   if (ambiguousTarget) {
     throw new BatchManifestImportError(
-      `Target ${ambiguousTarget[0]} appears in multiple repos, but lane targets are number-only. Split this into separate batch manifests.`
+      `Target ${ambiguousTarget[0]} appears in multiple repos, but lane targets are number-only. Split this into separate batch plans.`
     );
   }
   if (draft.lanes.length === 0) {
@@ -79,7 +79,7 @@ function validateImportedManifest(draft: BatchManifestDraft): void {
     }
     const unknownTarget = lane.targets.find((target) => !manifestTargets.has(target));
     if (unknownTarget) {
-      throw new BatchManifestImportError(`Lane ${lane.name} references target ${unknownTarget} not listed in manifest targets.`);
+      throw new BatchManifestImportError(`Lane ${lane.name} references target ${unknownTarget} not listed in batch plan targets.`);
     }
   }
 }
@@ -122,7 +122,7 @@ export async function writeImportedBatchManifest(
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
     if (code === "EEXIST") {
-      throw new BatchManifestImportError(`Batch manifest ${relativePath} already exists.`, 409);
+      throw new BatchManifestImportError(`Batch plan ${relativePath} already exists.`, 409);
     }
     throw error;
   }

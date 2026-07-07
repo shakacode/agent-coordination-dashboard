@@ -36,12 +36,12 @@ Changing target repositories through the UI remains loopback-only.
   QA validation gaps, ready work, and high-level counts.
 - **Work**: open GitHub issues and pull requests joined to coordination state,
   grouped as recovery, active, and ready-to-batch queues.
-- **Batches**: manifest batches, inferred batches from `batch_id` claims/heartbeats,
-  lanes, dependencies, liveness, blocked-on refs, launch prompt status, and
+- **Batches**: saved batch plans, inferred batches from `batch_id` claims/heartbeats,
+  lanes, dependencies, liveness, blocked-on refs, coordination prompt status, and
   recent history events, stop-request status, audit counts, and QA counts.
 - **Machines**: machines, agents, heartbeats, claims, liveness, warnings, and current work.
-- **Health**: missing machine IDs, missing heartbeats, missing manifests,
-  missing launch prompts, prompt/target drift, missing history, and other
+- **Health**: missing machine IDs, missing heartbeats, missing batch plans,
+  missing coordination prompts, prompt/target drift, missing history, and other
   coordination data gaps.
 - **Prompt drawer**: copyable `$pr-batch` prompt for checked work items.
 
@@ -57,7 +57,7 @@ The dashboard does not launch Codex agents, edit code, merge PRs, resolve
 reviews, or mutate claims or heartbeats. Coordination-state writes are limited
 to explicit loopback-only actions:
 
-- Save an imported retained batch manifest to `batches/<batch-id>.json`.
+- Save an imported batch plan to `batches/<batch-id>.json`.
 - Append a `batch.stop_requested` event to `events/batches/<batch-id>.jsonl`.
 
 A stop request is a coordination/audit signal so a batch can be restarted
@@ -88,49 +88,21 @@ coordination data root owns runtime records such as `claims/`, `heartbeats/`,
 Local coordination records are scoped to the saved target repositories; records
 outside those repos are skipped with count-based warnings.
 
-When no retained `batches/<batch-id>.json` manifest exists, the dashboard infers
+When no saved `batches/<batch-id>.json` batch plan exists, the dashboard infers
 batch cards from scoped claims and heartbeats that include `batch_id`. Inferred
-batches are labeled and produce Health warnings because they do not replace real
-manifests.
+batches are labeled and produce Health warnings because they do not replace a
+saved batch plan.
 
-Retained batch manifests may include launch prompt metadata so manually launched
-batches stay visible before workers write their own telemetry:
+Saved batch plans include the batch id, repository scope, objective, targets,
+lanes, reservations, creation metadata, and optional coordination prompt text so
+planned batches stay visible before workers write their own telemetry. They are
+stored as JSON under `batches/<batch-id>.json`.
 
-```json
-{
-  "schema_version": 1,
-  "batch_id": "batch-shakacode-react-on-rails-p93s1v",
-  "repo": "shakacode/react_on_rails",
-  "objective": "Process selected ready pull requests.",
-  "targets": [
-    {
-      "type": "pull_request",
-      "target": "4005",
-      "url": "https://github.com/shakacode/react_on_rails/pull/4005",
-      "title": "Fix FOUC integration tests"
-    }
-  ],
-  "lanes": [
-    {
-      "name": "lane-pr-4005",
-      "owner": "unassigned",
-      "targets": ["4005"],
-      "depends_on": [],
-      "status": "queued"
-    }
-  ],
-  "reservations": [],
-  "created_at": "2026-06-20T10:00:00.000Z",
-  "created_by_machine": "workstation-1",
-  "launch_prompt": "Use $pr-batch to complete this batch with subagents.\n\nRepository: shakacode/react_on_rails\nBatch id: batch-shakacode-react-on-rails-p93s1v\n..."
-}
-```
-
-The Batches view can import old manually launched batches by pasting a
-`$pr-batch` launch prompt, reviewing the parsed manifest JSON, and explicitly
-saving it to `batches/<batch-id>.json` under `AGENT_COORD_STATE_ROOT`. This
-write is accepted only from loopback clients and does not launch agents or touch
-claims, heartbeats, events, or history.
+The Batches view can import a planned `$pr-batch` run by pasting the coordination
+prompt, reviewing the parsed batch plan, and explicitly saving it to
+`batches/<batch-id>.json` under the configured coordination root. This write is
+accepted only from the machine running the dashboard and does not launch agents
+or touch claims, heartbeats, events, or history.
 
 Batch history is read from optional `events/**/*.json`, `events/**/*.jsonl`,
 `history/**/*.json`, and `history/**/*.jsonl` files. See
@@ -168,5 +140,5 @@ npm run build
 npm run dev
 ```
 
-The npm scripts call package entrypoints through `node` directly to avoid local
-shell shim issues.
+The npm scripts call package entrypoints through `node` directly for consistent
+local execution.

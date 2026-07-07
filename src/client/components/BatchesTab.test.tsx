@@ -68,10 +68,11 @@ describe("BatchesTab", () => {
     expect(screen.getByText("Resumed after token-limit pause.")).toBeInTheDocument();
   });
 
-  it("renders scoped event history even when no batch file is retained", () => {
+  it("renders scoped event history even when no saved batch plan is available", () => {
     render(<BatchesTab batches={[]} events={[{ ...event, batchPath: undefined }]} />);
 
     expect(screen.getByRole("heading", { name: "Recent history" })).toBeInTheDocument();
+    expect(screen.getByText("No saved batch plan")).toBeInTheDocument();
     expect(screen.getByText("Resumed after token-limit pause.")).toBeInTheDocument();
   });
 
@@ -81,15 +82,15 @@ describe("BatchesTab", () => {
     expect(screen.getByText("Inferred")).toBeInTheDocument();
   });
 
-  it("shows, expands, and copies retained launch prompts", async () => {
+  it("shows, expands, and copies saved coordination prompts", async () => {
     const clipboard = { writeText: vi.fn() };
     Object.assign(navigator, { clipboard });
     render(<BatchesTab batches={[batch]} events={[]} />);
 
-    expect(screen.getByText("Launch prompt retained")).toBeInTheDocument();
+    expect(screen.getByText("Coordination prompt saved")).toBeInTheDocument();
     expect(screen.getByText("Use $pr-batch to complete batch-1.")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Copy launch prompt for batch-1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Copy coordination prompt for batch-1" }));
 
     expect(clipboard.writeText).toHaveBeenCalledWith(batch.launchPrompt);
   });
@@ -194,12 +195,12 @@ describe("BatchesTab", () => {
     expect(screen.getByText("QA 0 passed / 1 failed / 1 in progress / 1 requested / 1 unknown / 0 missing")).toBeInTheDocument();
   });
 
-  it("parses pasted launch prompts for review before saving imports", async () => {
+  it("reviews pasted coordination prompts before saving batch plans", async () => {
     const onImportBatch = vi.fn().mockResolvedValue(undefined);
     render(<BatchesTab batches={[]} events={[]} onImportBatch={onImportBatch} />);
 
     await userEvent.type(
-      screen.getByLabelText("Paste PR-batch launch prompt"),
+      screen.getByLabelText("Paste coordination prompt"),
       [
         "Use $pr-batch to complete this batch with subagents.",
         "Repository: shakacode/react_on_rails",
@@ -211,12 +212,12 @@ describe("BatchesTab", () => {
         "- tests (owner: worker-a): PR #4005"
       ].join("\n")
     );
-    await userEvent.click(screen.getByRole("button", { name: "Parse launch prompt" }));
+    await userEvent.click(screen.getByRole("button", { name: "Review batch plan" }));
 
     expect(screen.getByDisplayValue("batch-import-1")).toBeInTheDocument();
-    expect(screen.getByDisplayValue(/\"repo\": \"shakacode\/react_on_rails\"/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Plan details")).toHaveDisplayValue(/\"repo\": \"shakacode\/react_on_rails\"/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Save imported batch manifest" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save batch plan" }));
 
     expect(onImportBatch).toHaveBeenCalledWith(
       expect.objectContaining({

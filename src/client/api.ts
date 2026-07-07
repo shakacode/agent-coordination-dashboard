@@ -35,7 +35,7 @@ export async function saveImportedBatchManifest(manifest: Partial<BatchRecord>):
     method: "POST"
   });
   if (!response.ok) {
-    throw new Error(`Batch manifest import failed with ${response.status}`);
+    throw new Error(`Batch plan import failed with ${response.status}`);
   }
   return (await response.json()) as { path: string };
 }

@@ -31,9 +31,11 @@ describe("generatePrBatchPrompt", () => {
     expect(prompt).toMatch(/Batch id: batch-shakacode-react-on-rails-[a-z0-9]+/);
     expect(prompt).toContain("PR #4005");
     expect(prompt).toContain("Fix FOUC integration tests");
-    expect(prompt).toContain("Before spawning workers, create the private retained batch manifest");
-    expect(prompt).toContain("Every worker must include this exact batch_id");
+    expect(prompt).toContain("Before starting workers, save this batch plan");
+    expect(prompt).toContain("Every worker must use this batch id");
     expect(prompt).toContain("agent-coord status");
+    expect(prompt).not.toContain("launch_prompt");
+    expect(prompt).not.toContain("coordination backend");
     expect(prompt.length).toBeLessThan(4000);
   });
 

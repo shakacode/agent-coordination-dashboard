@@ -183,10 +183,10 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.some((warning) => warning.message === "Malformed JSON in an unscoped events record.")).toBe(true);
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
-        "Skipped 1 claim records outside TARGET_REPOS.",
-        "Skipped 2 heartbeat records outside TARGET_REPOS.",
-        "Skipped 1 GitHub preview records outside TARGET_REPOS.",
-        "Skipped 2 warning records outside TARGET_REPOS."
+        "Skipped 1 claim records outside saved target repositories.",
+        "Skipped 2 heartbeat records outside saved target repositories.",
+        "Skipped 1 GitHub preview records outside saved target repositories.",
+        "Skipped 2 warning records outside saved target repositories."
       ])
     );
   });
@@ -208,7 +208,7 @@ describe("buildDashboardModel", () => {
               name: "lane-a",
               owner: "worker-a",
               targets: ["4010"],
-              dependsOn: ["outside TARGET_REPOS"],
+              dependsOn: ["outside saved target repositories"],
               status: "queued",
               liveness: "no-heartbeat",
               blockedOn: []
@@ -232,7 +232,7 @@ describe("buildDashboardModel", () => {
 
     expect(model.workItems[0].schedulingState).toBe("started_not_processing");
     expect(model.workItems[0].batchSignals).toEqual([
-      { batchId: "batch-1", laneName: "lane-a", status: "queued", blockedOn: ["outside TARGET_REPOS"] }
+      { batchId: "batch-1", laneName: "lane-a", status: "queued", blockedOn: ["outside saved target repositories"] }
     ]);
     expect(model.workItems[0].warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("already scheduled in batch")])
@@ -463,7 +463,7 @@ describe("buildDashboardModel", () => {
     expect(model.workItems.find((item) => item.target === "4010")?.batchSignals).toEqual([
       { batchId: "batch-1", laneName: "worker-b", status: "in_progress", blockedOn: [] }
     ]);
-    expect(model.healthItems.map((item) => item.title)).toContain("Batch manifest missing");
+    expect(model.healthItems.map((item) => item.title)).toContain("Batch plan missing");
   });
 
   it("does not infer duplicate batches when a same-repo manifest exists", () => {
@@ -560,7 +560,7 @@ describe("buildDashboardModel", () => {
     expect(model.batches[0].lanes).toHaveLength(1);
     expect(model.batches[0].lanes[0].status).toBe("in_progress");
     expect(model.batches[0].lanes[0].liveness).toBe("live");
-    expect(model.batches[0].lanes[0].blockedOn).toEqual(["outside TARGET_REPOS"]);
+    expect(model.batches[0].lanes[0].blockedOn).toEqual(["outside saved target repositories"]);
     expect(model.agents[0].agentId).toBe("worker-a");
     expect(model.agents.some((agent) => agent.agentId === "other-worker")).toBe(false);
   });
@@ -1616,8 +1616,8 @@ describe("buildDashboardModel", () => {
       now: new Date("2026-06-17T20:00:00Z")
     });
 
-    expect(model.batches[0].lanes[0].dependsOn).toEqual(["outside TARGET_REPOS"]);
-    expect(model.batches[0].lanes[0].blockedOn).toEqual(["outside TARGET_REPOS"]);
+    expect(model.batches[0].lanes[0].dependsOn).toEqual(["outside saved target repositories"]);
+    expect(model.batches[0].lanes[0].blockedOn).toEqual(["outside saved target repositories"]);
   });
 
   it("does not apply batch-only heartbeats across repo-scoped batch collisions", () => {
@@ -2187,7 +2187,7 @@ describe("buildDashboardModel", () => {
       expect.arrayContaining([
         expect.objectContaining({
           title: "Prompt target mismatch",
-          detail: expect.stringContaining("manifest has shakacode/react_on_rails:issue#4011")
+          detail: expect.stringContaining("plan has shakacode/react_on_rails:issue#4011")
         })
       ])
     );
@@ -2257,7 +2257,7 @@ describe("buildDashboardModel", () => {
       "Items:",
       "- PR #4005: https://github.com/shakacode/react_on_rails/pull/4005",
       "Execution rules:",
-      "- Before spawning workers, create the private retained batch manifest at batches/batch-1.json with batch_id, repo, objective, targets, lanes, reservations, created_at, created_by_machine, and launch_prompt."
+      "- Before starting workers, save this batch plan at batches/batch-1.json so the dashboard can show ownership and history."
     ].join("\n");
     const model = buildDashboardModel({
       stateRoot: "/state",
