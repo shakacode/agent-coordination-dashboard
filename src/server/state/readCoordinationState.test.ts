@@ -1,10 +1,14 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readCoordinationState } from "./readCoordinationState";
 
 describe("readCoordinationState", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("reads claims, heartbeats, batches, and malformed file warnings", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-state-"));
     await mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true });
@@ -155,5 +159,97 @@ describe("readCoordinationState", () => {
     );
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("No coordination state found");
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("claims");
+  });
+
+  it("reads claims, heartbeats, and batches from the coordination API when configured", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.headers).toEqual({ authorization: "Bearer test-token" });
+      const url = new URL(String(input));
+      const prefix = url.searchParams.get("prefix");
+      const entriesByPrefix = {
+        claims: [
+          {
+            path: "claims/shakacode/react_on_rails/4005.json",
+            data: {
+              schema_version: 1,
+              repo: "shakacode/react_on_rails",
+              target: "4005",
+              agent_id: "worker-api",
+              status: "active"
+            }
+          }
+        ],
+        heartbeats: [
+          {
+            path: "heartbeats/worker-api.json",
+            data: {
+              schema_version: 1,
+              agent_id: "worker-api",
+              machine_id: "m1",
+              repo: "shakacode/react_on_rails",
+              target: "4005",
+              status: "in_progress",
+              updated_at: "2026-06-17T19:50:00Z",
+              expires_at: "2026-06-17T20:05:00Z"
+            }
+          }
+        ],
+        batches: [
+          {
+            path: "batches/batch-api.json",
+            data: {
+              schema_version: 1,
+              batch_id: "batch-api",
+              repo: "shakacode/react_on_rails",
+              lanes: [{ name: "api", owner: "worker-api", targets: ["4005"] }]
+            }
+          }
+        ]
+      } as const;
+
+      return new Response(JSON.stringify({ entries: entriesByPrefix[prefix as keyof typeof entriesByPrefix] || [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(state.claims[0]).toMatchObject({ agentId: "worker-api", repo: "shakacode/react_on_rails", target: "4005" });
+    expect(state.heartbeats[0]).toMatchObject({ agentId: "worker-api", machineId: "m1", liveness: "live" });
+    expect(state.batches[0]).toMatchObject({ batchId: "batch-api", lanes: [expect.objectContaining({ name: "api" })] });
+    expect(state.events).toEqual([]);
+    expect(state.warnings).toEqual([]);
+  });
+
+  it("warns instead of reading files when API mode is missing a token", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test"
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state.claims).toEqual([]);
+    expect(state.warnings[0].message).toContain("AGENT_COORD_TOKEN");
+  });
+
+  it("allows loopback HTTP coordination API URLs", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ entries: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "http://[::1]:8787",
+      token: "test-token"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(state.warnings).toEqual([]);
   });
 });

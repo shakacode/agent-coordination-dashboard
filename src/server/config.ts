@@ -6,6 +6,8 @@ export interface ServerConfig {
   host: string;
   allowedHosts: string[];
   stateRoot: string;
+  coordApiUrl?: string;
+  coordApiToken?: string;
   targetRepos: string[];
   settingsPath: string;
   nodeEnv: string;
@@ -41,6 +43,8 @@ export function readConfig(env = process.env): ServerConfig {
     host,
     allowedHosts: env.ALLOWED_HOSTS ? listFromEnv(env.ALLOWED_HOSTS) : defaultAllowedHosts(host),
     stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),
+    coordApiUrl: env.AGENT_COORD_API_URL || "",
+    coordApiToken: env.AGENT_COORD_TOKEN || "",
     targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",
     nodeEnv: env.NODE_ENV || "development"

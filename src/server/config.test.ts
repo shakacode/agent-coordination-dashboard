@@ -8,6 +8,8 @@ describe("readConfig", () => {
     expect(config.host).toBe("127.0.0.1");
     expect(config.allowedHosts).toEqual(expect.arrayContaining(["localhost", "127.0.0.1", "::1"]));
     expect(config.stateRoot).toContain(".local/state/agent-coordination");
+    expect(config.coordApiUrl).toBe("");
+    expect(config.coordApiToken).toBe("");
     expect(config.targetRepos).toEqual([]);
   });
 
@@ -18,5 +20,12 @@ describe("readConfig", () => {
       "dashboard.local",
       "192.168.1.10"
     ]);
+  });
+
+  it("reads optional coordination API settings", () => {
+    const config = readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", AGENT_COORD_TOKEN: "secret" });
+
+    expect(config.coordApiUrl).toBe("https://coord.example.test");
+    expect(config.coordApiToken).toBe("secret");
   });
 });

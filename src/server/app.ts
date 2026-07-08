@@ -25,6 +25,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
+  const displayedStateRoot = config.coordApiUrl ? `api:${config.coordApiUrl}` : config.stateRoot;
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -61,9 +62,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const now = new Date();
-    const state = await readCoordinationState(config.stateRoot, now);
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: config.coordApiUrl,
+      token: config.coordApiToken
+    });
     const model = buildDashboardModel({
-      stateRoot: config.stateRoot,
+      stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: state.claims,
       heartbeats: state.heartbeats,
@@ -158,14 +162,17 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   app.get("/api/dashboard", async (_req, res) => {
     const now = new Date();
     const settings = await currentSettings();
-    const state = await readCoordinationState(config.stateRoot, now);
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: config.coordApiUrl,
+      token: config.coordApiToken
+    });
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
     const githubItems = githubResults.flatMap((result) => result.items);
     const githubWarnings = githubResults.flatMap((result) => result.warnings);
 
     res.json(
       buildDashboardModel({
-        stateRoot: config.stateRoot,
+        stateRoot: displayedStateRoot,
         targetRepos: settings.targetRepos,
         claims: state.claims,
         heartbeats: state.heartbeats,
