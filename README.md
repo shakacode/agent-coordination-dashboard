@@ -3,6 +3,13 @@
 Local dashboard for agent coordination state, coordinator triage, machine/lane
 visibility, batch prompt planning, batch audit, and QA validation tracking.
 
+## License
+
+This local/protocol dashboard is part of the Agent Coordination MIT License
+protocol plane while it remains a local operator view over coordination state.
+Future hosted or monetized ShakaStack product-plane dashboards can use a
+separate repository and license boundary while consuming the same protocol API.
+
 ## Run
 
 ```bash
