@@ -215,7 +215,8 @@ describe("buildDashboardModel", () => {
           repo: "other/repo",
           target: "12",
           message: "Malformed coordination API claims record claims/other/repo/12.json: broken"
-        }
+        },
+        { severity: "warning", message: "Malformed coordination API batches record batches/broken.json: broken" }
       ],
       now: new Date("2026-06-17T20:00:00Z")
     });
@@ -226,10 +227,12 @@ describe("buildDashboardModel", () => {
         "AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set.",
         "Could not read coordination API heartbeats: timed out after 5000ms",
         "Malformed coordination API claims entry at index 2",
-        "Malformed coordination API claims record claims/shakacode/react_on_rails/4005.json: broken"
+        "Malformed coordination API claims record claims/shakacode/react_on_rails/4005.json: broken",
+        "Malformed coordination API in an unscoped batches record."
       ])
     );
     expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
+    expect(model.warnings.some((warning) => warning.message.includes("batches/broken.json"))).toBe(false);
   });
 
   it("does not mark open work as ready when it is already in a retained batch lane", () => {

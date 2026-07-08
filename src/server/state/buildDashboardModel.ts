@@ -555,6 +555,14 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
     return warning;
   }
 
+  const malformedApiRecord = warning.message.match(/^Malformed coordination API (claims|heartbeats|batches) record /);
+  if (malformedApiRecord) {
+    return {
+      severity: warning.severity,
+      message: `Malformed coordination API in an unscoped ${malformedApiRecord[1]} record.`
+    };
+  }
+
   const directoryRead = warning.message.match(/^Could not read coordination directory ([^:]+):/);
   if (directoryRead && ["claims", "heartbeats", "batches", "events", "history", "."].includes(directoryRead[1])) {
     return warning;
