@@ -24,7 +24,7 @@ function promptSummary(prompt: string): string {
   return prompt
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find(Boolean) || "Launch prompt retained.";
+    .find(Boolean) || "Coordination prompt saved.";
 }
 
 function operationKey(input: { repo?: string; batchPath?: string; batchId: string }): string {
@@ -112,7 +112,7 @@ function BatchOperationPanel({
 
 function PromptStatus({ batch }: { batch: BatchRecord }) {
   const prompt = batch.launchPrompt || "";
-  const status = prompt ? "Launch prompt retained" : batch.source === "inferred" ? "Manifest missing" : "Prompt missing";
+  const status = prompt ? "Coordination prompt saved" : batch.source === "inferred" ? "Batch plan missing" : "Prompt not saved";
 
   return (
     <div className="batch-prompt">
@@ -120,10 +120,10 @@ function PromptStatus({ batch }: { batch: BatchRecord }) {
         <span className={prompt ? "prompt-status retained" : "prompt-status missing"}>{status}</span>
         {prompt && (
           <button
-            aria-label={`Copy launch prompt for ${batch.batchId}`}
+            aria-label={`Copy coordination prompt for ${batch.batchId}`}
             className="icon-button"
             onClick={() => navigator.clipboard.writeText(prompt)}
-            title="Copy launch prompt"
+            title="Copy coordination prompt"
             type="button"
           >
             <Clipboard size={16} aria-hidden="true" />
@@ -131,10 +131,10 @@ function PromptStatus({ batch }: { batch: BatchRecord }) {
         )}
       </div>
       {batch.objective && <p>{batch.objective}</p>}
-      <p>{prompt ? promptSummary(prompt) : "No launch_prompt stored for this batch."}</p>
+      <p>{prompt ? promptSummary(prompt) : "No coordination prompt has been saved for this batch."}</p>
       {prompt && (
         <details>
-          <summary>View launch prompt</summary>
+          <summary>View coordination prompt</summary>
           <pre>{prompt}</pre>
         </details>
       )}
@@ -145,7 +145,7 @@ function PromptStatus({ batch }: { batch: BatchRecord }) {
 function parseEditableJson(json: string): Partial<BatchRecord> {
   const parsed = JSON.parse(json) as Partial<BatchRecord>;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Manifest JSON must be an object.");
+    throw new Error("Batch plan details must be an object.");
   }
   return parsed;
 }
@@ -181,7 +181,7 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
       const parsed = parsePrBatchLaunchPrompt(launchPrompt, { now: new Date() });
       setEditableManifest(parsed);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not parse launch prompt.");
+      setStatus(error instanceof Error ? error.message : "Could not review coordination prompt.");
     }
   }
 
@@ -193,30 +193,30 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
         throw new Error("Batch id is required.");
       }
       if (!onImportBatch) {
-        throw new Error("Batch import is unavailable.");
+        throw new Error("Batch plan import is unavailable.");
       }
       await onImportBatch(manifest);
-      setStatus("Imported batch manifest saved.");
+      setStatus("Batch plan saved.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not save imported batch manifest.");
+      setStatus(error instanceof Error ? error.message : "Could not save batch plan.");
     }
   }
 
   return (
     <article className="panel batch-import-panel">
       <header className="batch-card-header">
-        <h2>Import Batch Manifest</h2>
+        <h2>Import Batch Plan</h2>
         <FilePlus size={16} aria-hidden="true" />
       </header>
       <form className="batch-import-form" onSubmit={parsePrompt}>
         <label>
-          Paste PR-batch launch prompt
+          Paste coordination prompt
           <textarea
             onChange={(event) => setLaunchPrompt(event.target.value)}
             value={launchPrompt}
           />
         </label>
-        <button type="submit">Parse launch prompt</button>
+        <button type="submit">Review batch plan</button>
       </form>
       {manifestJson && (
         <div className="manifest-review">
@@ -251,15 +251,15 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
             />
           </label>
           <label>
-            Parsed batch manifest JSON
+            Plan details
             <textarea
-              aria-label="Parsed batch manifest JSON"
+              aria-label="Plan details"
               onChange={(event) => setManifestJson(event.target.value)}
               value={manifestJson}
             />
           </label>
           <button onClick={() => void saveManifest()} type="button">
-            Save imported batch manifest
+            Save batch plan
           </button>
         </div>
       )}
@@ -289,7 +289,7 @@ export function BatchesTab({
     <section className="batches-view">
       {!hasBatchContent ? (
         <>
-          <p className="empty-state">No batch files found.</p>
+          <p className="empty-state">No saved batch plans found.</p>
           <BatchImportPanel onImportBatch={onImportBatch} />
         </>
       ) : (
@@ -331,7 +331,7 @@ export function BatchesTab({
             {unattachedEvents.length > 0 && (
               <article className="panel">
                 <h2>Recent history</h2>
-                <p className="batch-scope">No retained batch file</p>
+                <p className="batch-scope">No saved batch plan</p>
                 <EventRows events={unattachedEvents} />
               </article>
             )}

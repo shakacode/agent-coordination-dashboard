@@ -49,7 +49,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   function repoForStop(batch: BatchRecord, requestedRepo: string): string {
     const repo = requestedRepo || batch.repo || uniqueTargetRepo(batch);
     if (!repo) {
-      throw new BatchManifestImportError(`Batch ${batch.batchId} spans multiple scoped repos; include repo.`, 409);
+      throw new BatchManifestImportError(`Batch ${batch.batchId} spans multiple saved target repositories; include repo.`, 409);
     }
     return repo;
   }
@@ -78,10 +78,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     );
 
     if (candidates.length === 0) {
-      throw new BatchManifestImportError(`Batch ${normalizedBatchId} is not visible in the scoped dashboard model.`, 404);
+      throw new BatchManifestImportError(`Batch ${normalizedBatchId} is not visible with the saved target repositories.`, 404);
     }
     if (!repo && candidates.length > 1) {
-      throw new BatchManifestImportError(`Batch ${normalizedBatchId} matches multiple scoped repos; include repo.`, 409);
+      throw new BatchManifestImportError(`Batch ${normalizedBatchId} matches multiple saved target repositories; include repo.`, 409);
     }
     return candidates[0];
   }
@@ -92,7 +92,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   app.put("/api/settings", async (req, res) => {
     if (!isLoopbackAddress(req.socket.remoteAddress)) {
-      res.status(403).json({ error: "Settings updates are only allowed from loopback clients." });
+      res.status(403).json({
+        error: "Settings can only be changed from the machine running the dashboard. Remote viewers have read-only access."
+      });
       return;
     }
 
@@ -107,7 +109,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   app.post("/api/batches/import", async (req, res) => {
     if (!isLoopbackAddress(req.socket.remoteAddress)) {
-      res.status(403).json({ error: "Batch manifest imports are only allowed from loopback clients." });
+      res.status(403).json({
+        error: "Batch plans can only be imported from the machine running the dashboard. Remote viewers have read-only access."
+      });
       return;
     }
 
@@ -119,13 +123,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       res.status(201).json(result);
     } catch (error) {
       const status = error instanceof BatchManifestImportError ? error.statusCode : 400;
-      res.status(status).json({ error: error instanceof Error ? error.message : "Batch manifest import failed." });
+      res.status(status).json({ error: error instanceof Error ? error.message : "Batch plan import failed." });
     }
   });
 
   app.post("/api/batches/stop", async (req, res) => {
     if (!isLoopbackAddress(req.socket.remoteAddress)) {
-      res.status(403).json({ error: "Batch stop requests are only allowed from loopback clients." });
+      res.status(403).json({
+        error: "Batch stop requests can only be sent from the machine running the dashboard. Remote viewers have read-only access."
+      });
       return;
     }
 
@@ -133,7 +139,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       const settings = await currentSettings();
       const repo = typeof req.body?.repo === "string" ? req.body.repo.trim() : "";
       if (repo && !settings.targetRepos.includes(repo)) {
-        throw new BatchManifestImportError(`Batch stop repo outside TARGET_REPOS: ${repo}.`);
+        throw new BatchManifestImportError(`Batch stop repo is outside saved target repositories: ${repo}.`);
       }
       const batch = await resolveScopedBatchForStop(req.body?.batchId, repo, settings);
       const stopRepo = repoForStop(batch, repo);
@@ -256,6 +262,6 @@ function assertImportWithinTargetRepos(draft: BatchManifestDraft, targetRepos: s
   }
   const outOfScopeRepos = Array.from(repos).filter((repo) => !targetRepoSet.has(repo));
   if (outOfScopeRepos.length > 0) {
-    throw new BatchManifestImportError(`Batch manifest repos outside TARGET_REPOS: ${outOfScopeRepos.join(", ")}.`);
+    throw new BatchManifestImportError(`Batch plan repos outside saved target repositories: ${outOfScopeRepos.join(", ")}.`);
   }
 }

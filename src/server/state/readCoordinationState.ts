@@ -13,6 +13,10 @@ interface RawState {
 }
 
 const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
+const COORDINATION_ROOT_REMEDIATION = [
+  "Set AGENT_COORD_STATE_ROOT to an existing coordination workspace,",
+  "or initialize this workspace with claims/, heartbeats/, and batches/ directories."
+].join(" ");
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "unknown error";
@@ -26,7 +30,7 @@ async function hasInitializedCoordinationRoot(root: string, warnings: Coordinati
     if (!hasRequiredDirectory) {
       warnings.push({
         severity: "info",
-        message: `No coordination state found at ${root}. Set AGENT_COORD_STATE_ROOT to an existing state root, or initialize this root with claims/, heartbeats/, and batches/ directories.`
+        message: `No coordination state found at ${root}. ${COORDINATION_ROOT_REMEDIATION}`
       });
     }
     return hasRequiredDirectory;
@@ -35,7 +39,7 @@ async function hasInitializedCoordinationRoot(root: string, warnings: Coordinati
       severity: "info",
       message: `No coordination state found at ${root}: ${errorMessage(
         error
-      )}. Set AGENT_COORD_STATE_ROOT to an existing state root, or initialize this root with claims/, heartbeats/, and batches/ directories.`
+      )}. ${COORDINATION_ROOT_REMEDIATION}`
     });
     return false;
   }

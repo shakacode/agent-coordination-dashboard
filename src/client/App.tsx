@@ -93,7 +93,7 @@ export function App() {
       await saveImportedBatchManifest(manifest);
       setDashboard(await fetchDashboard());
     } catch (caught: unknown) {
-      throw caught instanceof Error ? caught : new Error("Batch manifest import failed");
+      throw caught instanceof Error ? caught : new Error("Batch plan import failed");
     } finally {
       setIsRefreshing(false);
     }
@@ -127,9 +127,11 @@ export function App() {
       <header className="topbar">
         <div>
           <h1>Agent Coordination</h1>
-          <p>
-            {dashboard.stateRoot} · {dashboard.workItems.length} open or coordinated items
-          </p>
+          <p>Coordination workspace · {dashboard.workItems.length} open or coordinated items</p>
+          <details className="state-root-details">
+            <summary>State root</summary>
+            <code>{dashboard.stateRoot}</code>
+          </details>
         </div>
         <div className="summary-strip">
           <span>{dashboard.agents.length} agents</span>

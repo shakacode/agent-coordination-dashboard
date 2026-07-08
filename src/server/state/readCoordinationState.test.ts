@@ -115,10 +115,26 @@ describe("readCoordinationState", () => {
     expect(state.warnings).toEqual([
       expect.objectContaining({
         severity: "info",
-        message: expect.stringContaining("No coordination state found")
+        message: expect.stringContaining("AGENT_COORD_STATE_ROOT")
       })
     ]);
+    expect(state.warnings[0].message).toContain("Set AGENT_COORD_STATE_ROOT to an existing coordination workspace");
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("Could not read coordination directory");
+  });
+
+  it("shows the state root environment variable when the configured root cannot be read", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "coord-state-missing-parent-"));
+    const root = join(parent, "missing-root");
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.warnings).toEqual([
+      expect.objectContaining({
+        severity: "info",
+        message: expect.stringContaining("AGENT_COORD_STATE_ROOT")
+      })
+    ]);
+    expect(state.warnings[0].message).toContain("Set AGENT_COORD_STATE_ROOT to an existing coordination workspace");
   });
 
   it("warns when partially initialized expected coordination directories cannot be read", async () => {

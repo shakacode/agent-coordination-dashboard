@@ -118,7 +118,7 @@ export function OverviewTab({ dashboard }: { dashboard: DashboardModel }) {
                 <div className="overview-row" key={`${batch.repo || batch.path}:${batch.batchId}`}>
                   <div>
                     <strong>{batch.batchId}</strong>
-                    <span>{batch.source === "inferred" ? "Batch manifest missing" : "Prompt missing"}</span>
+                    <span>{batch.source === "inferred" ? "Batch plan missing" : "Prompt missing"}</span>
                   </div>
                   <StatusBadge value="warning" />
                 </div>

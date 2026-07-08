@@ -20,7 +20,7 @@ import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
-const REDACTED_DEPENDENCY_REF = "outside TARGET_REPOS";
+const REDACTED_DEPENDENCY_REF = "outside saved target repositories";
 
 interface BuildInput {
   stateRoot: string;
@@ -95,7 +95,7 @@ function appendSkippedWarning(warnings: CoordinationWarning[], count: number, la
   if (count > 0) {
     warnings.push({
       severity: "info",
-      message: `Skipped ${count} ${label} outside TARGET_REPOS.`
+      message: `Skipped ${count} ${label} outside saved target repositories.`
     });
   }
 }
@@ -155,7 +155,9 @@ function promptTargetHealth(batch: BatchRecord): { title: "Prompt parse failed" 
   } catch (error) {
     return {
       title: "Prompt parse failed",
-      detail: `${batch.batchId} launch_prompt could not be parsed: ${error instanceof Error ? error.message : "unknown error"}.`
+      detail: `${batch.batchId} saved coordination prompt could not be parsed: ${
+        error instanceof Error ? error.message : "unknown error"
+      }.`
     };
   }
   const batchManifestTargets = manifestTargetIdentities(batch);
@@ -172,9 +174,9 @@ function promptTargetHealth(batch: BatchRecord): { title: "Prompt parse failed" 
 
   return {
     title: "Prompt target mismatch",
-    detail: `${batch.batchId} launch_prompt and manifest targets differ: ${[
+    detail: `${batch.batchId} saved coordination prompt and batch plan targets differ: ${[
       promptOnly.length > 0 ? `prompt has ${promptOnly.join(", ")}` : "",
-      manifestOnly.length > 0 ? `manifest has ${manifestOnly.join(", ")}` : ""
+      manifestOnly.length > 0 ? `plan has ${manifestOnly.join(", ")}` : ""
     ]
       .filter(Boolean)
       .join("; ")}.`
@@ -1134,8 +1136,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         healthItem({
           severity: "warning",
           category: "batch",
-          title: "Batch manifest missing",
-          detail: `${batch.batchId} was inferred from claim/heartbeat batch_id fields because no retained batch manifest was found.`,
+          title: "Batch plan missing",
+          detail: `${batch.batchId} was inferred from coordination records because no saved batch plan was found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
@@ -1146,7 +1148,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: "batch",
           title: "Prompt missing",
-          detail: `${batch.batchId} has a retained batch manifest, but no launch_prompt was saved.`,
+          detail: `${batch.batchId} has a saved batch plan, but no coordination prompt was saved.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
@@ -1176,7 +1178,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           detail:
             batch.source === "inferred"
               ? `${batch.batchId} has inferred lanes, but no events/history records were found.`
-              : `${batch.batchId} has a batch file, but no events/history records were found.`,
+              : `${batch.batchId} has a saved batch plan, but no events/history records were found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })

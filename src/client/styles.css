@@ -47,6 +47,10 @@ textarea {
   font-size: 20px;
 }
 
+.topbar > div:first-child {
+  min-width: 0;
+}
+
 .topbar p,
 .batch-scope,
 .work-main p,
@@ -54,6 +58,31 @@ textarea {
   margin: 4px 0 0;
   color: #5f6b7a;
   font-size: 13px;
+}
+
+.state-root-details {
+  margin-top: 4px;
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.state-root-details summary {
+  display: inline-flex;
+  cursor: pointer;
+  color: #175cd3;
+}
+
+.state-root-details code {
+  display: block;
+  max-width: min(640px, 60vw);
+  margin-top: 4px;
+  overflow-x: auto;
+  border: 1px solid #d8e0e8;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 4px 6px;
+  color: #344054;
+  font-size: 12px;
 }
 
 .summary-strip {
