@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local dashboard for viewing agent coordination state and preparing pr-batch prompts.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shakacode/agent-coordination-dashboard.git"
