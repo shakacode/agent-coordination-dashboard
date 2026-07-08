@@ -49,9 +49,10 @@ npm run dev
 In API mode the dashboard reads `claims`, `heartbeats`, and `batches` from the
 Worker state API and keeps file mode as the fallback when `AGENT_COORD_API_URL`
 is unset. Remote dashboard responses label the source as `coordination-api`
-instead of echoing the configured backend URL. API mode is read-only in this
-slice; batch import and stop-request writes remain local recovery tools for
-filesystem mode.
+instead of echoing the configured backend URL. API mode does not read
+`events/` or `history/` yet, so batch timelines remain empty until that API
+surface is added. API mode is read-only in this slice; batch import and
+stop-request writes remain local recovery tools for filesystem mode.
 
 ## What It Shows
 
