@@ -37,6 +37,23 @@ make it reachable from another machine on the network, and set `ALLOWED_HOSTS`
 to the exact hostnames or IP addresses you will use in the browser.
 Changing target repositories through the UI remains loopback-only.
 
+To read from the HTTP coordination backend instead of the local filesystem
+state root, set the same API variables used by `agent-coord`:
+
+```bash
+AGENT_COORD_API_URL="https://coord.example.test" \
+AGENT_COORD_TOKEN="..." \
+npm run dev
+```
+
+In API mode the dashboard reads `claims`, `heartbeats`, and `batches` from the
+Worker state API and keeps file mode as the fallback when `AGENT_COORD_API_URL`
+is unset. Remote dashboard responses label the source as `coordination-api`
+instead of echoing the configured backend URL. API mode does not read
+`events/` or `history/` yet, so batch timelines remain empty until that API
+surface is added. API mode is read-only in this slice; batch import and
+stop-request writes remain local recovery tools for filesystem mode.
+
 ## What It Shows
 
 - **Overview**: needs-attention queue, active/recoverable work, batch repairs,
@@ -78,6 +95,8 @@ cleanly; it does not kill processes or release claims by itself.
 | `HOST` | `127.0.0.1` |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` plus non-wildcard `HOST` |
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
+| `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
+| `AGENT_COORD_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 

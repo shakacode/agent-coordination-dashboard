@@ -25,6 +25,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
+  const coordApiUrl = config.coordApiUrl?.trim() || "";
+  const coordApiToken = config.coordApiToken || "";
+  const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -61,9 +64,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const now = new Date();
-    const state = await readCoordinationState(config.stateRoot, now);
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
     const model = buildDashboardModel({
-      stateRoot: config.stateRoot,
+      stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: state.claims,
       heartbeats: state.heartbeats,
@@ -84,6 +90,16 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       throw new BatchManifestImportError(`Batch ${normalizedBatchId} matches multiple saved target repositories; include repo.`, 409);
     }
     return candidates[0];
+  }
+
+  function rejectApiModeWrite(res: express.Response, action: string): boolean {
+    if (!coordApiUrl) {
+      return false;
+    }
+    res.status(409).json({
+      error: `${action} is only available in filesystem mode. API write support is planned for a later dashboard slice.`
+    });
+    return true;
   }
 
   app.get("/api/settings", async (_req, res) => {
@@ -114,6 +130,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       });
       return;
     }
+    if (rejectApiModeWrite(res, "Batch import")) {
+      return;
+    }
 
     try {
       const settings = await currentSettings();
@@ -132,6 +151,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       res.status(403).json({
         error: "Batch stop requests can only be sent from the machine running the dashboard. Remote viewers have read-only access."
       });
+      return;
+    }
+    if (rejectApiModeWrite(res, "Batch stop requests")) {
       return;
     }
 
@@ -158,14 +180,17 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   app.get("/api/dashboard", async (_req, res) => {
     const now = new Date();
     const settings = await currentSettings();
-    const state = await readCoordinationState(config.stateRoot, now);
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
     const githubItems = githubResults.flatMap((result) => result.items);
     const githubWarnings = githubResults.flatMap((result) => result.warnings);
 
     res.json(
       buildDashboardModel({
-        stateRoot: config.stateRoot,
+        stateRoot: displayedStateRoot,
         targetRepos: settings.targetRepos,
         claims: state.claims,
         heartbeats: state.heartbeats,

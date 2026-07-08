@@ -191,6 +191,50 @@ describe("buildDashboardModel", () => {
     );
   });
 
+  it("preserves global coordination API warnings while scoping dashboard data", () => {
+    const model = buildDashboardModel({
+      stateRoot: "coordination-api",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      githubItems: [],
+      warnings: [
+        { severity: "warning", message: "Invalid AGENT_COORD_API_URL: expected http(s) URL with host" },
+        { severity: "warning", message: "AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set." },
+        { severity: "warning", message: "Could not read coordination API heartbeats: timed out after 5000ms" },
+        { severity: "warning", message: "Malformed coordination API claims entry at index 2" },
+        {
+          severity: "warning",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          message: "Malformed coordination API claims record claims/shakacode/react_on_rails/4005.json: broken"
+        },
+        {
+          severity: "warning",
+          repo: "other/repo",
+          target: "12",
+          message: "Malformed coordination API claims record claims/other/repo/12.json: broken"
+        },
+        { severity: "warning", message: "Malformed coordination API batches record batches/broken.json: broken" }
+      ],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([
+        "Invalid AGENT_COORD_API_URL: expected http(s) URL with host",
+        "AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set.",
+        "Could not read coordination API heartbeats: timed out after 5000ms",
+        "Malformed coordination API claims entry at index 2",
+        "Malformed coordination API claims record claims/shakacode/react_on_rails/4005.json: broken",
+        "Malformed coordination API in an unscoped batches record."
+      ])
+    );
+    expect(model.warnings.some((warning) => warning.message.includes("claims/other/repo"))).toBe(false);
+    expect(model.warnings.some((warning) => warning.message.includes("batches/broken.json"))).toBe(false);
+  });
+
   it("does not mark open work as ready when it is already in a retained batch lane", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",

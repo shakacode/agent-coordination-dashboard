@@ -1,14 +1,14 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDashboardApp } from "./app";
 import type { ServerConfig } from "./config";
 
 const servers: Server[] = [];
 
-function testConfig(stateRoot: string): ServerConfig {
+function testConfig(stateRoot: string, overrides: Partial<ServerConfig> = {}): ServerConfig {
   return {
     port: 0,
     host: "127.0.0.1",
@@ -16,16 +16,12 @@ function testConfig(stateRoot: string): ServerConfig {
     stateRoot,
     targetRepos: ["shakacode/react_on_rails"],
     settingsPath: join(stateRoot, "settings.json"),
-    nodeEnv: "test"
+    nodeEnv: "test",
+    ...overrides
   };
 }
 
-async function listen(stateRoot: string): Promise<string> {
-  const app = await createDashboardApp(testConfig(stateRoot), {
-    serveFrontend: false,
-    loadOpenGitHubItems: async () => ({ items: [], warnings: [] })
-  });
-  const server = app.listen(0, "127.0.0.1");
+async function listenServer(server: Server): Promise<string> {
   servers.push(server);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
@@ -33,6 +29,24 @@ async function listen(stateRoot: string): Promise<string> {
     throw new Error("Expected TCP server address.");
   }
   return `http://127.0.0.1:${address.port}`;
+}
+
+async function listen(stateRoot: string, overrides: Partial<ServerConfig> = {}): Promise<string> {
+  const app = await createDashboardApp(testConfig(stateRoot, overrides), {
+    serveFrontend: false,
+    loadOpenGitHubItems: async () => ({ items: [], warnings: [] })
+  });
+  const server = app.listen(0, "127.0.0.1");
+  return listenServer(server);
+}
+
+async function listenEmptyCoordinationApi(): Promise<string> {
+  return listenServer(
+    createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ entries: [] }));
+    }).listen(0, "127.0.0.1")
+  );
 }
 
 describe("dashboard app import endpoint", () => {
@@ -117,6 +131,90 @@ describe("dashboard app import endpoint", () => {
     await expect(readFile(join(stateRoot, "batches", "batch-react-on-rails-4010.json"), "utf8")).resolves.toEqual(
       expect.stringContaining('"created_by_machine": "dashboard:')
     );
+  });
+
+  it("does not expose the configured coordination API URL in dashboard responses", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-display-"));
+    const apiUrl = await listenEmptyCoordinationApi();
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/dashboard`);
+    const body = (await response.json()) as { stateRoot: string };
+
+    expect(response.status).toBe(200);
+    expect(body.stateRoot).toBe("coordination-api");
+    expect(JSON.stringify(body)).not.toContain(apiUrl);
+  });
+
+  it("treats a blank coordination API URL as filesystem mode", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-blank-url-"));
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: "   ",
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/dashboard`);
+    const body = (await response.json()) as { stateRoot: string };
+
+    expect(response.status).toBe(200);
+    expect(body.stateRoot).toBe(stateRoot);
+  });
+
+  it("rejects batch imports in coordination API mode", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-import-disabled-"));
+    const apiUrl = await listenEmptyCoordinationApi();
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-api-disabled",
+        repo: "shakacode/react_on_rails",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [{ name: "qa", owner: "worker-a", targets: ["4005"] }],
+        launchPrompt: "Use $pr-batch to complete batch-api-disabled."
+      })
+    });
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain("filesystem mode");
+    await expect(readFile(join(stateRoot, "batches", "batch-api-disabled.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects batch stop requests in coordination API mode", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-stop-disabled-"));
+    const apiUrl = await listenEmptyCoordinationApi();
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/batches/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-api-disabled",
+        repo: "shakacode/react_on_rails",
+        reason: "Stop from API mode."
+      })
+    });
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain("filesystem mode");
+    await expect(readFile(join(stateRoot, "events", "batches", "batch-api-disabled.jsonl"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
   });
 
   it("allows imported prompt metadata that mentions local source paths", async () => {

@@ -12,7 +12,22 @@ interface RawState {
   warnings: CoordinationWarning[];
 }
 
+interface CoordinationApiOptions {
+  apiUrl?: string;
+  token?: string;
+}
+
+type ApiPrefix = "claims" | "heartbeats" | "batches";
+
+interface ApiStateEntry {
+  path: string;
+  data: Record<string, unknown>;
+}
+
 const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
+const API_STATE_PREFIXES: ApiPrefix[] = ["claims", "heartbeats", "batches"];
+const API_FETCH_TIMEOUT_MS = 5000;
+const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const COORDINATION_ROOT_REMEDIATION = [
   "Set AGENT_COORD_STATE_ROOT to an existing coordination workspace,",
   "or initialize this workspace with claims/, heartbeats/, and batches/ directories."
@@ -20,6 +35,172 @@ const COORDINATION_ROOT_REMEDIATION = [
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "unknown error";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function emptyState(warnings: CoordinationWarning[]): RawState {
+  return {
+    claims: [],
+    heartbeats: [],
+    batches: [],
+    events: [],
+    warnings
+  };
+}
+
+function parseApiBaseUrl(apiUrl: string): URL {
+  const url = new URL(apiUrl);
+  if (!["http:", "https:"].includes(url.protocol) || !url.host) {
+    throw new Error("expected http(s) URL with host");
+  }
+  if (url.protocol === "http:" && !LOOPBACK_API_HOSTS.has(url.hostname)) {
+    throw new Error("HTTP coordination API URLs must use https unless they point at localhost");
+  }
+  return url;
+}
+
+function apiStateListUrl(baseUrl: URL, prefix: ApiPrefix): URL {
+  const url = new URL(`${baseUrl.toString().replace(/\/+$/, "")}/v1/state`);
+  url.searchParams.set("prefix", prefix);
+  return url;
+}
+
+function apiWarning(message: string): CoordinationWarning {
+  return {
+    severity: "warning",
+    message
+  };
+}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as unknown;
+    if (isRecord(body) && typeof body.error === "string") {
+      return body.error;
+    }
+  } catch {
+    // Use the status text below.
+  }
+  return response.statusText || `HTTP ${response.status}`;
+}
+
+async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(apiStateListUrl(baseUrl, prefix), {
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${response.status} ${await responseErrorMessage(response)}`));
+      return [];
+    }
+
+    const body = (await response.json()) as unknown;
+    if (!isRecord(body) || !Array.isArray(body.entries)) {
+      warnings.push(apiWarning(`Could not read coordination API ${prefix}: malformed response`));
+      return [];
+    }
+
+    const entries: ApiStateEntry[] = [];
+    body.entries.forEach((entry, index) => {
+      if (!isRecord(entry) || typeof entry.path !== "string" || !isRecord(entry.data)) {
+        warnings.push(apiWarning(`Malformed coordination API ${prefix} entry at index ${index}`));
+        return;
+      }
+      entries.push({
+        path: entry.path,
+        data: entry.data
+      });
+    });
+    return entries;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function readApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
+  try {
+    return await fetchApiEntries(baseUrl, token, prefix, warnings);
+  } catch (error) {
+    const reason = isAbortError(error) ? `timed out after ${API_FETCH_TIMEOUT_MS}ms` : errorMessage(error);
+    warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${reason}`));
+    return [];
+  }
+}
+
+function apiEntryWarningContext(entry: ApiStateEntry): Pick<CoordinationWarning, "repo" | "target"> {
+  const pathContext = warningContextFromPath(entry.path);
+  const repo = pathContext.repo || (typeof entry.data.repo === "string" ? entry.data.repo : "");
+  const rawTarget = entry.data.target;
+  const target =
+    pathContext.target ||
+    (typeof rawTarget === "string" || typeof rawTarget === "number" ? String(rawTarget) : "");
+  return {
+    ...(repo ? { repo } : {}),
+    ...(target ? { target } : {})
+  };
+}
+
+function normalizeApiEntries<T>(
+  prefix: ApiPrefix,
+  entries: ApiStateEntry[],
+  warnings: CoordinationWarning[],
+  normalize: (raw: Record<string, unknown>, path: string) => T
+): T[] {
+  const records: T[] = [];
+  for (const entry of entries) {
+    try {
+      records.push(normalize(entry.data, entry.path));
+    } catch (error) {
+      warnings.push({
+        severity: "warning",
+        ...apiEntryWarningContext(entry),
+        message: `Malformed coordination API ${prefix} record ${entry.path}: ${errorMessage(error)}`
+      });
+    }
+  }
+  return records;
+}
+
+async function readApiCoordinationState(options: Required<CoordinationApiOptions>, now: Date): Promise<RawState> {
+  const warnings: CoordinationWarning[] = [];
+  let baseUrl: URL;
+  try {
+    baseUrl = parseApiBaseUrl(options.apiUrl);
+  } catch (error) {
+    warnings.push(apiWarning(`Invalid AGENT_COORD_API_URL: ${errorMessage(error)}`));
+    return emptyState(warnings);
+  }
+
+  const token = options.token.trim();
+  if (!token) {
+    warnings.push(apiWarning("AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set."));
+    return emptyState(warnings);
+  }
+
+  const entries = Object.fromEntries(
+    await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, token, prefix, warnings)]))
+  ) as Record<ApiPrefix, ApiStateEntry[]>;
+
+  return {
+    claims: normalizeApiEntries("claims", entries.claims, warnings, normalizeClaim),
+    heartbeats: normalizeApiEntries("heartbeats", entries.heartbeats, warnings, (raw, path) => normalizeHeartbeat(raw, path, now)),
+    batches: normalizeApiEntries("batches", entries.batches, warnings, normalizeBatch),
+    events: [],
+    warnings
+  };
 }
 
 async function hasInitializedCoordinationRoot(root: string, warnings: CoordinationWarning[]): Promise<boolean> {
@@ -217,7 +398,17 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
 }
 
-export async function readCoordinationState(root: string, now = new Date()): Promise<RawState> {
+export async function readCoordinationState(root: string, now = new Date(), apiOptions: CoordinationApiOptions = {}): Promise<RawState> {
+  if (apiOptions.apiUrl?.trim()) {
+    return readApiCoordinationState(
+      {
+        apiUrl: apiOptions.apiUrl,
+        token: apiOptions.token || ""
+      },
+      now
+    );
+  }
+
   const warnings: CoordinationWarning[] = [];
   const hasInitializedRoot = await hasInitializedCoordinationRoot(root, warnings);
   const claimFiles = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
