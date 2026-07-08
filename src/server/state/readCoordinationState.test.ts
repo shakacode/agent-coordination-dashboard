@@ -282,6 +282,48 @@ describe("readCoordinationState", () => {
     );
   });
 
+  it("adds repo context to malformed coordination API record warnings", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const prefix = url.searchParams.get("prefix");
+      const entries =
+        prefix === "batches"
+          ? [
+              {
+                path: "batches/broken.json",
+                data: {
+                  schema_version: 1,
+                  batch_id: "broken",
+                  repo: "shakacode/react_on_rails",
+                  lanes: [null]
+                }
+              }
+            ]
+          : [];
+
+      return new Response(JSON.stringify({ entries }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.batches).toEqual([]);
+    expect(state.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          repo: "shakacode/react_on_rails",
+          message: expect.stringContaining("Malformed coordination API batches record batches/broken.json")
+        })
+      ])
+    );
+  });
+
   it("times out stalled coordination API requests", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {

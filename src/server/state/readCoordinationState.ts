@@ -140,6 +140,19 @@ async function readApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, wa
   }
 }
 
+function apiEntryWarningContext(entry: ApiStateEntry): Pick<CoordinationWarning, "repo" | "target"> {
+  const pathContext = warningContextFromPath(entry.path);
+  const repo = pathContext.repo || (typeof entry.data.repo === "string" ? entry.data.repo : "");
+  const rawTarget = entry.data.target;
+  const target =
+    pathContext.target ||
+    (typeof rawTarget === "string" || typeof rawTarget === "number" ? String(rawTarget) : "");
+  return {
+    ...(repo ? { repo } : {}),
+    ...(target ? { target } : {})
+  };
+}
+
 function normalizeApiEntries<T>(
   prefix: ApiPrefix,
   entries: ApiStateEntry[],
@@ -151,7 +164,11 @@ function normalizeApiEntries<T>(
     try {
       records.push(normalize(entry.data, entry.path));
     } catch (error) {
-      warnings.push(apiWarning(`Malformed coordination API ${prefix} record ${entry.path}: ${errorMessage(error)}`));
+      warnings.push({
+        severity: "warning",
+        ...apiEntryWarningContext(entry),
+        message: `Malformed coordination API ${prefix} record ${entry.path}: ${errorMessage(error)}`
+      });
     }
   }
   return records;
