@@ -90,6 +90,16 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return candidates[0];
   }
 
+  function rejectApiModeWrite(res: express.Response, action: string): boolean {
+    if (!config.coordApiUrl) {
+      return false;
+    }
+    res.status(409).json({
+      error: `${action} is only available in filesystem mode. API write support is planned for a later dashboard slice.`
+    });
+    return true;
+  }
+
   app.get("/api/settings", async (_req, res) => {
     res.json(await currentSettings());
   });
@@ -118,6 +128,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       });
       return;
     }
+    if (rejectApiModeWrite(res, "Batch import")) {
+      return;
+    }
 
     try {
       const settings = await currentSettings();
@@ -136,6 +149,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       res.status(403).json({
         error: "Batch stop requests can only be sent from the machine running the dashboard. Remote viewers have read-only access."
       });
+      return;
+    }
+    if (rejectApiModeWrite(res, "Batch stop requests")) {
       return;
     }
 

@@ -40,6 +40,15 @@ async function listen(stateRoot: string, overrides: Partial<ServerConfig> = {}):
   return listenServer(server);
 }
 
+async function listenEmptyCoordinationApi(): Promise<string> {
+  return listenServer(
+    createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ entries: [] }));
+    }).listen(0, "127.0.0.1")
+  );
+}
+
 describe("dashboard app import endpoint", () => {
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -126,12 +135,7 @@ describe("dashboard app import endpoint", () => {
 
   it("does not expose the configured coordination API URL in dashboard responses", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-display-"));
-    const apiUrl = await listenServer(
-      createServer((_req, res) => {
-        res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ entries: [] }));
-      }).listen(0, "127.0.0.1")
-    );
+    const apiUrl = await listenEmptyCoordinationApi();
     const baseUrl = await listen(stateRoot, {
       coordApiUrl: apiUrl,
       coordApiToken: "test-token"
@@ -143,6 +147,60 @@ describe("dashboard app import endpoint", () => {
     expect(response.status).toBe(200);
     expect(body.stateRoot).toBe("coordination-api");
     expect(JSON.stringify(body)).not.toContain(apiUrl);
+  });
+
+  it("rejects batch imports in coordination API mode", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-import-disabled-"));
+    const apiUrl = await listenEmptyCoordinationApi();
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-api-disabled",
+        repo: "shakacode/react_on_rails",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [{ name: "qa", owner: "worker-a", targets: ["4005"] }],
+        launchPrompt: "Use $pr-batch to complete batch-api-disabled."
+      })
+    });
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain("filesystem mode");
+    await expect(readFile(join(stateRoot, "batches", "batch-api-disabled.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects batch stop requests in coordination API mode", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-stop-disabled-"));
+    const apiUrl = await listenEmptyCoordinationApi();
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/batches/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-api-disabled",
+        repo: "shakacode/react_on_rails",
+        reason: "Stop from API mode."
+      })
+    });
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain("filesystem mode");
+    await expect(readFile(join(stateRoot, "events", "batches", "batch-api-disabled.jsonl"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
   });
 
   it("allows imported prompt metadata that mentions local source paths", async () => {
