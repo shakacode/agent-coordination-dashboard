@@ -127,9 +127,11 @@ export function App() {
       <header className="topbar">
         <div>
           <h1>Agent Coordination</h1>
-          <p title={`State root: ${dashboard.stateRoot}`}>
-            Coordination workspace · {dashboard.workItems.length} open or coordinated items
-          </p>
+          <p>Coordination workspace · {dashboard.workItems.length} open or coordinated items</p>
+          <details className="state-root-details">
+            <summary>State root</summary>
+            <code>{dashboard.stateRoot}</code>
+          </details>
         </div>
         <div className="summary-strip">
           <span>{dashboard.agents.length} agents</span>

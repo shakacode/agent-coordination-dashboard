@@ -134,6 +134,11 @@ describe("App", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
     expect(screen.getByText("Coordination workspace · 2 open or coordinated items")).toBeInTheDocument();
+    const stateRootDisclosure = screen.getByText("State root").closest("details");
+    expect(stateRootDisclosure).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByText("State root"));
+    expect(stateRootDisclosure).toHaveAttribute("open");
+    expect(screen.getByText("/state")).toBeInTheDocument();
     expect(screen.queryByText(/\/state ·/)).not.toBeInTheDocument();
     expect(screen.getByText("1 ready")).toBeInTheDocument();
     expect(screen.getByText("1 started")).toBeInTheDocument();

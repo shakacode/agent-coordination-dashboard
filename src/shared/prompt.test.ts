@@ -34,6 +34,10 @@ describe("generatePrBatchPrompt", () => {
     expect(prompt).toContain("Before starting workers, save this batch plan");
     expect(prompt).toContain("Every worker must use this batch id");
     expect(prompt).toContain("agent-coord status");
+    expect(prompt).toContain(
+      "agent-coord claim before creating worktrees or branches when the `agent-coord` CLI is available in this repo"
+    );
+    expect(prompt).not.toContain("current coordination command");
     expect(prompt).not.toContain("launch_prompt");
     expect(prompt).not.toContain("coordination backend");
     expect(prompt.length).toBeLessThan(4000);

@@ -88,7 +88,7 @@ export function generatePrBatchPrompt(items: WorkItem[]): string {
     `- Before starting workers, save this batch plan at batches/${batchId}.json so the dashboard can show ownership and history.`,
     `- Every worker must use this batch id: ${batchId} in coordination claims, heartbeats, history events, and final handoff.`,
     "- Run agent-coord status before lane start, before rebase, and before push.",
-    "- Use agent-coord claim before creating worktrees or branches when the current coordination command is available.",
+    "- Use agent-coord claim before creating worktrees or branches when the `agent-coord` CLI is available in this repo.",
     "- Heartbeat at phase transitions: start, branch update, review pass, blocked, done.",
     "- Stop on live or stale claim holders and report holder/liveness instead of competing.",
     "- If a lane shows blocked_on refs, set heartbeat status blocked and move to independent work.",
