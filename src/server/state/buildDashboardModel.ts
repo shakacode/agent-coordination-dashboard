@@ -546,6 +546,15 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
     return targetRepoSet.has(warning.repo) ? warning : undefined;
   }
 
+  if (
+    warning.message.startsWith("Invalid AGENT_COORD_API_URL:") ||
+    warning.message.startsWith("AGENT_COORD_TOKEN is required") ||
+    warning.message.startsWith("Could not read coordination API ") ||
+    /^Malformed coordination API (claims|heartbeats|batches) entry at index \d+$/.test(warning.message)
+  ) {
+    return warning;
+  }
+
   const directoryRead = warning.message.match(/^Could not read coordination directory ([^:]+):/);
   if (directoryRead && ["claims", "heartbeats", "batches", "events", "history", "."].includes(directoryRead[1])) {
     return warning;

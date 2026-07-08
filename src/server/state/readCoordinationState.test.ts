@@ -217,7 +217,7 @@ describe("readCoordinationState", () => {
 
     const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
       apiUrl: "https://coord.example.test",
-      token: "test-token"
+      token: " test-token\n"
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -317,6 +317,43 @@ describe("readCoordinationState", () => {
         expect.stringContaining("Could not read coordination API heartbeats: timed out after 5000ms"),
         expect.stringContaining("Could not read coordination API batches: timed out after 5000ms")
       ])
+    );
+  });
+
+  it("times out stalled coordination API response bodies", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal;
+      const response = {
+        ok: true,
+        status: 200,
+        json: () =>
+          new Promise((_resolve, reject) => {
+            if (!signal) {
+              reject(new Error("missing abort signal"));
+              return;
+            }
+            signal.addEventListener("abort", () => {
+              const error = new Error("aborted");
+              error.name = "AbortError";
+              reject(error);
+            });
+          })
+      } as Response;
+      return Promise.resolve(response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const statePromise = readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+    await vi.runAllTimersAsync();
+    const state = await statePromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(state.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining("Could not read coordination API claims: timed out after 5000ms")])
     );
   });
 

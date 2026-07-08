@@ -94,41 +94,40 @@ async function responseErrorMessage(response: Response): Promise<string> {
 async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
-  let response: Response;
   try {
-    response = await fetch(apiStateListUrl(baseUrl, prefix), {
+    const response = await fetch(apiStateListUrl(baseUrl, prefix), {
       headers: {
         authorization: `Bearer ${token}`
       },
       signal: controller.signal
     });
+
+    if (!response.ok) {
+      warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${response.status} ${await responseErrorMessage(response)}`));
+      return [];
+    }
+
+    const body = (await response.json()) as unknown;
+    if (!isRecord(body) || !Array.isArray(body.entries)) {
+      warnings.push(apiWarning(`Could not read coordination API ${prefix}: malformed response`));
+      return [];
+    }
+
+    const entries: ApiStateEntry[] = [];
+    body.entries.forEach((entry, index) => {
+      if (!isRecord(entry) || typeof entry.path !== "string" || !isRecord(entry.data)) {
+        warnings.push(apiWarning(`Malformed coordination API ${prefix} entry at index ${index}`));
+        return;
+      }
+      entries.push({
+        path: entry.path,
+        data: entry.data
+      });
+    });
+    return entries;
   } finally {
     clearTimeout(timeoutId);
   }
-
-  if (!response.ok) {
-    warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${response.status} ${await responseErrorMessage(response)}`));
-    return [];
-  }
-
-  const body = (await response.json()) as unknown;
-  if (!isRecord(body) || !Array.isArray(body.entries)) {
-    warnings.push(apiWarning(`Could not read coordination API ${prefix}: malformed response`));
-    return [];
-  }
-
-  const entries: ApiStateEntry[] = [];
-  body.entries.forEach((entry, index) => {
-    if (!isRecord(entry) || typeof entry.path !== "string" || !isRecord(entry.data)) {
-      warnings.push(apiWarning(`Malformed coordination API ${prefix} entry at index ${index}`));
-      return;
-    }
-    entries.push({
-      path: entry.path,
-      data: entry.data
-    });
-  });
-  return entries;
 }
 
 async function readApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
@@ -168,13 +167,14 @@ async function readApiCoordinationState(options: Required<CoordinationApiOptions
     return emptyState(warnings);
   }
 
-  if (!options.token.trim()) {
+  const token = options.token.trim();
+  if (!token) {
     warnings.push(apiWarning("AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set."));
     return emptyState(warnings);
   }
 
   const entries = Object.fromEntries(
-    await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, options.token, prefix, warnings)]))
+    await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, token, prefix, warnings)]))
   ) as Record<ApiPrefix, ApiStateEntry[]>;
 
   return {
