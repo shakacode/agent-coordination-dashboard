@@ -1,0 +1,595 @@
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Server } from "node:http";
+import { afterEach, describe, expect, it } from "vitest";
+import { createDashboardApp } from "./app";
+import type { ServerConfig } from "./config";
+
+const servers: Server[] = [];
+
+function testConfig(stateRoot: string): ServerConfig {
+  return {
+    port: 0,
+    host: "127.0.0.1",
+    allowedHosts: ["127.0.0.1", "localhost"],
+    stateRoot,
+    targetRepos: ["shakacode/react_on_rails"],
+    settingsPath: join(stateRoot, "settings.json"),
+    nodeEnv: "test"
+  };
+}
+
+async function listen(stateRoot: string): Promise<string> {
+  const app = await createDashboardApp(testConfig(stateRoot), {
+    serveFrontend: false,
+    loadOpenGitHubItems: async () => ({ items: [], warnings: [] })
+  });
+  const server = app.listen(0, "127.0.0.1");
+  servers.push(server);
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Expected TCP server address.");
+  }
+  return `http://127.0.0.1:${address.port}`;
+}
+
+describe("dashboard app import endpoint", () => {
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  it("writes imported batch manifests into the coordination root batches directory", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-react-on-rails-4005",
+        repo: "shakacode/react_on_rails",
+        objective: "Stabilize PR 4005.",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [
+          {
+            name: "tests",
+            owner: "worker-a",
+            targets: ["4005"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        reservations: [],
+        createdAt: "2026-06-20T10:00:00.000Z",
+        createdByMachine: "macbook-a",
+        launchPrompt:
+          "Use $pr-batch to complete batch-react-on-rails-4005.\nRepository: shakacode/react_on_rails\nBatch id: batch-react-on-rails-4005\nItems:\n- PR #4005"
+      })
+    });
+
+    expect(response.status).toBe(201);
+    await expect(readFile(join(stateRoot, "batches", "batch-react-on-rails-4005.json"), "utf8")).resolves.toContain(
+      "Batch id: batch-react-on-rails-4005"
+    );
+    await expect(readFile(join(stateRoot, "claims", "batch-react-on-rails-4005.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(readFile(join(stateRoot, "heartbeats", "batch-react-on-rails-4005.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("stamps imported manifests with missing server-side creation metadata", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-audit-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-react-on-rails-4010",
+        repo: "shakacode/react_on_rails",
+        objective: "Validate PR 4010.",
+        targets: [{ type: "pull_request", target: "4010" }],
+        lanes: [
+          {
+            name: "qa",
+            owner: "worker-a",
+            targets: ["4010"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        reservations: [],
+        launchPrompt:
+          "Use $pr-batch to complete batch-react-on-rails-4010.\nRepository: shakacode/react_on_rails\nBatch id: batch-react-on-rails-4010\nItems:\n- PR #4010"
+      })
+    });
+
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as { manifest: { created_at?: string; created_by_machine?: string } };
+    expect(body.manifest.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(body.manifest.created_by_machine).toMatch(/^dashboard:/);
+    await expect(readFile(join(stateRoot, "batches", "batch-react-on-rails-4010.json"), "utf8")).resolves.toEqual(
+      expect.stringContaining('"created_by_machine": "dashboard:')
+    );
+  });
+
+  it("allows imported prompt metadata that mentions local source paths", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-source-paths-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-source-paths",
+        repo: "shakacode/react_on_rails",
+        objective: "Fix src/server/app.ts.",
+        targets: [{ type: "pull_request", target: "4010", title: "fix src/server/app.ts" }],
+        lanes: [
+          {
+            name: "implementation",
+            owner: "worker-a",
+            targets: ["4010"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        reservations: [],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails\nBatch id: batch-source-paths\nBatch objective: Fix src/server/app.ts.\nItems:\n- PR #4010\n  Context: fix src/server/app.ts"
+      })
+    });
+
+    expect(response.status).toBe(201);
+    await expect(readFile(join(stateRoot, "batches", "batch-source-paths.json"), "utf8")).resolves.toEqual(
+      expect.stringContaining("src/server/app.ts")
+    );
+  });
+
+  it("rejects imported prompt metadata that mentions out-of-scope repos with local-looking owners", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-local-owner-repo-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-local-owner-repo",
+        repo: "shakacode/react_on_rails",
+        objective: "Fix visible PR while docs/private is pending.",
+        targets: [{ type: "pull_request", target: "4010", title: "visible PR" }],
+        lanes: [
+          {
+            name: "implementation",
+            owner: "worker-a",
+            targets: ["4010"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        reservations: [],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails\nBatch id: batch-local-owner-repo\nItems:\n- PR #4010\n  Context: blocked by docs/private"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-local-owner-repo.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects unsafe batch ids instead of writing outside the batches directory", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-unsafe-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "../escape",
+        repo: "shakacode/react_on_rails",
+        objective: "Unsafe path attempt.",
+        launchPrompt: "Use $pr-batch..."
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "escape.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects imported manifests without targets, lanes, and launch prompt metadata", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-invalid-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-empty",
+        repo: "shakacode/react_on_rails",
+        targets: [],
+        lanes: []
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-empty.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not overwrite an existing imported batch manifest", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-existing-"));
+    const baseUrl = await listen(stateRoot);
+    const body = {
+      batchId: "batch-react-on-rails-4005",
+      repo: "shakacode/react_on_rails",
+      objective: "Stabilize PR 4005.",
+      targets: [{ type: "pull_request", target: "4005" }],
+      lanes: [
+        {
+          name: "tests",
+          owner: "worker-a",
+          targets: ["4005"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ],
+      reservations: [],
+      createdAt: "2026-06-20T10:00:00.000Z",
+      createdByMachine: "macbook-a",
+      launchPrompt:
+        "Use $pr-batch to complete batch-react-on-rails-4005.\nRepository: shakacode/react_on_rails\nBatch id: batch-react-on-rails-4005\nItems:\n- PR #4005"
+    };
+
+    const first = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const second = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, objective: "Clobber attempt." })
+    });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    await expect(readFile(join(stateRoot, "batches", "batch-react-on-rails-4005.json"), "utf8")).resolves.toContain(
+      '"objective": "Stabilize PR 4005."'
+    );
+  });
+
+  it("rejects imports outside the saved dashboard target repositories", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-out-of-scope-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-other-repo",
+        repo: "other/repo",
+        objective: "Out of scope.",
+        targets: [{ type: "pull_request", target: "12" }],
+        lanes: [
+          {
+            name: "lane-a",
+            owner: "worker-a",
+            targets: ["12"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        launchPrompt: "Use $pr-batch to complete this batch.\nRepository: other/repo\nBatch id: batch-other-repo\nItems:\n- PR #12"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-other-repo.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects imports whose target metadata references repositories outside the dashboard scope", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-out-of-scope-target-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-hidden-target",
+        repo: "shakacode/react_on_rails",
+        objective: "Do not leak hidden target details.",
+        targets: [
+          {
+            type: "pull_request",
+            target: "4005",
+            title: "Blocked by other/private-repo."
+          }
+        ],
+        lanes: [
+          {
+            name: "tests",
+            owner: "worker-a",
+            targets: ["4005"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails\nBatch id: batch-hidden-target\nItems:\n- PR #4005"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-hidden-target.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects imports whose lane metadata references repositories outside the dashboard scope", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-out-of-scope-lane-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-hidden-lane",
+        repo: "shakacode/react_on_rails",
+        objective: "Do not persist hidden lane details.",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [
+          {
+            name: "blocked-by-other/private-repo",
+            owner: "worker-a",
+            targets: ["4005"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails\nBatch id: batch-hidden-lane\nItems:\n- PR #4005"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-hidden-lane.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects imports whose launch prompt repository header references out-of-scope repos", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-header-scope-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-hidden-header",
+        repo: "shakacode/react_on_rails",
+        objective: "Do not persist hidden repository headers.",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [
+          {
+            name: "tests",
+            owner: "worker-a",
+            targets: ["4005"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails, docs/private\nBatch id: batch-hidden-header\nItems:\n- PR #4005"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-hidden-header.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects imports with duplicate target numbers across repos", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-duplicate-targets-"));
+    const baseUrl = await listen(stateRoot);
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app", "repo-b/api"] })
+    });
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-duplicate-targets",
+        objective: "Ambiguous duplicate target numbers.",
+        targets: [
+          { type: "pull_request", target: "12", repo: "repo-a/app" },
+          { type: "issue", target: "12", repo: "repo-b/api" }
+        ],
+        lanes: [
+          {
+            name: "shared-number",
+            owner: "worker-a",
+            targets: ["12"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: repo-a/app, repo-b/api\nBatch id: batch-duplicate-targets\nItems:\n- PR #12\n- Issue #12"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-duplicate-targets.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects imports whose launch prompt batch id differs from the manifest id", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-id-drift-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-new-id",
+        repo: "shakacode/react_on_rails",
+        objective: "Stabilize PR 4005.",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [
+          {
+            name: "tests",
+            owner: "worker-a",
+            targets: ["4005"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: []
+          }
+        ],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails\nBatch id: batch-old-id\nItems:\n- PR #4005"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-new-id.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("writes explicit batch stop requests as events without touching claims or heartbeats", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-stop-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(
+      join(stateRoot, "batches", "batch-react-on-rails-4005.json"),
+      JSON.stringify({
+        schema_version: 1,
+        batch_id: "batch-react-on-rails-4005",
+        repo: "shakacode/react_on_rails",
+        objective: "Stabilize PR 4005.",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [{ name: "qa", owner: "worker-a", targets: ["4005"], depends_on: [], status: "queued" }]
+      })
+    );
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-react-on-rails-4005",
+        repo: "shakacode/react_on_rails",
+        reason: "Restart with a smaller lane split."
+      })
+    });
+
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as { path: string };
+    expect(body.path).toBe("events/batches/batch-react-on-rails-4005.jsonl");
+    await expect(readFile(join(stateRoot, "events", "batches", "batch-react-on-rails-4005.jsonl"), "utf8")).resolves.toEqual(
+      expect.stringContaining('"type":"batch.stop_requested"')
+    );
+    await expect(readFile(join(stateRoot, "claims", "batch-react-on-rails-4005.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(readFile(join(stateRoot, "heartbeats", "batch-react-on-rails-4005.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("writes repo-scoped stop requests for scoped repo-less batches", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-stop-repoless-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(
+      join(stateRoot, "batches", "multi-repo-batch.json"),
+      JSON.stringify({
+        schema_version: 1,
+        batch_id: "multi-repo-batch",
+        objective: "Multi-repo batch.",
+        targets: [
+          { type: "pull_request", target: "4005", repo: "shakacode/react_on_rails" },
+          { type: "pull_request", target: "99", repo: "secret/repo" }
+        ],
+        lanes: [{ name: "visible", owner: "worker-a", targets: ["4005"], depends_on: [], status: "queued" }]
+      })
+    );
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "multi-repo-batch",
+        reason: "Restart visible scoped lane."
+      })
+    });
+
+    expect(response.status).toBe(201);
+    const event = await readFile(join(stateRoot, "events", "batches", "multi-repo-batch.jsonl"), "utf8");
+    expect(event).toContain('"repo":"shakacode/react_on_rails"');
+    expect(event).toContain("Restart visible scoped lane.");
+  });
+
+  it("rejects ambiguous repo-less batch stop requests without a scoped repo", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-stop-repoless-ambiguous-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(
+      join(stateRoot, "batches", "multi-repo-batch.json"),
+      JSON.stringify({
+        schema_version: 1,
+        batch_id: "multi-repo-batch",
+        objective: "Visible multi-repo batch.",
+        targets: [
+          { type: "pull_request", target: "12", repo: "repo-a/app" },
+          { type: "pull_request", target: "34", repo: "repo-b/api" }
+        ],
+        lanes: [
+          { name: "app", owner: "worker-a", targets: ["12"], depends_on: [], status: "queued" },
+          { name: "api", owner: "worker-b", targets: ["34"], depends_on: [], status: "queued" }
+        ]
+      })
+    );
+    const baseUrl = await listen(stateRoot);
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app", "repo-b/api"] })
+    });
+    const response = await fetch(`${baseUrl}/api/batches/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batchId: "multi-repo-batch" })
+    });
+
+    expect(response.status).toBe(409);
+    await expect(readFile(join(stateRoot, "events", "batches", "multi-repo-batch.jsonl"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects batch stop requests that do not resolve to a scoped visible batch", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-stop-hidden-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "hidden-batch",
+        reason: "Should not write outside the scoped dashboard model."
+      })
+    });
+
+    expect(response.status).toBe(404);
+    await expect(readFile(join(stateRoot, "events", "batches", "hidden-batch.jsonl"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+});

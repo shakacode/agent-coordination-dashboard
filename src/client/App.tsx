@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
-import type { DashboardModel, DashboardSettings } from "../shared/types";
-import { fetchDashboard, fetchSettings, saveSettings } from "./api";
+import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
+import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { HealthTab } from "./components/HealthTab";
 import { MachinesTab } from "./components/MachinesTab";
+import { OverviewTab } from "./components/OverviewTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { WorkTab } from "./components/WorkTab";
 
-type Tab = "machines" | "work" | "batches" | "health";
+type Tab = "overview" | "work" | "batches" | "machines" | "health";
 
 export function App() {
   const [dashboard, setDashboard] = useState<DashboardModel | null>(null);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>("machines");
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
@@ -86,6 +87,30 @@ export function App() {
     });
   }
 
+  async function importBatchManifest(manifest: Partial<BatchRecord>) {
+    setIsRefreshing(true);
+    try {
+      await saveImportedBatchManifest(manifest);
+      setDashboard(await fetchDashboard());
+    } catch (caught: unknown) {
+      throw caught instanceof Error ? caught : new Error("Batch plan import failed");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  async function stopBatch(input: { batchId: string; repo?: string; reason?: string }) {
+    setIsRefreshing(true);
+    try {
+      await requestBatchStop(input);
+      setDashboard(await fetchDashboard());
+    } catch (caught: unknown) {
+      throw caught instanceof Error ? caught : new Error("Batch stop request failed");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   if (error) {
     return <main className="app-shell error-state">{error}</main>;
   }
@@ -94,20 +119,27 @@ export function App() {
     return <main className="app-shell loading-state">Loading coordination dashboard...</main>;
   }
 
+  const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
+  const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
+
   return (
     <main className="app-shell">
       <header className="topbar">
         <div>
           <h1>Agent Coordination</h1>
-          <p>
-            {dashboard.stateRoot} · {dashboard.workItems.length} open or coordinated items
-          </p>
+          <p>Coordination workspace · {dashboard.workItems.length} open or coordinated items</p>
+          <details className="state-root-details">
+            <summary>State root</summary>
+            <code>{dashboard.stateRoot}</code>
+          </details>
         </div>
         <div className="summary-strip">
           <span>{dashboard.agents.length} agents</span>
           <span>{dashboard.events.length} events</span>
           <span>{dashboard.healthItems.length} health</span>
-          <span>{dashboard.warnings.length} warnings</span>
+          <span>
+            {dashboard.warnings.length} {warningLabel}
+          </span>
           <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
           <button
             aria-label="Refresh dashboard"
@@ -153,8 +185,8 @@ export function App() {
       </section>
 
       {dashboard.warnings.length > 0 && (
-        <section className="warnings-panel" aria-label="Coordination warnings">
-          <div className="warnings-heading">Warnings</div>
+        <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`}>
+          <div className="warnings-heading">{warningsHeading}</div>
           <ul>
             {dashboard.warnings.map((warning, index) => (
               <li key={`${warning.message}-${index}`}>
@@ -169,8 +201,8 @@ export function App() {
       <div className="dashboard-layout">
         <section className="content-region">
           <nav className="tabs" aria-label="Dashboard views">
-            <button className={activeTab === "machines" ? "active" : ""} onClick={() => setActiveTab("machines")} type="button">
-              Machines
+            <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")} type="button">
+              Overview
             </button>
             <button className={activeTab === "work" ? "active" : ""} onClick={() => setActiveTab("work")} type="button">
               Work
@@ -178,14 +210,26 @@ export function App() {
             <button className={activeTab === "batches" ? "active" : ""} onClick={() => setActiveTab("batches")} type="button">
               Batches
             </button>
+            <button className={activeTab === "machines" ? "active" : ""} onClick={() => setActiveTab("machines")} type="button">
+              Machines
+            </button>
             <button className={activeTab === "health" ? "active" : ""} onClick={() => setActiveTab("health")} type="button">
               Health
             </button>
           </nav>
 
-          {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
+          {activeTab === "overview" && <OverviewTab dashboard={dashboard} />}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
-          {activeTab === "batches" && <BatchesTab batches={dashboard.batches} events={dashboard.events} />}
+          {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
+          {activeTab === "batches" && (
+            <BatchesTab
+              batches={dashboard.batches}
+              events={dashboard.events}
+              onImportBatch={importBatchManifest}
+              onRequestStop={stopBatch}
+              operations={dashboard.batchOperations}
+            />
+          )}
           {activeTab === "health" && <HealthTab items={dashboard.healthItems} />}
         </section>
 

@@ -1,5 +1,6 @@
 import type {
   AgentSummary,
+  BatchOperation,
   BatchEvent,
   BatchLane,
   BatchRecord,
@@ -10,12 +11,16 @@ import type {
   GitHubPreview,
   HeartbeatRecord,
   HealthItem,
+  QaValidationItem,
+  QaValidationStatus,
   SchedulingState,
   WorkItem
 } from "../../shared/types";
+import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
+import { repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
-const REDACTED_DEPENDENCY_REF = "outside TARGET_REPOS";
+const REDACTED_DEPENDENCY_REF = "outside saved target repositories";
 
 interface BuildInput {
   stateRoot: string;
@@ -75,8 +80,9 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
   }
 
   const sameBatch = heartbeat.batchId === batch.batchId;
-  const sameRepo = batch.repo ? heartbeat.repo === batch.repo : true;
   const sameTarget = Boolean(heartbeat.target && lane.targets.includes(heartbeat.target));
+  const expectedRepo = heartbeat.target ? uniqueManifestRepoForTarget(batch, heartbeat.target) || batch.repo : batch.repo;
+  const sameRepo = expectedRepo ? heartbeat.repo === expectedRepo : true;
 
   if (heartbeat.target) {
     return sameRepo && sameTarget && (!heartbeat.batchId || sameBatch);
@@ -89,7 +95,7 @@ function appendSkippedWarning(warnings: CoordinationWarning[], count: number, la
   if (count > 0) {
     warnings.push({
       severity: "info",
-      message: `Skipped ${count} ${label} outside TARGET_REPOS.`
+      message: `Skipped ${count} ${label} outside saved target repositories.`
     });
   }
 }
@@ -124,6 +130,256 @@ function batchTargets(batch: BatchRecord): Set<string> {
   return new Set(batch.lanes.flatMap((lane) => lane.targets));
 }
 
+function targetIdentity(input: { type?: string; target: string; repo?: string }, fallbackRepo?: string): string {
+  return `${input.repo || fallbackRepo || "UNKNOWN"}:${input.type || "unknown"}#${input.target}`;
+}
+
+function manifestTargetIdentities(batch: BatchRecord): Set<string> {
+  if (batch.targets && batch.targets.length > 0) {
+    return new Set(batch.targets.map((target) => targetIdentity(target, batch.repo)));
+  }
+  return new Set(
+    batch.lanes.flatMap((lane) => lane.targets.map((target) => targetIdentity({ type: "unknown", target }, batch.repo)))
+  );
+}
+
+function promptTargetHealth(batch: BatchRecord): { title: "Prompt parse failed" | "Prompt target mismatch"; detail: string } | undefined {
+  if (!batch.launchPrompt) {
+    return undefined;
+  }
+
+  let promptTargets: Set<string>;
+  try {
+    const parsedPrompt = parsePrBatchLaunchPrompt(batch.launchPrompt);
+    promptTargets = new Set(parsedPrompt.targets.map((target) => targetIdentity(target, parsedPrompt.repo || batch.repo)));
+  } catch (error) {
+    return {
+      title: "Prompt parse failed",
+      detail: `${batch.batchId} saved coordination prompt could not be parsed: ${
+        error instanceof Error ? error.message : "unknown error"
+      }.`
+    };
+  }
+  const batchManifestTargets = manifestTargetIdentities(batch);
+  const promptOnly = Array.from(promptTargets)
+    .filter((target) => !batchManifestTargets.has(target))
+    .sort();
+  const manifestOnly = Array.from(batchManifestTargets)
+    .filter((target) => !promptTargets.has(target))
+    .sort();
+
+  if (promptOnly.length === 0 && manifestOnly.length === 0) {
+    return undefined;
+  }
+
+  return {
+    title: "Prompt target mismatch",
+    detail: `${batch.batchId} saved coordination prompt and batch plan targets differ: ${[
+      promptOnly.length > 0 ? `prompt has ${promptOnly.join(", ")}` : "",
+      manifestOnly.length > 0 ? `plan has ${manifestOnly.join(", ")}` : ""
+    ]
+      .filter(Boolean)
+      .join("; ")}.`
+  };
+}
+
+function eventText(event: BatchEvent): string {
+  return [event.type, event.status, event.message].filter(Boolean).join(" ").toLowerCase();
+}
+
+function eventStructuredText(event: BatchEvent): string {
+  return [event.type, event.status].filter(Boolean).join(" ").toLowerCase();
+}
+
+function isStopRequestEvent(event: BatchEvent): boolean {
+  const structured = eventStructuredText(event);
+  if (/\b(batch[._-]stopped|stopped|cancelled|canceled)\b/.test(structured)) {
+    return false;
+  }
+  return structured.includes("stop_requested") || structured.includes("stop requested") || structured.includes("cancel_requested");
+}
+
+function isStoppedEvent(event: BatchEvent): boolean {
+  const structured = eventStructuredText(event);
+  if (/\b(batch[._-]stopped|stopped|cancelled|canceled)\b/.test(structured)) {
+    return true;
+  }
+  return false;
+}
+
+function isQaEvent(event: BatchEvent): boolean {
+  const type = event.type.toLowerCase();
+  return (
+    type === "qa" ||
+    type === "validation" ||
+    type.startsWith("qa.") ||
+    type.startsWith("qa_") ||
+    type.startsWith("qa-") ||
+    type.startsWith("validation.") ||
+    type.startsWith("validation_") ||
+    type.startsWith("validation-")
+  );
+}
+
+function scopedBatchEvent(event: BatchEvent, batch: BatchRecord): BatchEvent {
+  const attached = { ...event, batchPath: batch.path };
+  if (!event.repo && !event.target) {
+    return {
+      eventId: `${batch.batchId}:redacted:${event.type}:${event.timestamp || event.eventId}`,
+      type: event.type,
+      batchId: event.batchId,
+      batchPath: batch.path,
+      status: event.status,
+      timestamp: event.timestamp,
+      path: batch.path,
+      message: "Unscoped batch-level event details hidden by dashboard scoping."
+    };
+  }
+  return attached;
+}
+
+function qaStatusFromEvent(event: BatchEvent): QaValidationStatus {
+  const structured = eventStructuredText(event);
+  if (/(^|[._\-\s])(fail|failed|failure|blocked|needs_changes|changes_requested)($|[._\-\s])/.test(structured)) {
+    return "failed";
+  }
+  if (/(^|[._\-\s])(pass|passed|validated|complete|completed|done|ready)($|[._\-\s])/.test(structured)) {
+    return "passed";
+  }
+  if (/(^|[._\-\s])(start|started|in_progress|running|validating)($|[._\-\s])/.test(structured)) {
+    return "in_progress";
+  }
+  if (/(^|[._\-\s])(request|requested|queued|pending)($|[._\-\s])/.test(structured)) {
+    return "requested";
+  }
+  const value = eventText(event);
+  if (/\b(fail|failed|failure|blocked|needs_changes|changes_requested)\b/.test(value)) {
+    return "failed";
+  }
+  if (/\b(pass|passed|validated|complete|completed|done|ready)\b/.test(value)) {
+    return "passed";
+  }
+  if (/\b(start|started|in_progress|running|validating)\b/.test(value)) {
+    return "in_progress";
+  }
+  if (/\b(request|requested|queued|pending)\b/.test(value)) {
+    return "requested";
+  }
+  return "unknown";
+}
+
+function qaDetail(status: QaValidationStatus, event: BatchEvent | undefined): string {
+  if (!event) {
+    return "No separate QA validation event found.";
+  }
+  const timestamp = event.timestamp ? ` at ${event.timestamp}` : "";
+  if (status === "passed") {
+    return `Latest separate QA validation passed${timestamp}.`;
+  }
+  if (status === "failed") {
+    return `Latest separate QA validation failed${timestamp}.`;
+  }
+  if (status === "in_progress") {
+    return `Separate QA validation is in progress${timestamp}.`;
+  }
+  if (status === "requested") {
+    return `Separate QA validation was requested${timestamp}.`;
+  }
+  return `Latest separate QA validation status is unknown${timestamp}.`;
+}
+
+function emptyQaCounts(): BatchOperation["qa"] {
+  return {
+    total: 0,
+    missing: 0,
+    requested: 0,
+    inProgress: 0,
+    passed: 0,
+    failed: 0,
+    unknown: 0
+  };
+}
+
+function repoRefsFromPrompt(value: string | undefined): string[] {
+  return Array.from(new Set([...repoRefsFromText(value), ...repoRefsFromPromptHeaders(value)]));
+}
+
+function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): boolean {
+  const explicitRepos = [
+    ...(batch.targets || []).map((target) => target.repo),
+    ...(batch.targets || []).flatMap((target) => [...repoRefsFromText(target.url), ...repoRefsFromText(target.title)]),
+    ...batch.lanes.flatMap((lane) => [
+      ...repoRefsFromText(lane.name),
+      ...repoRefsFromText(lane.owner),
+      ...repoRefsFromText(lane.status),
+      ...lane.dependsOn.flatMap((dependency) => repoRefsFromText(dependency)),
+      ...lane.blockedOn.flatMap((blockedOn) => repoRefsFromText(blockedOn))
+    ]),
+    ...(batch.reservations || []).map((reservation) => reservation.repo),
+    ...(batch.reservations || []).flatMap((reservation) => [
+      ...repoRefsFromText(reservation.reason),
+      ...repoRefsFromText(reservation.owner),
+      ...repoRefsFromText(reservation.laneName)
+    ]),
+    ...repoRefsFromText(batch.objective),
+    ...repoRefsFromText(batch.launchPrompt),
+    ...repoRefsFromPrompt(batch.launchPrompt)
+  ].filter((repo): repo is string => Boolean(repo));
+
+  return explicitRepos.some((repo) => !targetRepoSet.has(repo));
+}
+
+function hasOutOfScopeIdentity(batch: BatchRecord, targetRepoSet: Set<string>): boolean {
+  const refs = [...repoRefsFromText(batch.batchId), ...repoRefsFromText(batch.path)];
+  return refs.some((repo) => !targetRepoSet.has(repo));
+}
+
+function laneHasOutOfScopeMetadata(lane: BatchLane, targetRepoSet: Set<string>): boolean {
+  const refs = [
+    ...repoRefsFromText(lane.name),
+    ...repoRefsFromText(lane.owner),
+    ...repoRefsFromText(lane.status),
+    ...lane.dependsOn.flatMap((dependency) => repoRefsFromText(dependency)),
+    ...lane.blockedOn.flatMap((blockedOn) => repoRefsFromText(blockedOn))
+  ];
+  return refs.some((repo) => !targetRepoSet.has(repo));
+}
+
+function safeScopedTargetNumbers(batch: BatchRecord, targetRepoSet: Set<string>): Set<string> {
+  const groups = new Map<string, { inScopeRepos: Set<string>; hasOutOfScope: boolean }>();
+  for (const target of batch.targets || []) {
+    const group = groups.get(target.target) || { inScopeRepos: new Set<string>(), hasOutOfScope: false };
+    const metadataRepos = [...repoRefsFromText(target.url), ...repoRefsFromText(target.title)];
+    const hasOutOfScopeMetadataRepo = metadataRepos.some((repo) => !targetRepoSet.has(repo));
+    const effectiveRepo = target.repo || batch.repo;
+    if ((effectiveRepo && !targetRepoSet.has(effectiveRepo)) || hasOutOfScopeMetadataRepo) {
+      group.hasOutOfScope = true;
+    } else {
+      group.inScopeRepos.add(effectiveRepo || "");
+    }
+    groups.set(target.target, group);
+  }
+  return new Set(
+    Array.from(groups.entries())
+      .filter(([, group]) => !group.hasOutOfScope && group.inScopeRepos.size <= 1)
+      .map(([target]) => target)
+  );
+}
+
+function uniqueManifestRepoForTarget(batch: BatchRecord, target: string): string | undefined {
+  const repos = new Set(
+    (batch.targets || [])
+      .filter((batchTarget) => batchTarget.target === target)
+      .map((batchTarget) => batchTarget.repo)
+      .filter((repo): repo is string => Boolean(repo))
+  );
+  return repos.size === 1 ? Array.from(repos)[0] : undefined;
+}
+
+function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
+  return batch.repo === repo || Boolean((batch.targets || []).some((target) => target.repo === repo));
+}
+
 function eventMatchesBatch(
   event: BatchEvent,
   batch: BatchRecord,
@@ -134,14 +390,35 @@ function eventMatchesBatch(
   }
 
   if (!event.repo) {
+    if (!batch.repo && !event.target && (isStopRequestEvent(event) || isStoppedEvent(event))) {
+      return true;
+    }
     return false;
   }
 
   if (event.repo && batch.repo) {
+    if (!event.target && (isStopRequestEvent(event) || isStoppedEvent(event))) {
+      return event.repo === batch.repo || Boolean((batch.targets || []).some((target) => target.repo === event.repo));
+    }
+    if (event.target) {
+      if (!batchTargets(batch).has(event.target)) {
+        return false;
+      }
+      const targetRepo = uniqueManifestRepoForTarget(batch, event.target);
+      if (targetRepo) {
+        return event.repo === targetRepo;
+      }
+    }
     return event.repo === batch.repo;
   }
 
   if (event.repo && !batch.repo) {
+    if (!event.target) {
+      return (
+        (isStopRequestEvent(event) || isStoppedEvent(event)) &&
+        Boolean((batch.targets || []).some((target) => target.repo === event.repo))
+      );
+    }
     if (!event.target || !batchTargets(batch).has(event.target)) {
       return false;
     }
@@ -161,7 +438,11 @@ function uniqueSorted(values: string[]): string[] {
 
 function inferBatchesFromSignals(claims: ClaimRecord[], heartbeats: HeartbeatRecord[], manifestedBatches: BatchRecord[]): BatchRecord[] {
   const manifestedRepoBatchKeys = new Set(
-    manifestedBatches.filter((batch) => batch.repo).map((batch) => `${batch.repo}:${batch.batchId}`)
+    manifestedBatches.flatMap((batch) =>
+      Array.from(new Set([batch.repo, ...(batch.targets || []).map((target) => target.repo)].filter(Boolean))).map(
+        (repo) => `${repo}:${batch.batchId}`
+      )
+    )
   );
   const lanesByBatch = new Map<
     string,
@@ -234,6 +515,12 @@ function inferBatchesFromSignals(claims: ClaimRecord[], heartbeats: HeartbeatRec
       batchId: batch.batchId,
       repo: batch.repo,
       source: "inferred",
+      targets: Array.from(batch.lanesByOwner.values()).flatMap((lane) =>
+        lane.targets.map((target) => ({
+          type: "unknown" as const,
+          target
+        }))
+      ),
       updatedAt: Array.from(batch.lanesByOwner.values())
         .map((lane) => lane.updatedAt)
         .filter((value): value is string => Boolean(value))
@@ -261,6 +548,10 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
 
   const directoryRead = warning.message.match(/^Could not read coordination directory ([^:]+):/);
   if (directoryRead && ["claims", "heartbeats", "batches", "events", "history", "."].includes(directoryRead[1])) {
+    return warning;
+  }
+
+  if (warning.message.startsWith("No coordination state found at ")) {
     return warning;
   }
 
@@ -364,14 +655,6 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
   const repoScopedHeartbeats = input.heartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
-  const repoScopedBatchTargets = new Set([
-    ...currentClaims
-      .filter((claim) => Boolean(claim.batchId))
-      .map((claim) => `${claim.batchId}:${claim.target}`),
-    ...repoScopedHeartbeats
-      .filter((heartbeat) => Boolean(heartbeat.batchId && heartbeat.target))
-      .map((heartbeat) => `${heartbeat.batchId}:${heartbeat.target}`)
-  ]);
   const reposByBatchTarget = new Map<string, Set<string>>();
   for (const claim of currentClaims) {
     if (claim.batchId) {
@@ -385,28 +668,96 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       reposByBatchTarget.set(key, new Set([...(reposByBatchTarget.get(key) || []), heartbeat.repo]));
     }
   }
+  for (const batch of input.batches) {
+    if (!batch.repo) {
+      for (const target of batch.targets || []) {
+        if (target.repo && targetRepoSet.has(target.repo)) {
+          const key = `${batch.batchId}:${target.target}`;
+          reposByBatchTarget.set(key, new Set([...(reposByBatchTarget.get(key) || []), target.repo]));
+        }
+      }
+    }
+  }
   function uniqueRepoForBatchTarget(batchId: string, target: string): string | undefined {
     const repos = reposByBatchTarget.get(`${batchId}:${target}`);
     return repos?.size === 1 ? Array.from(repos)[0] : undefined;
   }
   const scopedManifestBatchesRaw = input.batches.flatMap((batch) => {
+    if (hasOutOfScopeIdentity(batch, targetRepoSet)) {
+      return [];
+    }
     if (batch.repo) {
-      return targetRepoSet.has(batch.repo) ? [{ ...batch, source: batch.source || "manifest" }] : [];
+      const batchRepoInScope = targetRepoSet.has(batch.repo);
+      const hasInScopeTargetRepo = Boolean((batch.targets || []).some((target) => target.repo && targetRepoSet.has(target.repo)));
+      if (!batchRepoInScope && !hasInScopeTargetRepo) {
+        return [];
+      }
+      const unsafeMetadata = !batchRepoInScope || hasOutOfScopeMetadata(batch, targetRepoSet);
+      const safeTargets = safeScopedTargetNumbers(batch, targetRepoSet);
+      const targets = (batch.targets || []).filter(
+        (target) => safeTargets.has(target.target) && (!target.repo || targetRepoSet.has(target.repo))
+      );
+      const keptTargets = new Set(targets.map((target) => target.target));
+      const lanes =
+        batch.targets && batch.targets.length > 0
+          ? batch.lanes
+              .filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet))
+              .map((lane) => ({
+                ...lane,
+                targets: lane.targets.filter((target) => keptTargets.has(target))
+              }))
+              .filter((lane) => lane.targets.length > 0)
+          : batch.lanes.filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet));
+      return [
+        {
+          ...batch,
+          repo: batchRepoInScope ? batch.repo : undefined,
+          objective: unsafeMetadata ? undefined : batch.objective,
+          targets,
+          reservations: (batch.reservations || []).filter((reservation) =>
+            reservation.repo ? targetRepoSet.has(reservation.repo) : !unsafeMetadata
+          ),
+          launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
+          source: batch.source || "manifest",
+          lanes
+        }
+      ];
     }
 
+    const safeTargets = batch.targets && batch.targets.length > 0 ? safeScopedTargetNumbers(batch, targetRepoSet) : undefined;
     const lanes = batch.lanes
+      .filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet))
       .map((lane) => ({
         ...lane,
         targets: lane.targets.filter(
-          (target) => repoScopedBatchTargets.has(`${batch.batchId}:${target}`) && Boolean(uniqueRepoForBatchTarget(batch.batchId, target))
+          (target) => (!safeTargets || safeTargets.has(target)) && Boolean(uniqueRepoForBatchTarget(batch.batchId, target))
         )
       }))
       .filter((lane) => lane.targets.length > 0);
+    const keptTargets = new Set(lanes.flatMap((lane) => lane.targets));
+    const targets = (batch.targets || []).filter((target) => {
+      if (!keptTargets.has(target.target)) {
+        return false;
+      }
+      if (safeTargets && !safeTargets.has(target.target)) {
+        return false;
+      }
+      if (target.repo) {
+        return targetRepoSet.has(target.repo);
+      }
+      return Boolean(uniqueRepoForBatchTarget(batch.batchId, target.target));
+    });
+    const reservations = (batch.reservations || []).filter((reservation) => Boolean(reservation.repo && targetRepoSet.has(reservation.repo)));
+    const unsafeMetadata = hasOutOfScopeMetadata(batch, targetRepoSet);
 
     return lanes.length > 0
       ? [
           {
             ...batch,
+            objective: unsafeMetadata ? undefined : batch.objective,
+            targets,
+            reservations,
+            launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
             source: batch.source || "manifest",
             lanes
           }
@@ -459,7 +810,10 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         eventMatchesBatch(event, batch, uniqueRepoForBatchTarget)
       );
       if (matchingBatches.length > 0) {
-        return matchingBatches.map((batch) => ({ ...event, batchPath: batch.path }));
+        return matchingBatches.map((batch) => scopedBatchEvent(event, batch));
+      }
+      if (batchesWithSameId.length > 0) {
+        return [];
       }
       return event.repo && targetRepoSet.has(event.repo) ? [event] : [];
     })
@@ -525,10 +879,17 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }));
 
   const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
+  const batchTargetsByWork = new Map<string, NonNullable<BatchRecord["targets"]>[number]>();
   for (const batch of batches) {
+    for (const target of batch.targets || []) {
+      const repo = target.repo || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target.target);
+      if (repo) {
+        batchTargetsByWork.set(workId(repo, target.target), target);
+      }
+    }
     for (const lane of batch.lanes) {
       for (const target of lane.targets) {
-        const repo = batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
+        const repo = uniqueManifestRepoForTarget(batch, target) || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
         if (!repo) {
           continue;
         }
@@ -569,6 +930,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         (claim && workHeartbeats.find((item) => item.agentId === claim.agentId)) ||
         workHeartbeats[0];
       const github = previewsByWork.get(id);
+      const batchTarget = batchTargetsByWork.get(id);
       const schedulingState = classifyWork(claim, heartbeat, batchSignals);
       const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, batchSignals, schedulingState);
 
@@ -576,7 +938,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         id,
         repo,
         target,
-        type: github?.type || "unknown",
+        type: github?.type || batchTarget?.type || "unknown",
         claim,
         heartbeat,
         batchSignals,
@@ -586,6 +948,78 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         selected: false
       };
     });
+
+  const qaValidations: QaValidationItem[] = workItems
+    .filter((item) => item.type === "pull_request")
+    .flatMap((item) => {
+      const signals = item.batchSignals && item.batchSignals.length > 0 ? item.batchSignals : [undefined];
+      return signals.map((batchSignal) => {
+        const latestEvent = scopedEvents
+          .filter(
+            (event) =>
+              event.repo === item.repo &&
+              event.target === item.target &&
+              isQaEvent(event) &&
+              (!batchSignal || event.batchId === batchSignal.batchId)
+          )
+          .sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp) || right.path.localeCompare(left.path))[0];
+        const status = latestEvent ? qaStatusFromEvent(latestEvent) : "missing";
+        const id = batchSignal ? `${item.id}:${batchSignal.batchId}:${batchSignal.laneName}` : item.id;
+
+        return {
+          id,
+          repo: item.repo,
+          target: item.target,
+          type: item.type,
+          title: item.github?.title || batchTargetsByWork.get(item.id)?.title,
+          url: item.github?.url || batchTargetsByWork.get(item.id)?.url,
+          batchId: batchSignal?.batchId,
+          laneName: batchSignal?.laneName,
+          status,
+          detail: qaDetail(status, latestEvent),
+          latestEvent
+        };
+      });
+    });
+
+  const batchOperations: BatchOperation[] = batches.map((batch) => {
+    const batchEvents = scopedEvents.filter((event) =>
+      event.batchPath ? event.batchPath === batch.path : event.batchId === batch.batchId && (!batch.repo || event.repo === batch.repo)
+    );
+    const latestEvent = batchEvents[0];
+    const stopEvents = batchEvents.filter((event) => isStopRequestEvent(event) || isStoppedEvent(event));
+    const latestStopEvent = stopEvents.sort(
+      (left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp) || right.path.localeCompare(left.path)
+    )[0];
+    const controlStatus = latestStopEvent
+      ? isStoppedEvent(latestStopEvent)
+        ? "stopped"
+        : "stop_requested"
+      : "running";
+    const qa = emptyQaCounts();
+    for (const validation of qaValidations.filter((item) => item.batchId === batch.batchId && batchContainsRepo(batch, item.repo))) {
+      qa.total += 1;
+      if (validation.status === "in_progress") {
+        qa.inProgress += 1;
+      } else {
+        qa[validation.status] += 1;
+      }
+    }
+
+    return {
+      batchId: batch.batchId,
+      repo: batch.repo,
+      batchPath: batch.path,
+      controlStatus,
+      eventCount: batchEvents.length,
+      latestEventAt: latestEvent?.timestamp,
+      latestEventType: latestEvent?.type,
+      stopRequestedAt: stopEvents.filter(isStopRequestEvent).sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp))[0]
+        ?.timestamp,
+      stoppedAt: stopEvents.filter(isStoppedEvent).sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp))[0]?.timestamp,
+      qa
+    };
+  });
 
   const workByAgent = new Map<string, WorkItem[]>();
   for (const item of workItems) {
@@ -702,12 +1136,37 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         healthItem({
           severity: "warning",
           category: "batch",
-          title: "Batch manifest missing",
-          detail: `${batch.batchId} was inferred from claim/heartbeat batch_id fields because no retained batch manifest was found.`,
+          title: "Batch plan missing",
+          detail: `${batch.batchId} was inferred from coordination records because no saved batch plan was found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
       );
+    } else if (!batch.launchPrompt) {
+      healthItems.push(
+        healthItem({
+          severity: "warning",
+          category: "batch",
+          title: "Prompt missing",
+          detail: `${batch.batchId} has a saved batch plan, but no coordination prompt was saved.`,
+          repo: batch.repo,
+          batchId: batch.batchId
+        })
+      );
+    } else {
+      const promptHealth = promptTargetHealth(batch);
+      if (promptHealth) {
+        healthItems.push(
+          healthItem({
+            severity: "warning",
+            category: "batch",
+            title: promptHealth.title,
+            detail: promptHealth.detail,
+            repo: batch.repo,
+            batchId: batch.batchId
+          })
+        );
+      }
     }
 
     if (!eventsByBatchPath.has(batch.path)) {
@@ -719,7 +1178,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           detail:
             batch.source === "inferred"
               ? `${batch.batchId} has inferred lanes, but no events/history records were found.`
-              : `${batch.batchId} has a batch file, but no events/history records were found.`,
+              : `${batch.batchId} has a saved batch plan, but no events/history records were found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
@@ -752,6 +1211,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     workItems,
     batches,
     events: scopedEvents,
+    batchOperations,
+    qaValidations,
     healthItems,
     warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
   };

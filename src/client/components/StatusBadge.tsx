@@ -15,7 +15,15 @@ const labels: Record<string, string> = {
   ready_for_batch: "Ready for batch",
   info: "Info",
   warning: "Warning",
-  critical: "Critical"
+  critical: "Critical",
+  running: "Running",
+  stop_requested: "Stop requested",
+  stopped: "Stopped",
+  missing: "Missing",
+  requested: "Requested",
+  in_progress: "In progress",
+  passed: "Passed",
+  failed: "Failed"
 };
 
 export function StatusBadge({ value }: StatusBadgeProps) {

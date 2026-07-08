@@ -58,6 +58,31 @@ const model = {
   ],
   batches: [],
   events: [],
+  batchOperations: [],
+  qaValidations: [
+    {
+      id: "shakacode/react_on_rails#4005",
+      repo: "shakacode/react_on_rails",
+      target: "4005",
+      type: "pull_request",
+      title: "Stale PR",
+      url: "https://github.com/shakacode/react_on_rails/pull/4005",
+      status: "missing",
+      detail: "No separate QA validation event found."
+    },
+    {
+      id: "shakacode/react_on_rails#4011",
+      repo: "shakacode/react_on_rails",
+      target: "4011",
+      type: "pull_request",
+      title: "Active QA",
+      url: "https://github.com/shakacode/react_on_rails/pull/4011",
+      batchId: "batch-qa",
+      laneName: "qa",
+      status: "in_progress",
+      detail: "Separate QA validation is in progress."
+    }
+  ],
   healthItems: [
     {
       id: "machine:warning:worker-a:Heartbeat missing machine id",
@@ -104,10 +129,22 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders agents, work scheduling states, and generated prompt", async () => {
+  it("renders an action-oriented overview by default before drill-down tabs", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText("worker-a")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    expect(screen.getByText("Coordination workspace · 2 open or coordinated items")).toBeInTheDocument();
+    const stateRootDisclosure = screen.getByText("State root").closest("details");
+    expect(stateRootDisclosure).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByText("State root"));
+    expect(stateRootDisclosure).toHaveAttribute("open");
+    expect(screen.getByText("/state")).toBeInTheDocument();
+    expect(screen.queryByText(/\/state ·/)).not.toBeInTheDocument();
+    expect(screen.getByText("1 ready")).toBeInTheDocument();
+    expect(screen.getByText("1 started")).toBeInTheDocument();
+    expect(screen.getByText("1 missing QA")).toBeInTheDocument();
+    expect(screen.getByText("In progress")).toBeInTheDocument();
+
     await userEvent.click(screen.getByRole("button", { name: "Work" }));
 
     expect(screen.getByText("Ready for batch")).toBeInTheDocument();
@@ -117,10 +154,44 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
   });
 
+  it("labels info-only coordination messages as notices", async () => {
+    vi.mocked(fetch).mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/settings" && init?.method === "PUT") {
+          return {
+            ok: true,
+            json: async () => JSON.parse(String(init.body))
+          } as Response;
+        }
+        return {
+          ok: true,
+          json: async () =>
+            url === "/api/settings"
+              ? settings
+              : {
+                  ...model,
+                  agents: [],
+                  workItems: [],
+                  healthItems: [],
+                  warnings: [{ severity: "info", message: "No coordination state found at /state." }]
+                }
+        } as Response;
+      }
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Notices")).toBeInTheDocument());
+    expect(screen.getByText("1 notices")).toBeInTheDocument();
+    expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/No coordination state found/).length).toBeGreaterThan(0);
+  });
+
   it("saves target repository filters and reloads the dashboard", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText("shakacode/react_on_rails")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("Add target repository")).toBeInTheDocument());
     await userEvent.type(screen.getByLabelText("Add target repository"), "other/repo");
     await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
 
@@ -131,5 +202,42 @@ describe("App", () => {
         method: "PUT"
       })
     );
+  });
+
+  it("keeps batch import validation failures local to the Batches view", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/batches/import" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "Invalid batch plan" })
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => (url === "/api/settings" ? settings : model)
+      } as Response;
+    });
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Batches" }));
+    await userEvent.type(
+      screen.getByLabelText("Paste coordination prompt"),
+      [
+        "Use $pr-batch to complete this batch with subagents.",
+        "Repository: shakacode/react_on_rails",
+        "Batch id: batch-import-1",
+        "Batch objective: Import retained metadata.",
+        "Items:",
+        "- PR #4005: https://github.com/shakacode/react_on_rails/pull/4005"
+      ].join("\n")
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Review batch plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save batch plan" }));
+
+    expect(await screen.findByText("Batch plan import failed with 400")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agent Coordination" })).toBeInTheDocument();
   });
 });

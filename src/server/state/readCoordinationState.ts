@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
+import { normalizeBatchReservations, normalizeBatchTargets } from "../../shared/batchManifest";
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
 import type { BatchEvent, BatchRecord, ClaimRecord, CoordinationWarning, HeartbeatRecord } from "../../shared/types";
 
@@ -9,6 +10,39 @@ interface RawState {
   batches: BatchRecord[];
   events: BatchEvent[];
   warnings: CoordinationWarning[];
+}
+
+const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
+const COORDINATION_ROOT_REMEDIATION = [
+  "Set AGENT_COORD_STATE_ROOT to an existing coordination workspace,",
+  "or initialize this workspace with claims/, heartbeats/, and batches/ directories."
+].join(" ");
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown error";
+}
+
+async function hasInitializedCoordinationRoot(root: string, warnings: CoordinationWarning[]): Promise<boolean> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const directoryNames = new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
+    const hasRequiredDirectory = REQUIRED_STATE_DIRECTORIES.some((directory) => directoryNames.has(directory));
+    if (!hasRequiredDirectory) {
+      warnings.push({
+        severity: "info",
+        message: `No coordination state found at ${root}. ${COORDINATION_ROOT_REMEDIATION}`
+      });
+    }
+    return hasRequiredDirectory;
+  } catch (error) {
+    warnings.push({
+      severity: "info",
+      message: `No coordination state found at ${root}: ${errorMessage(
+        error
+      )}. ${COORDINATION_ROOT_REMEDIATION}`
+    });
+    return false;
+  }
 }
 
 async function listStateFiles(
@@ -39,9 +73,7 @@ async function listStateFiles(
     warnings.push({
       severity: "warning",
       ...warningContextFromPath(path),
-      message: `Could not read coordination directory ${path || "."}: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`
+      message: `Could not read coordination directory ${path || "."}: ${errorMessage(error)}`
     });
     return [];
   }
@@ -130,6 +162,12 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
     schemaVersion: Number(raw.schema_version || 1),
     batchId,
     repo: stringValue(raw.repo) || undefined,
+    objective: stringValue(raw.objective) || undefined,
+    targets: normalizeBatchTargets(raw.targets),
+    reservations: normalizeBatchReservations(raw.reservations),
+    createdAt: stringValue(raw.created_at) || undefined,
+    createdByMachine: stringValue(raw.created_by_machine) || undefined,
+    launchPrompt: stringValue(raw.launch_prompt) || undefined,
     updatedAt: stringValue(raw.updated_at) || undefined,
     path,
     lanes: lanes.map((laneRaw) => {
@@ -181,9 +219,10 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 
 export async function readCoordinationState(root: string, now = new Date()): Promise<RawState> {
   const warnings: CoordinationWarning[] = [];
-  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings);
-  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings);
-  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings);
+  const hasInitializedRoot = await hasInitializedCoordinationRoot(root, warnings);
+  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
+  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings, [".json"], hasInitializedRoot);
+  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings, [".json"], hasInitializedRoot);
   const eventFiles = [
     ...(await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false)),
     ...(await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false))
