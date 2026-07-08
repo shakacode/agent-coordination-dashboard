@@ -25,7 +25,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
-  const displayedStateRoot = config.coordApiUrl ? `api:${config.coordApiUrl}` : config.stateRoot;
+  const displayedStateRoot = config.coordApiUrl ? "coordination-api" : config.stateRoot;
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));

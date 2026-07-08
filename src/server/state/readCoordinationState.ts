@@ -26,7 +26,8 @@ interface ApiStateEntry {
 
 const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
 const API_STATE_PREFIXES: ApiPrefix[] = ["claims", "heartbeats", "batches"];
-const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const API_FETCH_TIMEOUT_MS = 5000;
+const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const COORDINATION_ROOT_REMEDIATION = [
   "Set AGENT_COORD_STATE_ROOT to an existing coordination workspace,",
   "or initialize this workspace with claims/, heartbeats/, and batches/ directories."
@@ -34,6 +35,10 @@ const COORDINATION_ROOT_REMEDIATION = [
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "unknown error";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -87,11 +92,19 @@ async function responseErrorMessage(response: Response): Promise<string> {
 }
 
 async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
-  const response = await fetch(apiStateListUrl(baseUrl, prefix), {
-    headers: {
-      authorization: `Bearer ${token}`
-    }
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(apiStateListUrl(baseUrl, prefix), {
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${response.status} ${await responseErrorMessage(response)}`));
@@ -116,6 +129,16 @@ async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, w
     });
   });
   return entries;
+}
+
+async function readApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
+  try {
+    return await fetchApiEntries(baseUrl, token, prefix, warnings);
+  } catch (error) {
+    const reason = isAbortError(error) ? `timed out after ${API_FETCH_TIMEOUT_MS}ms` : errorMessage(error);
+    warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${reason}`));
+    return [];
+  }
 }
 
 function normalizeApiEntries<T>(
@@ -150,22 +173,17 @@ async function readApiCoordinationState(options: Required<CoordinationApiOptions
     return emptyState(warnings);
   }
 
-  try {
-    const entries = Object.fromEntries(
-      await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await fetchApiEntries(baseUrl, options.token, prefix, warnings)]))
-    ) as Record<ApiPrefix, ApiStateEntry[]>;
+  const entries = Object.fromEntries(
+    await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, options.token, prefix, warnings)]))
+  ) as Record<ApiPrefix, ApiStateEntry[]>;
 
-    return {
-      claims: normalizeApiEntries("claims", entries.claims, warnings, normalizeClaim),
-      heartbeats: normalizeApiEntries("heartbeats", entries.heartbeats, warnings, (raw, path) => normalizeHeartbeat(raw, path, now)),
-      batches: normalizeApiEntries("batches", entries.batches, warnings, normalizeBatch),
-      events: [],
-      warnings
-    };
-  } catch (error) {
-    warnings.push(apiWarning(`Could not read coordination API: ${errorMessage(error)}`));
-    return emptyState(warnings);
-  }
+  return {
+    claims: normalizeApiEntries("claims", entries.claims, warnings, normalizeClaim),
+    heartbeats: normalizeApiEntries("heartbeats", entries.heartbeats, warnings, (raw, path) => normalizeHeartbeat(raw, path, now)),
+    batches: normalizeApiEntries("batches", entries.batches, warnings, normalizeBatch),
+    events: [],
+    warnings
+  };
 }
 
 async function hasInitializedCoordinationRoot(root: string, warnings: CoordinationWarning[]): Promise<boolean> {

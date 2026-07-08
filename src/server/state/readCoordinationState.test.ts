@@ -6,6 +6,7 @@ import { readCoordinationState } from "./readCoordinationState";
 
 describe("readCoordinationState", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -225,6 +226,98 @@ describe("readCoordinationState", () => {
     expect(state.batches[0]).toMatchObject({ batchId: "batch-api", lanes: [expect.objectContaining({ name: "api" })] });
     expect(state.events).toEqual([]);
     expect(state.warnings).toEqual([]);
+  });
+
+  it("keeps successful API prefixes when one prefix fails", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const prefix = url.searchParams.get("prefix");
+      if (prefix === "heartbeats") {
+        throw new Error("connection refused");
+      }
+
+      const entriesByPrefix = {
+        claims: [
+          {
+            path: "claims/shakacode/react_on_rails/4005.json",
+            data: {
+              schema_version: 1,
+              repo: "shakacode/react_on_rails",
+              target: "4005",
+              agent_id: "worker-api",
+              status: "active"
+            }
+          }
+        ],
+        batches: [
+          {
+            path: "batches/batch-api.json",
+            data: {
+              schema_version: 1,
+              batch_id: "batch-api",
+              repo: "shakacode/react_on_rails",
+              lanes: [{ name: "api", owner: "worker-api", targets: ["4005"] }]
+            }
+          }
+        ]
+      } as const;
+
+      return new Response(JSON.stringify({ entries: entriesByPrefix[prefix as keyof typeof entriesByPrefix] || [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.claims).toHaveLength(1);
+    expect(state.heartbeats).toEqual([]);
+    expect(state.batches).toHaveLength(1);
+    expect(state.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining("Could not read coordination API heartbeats: connection refused")])
+    );
+  });
+
+  it("times out stalled coordination API requests", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing abort signal"));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const statePromise = readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+    await vi.runAllTimersAsync();
+    const state = await statePromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(state.claims).toEqual([]);
+    expect(state.heartbeats).toEqual([]);
+    expect(state.batches).toEqual([]);
+    expect(state.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Could not read coordination API claims: timed out after 5000ms"),
+        expect.stringContaining("Could not read coordination API heartbeats: timed out after 5000ms"),
+        expect.stringContaining("Could not read coordination API batches: timed out after 5000ms")
+      ])
+    );
   });
 
   it("warns instead of reading files when API mode is missing a token", async () => {

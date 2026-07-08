@@ -48,8 +48,9 @@ npm run dev
 
 In API mode the dashboard reads `claims`, `heartbeats`, and `batches` from the
 Worker state API and keeps file mode as the fallback when `AGENT_COORD_API_URL`
-is unset. Batch import and stop-request writes remain local recovery tools in
-this slice.
+is unset. Remote dashboard responses label the source as `coordination-api`
+instead of echoing the configured backend URL. Batch import and stop-request
+writes remain local recovery tools in this slice.
 
 ## What It Shows
 
