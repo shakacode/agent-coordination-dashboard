@@ -34,6 +34,7 @@ function isWildcardHost(host: string): boolean {
 
 export function readConfig(env = process.env): ServerConfig {
   const host = env.HOST || "127.0.0.1";
+  const coordApiUrl = env.AGENT_COORD_API_URL?.trim() || "";
   if (isWildcardHost(host) && !env.ALLOWED_HOSTS?.trim()) {
     throw new Error("ALLOWED_HOSTS is required when HOST binds all interfaces.");
   }
@@ -43,8 +44,8 @@ export function readConfig(env = process.env): ServerConfig {
     host,
     allowedHosts: env.ALLOWED_HOSTS ? listFromEnv(env.ALLOWED_HOSTS) : defaultAllowedHosts(host),
     stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),
-    coordApiUrl: env.AGENT_COORD_API_URL || "",
-    coordApiToken: env.AGENT_COORD_TOKEN || "",
+    coordApiUrl,
+    coordApiToken: env.AGENT_COORD_TOKEN?.trim() || "",
     targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",
     nodeEnv: env.NODE_ENV || "development"

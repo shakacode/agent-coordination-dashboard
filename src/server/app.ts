@@ -25,7 +25,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
-  const displayedStateRoot = config.coordApiUrl ? "coordination-api" : config.stateRoot;
+  const coordApiUrl = config.coordApiUrl?.trim() || "";
+  const coordApiToken = config.coordApiToken || "";
+  const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -63,8 +65,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
     const now = new Date();
     const state = await readCoordinationState(config.stateRoot, now, {
-      apiUrl: config.coordApiUrl,
-      token: config.coordApiToken
+      apiUrl: coordApiUrl,
+      token: coordApiToken
     });
     const model = buildDashboardModel({
       stateRoot: displayedStateRoot,
@@ -91,7 +93,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   function rejectApiModeWrite(res: express.Response, action: string): boolean {
-    if (!config.coordApiUrl) {
+    if (!coordApiUrl) {
       return false;
     }
     res.status(409).json({
@@ -179,8 +181,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const now = new Date();
     const settings = await currentSettings();
     const state = await readCoordinationState(config.stateRoot, now, {
-      apiUrl: config.coordApiUrl,
-      token: config.coordApiToken
+      apiUrl: coordApiUrl,
+      token: coordApiToken
     });
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
     const githubItems = githubResults.flatMap((result) => result.items);

@@ -149,6 +149,20 @@ describe("dashboard app import endpoint", () => {
     expect(JSON.stringify(body)).not.toContain(apiUrl);
   });
 
+  it("treats a blank coordination API URL as filesystem mode", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-blank-url-"));
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: "   ",
+      coordApiToken: "test-token"
+    });
+
+    const response = await fetch(`${baseUrl}/api/dashboard`);
+    const body = (await response.json()) as { stateRoot: string };
+
+    expect(response.status).toBe(200);
+    expect(body.stateRoot).toBe(stateRoot);
+  });
+
   it("rejects batch imports in coordination API mode", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-api-import-disabled-"));
     const apiUrl = await listenEmptyCoordinationApi();
