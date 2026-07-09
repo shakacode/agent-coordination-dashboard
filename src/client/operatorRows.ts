@@ -362,8 +362,9 @@ function sortRows(rows: OperatorRow[], targetRepos: string[]): OperatorRow[] {
 }
 
 function activeBatchIdsForWork(item: WorkItem): Set<string> {
+  const heartbeatBatchId = item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat.batchId : undefined;
   return new Set(
-    [item.heartbeat?.batchId, item.claim && item.claim.status !== "released" ? item.claim.batchId : undefined].filter(
+    [heartbeatBatchId, item.claim && item.claim.status !== "released" ? item.claim.batchId : undefined].filter(
       (batchId): batchId is string => Boolean(batchId)
     )
   );

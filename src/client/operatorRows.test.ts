@@ -271,6 +271,36 @@ describe("operatorRows", () => {
     expect(rows[0].lastEventAt).toBeUndefined();
   });
 
+  it("does not treat dead heartbeat batch ids as current event scope", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: { ...claim, batchId: undefined },
+            heartbeat: { ...heartbeat, batchId: "batch-old", liveness: "dead" },
+            batchSignals: [{ batchId: "batch-old", laneName: "docs", status: "done", blockedOn: [] }]
+          })
+        ],
+        events: [
+          {
+            eventId: "old-done",
+            type: "done",
+            batchId: "batch-old",
+            laneName: "docs",
+            repo: "repo/app",
+            target: "123",
+            status: "done",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-old.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("dead");
+    expect(rows[0].lastEventAt).toBeUndefined();
+  });
+
   it("does not classify rows from target-specific events for other targets in the same lane", () => {
     const rows = buildOperatorRows(
       dashboard({
