@@ -71,7 +71,8 @@ interface MetadataSource {
 }
 
 const DONE_PATTERN = /\b(complete|completed|done|merged|closed|passed|released)\b/i;
-const PAUSED_PATTERN = /\b(paused?|token[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?limit|context[_\-\s]?window)/i;
+const PAUSED_PATTERN =
+  /\b(paused?|token[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?window)\b/i;
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
@@ -373,7 +374,7 @@ function eventMatchesCurrentWorkBatch(item: WorkItem, event: BatchEvent): boolea
     return true;
   }
   const batchIds = currentBatchIdsForWork(item);
-  return batchIds.size === 0 || batchIds.has(event.batchId);
+  return batchIds.has(event.batchId);
 }
 
 function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent[] {
@@ -391,9 +392,22 @@ function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent
   });
 }
 
+function eventMatchesBatchRecord(batch: BatchRecord, event: BatchEvent): boolean {
+  if (event.batchId !== batch.batchId) {
+    return false;
+  }
+  if (event.batchPath && event.batchPath !== batch.path) {
+    return false;
+  }
+  if (event.repo && batch.repo && event.repo !== batch.repo) {
+    return false;
+  }
+  return true;
+}
+
 function matchingEventsForLane(batch: BatchRecord, lane: BatchLane, events: BatchEvent[]): BatchEvent[] {
   return events.filter((event) => {
-    if (event.batchId !== batch.batchId) {
+    if (!eventMatchesBatchRecord(batch, event)) {
       return false;
     }
     if (event.laneName === lane.name) {

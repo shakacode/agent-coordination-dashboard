@@ -310,6 +310,40 @@ describe("operatorRows", () => {
     expect(rows[0].lastEventAt).toBeUndefined();
   });
 
+  it("ignores batch-scoped target events when work has no current batch context", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: undefined,
+            heartbeat: undefined,
+            batchSignals: undefined,
+            schedulingState: "ready_for_batch"
+          })
+        ],
+        events: [
+          {
+            eventId: "prior-batch-done",
+            type: "done",
+            batchId: "batch-old",
+            laneName: "old-lane",
+            repo: "repo/app",
+            target: "123",
+            status: "done",
+            timestamp: "2026-07-09T19:58:00Z",
+            path: "events/batch-old.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      operatorState: "ready",
+      activityStatus: "ready_for_batch"
+    });
+    expect(rows[0].lastEventAt).toBeUndefined();
+  });
+
   it("keeps freeform event messages out of operator-state classification", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -334,6 +368,16 @@ describe("operatorRows", () => {
 
     expect(rows[0].operatorState).toBe("running");
     expect(rows[0].activityMessage).toContain("Passed lint");
+  });
+
+  it("does not pause rows for statuses that only prefix-match pause tokens", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [workItem({ claim, heartbeat: { ...heartbeat, status: "context_limitation_review" } })]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("running");
   });
 
   it("adds fallback rows for batch lanes without loaded target rows", () => {
@@ -437,6 +481,46 @@ describe("operatorRows", () => {
     );
 
     expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+  });
+
+  it("scopes fallback lane events by repo when batch ids and lane names are reused", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: ["repo/app", "repo/api"].map((repo) => ({
+          schemaVersion: 1,
+          batchId: "batch-reused",
+          repo,
+          path: `batches/${repo.replace("/", "__")}/batch-reused.json`,
+          lanes: [
+            {
+              name: "docs",
+              owner: `agent-${repo.endsWith("app") ? "app" : "api"}`,
+              targets: [],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        })),
+        events: [
+          {
+            eventId: "app-done",
+            type: "done",
+            batchId: "batch-reused",
+            batchPath: "batches/repo__app/batch-reused.json",
+            laneName: "docs",
+            repo: "repo/app",
+            status: "done",
+            timestamp: "2026-07-09T19:58:00Z",
+            path: "events/batch-reused.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows.find((row) => row.repo === "repo/app")?.operatorState).toBe("done");
+    expect(rows.find((row) => row.repo === "repo/api")?.operatorState).toBe("ready");
   });
 
   it("does not let QA validation events complete live operator work", () => {
