@@ -12,7 +12,13 @@ import { WorkTab } from "./components/WorkTab";
 
 type Tab = "overview" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
-const BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
+const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
+const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
+
+export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
+  const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
+  return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
+}
 
 function canSelectWorkItem(item: WorkItem): boolean {
   return item.schedulingState !== "in_process" && !item.batchSignals?.length;
@@ -47,7 +53,7 @@ export function App() {
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
 
-  const loadDashboard = useCallback(async (options: { background?: boolean } = {}) => {
+  const loadDashboard = useCallback(async (options: { background?: boolean; backgroundTimeoutMs?: number } = {}) => {
     const isBackground = Boolean(options.background);
     if (isBackground && (backgroundLoadInFlight.current || userActionInFlight.current)) {
       return;
@@ -60,7 +66,9 @@ export function App() {
       setIsRefreshing(true);
     }
     const abortController = isBackground ? new AbortController() : undefined;
-    const timeoutId = abortController ? window.setTimeout(() => abortController.abort(), BACKGROUND_REFRESH_TIMEOUT_MS) : undefined;
+    const timeoutId = abortController
+      ? window.setTimeout(() => abortController.abort(), options.backgroundTimeoutMs ?? MIN_BACKGROUND_REFRESH_TIMEOUT_MS)
+      : undefined;
     const requestVersion = ++dashboardRequestVersion.current;
     try {
       const [loadedSettings, loadedDashboard] = await Promise.all([
@@ -100,7 +108,7 @@ export function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      void loadDashboard({ background: true });
+      void loadDashboard({ background: true, backgroundTimeoutMs: backgroundRefreshTimeoutMs(refreshIntervalMs) });
     }, refreshIntervalMs);
 
     return () => window.clearInterval(intervalId);

@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, backgroundRefreshTimeoutMs } from "./App";
 
 const model = {
   generatedAt: "2026-06-17T20:00:00Z",
@@ -226,6 +226,12 @@ describe("App", () => {
     await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(0));
     const initialCount = dashboardCallCount();
     await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(initialCount));
+  });
+
+  it("sizes background refresh timeouts from the configured polling interval", () => {
+    expect(backgroundRefreshTimeoutMs(100)).toBe(4000);
+    expect(backgroundRefreshTimeoutMs(10000)).toBe(11000);
+    expect(backgroundRefreshTimeoutMs(Number.NaN)).toBe(4000);
   });
 
   it("preserves selected work items across background refreshes", async () => {
