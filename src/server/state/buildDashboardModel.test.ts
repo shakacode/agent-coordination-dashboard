@@ -191,7 +191,7 @@ describe("buildDashboardModel", () => {
     );
   });
 
-  it("drops claim and heartbeat records whose operator metadata references out-of-scope repos", () => {
+  it("redacts leaky operator metadata without dropping in-scope claim and heartbeat records", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
       targetRepos: ["repo-a/app"],
@@ -231,15 +231,23 @@ describe("buildDashboardModel", () => {
     expect(model.workItems[0]).toMatchObject({
       repo: "repo-a/app",
       target: "4005",
-      claim: undefined,
-      heartbeat: undefined,
-      schedulingState: "ready_for_batch"
+      claim: expect.objectContaining({
+        repo: "repo-a/app",
+        target: "4005"
+      }),
+      heartbeat: expect.objectContaining({
+        repo: "repo-a/app",
+        target: "4005"
+      }),
+      schedulingState: "in_process"
     });
-    expect(model.warnings.map((warning) => warning.message)).toEqual(
-      expect.arrayContaining([
-        "Skipped 1 claim records outside saved target repositories.",
-        "Skipped 1 heartbeat records outside saved target repositories."
-      ])
+    expect(model.workItems[0].claim?.prUrl).toBeUndefined();
+    expect(model.workItems[0].heartbeat?.prUrl).toBeUndefined();
+    expect(model.warnings.map((warning) => warning.message)).not.toContain(
+      "Skipped 1 claim records outside saved target repositories."
+    );
+    expect(model.warnings.map((warning) => warning.message)).not.toContain(
+      "Skipped 1 heartbeat records outside saved target repositories."
     );
   });
 

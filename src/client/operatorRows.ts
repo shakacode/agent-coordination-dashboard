@@ -359,13 +359,21 @@ function sortRows(rows: OperatorRow[], targetRepos: string[]): OperatorRow[] {
   });
 }
 
-function currentBatchIdsForWork(item: WorkItem): Set<string> {
+function activeBatchIdsForWork(item: WorkItem): Set<string> {
   return new Set(
-    [
-      item.claim?.batchId,
-      item.heartbeat?.batchId,
-      ...(item.batchSignals || []).map((signal) => signal.batchId)
-    ].filter((batchId): batchId is string => Boolean(batchId))
+    [item.heartbeat?.batchId, item.claim && item.claim.status !== "released" ? item.claim.batchId : undefined].filter(
+      (batchId): batchId is string => Boolean(batchId)
+    )
+  );
+}
+
+function currentBatchIdsForWork(item: WorkItem): Set<string> {
+  const activeBatchIds = activeBatchIdsForWork(item);
+  if (activeBatchIds.size > 0) {
+    return activeBatchIds;
+  }
+  return new Set(
+    (item.batchSignals || []).map((signal) => signal.batchId).filter((batchId): batchId is string => Boolean(batchId))
   );
 }
 
@@ -390,6 +398,18 @@ function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent
       signals.some((signal) => event.batchId === signal.batchId && event.laneName === signal.laneName);
     return targetMatch || laneMatch;
   });
+}
+
+function preferredSignalForWork(item: WorkItem) {
+  const signals = item.batchSignals || [];
+  const activeBatchIds = activeBatchIdsForWork(item);
+  if (activeBatchIds.size > 0) {
+    const activeSignal = signals.find((signal) => activeBatchIds.has(signal.batchId));
+    if (activeSignal) {
+      return activeSignal;
+    }
+  }
+  return signals[0];
 }
 
 function eventMatchesBatchRecord(batch: BatchRecord, event: BatchEvent): boolean {
@@ -444,7 +464,7 @@ function batchContainsWork(batch: BatchRecord, item: WorkItem, lane: BatchLane):
 }
 
 function findSignalLane(item: WorkItem, batches: BatchRecord[]): { batch?: BatchRecord; lane?: BatchLane } {
-  const signal = item.batchSignals?.[0];
+  const signal = preferredSignalForWork(item);
   if (!signal) {
     return {};
   }
@@ -478,7 +498,7 @@ function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): Non
 function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number): OperatorRow {
   const latest = latestEvent(matchingEventsForWork(item, dashboard.events));
   const { batch, lane } = findSignalLane(item, dashboard.batches);
-  const signal = item.batchSignals?.[0];
+  const signal = preferredSignalForWork(item);
   const batchTarget = batchTargetForWork(batch, item);
   const blockedOn = [...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean);
   const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventMetadata(latest));

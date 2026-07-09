@@ -326,6 +326,30 @@ function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
   ];
 }
 
+function hasOutOfScopeRepoRef(refs: string[], targetRepoSet: Set<string>): boolean {
+  return refs.some((repo) => !targetRepoSet.has(repo));
+}
+
+function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: T, targetRepoSet: Set<string>): T {
+  const redacted = { ...metadata };
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.threadHandle), targetRepoSet)) {
+    delete redacted.threadHandle;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.host), targetRepoSet)) {
+    delete redacted.host;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.operator), targetRepoSet)) {
+    delete redacted.operator;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromBranch(redacted.branch), targetRepoSet)) {
+    delete redacted.branch;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.prUrl), targetRepoSet)) {
+    delete redacted.prUrl;
+  }
+  return redacted;
+}
+
 function hasOutOfScopeOperatorMetadata(metadata: OperatorMetadata, targetRepoSet: Set<string>): boolean {
   return repoRefsFromOperatorMetadata(metadata).some((repo) => !targetRepoSet.has(repo));
 }
@@ -697,13 +721,10 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const inputEvents = input.events || [];
   const scopeWarnings: CoordinationWarning[] = [];
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
-  const currentClaims = nonReleasedClaims.filter(
-    (claim) => targetRepoSet.has(claim.repo) && !hasOutOfScopeOperatorMetadata(claim, targetRepoSet)
-  );
-  const repoScopedHeartbeats = input.heartbeats.filter(
-    (heartbeat) =>
-      Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)) && !hasOutOfScopeOperatorMetadata(heartbeat, targetRepoSet)
-  );
+  const sanitizedClaims = nonReleasedClaims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet));
+  const sanitizedHeartbeats = input.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet));
+  const currentClaims = sanitizedClaims.filter((claim) => targetRepoSet.has(claim.repo));
+  const repoScopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
   const reposByBatchTarget = new Map<string, Set<string>>();
   for (const claim of currentClaims) {
@@ -836,10 +857,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       .filter((batch) => !batch.repo)
       .flatMap((batch) => batch.lanes.flatMap((lane) => lane.targets.map((target) => `${batch.batchId}:${lane.owner}:${target}`)))
   );
-  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
-    if (hasOutOfScopeOperatorMetadata(heartbeat, targetRepoSet)) {
-      return false;
-    }
+  const scopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => {
     if (heartbeat.repo) {
       return targetRepoSet.has(heartbeat.repo);
     }

@@ -937,7 +937,6 @@ textarea {
 .status-missing,
 .status-requested,
 .status-paused,
-.status-ready,
 .warning {
   border-color: #fedf89;
   background: #fffaeb;
@@ -958,6 +957,7 @@ textarea {
 }
 
 .status-ready_for_batch,
+.status-ready,
 .status-in_progress {
   border-color: #a6d8ff;
   background: #eff8ff;

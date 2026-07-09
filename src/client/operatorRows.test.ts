@@ -523,6 +523,68 @@ describe("operatorRows", () => {
     expect(rows.find((row) => row.repo === "repo/api")?.operatorState).toBe("ready");
   });
 
+  it("prefers the active claim and heartbeat batch signal over older retained signals", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: { ...claim, batchId: "batch-current", threadHandle: undefined },
+            heartbeat: { ...heartbeat, batchId: "batch-current", threadHandle: undefined },
+            batchSignals: [
+              { batchId: "batch-old", laneName: "docs", status: "done", blockedOn: [] },
+              { batchId: "batch-current", laneName: "docs", status: "coding", blockedOn: [] }
+            ]
+          })
+        ],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "batch-old",
+            repo: "repo/app",
+            path: "batches/batch-old.json",
+            lanes: [
+              {
+                name: "docs",
+                owner: "agent-old",
+                targets: ["123"],
+                dependsOn: [],
+                status: "done",
+                liveness: "no-heartbeat",
+                blockedOn: [],
+                threadHandle: "thread-old"
+              }
+            ]
+          },
+          {
+            schemaVersion: 1,
+            batchId: "batch-current",
+            repo: "repo/app",
+            path: "batches/batch-current.json",
+            lanes: [
+              {
+                name: "docs",
+                owner: "agent-current",
+                targets: ["123"],
+                dependsOn: [],
+                status: "coding",
+                liveness: "live",
+                blockedOn: [],
+                threadHandle: "thread-current"
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      operatorState: "running",
+      batchId: "batch-current",
+      laneName: "docs",
+      threadHandle: "thread-current"
+    });
+  });
+
   it("does not let QA validation events complete live operator work", () => {
     const rows = buildOperatorRows(
       dashboard({
