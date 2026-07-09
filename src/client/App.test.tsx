@@ -228,6 +228,41 @@ describe("App", () => {
     await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(initialCount));
   });
 
+  it("keeps the current dashboard visible when a background refresh fails", async () => {
+    let dashboardCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(init.body))
+        } as Response;
+      }
+      if (url === "/api/settings") {
+        return {
+          ok: true,
+          json: async () => ({ ...settings, refreshIntervalMs: 100 })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls > 1) {
+        throw new Error("temporary API failure");
+      }
+      return {
+        ok: true,
+        json: async () => model
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
+    expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument();
+    expect(screen.queryByText("temporary API failure")).not.toBeInTheDocument();
+  });
+
   it("keeps batch import validation failures local to the Batches view", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
 import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
@@ -19,12 +19,17 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const loadInFlight = useRef(false);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
 
   const loadDashboard = useCallback(async (options: { background?: boolean } = {}) => {
-    setError(null);
+    if (loadInFlight.current) {
+      return;
+    }
+    loadInFlight.current = true;
     if (!options.background) {
+      setError(null);
       setIsRefreshing(true);
     }
     try {
@@ -32,8 +37,11 @@ export function App() {
       setSettings(loadedSettings);
       setDashboard(await fetchDashboard());
     } catch (caught: unknown) {
-      setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
+      if (!options.background) {
+        setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
+      }
     } finally {
+      loadInFlight.current = false;
       if (!options.background) {
         setIsRefreshing(false);
       }
