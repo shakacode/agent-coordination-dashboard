@@ -58,7 +58,9 @@ API mode also refreshes the dashboard every 5 seconds by default; set
 `DASHBOARD_REFRESH_MS=0` to disable polling or another non-negative millisecond
 value to tune it. The server coalesces and briefly caches dashboard reads while
 polling is enabled, invalidates that cache after dashboard-owned writes, and
-lets local foreground refreshes bypass it.
+lets local foreground refreshes bypass it. The read cache is capped at 5 seconds,
+so larger polling intervals reduce polling frequency but not the short
+coalescing window.
 
 ## What It Shows
 
@@ -103,7 +105,7 @@ cleanly; it does not kill processes or release claims by itself.
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
 | `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
 | `AGENT_COORD_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
-| `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling |
+| `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling; dashboard read cache is capped at 5s |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 

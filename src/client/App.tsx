@@ -48,22 +48,33 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const backgroundLoadInFlight = useRef(false);
-  const userActionInFlight = useRef(false);
+  const userActionInFlightCount = useRef(0);
   const dashboardRequestVersion = useRef(0);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
 
+  function beginUserAction() {
+    userActionInFlightCount.current += 1;
+    setIsRefreshing(true);
+  }
+
+  function finishUserAction() {
+    userActionInFlightCount.current = Math.max(0, userActionInFlightCount.current - 1);
+    if (userActionInFlightCount.current === 0) {
+      setIsRefreshing(false);
+    }
+  }
+
   const loadDashboard = useCallback(async (options: { background?: boolean; backgroundTimeoutMs?: number } = {}) => {
     const isBackground = Boolean(options.background);
-    if (isBackground && (backgroundLoadInFlight.current || userActionInFlight.current)) {
+    if (isBackground && (backgroundLoadInFlight.current || userActionInFlightCount.current > 0)) {
       return;
     }
     if (isBackground) {
       backgroundLoadInFlight.current = true;
     } else {
-      userActionInFlight.current = true;
       setError(null);
-      setIsRefreshing(true);
+      beginUserAction();
     }
     const abortController = isBackground ? new AbortController() : undefined;
     const timeoutId = abortController
@@ -91,8 +102,7 @@ export function App() {
       if (isBackground) {
         backgroundLoadInFlight.current = false;
       } else {
-        userActionInFlight.current = false;
-        setIsRefreshing(false);
+        finishUserAction();
       }
     }
   }, []);
@@ -115,10 +125,9 @@ export function App() {
   }, [loadDashboard, settings?.refreshIntervalMs]);
 
   async function persistRepos(nextRepos: string[]) {
-    userActionInFlight.current = true;
     const requestVersion = ++dashboardRequestVersion.current;
     setError(null);
-    setIsRefreshing(true);
+    beginUserAction();
     try {
       const saved = await saveSettings({ targetRepos: nextRepos });
       if (requestVersion === dashboardRequestVersion.current) {
@@ -131,8 +140,7 @@ export function App() {
     } catch (caught: unknown) {
       setError(caught instanceof Error ? caught.message : "Settings failed to save");
     } finally {
-      userActionInFlight.current = false;
-      setIsRefreshing(false);
+      finishUserAction();
     }
   }
 
@@ -170,9 +178,8 @@ export function App() {
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
-    userActionInFlight.current = true;
     const requestVersion = ++dashboardRequestVersion.current;
-    setIsRefreshing(true);
+    beginUserAction();
     try {
       await saveImportedBatchManifest(manifest);
       const loadedDashboard = await fetchDashboard({ fresh: true });
@@ -182,15 +189,13 @@ export function App() {
     } catch (caught: unknown) {
       throw caught instanceof Error ? caught : new Error("Batch plan import failed");
     } finally {
-      userActionInFlight.current = false;
-      setIsRefreshing(false);
+      finishUserAction();
     }
   }
 
   async function stopBatch(input: { batchId: string; repo?: string; reason?: string }) {
-    userActionInFlight.current = true;
     const requestVersion = ++dashboardRequestVersion.current;
-    setIsRefreshing(true);
+    beginUserAction();
     try {
       await requestBatchStop(input);
       const loadedDashboard = await fetchDashboard({ fresh: true });
@@ -200,8 +205,7 @@ export function App() {
     } catch (caught: unknown) {
       throw caught instanceof Error ? caught : new Error("Batch stop request failed");
     } finally {
-      userActionInFlight.current = false;
-      setIsRefreshing(false);
+      finishUserAction();
     }
   }
 

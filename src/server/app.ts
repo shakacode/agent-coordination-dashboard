@@ -17,6 +17,10 @@ import { repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
 
+export function canBypassDashboardCache(refreshHeader: string | undefined, remoteAddress: string | undefined): boolean {
+  return refreshHeader === "foreground" && isLoopbackAddress(remoteAddress);
+}
+
 interface CreateDashboardAppOptions {
   serveFrontend?: boolean;
   loadOpenGitHubItems?: LoadOpenGitHubItems;
@@ -281,7 +285,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   app.get("/api/dashboard", async (req, res) => {
     const settings = await currentSettings();
-    const bypassCache = req.get("X-Dashboard-Refresh") === "foreground" && isLoopbackAddress(req.socket.remoteAddress);
+    const bypassCache = canBypassDashboardCache(req.get("X-Dashboard-Refresh"), req.socket.remoteAddress);
     res.json(await readScopedDashboard(settings, { bypassCache }));
   });
 

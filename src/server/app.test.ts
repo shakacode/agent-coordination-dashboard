@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDashboardApp } from "./app";
+import { canBypassDashboardCache, createDashboardApp } from "./app";
 import type { ServerConfig } from "./config";
 
 const servers: Server[] = [];
@@ -157,6 +157,13 @@ describe("dashboard app import endpoint", () => {
     const afterInvalidation = await fetch(`${baseUrl}/api/dashboard`);
     expect(afterInvalidation.ok).toBe(true);
     expect(githubLoads).toBe(2);
+  });
+
+  it("allows dashboard cache bypass only from loopback foreground refreshes", () => {
+    expect(canBypassDashboardCache("foreground", "127.0.0.1")).toBe(true);
+    expect(canBypassDashboardCache("foreground", "::1")).toBe(true);
+    expect(canBypassDashboardCache("foreground", "203.0.113.8")).toBe(false);
+    expect(canBypassDashboardCache(undefined, "127.0.0.1")).toBe(false);
   });
 
   it("writes imported batch manifests into the coordination root batches directory", async () => {
