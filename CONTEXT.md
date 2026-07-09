@@ -114,6 +114,10 @@ Missing values render as `UNKNOWN`, never as empty cells. Missing
 or in-process rows. For completed, ready, or otherwise inactive rows, `UNKNOWN`
 can be informational only.
 
+`machine_id` identifies the machine. `host` identifies the app or runner
+surface, such as `codex` or `claude`; parsers must not treat `host` as a
+machine-id fallback.
+
 ### Operator Deep Link
 
 Operator View deep links use query parameters on the existing dashboard route.

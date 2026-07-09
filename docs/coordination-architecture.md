@@ -1,10 +1,15 @@
 # Coordination Architecture
 
-This dashboard joins GitHub work, local coordination records, retained batch
-metadata, and append-only history into one read model. The core relationship is:
-a PR or issue is the target, a claim says who owns it, a heartbeat says whether
-that worker is alive and which machine it is on, and a batch manifest/history
+This dashboard joins GitHub work, coordination records, retained batch metadata,
+and append-only history into one read model. The core relationship is: a PR or
+issue is the target, a claim says who owns it, a heartbeat says whether that
+worker is alive and which machine it is on, and a batch manifest/history
 explains why that target belongs to a coordinated batch.
+
+API mode reads the HTTP coordination backend and is the primary live
+multi-machine operations mode. Filesystem mode reads the local coordination
+state root and remains useful for local inspection, offline/recovery work,
+demos, older roots, and tests.
 
 ## System Diagram
 
@@ -29,7 +34,7 @@ flowchart LR
   subgraph Dashboard["Agent coordination dashboard"]
     API["Express API"]
     Model["Derived dashboard model"]
-    UI["React UI<br/>Overview / Work / Batches / Machines / Health"]
+    UI["React UI<br/>Operator View<br/>Overview / Work / Batches / Machines / Health"]
   end
 
   Worker -->|"claim, release, renew"| Claims
@@ -70,7 +75,12 @@ erDiagram
     string repo
     string target
     string agent_id
+    string thread_handle
+    string host
+    string operator
     string batch_id
+    string branch
+    string pr_url
     string status
     string updated_at
     string expires_at
@@ -79,9 +89,14 @@ erDiagram
   HEARTBEAT {
     string agent_id
     string machine_id
+    string thread_handle
+    string host
+    string operator
     string repo
     string target
     string batch_id
+    string branch
+    string pr_url
     string status
     string updated_at
     string expires_at
@@ -102,6 +117,11 @@ erDiagram
     string targets
     string status
     string depends_on
+    string thread_handle
+    string host
+    string operator
+    string branch
+    string pr_url
   }
 
   BATCH_EVENT {
@@ -112,7 +132,12 @@ erDiagram
     string target
     string agent_id
     string machine_id
+    string thread_handle
+    string host
+    string operator
     string timestamp
+    string branch
+    string pr_url
   }
 ```
 
@@ -177,7 +202,7 @@ write such as importing a batch manifest or requesting a batch stop.
 | Batch events/history | `events/**/*.jsonl`, `history/**/*.jsonl` | Workers and coordinators | Append at lifecycle moments |
 | Stop requests | `events/batches/<batch-id>.jsonl` | Dashboard explicit button | Only when a user requests stop |
 | QA validation | QA events in `events/` or `history/` | Separate QA worker or process | When QA is requested, started, passed, or failed |
-| Dashboard model | Server memory | Dashboard API | Rebuilt on page load, manual refresh, and after explicit dashboard writes |
+| Dashboard model | Server memory | Dashboard API | Rebuilt on page load, manual refresh, API polling, and after explicit dashboard writes |
 
 ## Join Keys
 
@@ -187,6 +212,8 @@ The dashboard joins records by stable identity fields:
   targets, and QA validation events.
 - `agent_id`: connects a claim holder to a heartbeat and a machine.
 - `machine_id`: groups active workers by machine.
+- `thread_handle`, `operator`, and `host`: identify the human/operator thread
+  context and host app. `host` is not a machine id.
 - `batch_id`: connects claims, heartbeats, manifests, events, stop requests,
   and QA events to one batch.
 - `lane_name` or lane owner: connects events and heartbeats to a planned lane
@@ -221,6 +248,8 @@ sequenceDiagram
 
 In the UI, that one PR can appear in multiple contexts:
 
+- **Operator View**: first-screen row keyed by repo/target, searchable by PR,
+  issue, branch, thread, agent, machine, operator, host, or PR URL.
 - **Overview**: active, recoverable, ready, missing QA, or needs attention.
 - **Work**: target row grouped by scheduling state.
 - **Batches**: lane target with batch lifecycle, launch prompt, and history.

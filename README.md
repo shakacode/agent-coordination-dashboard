@@ -54,6 +54,8 @@ Older Worker deployments that do not expose the `events` prefix still render the
 rest of API mode with a visible warning. `history/` remains filesystem-only.
 API mode is read-only in this slice; batch import and stop-request writes remain
 local recovery tools for filesystem mode.
+Filesystem mode is still useful for local inspection, offline/recovery work,
+demos, and tests; it renders the same Operator View model over local records.
 API mode also refreshes the dashboard every 5 seconds by default; set
 `DASHBOARD_REFRESH_MS=0` to disable polling or another non-negative millisecond
 value to tune it. The server coalesces and briefly caches dashboard reads while
@@ -64,6 +66,10 @@ coalescing window.
 
 ## What It Shows
 
+- **Operator View**: default first screen for live operations. It is a dense,
+  searchable table keyed by `repo + target` when a PR/issue target exists, with
+  `batch_id + lane_name` fallback rows for batch-only telemetry. It shows state,
+  liveness age, work, owner, thread, batch, activity, branch/PR, and warnings.
 - **Overview**: needs-attention queue, active/recoverable work, batch repairs,
   QA validation gaps, ready work, and high-level counts.
 - **Work**: open GitHub issues and pull requests joined to coordination state,
@@ -76,6 +82,17 @@ coalescing window.
   missing coordination prompts, prompt/target drift, missing history, and other
   coordination data gaps.
 - **Prompt drawer**: copyable `$pr-batch` prompt for checked work items.
+
+Operator View search is client-side over loaded rows. It matches target numbers
+such as `123`, `#123`, `PR #123`, and `issue #123`, plus branch names, thread
+handles, agent ids, machine ids, operators, hosts, and PR URLs. Query parameters
+on the root route can deep-link loaded rows: `?target=<target>&repo=<owner/repo>`,
+`?batch=<batch_id>&lane=<lane_name>`, or `?q=<search>`. Deep links do not widen
+target repository scope or fetch hidden data.
+
+Operator states are `running`, `wedged`, `paused`, `blocked`, `stale`, `dead`,
+`ready`, `done`, and `unknown`. A row is `wedged` when it has a live heartbeat
+but no phase/event transition for 15 minutes.
 
 Work items show three scheduling states:
 

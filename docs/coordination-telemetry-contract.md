@@ -22,9 +22,15 @@ Every claim, heartbeat, and batch event should include:
 
 - `agent_id`: stable worker/session id.
 - `machine_id`: short machine label, such as `workstation-1` or `buildbox-a`.
+- `thread_handle`: operator-facing Codex/Claude thread handle or session label.
+- `host`: host app or runner surface, such as `codex` or `claude`. Do not use
+  this as a machine label; use `machine_id` for machine identity.
+- `operator`: human or service operator responsible for the thread.
 - `batch_id`: stable batch id when the work belongs to a batch.
 - `repo`: `owner/repo`.
 - `target`: issue number, PR number, or other repo-scoped target id.
+- `branch`: current feature branch when known.
+- `pr_url`: pull request URL when known.
 - `status`: current phase, such as `queued`, `in_progress`, `blocked`,
   `token_limit_pause`, `continued`, `ready`, or `done`.
 - `updated_at`: ISO-8601 timestamp for claims and heartbeats.
@@ -85,14 +91,22 @@ Example:
       "owner": "worker-a",
       "targets": ["4005"],
       "depends_on": [],
-      "status": "queued"
+      "status": "queued",
+      "thread_handle": "codex-thread-abc",
+      "host": "codex",
+      "operator": "justin",
+      "branch": "jg-codex/fouc-tests",
+      "pr_url": "https://github.com/shakacode/react_on_rails/pull/4005"
     },
     {
       "name": "docs",
       "owner": "worker-b",
       "targets": ["4010"],
       "depends_on": ["batch-shakacode-react-on-rails-p93s1v:tests"],
-      "status": "queued"
+      "status": "queued",
+      "thread_handle": "claude-thread-docs",
+      "host": "claude",
+      "operator": "justin"
     }
   ],
   "reservations": [
@@ -129,8 +143,13 @@ object per line is easiest to write safely from multiple batch phases.
   "lane_name": "lane-a",
   "agent_id": "worker-a",
   "machine_id": "workstation-1",
+  "thread_handle": "codex-thread-abc",
+  "host": "codex",
+  "operator": "justin",
   "repo": "owner/repo",
   "target": "4010",
+  "branch": "jg-codex/4010-docs",
+  "pr_url": "https://github.com/owner/repo/pull/4010",
   "status": "in_progress",
   "timestamp": "2026-06-19T20:00:00Z",
   "message": "Resumed after token-limit pause."
@@ -169,6 +188,9 @@ stop-request event:
   "status": "stop_requested",
   "timestamp": "2026-06-19T20:05:00Z",
   "machine_id": "workstation-1",
+  "thread_handle": "codex-thread-abc",
+  "host": "codex",
+  "operator": "justin",
   "message": "Restart with smaller lanes."
 }
 ```
@@ -193,8 +215,13 @@ event with the same `batch_id`, `repo`, and `target`:
   "lane_name": "qa",
   "agent_id": "qa-worker-a",
   "machine_id": "workstation-1",
+  "thread_handle": "qa-thread-a",
+  "host": "codex",
+  "operator": "qa",
   "repo": "owner/repo",
   "target": "4010",
+  "branch": "jg-codex/4010-docs",
+  "pr_url": "https://github.com/owner/repo/pull/4010",
   "status": "passed",
   "timestamp": "2026-06-19T21:00:00Z",
   "message": "Validated install, smoke tests, and documented manual checks."

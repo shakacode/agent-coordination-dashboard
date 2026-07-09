@@ -25,6 +25,11 @@ describe("readCoordinationState", () => {
         target: "4005",
         agent_id: "worker-a",
         machine_id: "m5",
+        thread_handle: "thread-a",
+        host: "codex",
+        operator: "justin",
+        branch: "feature/operator-view",
+        pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
         status: "active",
         updated_at: "2026-06-17T19:50:00Z",
         expires_at: "2026-06-17T23:50:00Z"
@@ -37,8 +42,13 @@ describe("readCoordinationState", () => {
         schema_version: 1,
         agent_id: "worker-a",
         machine_id: "m5",
+        thread_handle: "thread-a",
+        host: "codex",
+        operator: "justin",
         repo: "shakacode/react_on_rails",
         target: "4005",
+        branch: "feature/operator-view",
+        pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
         status: "in_progress",
         updated_at: "2026-06-17T19:50:00Z",
         expires_at: "2026-06-17T20:05:00Z"
@@ -52,7 +62,19 @@ describe("readCoordinationState", () => {
         repo: "shakacode/react_on_rails",
         objective: "Stabilize the docs workflow.",
         targets: [{ type: "pull_request", target: "4005", title: "Docs workflow" }],
-        lanes: [{ name: "docs", owner: "worker-a", targets: ["4005"], depends_on: ["batch-1:backend"] }],
+        lanes: [
+          {
+            name: "docs",
+            owner: "worker-a",
+            targets: ["4005"],
+            depends_on: ["batch-1:backend"],
+            thread_handle: "thread-a",
+            host: "codex",
+            operator: "justin",
+            branch: "feature/operator-view",
+            pr_url: "https://github.com/shakacode/react_on_rails/pull/4005"
+          }
+        ],
         reservations: [{ type: "issue", target: "4010", reason: "Waiting for issue owner." }],
         created_at: "2026-06-17T19:40:00Z",
         created_by_machine: "m5",
@@ -69,8 +91,13 @@ describe("readCoordinationState", () => {
         lane_name: "docs",
         agent_id: "worker-a",
         machine_id: "m5",
+        thread_handle: "thread-a",
+        host: "codex",
+        operator: "justin",
         repo: "shakacode/react_on_rails",
         target: "4005",
+        branch: "feature/operator-view",
+        pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
         timestamp: "2026-06-17T19:45:00Z"
       })}\n{\n`
     );
@@ -80,8 +107,22 @@ describe("readCoordinationState", () => {
     expect(state.claims).toHaveLength(1);
     expect(state.claims[0].agentId).toBe("worker-a");
     expect(state.claims[0].machineId).toBe("m5");
+    expect(state.claims[0]).toMatchObject({
+      threadHandle: "thread-a",
+      host: "codex",
+      operator: "justin",
+      branch: "feature/operator-view",
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+    });
     expect(state.heartbeats[0].liveness).toBe("live");
     expect(state.heartbeats[0].machineId).toBe("m5");
+    expect(state.heartbeats[0]).toMatchObject({
+      threadHandle: "thread-a",
+      host: "codex",
+      operator: "justin",
+      branch: "feature/operator-view",
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+    });
     expect(state.batches[0]).toMatchObject({
       batchId: "batch-1",
       repo: "shakacode/react_on_rails",
@@ -92,8 +133,24 @@ describe("readCoordinationState", () => {
       createdByMachine: "m5",
       launchPrompt: "Use $pr-batch to complete batch-1."
     });
-    expect(state.batches[0].lanes[0].dependsOn).toEqual(["batch-1:backend"]);
-    expect(state.events[0]).toMatchObject({ eventId: "event-1", type: "lane.started", machineId: "m5" });
+    expect(state.batches[0].lanes[0]).toMatchObject({
+      dependsOn: ["batch-1:backend"],
+      threadHandle: "thread-a",
+      host: "codex",
+      operator: "justin",
+      branch: "feature/operator-view",
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+    });
+    expect(state.events[0]).toMatchObject({
+      eventId: "event-1",
+      type: "lane.started",
+      machineId: "m5",
+      threadHandle: "thread-a",
+      host: "codex",
+      operator: "justin",
+      branch: "feature/operator-view",
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+    });
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("events/batch-1.jsonl:2")])
     );
@@ -469,6 +526,59 @@ describe("readCoordinationState", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.claims).toEqual([]);
     expect(state.warnings[0].message).toContain("AGENT_COORD_TOKEN");
+  });
+
+  it("keeps host app metadata separate from machine id", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const prefix = url.searchParams.get("prefix");
+      const entriesByPrefix = {
+        claims: [
+          {
+            path: "claims/shakacode/react_on_rails/4005.json",
+            data: {
+              schema_version: 1,
+              repo: "shakacode/react_on_rails",
+              target: "4005",
+              agent_id: "worker-api",
+              host: "codex",
+              status: "active"
+            }
+          }
+        ],
+        heartbeats: [
+          {
+            path: "heartbeats/worker-api.json",
+            data: {
+              schema_version: 1,
+              agent_id: "worker-api",
+              host: "claude",
+              repo: "shakacode/react_on_rails",
+              target: "4005",
+              status: "in_progress",
+              updated_at: "2026-06-17T19:50:00Z",
+              expires_at: "2026-06-17T20:05:00Z"
+            }
+          }
+        ],
+        batches: [],
+        events: []
+      } as const;
+
+      return new Response(JSON.stringify({ entries: entriesByPrefix[prefix as keyof typeof entriesByPrefix] || [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.claims[0]).toMatchObject({ host: "codex", machineId: undefined });
+    expect(state.heartbeats[0]).toMatchObject({ host: "claude", machineId: undefined, liveness: "live" });
   });
 
   it("allows loopback HTTP coordination API URLs", async () => {
