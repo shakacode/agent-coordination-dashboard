@@ -9,6 +9,7 @@ import type {
   WorkItem,
   WorkItemType
 } from "../shared/types";
+import { isQaEventType } from "../shared/qaEvents";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -205,12 +206,13 @@ function deriveOperatorState(input: {
   claim?: ClaimRecord;
   lane?: BatchLane;
   event?: BatchEvent;
+  transitionEvent?: BatchEvent;
   signalStatus?: string;
   liveness?: Liveness | "none";
   blockedOn: string[];
   nowMs: number;
 }): OperatorState {
-  const eventDrivesOperatorState = !input.event || !isQaLikeEvent(input.event);
+  const eventDrivesOperatorState = !input.event || !isQaEventType(input.event.type);
   const text = stateText([
     input.workItem?.schedulingState,
     input.heartbeat?.status,
@@ -241,7 +243,7 @@ function deriveOperatorState(input: {
     return "stale";
   }
   if (liveness === "live") {
-    const transitionAt = input.event?.timestamp || input.heartbeat?.updatedAt;
+    const transitionAt = input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
     if (timestampMs(transitionAt) > 0 && input.nowMs - timestampMs(transitionAt) >= WEDGED_THRESHOLD_MS) {
       return "wedged";
     }
@@ -395,9 +397,14 @@ function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent
     const laneMatch =
       !event.target &&
       (!event.repo || event.repo === item.repo) &&
+      eventMatchesCurrentWorkBatch(item, event) &&
       signals.some((signal) => event.batchId === signal.batchId && event.laneName === signal.laneName);
     return targetMatch || laneMatch;
   });
+}
+
+function latestTransitionEvent(events: BatchEvent[]): BatchEvent | undefined {
+  return latestEvent(events.filter((event) => !isQaEventType(event.type)));
 }
 
 function preferredSignalForWork(item: WorkItem) {
@@ -441,20 +448,6 @@ function matchingEventsForLane(batch: BatchRecord, lane: BatchLane, events: Batc
   });
 }
 
-function isQaLikeEvent(event: BatchEvent): boolean {
-  const type = event.type.toLowerCase();
-  return (
-    type === "qa" ||
-    type === "validation" ||
-    type.startsWith("qa.") ||
-    type.startsWith("qa_") ||
-    type.startsWith("qa-") ||
-    type.startsWith("validation.") ||
-    type.startsWith("validation_") ||
-    type.startsWith("validation-")
-  );
-}
-
 function batchContainsWork(batch: BatchRecord, item: WorkItem, lane: BatchLane): boolean {
   if (!lane.targets.includes(item.target)) {
     return batch.repo === item.repo;
@@ -496,7 +489,9 @@ function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): Non
 }
 
 function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number): OperatorRow {
-  const latest = latestEvent(matchingEventsForWork(item, dashboard.events));
+  const matchingEvents = matchingEventsForWork(item, dashboard.events);
+  const latest = latestEvent(matchingEvents);
+  const transitionEvent = latestTransitionEvent(matchingEvents);
   const { batch, lane } = findSignalLane(item, dashboard.batches);
   const signal = preferredSignalForWork(item);
   const batchTarget = batchTargetForWork(batch, item);
@@ -508,6 +503,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     claim: item.claim,
     lane,
     event: latest,
+    transitionEvent,
     signalStatus: signal?.status,
     blockedOn,
     nowMs
@@ -549,7 +545,9 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
 }
 
 function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[], nowMs: number): OperatorRow {
-  const latest = latestEvent(matchingEventsForLane(batch, lane, events));
+  const matchingEvents = matchingEventsForLane(batch, lane, events);
+  const latest = latestEvent(matchingEvents);
+  const transitionEvent = latestTransitionEvent(matchingEvents);
   const firstTarget = lane.targets[0];
   const repo = (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
   const target = firstTarget || undefined;
@@ -558,6 +556,7 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
   const state = deriveOperatorState({
     lane,
     event: latest,
+    transitionEvent,
     liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,
     nowMs

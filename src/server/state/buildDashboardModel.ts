@@ -17,6 +17,7 @@ import type {
   WorkItem
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
+import { isQaEventType } from "../../shared/qaEvents";
 import { repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
@@ -208,17 +209,7 @@ function isStoppedEvent(event: BatchEvent): boolean {
 }
 
 function isQaEvent(event: BatchEvent): boolean {
-  const type = event.type.toLowerCase();
-  return (
-    type === "qa" ||
-    type === "validation" ||
-    type.startsWith("qa.") ||
-    type.startsWith("qa_") ||
-    type.startsWith("qa-") ||
-    type.startsWith("validation.") ||
-    type.startsWith("validation_") ||
-    type.startsWith("validation-")
-  );
+  return isQaEventType(event.type);
 }
 
 function scopedBatchEvent(event: BatchEvent, batch: BatchRecord): BatchEvent {

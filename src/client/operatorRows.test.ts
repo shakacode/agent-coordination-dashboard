@@ -188,6 +188,18 @@ describe("operatorRows", () => {
             batchSignals: [{ batchId: "batch-1", laneName: "queued-lane", status: "queued", blockedOn: [] }]
           })
         ],
+        events: [
+          {
+            eventId: "old-lane-done",
+            type: "done",
+            batchId: "batch-old",
+            laneName: "docs",
+            repo: "repo/app",
+            status: "done",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-old.jsonl:1"
+          }
+        ],
         batches: [
           {
             schemaVersion: 1,
@@ -536,6 +548,18 @@ describe("operatorRows", () => {
             ]
           })
         ],
+        events: [
+          {
+            eventId: "old-lane-done",
+            type: "done",
+            batchId: "batch-old",
+            laneName: "docs",
+            repo: "repo/app",
+            status: "done",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-old.jsonl:1"
+          }
+        ],
         batches: [
           {
             schemaVersion: 1,
@@ -583,6 +607,43 @@ describe("operatorRows", () => {
       laneName: "docs",
       threadHandle: "thread-current"
     });
+  });
+
+  it("keeps wedged state when only QA telemetry is fresh", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [workItem({ claim, heartbeat })],
+        events: [
+          {
+            eventId: "phase-old",
+            type: "phase",
+            batchId: "batch-1",
+            laneName: "lane-a",
+            agentId: "agent-a",
+            repo: "repo/app",
+            target: "123",
+            status: "coding",
+            timestamp: "2026-07-09T19:40:00Z",
+            path: "events/batch-1.jsonl:1"
+          },
+          {
+            eventId: "qa-fresh",
+            type: "qa.validation_requested",
+            batchId: "batch-1",
+            laneName: "qa",
+            repo: "repo/app",
+            target: "123",
+            status: "requested",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-1.jsonl:2"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("wedged");
+    expect(rows[0].activityStatus).toBe("requested");
+    expect(rows[0].lastEventAt).toBe("2026-07-09T19:59:30Z");
   });
 
   it("does not let QA validation events complete live operator work", () => {

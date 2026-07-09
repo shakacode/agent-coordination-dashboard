@@ -193,7 +193,11 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
                     <td>
                       <div className="operator-state">
                         <StatusBadge value={row.operatorState} />
-                        <span>{row.livenessAge === UNKNOWN ? display(row.liveness) : `${row.liveness} · ${row.livenessAge}`}</span>
+                        <span>
+                          {row.livenessAge === UNKNOWN
+                            ? display(row.liveness === "none" ? undefined : row.liveness)
+                            : `${row.liveness} · ${row.livenessAge}`}
+                        </span>
                       </div>
                     </td>
                     <td>

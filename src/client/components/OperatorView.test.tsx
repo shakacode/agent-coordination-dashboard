@@ -122,6 +122,15 @@ describe("OperatorView", () => {
     expect(screen.getByText("No loaded row matches this link.")).toBeInTheDocument();
   });
 
+  it("renders missing liveness as UNKNOWN instead of the raw none value", () => {
+    render(<OperatorView dashboard={dashboard} />);
+
+    const stateCell = screen.getByText("Issue #124").closest("tr")?.querySelector("td");
+
+    expect(stateCell).toHaveTextContent("UNKNOWN");
+    expect(stateCell).not.toHaveTextContent("none");
+  });
+
   it("does not render unsafe coordination URLs as links", () => {
     const unsafeDashboard: DashboardModel = {
       ...dashboard,
