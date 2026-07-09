@@ -17,7 +17,7 @@ interface CoordinationApiOptions {
   token?: string;
 }
 
-type ApiPrefix = "claims" | "heartbeats" | "batches";
+type ApiPrefix = "claims" | "heartbeats" | "batches" | "events";
 
 interface ApiStateEntry {
   path: string;
@@ -25,7 +25,7 @@ interface ApiStateEntry {
 }
 
 const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
-const API_STATE_PREFIXES: ApiPrefix[] = ["claims", "heartbeats", "batches"];
+const API_STATE_PREFIXES: ApiPrefix[] = ["claims", "heartbeats", "batches", "events"];
 const API_FETCH_TIMEOUT_MS = 5000;
 const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const COORDINATION_ROOT_REMEDIATION = [
@@ -198,7 +198,7 @@ async function readApiCoordinationState(options: Required<CoordinationApiOptions
     claims: normalizeApiEntries("claims", entries.claims, warnings, normalizeClaim),
     heartbeats: normalizeApiEntries("heartbeats", entries.heartbeats, warnings, (raw, path) => normalizeHeartbeat(raw, path, now)),
     batches: normalizeApiEntries("batches", entries.batches, warnings, normalizeBatch),
-    events: [],
+    events: normalizeApiEntries("events", entries.events, warnings, normalizeBatchEvent),
     warnings
   };
 }
@@ -374,7 +374,8 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
 }
 
 function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchEvent {
-  const timestamp = stringValue(raw.timestamp) || stringValue(raw.created_at) || stringValue(raw.updated_at) || undefined;
+  const timestamp =
+    stringValue(raw.timestamp) || stringValue(raw.at) || stringValue(raw.created_at) || stringValue(raw.updated_at) || undefined;
   const batchId = stringValue(raw.batch_id) || undefined;
   const laneName = stringValue(raw.lane_name) || stringValue(raw.lane_id) || stringValue(raw.lane) || undefined;
 
@@ -387,7 +388,7 @@ function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchE
     agentId: stringValue(raw.agent_id) || undefined,
     repo: stringValue(raw.repo) || undefined,
     target: raw.target ? String(raw.target) : undefined,
-    status: stringValue(raw.status) || undefined,
+    status: stringValue(raw.status) || stringValue(raw.phase) || undefined,
     message: stringValue(raw.message) || undefined,
     timestamp,
     path

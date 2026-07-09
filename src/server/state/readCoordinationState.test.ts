@@ -162,7 +162,7 @@ describe("readCoordinationState", () => {
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("claims");
   });
 
-  it("reads claims, heartbeats, and batches from the coordination API when configured", async () => {
+  it("reads claims, heartbeats, batches, and events from the coordination API when configured", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(init?.headers).toEqual({ authorization: "Bearer test-token" });
       const url = new URL(String(input));
@@ -205,6 +205,24 @@ describe("readCoordinationState", () => {
               lanes: [{ name: "api", owner: "worker-api", targets: ["4005"] }]
             }
           }
+        ],
+        events: [
+          {
+            path: "events/batch-api/20260709T001500000000Z-event.json",
+            data: {
+              schema_version: 1,
+              event_id: "20260709T001500000000Z-event",
+              type: "phase",
+              batch_id: "batch-api",
+              lane: "api",
+              agent_id: "worker-api",
+              repo: "shakacode/react_on_rails",
+              target: "4005",
+              phase: "validating",
+              at: "2026-06-17T19:55:00Z",
+              message: "running tests"
+            }
+          }
         ]
       } as const;
 
@@ -220,12 +238,53 @@ describe("readCoordinationState", () => {
       token: " test-token\n"
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(state.claims[0]).toMatchObject({ agentId: "worker-api", repo: "shakacode/react_on_rails", target: "4005" });
     expect(state.heartbeats[0]).toMatchObject({ agentId: "worker-api", machineId: "m1", liveness: "live" });
     expect(state.batches[0]).toMatchObject({ batchId: "batch-api", lanes: [expect.objectContaining({ name: "api" })] });
-    expect(state.events).toEqual([]);
+    expect(state.events[0]).toMatchObject({
+      eventId: "20260709T001500000000Z-event",
+      type: "phase",
+      batchId: "batch-api",
+      laneName: "api",
+      agentId: "worker-api",
+      repo: "shakacode/react_on_rails",
+      target: "4005",
+      status: "validating",
+      message: "running tests",
+      timestamp: "2026-06-17T19:55:00Z"
+    });
     expect(state.warnings).toEqual([]);
+  });
+
+  it("keeps API mode usable when the backend does not support events yet", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const prefix = url.searchParams.get("prefix");
+      if (prefix === "events") {
+        return new Response(JSON.stringify({ error: "invalid_prefix" }), {
+          status: 400,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      return new Response(JSON.stringify({ entries: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(state.events).toEqual([]);
+    expect(state.warnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: "Could not read coordination API events: 400 invalid_prefix" })])
+    );
   });
 
   it("keeps successful API prefixes when one prefix fails", async () => {
@@ -349,7 +408,7 @@ describe("readCoordinationState", () => {
     await vi.runAllTimersAsync();
     const state = await statePromise;
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(state.claims).toEqual([]);
     expect(state.heartbeats).toEqual([]);
     expect(state.batches).toEqual([]);
@@ -393,7 +452,7 @@ describe("readCoordinationState", () => {
     await vi.runAllTimersAsync();
     const state = await statePromise;
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("Could not read coordination API claims: timed out after 5000ms")])
     );
@@ -421,7 +480,7 @@ describe("readCoordinationState", () => {
       token: "test-token"
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(state.warnings).toEqual([]);
   });
 });
