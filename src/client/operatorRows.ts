@@ -70,7 +70,7 @@ interface MetadataSource {
   prUrl?: string;
 }
 
-const DONE_PATTERN = /\b(complete|completed|done|merged|closed|passed)\b/i;
+const DONE_PATTERN = /\b(complete|completed|done|merged|closed|passed|released)\b/i;
 const PAUSED_PATTERN = /\b(paused?|token[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?limit|context[_\-\s]?window)/i;
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
@@ -214,8 +214,7 @@ function deriveOperatorState(input: {
     input.lane?.status,
     input.event?.type,
     input.event?.status,
-    input.signalStatus,
-    ...input.blockedOn
+    input.signalStatus
   ]);
 
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);

@@ -191,6 +191,124 @@ describe("buildDashboardModel", () => {
     );
   });
 
+  it("drops claim and heartbeat records whose operator metadata references out-of-scope repos", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [
+        {
+          ...claim,
+          repo: "repo-a/app",
+          target: "4005",
+          prUrl: "https://github.com/secret/repo/pull/4005"
+        }
+      ],
+      heartbeats: [
+        {
+          ...heartbeat,
+          repo: "repo-a/app",
+          target: "4005",
+          prUrl: "https://github.com/secret/repo/pull/4005"
+        }
+      ],
+      batches: [],
+      githubItems: [
+        {
+          repo: "repo-a/app",
+          target: "4005",
+          type: "pull_request",
+          title: "Scoped PR",
+          url: "https://github.com/repo-a/app/pull/4005",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded"
+        }
+      ],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0]).toMatchObject({
+      repo: "repo-a/app",
+      target: "4005",
+      claim: undefined,
+      heartbeat: undefined,
+      schedulingState: "ready_for_batch"
+    });
+    expect(model.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([
+        "Skipped 1 claim records outside saved target repositories.",
+        "Skipped 1 heartbeat records outside saved target repositories."
+      ])
+    );
+  });
+
+  it("drops lane and event operator metadata that references out-of-scope repos", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "repo-a/app",
+          targets: [
+            { type: "pull_request", target: "10", repo: "repo-a/app" },
+            { type: "pull_request", target: "11", repo: "repo-a/app" }
+          ],
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "safe",
+              owner: "worker-a",
+              targets: ["10"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: [],
+              branch: "feature/operator-view"
+            },
+            {
+              name: "leaky",
+              owner: "worker-b",
+              targets: ["11"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: [],
+              prUrl: "https://github.com/secret/repo/pull/11"
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "event-leaky",
+          type: "done",
+          batchId: "batch-1",
+          laneName: "safe",
+          repo: "repo-a/app",
+          target: "10",
+          prUrl: "https://github.com/secret/repo/pull/10",
+          timestamp: "2026-06-17T19:55:00Z",
+          path: "events/batch-1.jsonl:1"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches[0].lanes.map((lane) => lane.name)).toEqual(["safe"]);
+    expect(model.batches[0].lanes[0].branch).toBe("feature/operator-view");
+    expect(model.events).toEqual([]);
+    expect(model.warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining(["Skipped 1 batch history records outside saved target repositories."])
+    );
+  });
+
   it("preserves global coordination API warnings while scoping dashboard data", () => {
     const model = buildDashboardModel({
       stateRoot: "coordination-api",

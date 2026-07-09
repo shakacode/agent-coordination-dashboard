@@ -22,19 +22,22 @@ Every claim, heartbeat, and batch event should include:
 
 - `agent_id`: stable worker/session id.
 - `machine_id`: short machine label, such as `workstation-1` or `buildbox-a`.
-- `thread_handle`: operator-facing Codex/Claude thread handle or session label.
-- `host`: host app or runner surface, such as `codex` or `claude`. Do not use
-  this as a machine label; use `machine_id` for machine identity.
-- `operator`: human or service operator responsible for the thread.
 - `batch_id`: stable batch id when the work belongs to a batch.
 - `repo`: `owner/repo`.
 - `target`: issue number, PR number, or other repo-scoped target id.
-- `branch`: current feature branch when known.
-- `pr_url`: pull request URL when known.
 - `status`: current phase, such as `queued`, `in_progress`, `blocked`,
   `token_limit_pause`, `continued`, `ready`, or `done`.
 - `updated_at`: ISO-8601 timestamp for claims and heartbeats.
 - `expires_at`: ISO-8601 timestamp for heartbeats and active claims.
+
+When known, include operator metadata:
+
+- `thread_handle`: operator-facing Codex/Claude thread handle or session label.
+- `host`: host app or runner surface, such as `codex` or `claude`. Do not use
+  this as a machine label; use `machine_id` for machine identity.
+- `operator`: human or service operator responsible for the thread.
+- `branch`: current feature branch.
+- `pr_url`: pull request URL.
 
 Use a stable `AGENT_COORD_MACHINE_ID` value in batch launch environments so
 every worker writes the same machine label consistently.

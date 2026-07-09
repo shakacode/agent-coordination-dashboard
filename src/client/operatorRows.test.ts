@@ -157,7 +157,7 @@ describe("operatorRows", () => {
       id: "repo/app#124",
       target: "124",
       schedulingState: "started_not_processing",
-      batchSignals: [{ batchId: "batch-1", laneName: "blocked-lane", status: "blocked", blockedOn: ["repo/app#123"] }],
+      batchSignals: [{ batchId: "batch-1", laneName: "blocked-lane", status: "coding", blockedOn: ["repo/app#done"] }],
       github: {
         repo: "repo/app",
         target: "124",
@@ -174,7 +174,7 @@ describe("operatorRows", () => {
 
     expect(rows.find((row) => row.target === "123")?.operatorState).toBe("paused");
     expect(rows.find((row) => row.target === "124")?.operatorState).toBe("blocked");
-    expect(rows.find((row) => row.target === "124")?.blockedOn).toEqual(["repo/app#123"]);
+    expect(rows.find((row) => row.target === "124")?.blockedOn).toEqual(["repo/app#done"]);
   });
 
   it("preserves queued target rows as ready before workers start", () => {
@@ -213,7 +213,7 @@ describe("operatorRows", () => {
     expect(rows[0].operatorState).toBe("ready");
   });
 
-  it("treats released claims on ready work as available instead of dead", () => {
+  it("treats released claims as done instead of dead", () => {
     const rows = buildOperatorRows(
       dashboard({
         workItems: [
@@ -226,7 +226,7 @@ describe("operatorRows", () => {
       })
     );
 
-    expect(rows[0].operatorState).toBe("ready");
+    expect(rows[0].operatorState).toBe("done");
   });
 
   it("does not classify rows from target-specific events for other targets in the same lane", () => {
