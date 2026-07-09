@@ -276,6 +276,40 @@ describe("operatorRows", () => {
     expect(rows.find((row) => row.target === "124")?.operatorState).toBe("done");
   });
 
+  it("ignores target events from older batches when a target is reused", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: { ...claim, batchId: "batch-2" },
+            heartbeat: { ...heartbeat, batchId: "batch-2" },
+            batchSignals: [{ batchId: "batch-2", laneName: "current-lane", status: "coding", blockedOn: [] }]
+          })
+        ],
+        events: [
+          {
+            eventId: "old-batch-done",
+            type: "done",
+            batchId: "batch-1",
+            laneName: "old-lane",
+            agentId: "agent-a",
+            repo: "repo/app",
+            target: "123",
+            status: "done",
+            timestamp: "2026-07-09T19:58:00Z",
+            path: "events/batch-1.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      operatorState: "running",
+      activityStatus: "coding"
+    });
+    expect(rows[0].lastEventAt).toBeUndefined();
+  });
+
   it("keeps freeform event messages out of operator-state classification", () => {
     const rows = buildOperatorRows(
       dashboard({

@@ -358,10 +358,31 @@ function sortRows(rows: OperatorRow[], targetRepos: string[]): OperatorRow[] {
   });
 }
 
+function currentBatchIdsForWork(item: WorkItem): Set<string> {
+  return new Set(
+    [
+      item.claim?.batchId,
+      item.heartbeat?.batchId,
+      ...(item.batchSignals || []).map((signal) => signal.batchId)
+    ].filter((batchId): batchId is string => Boolean(batchId))
+  );
+}
+
+function eventMatchesCurrentWorkBatch(item: WorkItem, event: BatchEvent): boolean {
+  if (!event.batchId) {
+    return true;
+  }
+  const batchIds = currentBatchIdsForWork(item);
+  return batchIds.size === 0 || batchIds.has(event.batchId);
+}
+
 function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent[] {
   const signals = item.batchSignals || [];
   return events.filter((event) => {
-    const targetMatch = event.target === item.target && (!event.repo || event.repo === item.repo);
+    const targetMatch =
+      event.target === item.target &&
+      (!event.repo || event.repo === item.repo) &&
+      eventMatchesCurrentWorkBatch(item, event);
     const laneMatch =
       !event.target &&
       (!event.repo || event.repo === item.repo) &&
