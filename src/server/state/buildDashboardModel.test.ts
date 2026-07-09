@@ -191,6 +191,229 @@ describe("buildDashboardModel", () => {
     );
   });
 
+  it("redacts leaky operator metadata without dropping in-scope claim and heartbeat records", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [
+        {
+          ...claim,
+          repo: "repo-a/app",
+          target: "4005",
+          prUrl: "https://github.com/secret/repo/pull/4005"
+        }
+      ],
+      heartbeats: [
+        {
+          ...heartbeat,
+          repo: "repo-a/app",
+          target: "4005",
+          prUrl: "https://github.com/secret/repo/pull/4005"
+        }
+      ],
+      batches: [],
+      githubItems: [
+        {
+          repo: "repo-a/app",
+          target: "4005",
+          type: "pull_request",
+          title: "Scoped PR",
+          url: "https://github.com/repo-a/app/pull/4005",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded"
+        }
+      ],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0]).toMatchObject({
+      repo: "repo-a/app",
+      target: "4005",
+      claim: expect.objectContaining({
+        repo: "repo-a/app",
+        target: "4005"
+      }),
+      heartbeat: expect.objectContaining({
+        repo: "repo-a/app",
+        target: "4005"
+      }),
+      schedulingState: "in_process"
+    });
+    expect(model.workItems[0].claim?.prUrl).toBeUndefined();
+    expect(model.workItems[0].heartbeat?.prUrl).toBeUndefined();
+    expect(model.warnings.map((warning) => warning.message)).not.toContain(
+      "Skipped 1 claim records outside saved target repositories."
+    );
+    expect(model.warnings.map((warning) => warning.message)).not.toContain(
+      "Skipped 1 heartbeat records outside saved target repositories."
+    );
+  });
+
+  it("redacts prose branch metadata that references out-of-scope repos", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [
+        {
+          ...claim,
+          repo: "repo-a/app",
+          target: "4005",
+          branch: "fix for secret/repo"
+        }
+      ],
+      heartbeats: [
+        {
+          ...heartbeat,
+          repo: "repo-a/app",
+          target: "4005",
+          branch: "feature/operator-view"
+        }
+      ],
+      batches: [],
+      githubItems: [
+        {
+          repo: "repo-a/app",
+          target: "4005",
+          type: "pull_request",
+          title: "Scoped PR",
+          url: "https://github.com/repo-a/app/pull/4005",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded"
+        }
+      ],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].claim?.branch).toBeUndefined();
+    expect(model.workItems[0].heartbeat?.branch).toBe("feature/operator-view");
+  });
+
+  it("drops leaky lanes and redacts in-scope event operator metadata", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "repo-a/app",
+          targets: [
+            { type: "pull_request", target: "10", repo: "repo-a/app" },
+            { type: "pull_request", target: "11", repo: "repo-a/app" }
+          ],
+          path: "batches/batch-1.json",
+          lanes: [
+            {
+              name: "safe",
+              owner: "worker-a",
+              targets: ["10"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: [],
+              branch: "feature/operator-view"
+            },
+            {
+              name: "leaky",
+              owner: "worker-b",
+              targets: ["11"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: [],
+              prUrl: "https://github.com/secret/repo/pull/11"
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "event-leaky",
+          type: "done",
+          batchId: "batch-1",
+          laneName: "safe",
+          repo: "repo-a/app",
+          target: "10",
+          prUrl: "https://github.com/secret/repo/pull/10",
+          timestamp: "2026-06-17T19:55:00Z",
+          path: "events/batch-1.jsonl:1"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.batches[0].lanes.map((lane) => lane.name)).toEqual(["safe"]);
+    expect(model.batches[0].lanes[0].branch).toBe("feature/operator-view");
+    expect(model.events).toHaveLength(1);
+    expect(model.events[0]).toMatchObject({
+      eventId: "event-leaky",
+      repo: "repo-a/app",
+      target: "10"
+    });
+    expect(model.events[0].prUrl).toBeUndefined();
+    expect(model.warnings.map((warning) => warning.message)).not.toContain(
+      "Skipped 1 batch history records outside saved target repositories."
+    );
+  });
+
+  it("keeps targetless stop events while redacting leaky operator metadata", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-stop",
+          targets: [{ type: "pull_request", target: "10", repo: "repo-a/app" }],
+          path: "batches/batch-stop.json",
+          lanes: [
+            {
+              name: "safe",
+              owner: "worker-a",
+              targets: ["10"],
+              dependsOn: [],
+              status: "running",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "stop-leaky",
+          type: "batch.stop_requested",
+          batchId: "batch-stop",
+          status: "stop_requested",
+          prUrl: "https://github.com/secret/repo/pull/10",
+          timestamp: "2026-06-17T19:55:00Z",
+          path: "events/batch-stop.jsonl:1"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.events[0]).toMatchObject({
+      type: "batch.stop_requested",
+      batchId: "batch-stop",
+      message: "Unscoped batch-level event details hidden by dashboard scoping."
+    });
+    expect(model.events[0].prUrl).toBeUndefined();
+    expect(model.batchOperations[0]).toEqual(expect.objectContaining({ controlStatus: "stop_requested" }));
+  });
+
   it("preserves global coordination API warnings while scoping dashboard data", () => {
     const model = buildDashboardModel({
       stateRoot: "coordination-api",

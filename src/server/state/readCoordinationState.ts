@@ -268,10 +268,30 @@ function machineIdFrom(raw: Record<string, unknown>): string | undefined {
   return (
     stringValue(raw.machine_id) ||
     stringValue(raw.machine) ||
-    stringValue(raw.host) ||
     stringValue(raw.hostname) ||
     undefined
   );
+}
+
+function threadHandleFrom(raw: Record<string, unknown>): string | undefined {
+  return (
+    stringValue(raw.thread_handle) ||
+    stringValue(raw.thread_name) ||
+    stringValue(raw.thread) ||
+    undefined
+  );
+}
+
+function hostFrom(raw: Record<string, unknown>): string | undefined {
+  return stringValue(raw.host) || stringValue(raw.host_app) || undefined;
+}
+
+function operatorFrom(raw: Record<string, unknown>): string | undefined {
+  return stringValue(raw.operator) || stringValue(raw.operator_id) || undefined;
+}
+
+function prUrlFrom(raw: Record<string, unknown>): string | undefined {
+  return stringValue(raw.pr_url) || stringValue(raw.prUrl) || stringValue(raw.pull_request_url) || undefined;
 }
 
 function repoFromClaimPath(path: string): string {
@@ -305,8 +325,12 @@ function normalizeClaim(raw: Record<string, unknown>, path: string): ClaimRecord
     target: raw.target ? String(raw.target) : targetFromPath(path),
     agentId: stringValue(raw.agent_id, "UNKNOWN"),
     machineId: machineIdFrom(raw),
+    threadHandle: threadHandleFrom(raw),
+    host: hostFrom(raw),
+    operator: operatorFrom(raw),
     batchId: stringValue(raw.batch_id) || undefined,
     branch: stringValue(raw.branch) || undefined,
+    prUrl: prUrlFrom(raw),
     status: raw.status === "released" ? "released" : raw.status === "active" ? "active" : "unknown",
     claimedAt: stringValue(raw.claimed_at) || undefined,
     updatedAt: stringValue(raw.updated_at) || undefined,
@@ -323,10 +347,14 @@ function normalizeHeartbeat(raw: Record<string, unknown>, path: string, now: Dat
     schemaVersion: Number(raw.schema_version || 1),
     agentId: stringValue(raw.agent_id, targetFromPath(path)),
     machineId: machineIdFrom(raw),
+    threadHandle: threadHandleFrom(raw),
+    host: hostFrom(raw),
+    operator: operatorFrom(raw),
     repo: stringValue(raw.repo) || undefined,
     target: raw.target ? String(raw.target) : undefined,
     batchId: stringValue(raw.batch_id) || undefined,
     branch: stringValue(raw.branch) || undefined,
+    prUrl: prUrlFrom(raw),
     status: stringValue(raw.status, "unknown"),
     updatedAt,
     expiresAt,
@@ -367,7 +395,12 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
         dependsOn,
         status: stringValue(lane.status, "unknown"),
         liveness: "no-heartbeat",
-        blockedOn: []
+        blockedOn: [],
+        threadHandle: threadHandleFrom(lane),
+        host: hostFrom(lane),
+        operator: operatorFrom(lane),
+        branch: stringValue(lane.branch) || undefined,
+        prUrl: prUrlFrom(lane)
       };
     })
   };
@@ -386,8 +419,13 @@ function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchE
     laneName,
     machineId: machineIdFrom(raw),
     agentId: stringValue(raw.agent_id) || undefined,
+    threadHandle: threadHandleFrom(raw),
+    host: hostFrom(raw),
+    operator: operatorFrom(raw),
     repo: stringValue(raw.repo) || undefined,
     target: raw.target ? String(raw.target) : undefined,
+    branch: stringValue(raw.branch) || undefined,
+    prUrl: prUrlFrom(raw),
     status: stringValue(raw.status) || stringValue(raw.phase) || undefined,
     message: stringValue(raw.message) || undefined,
     timestamp,

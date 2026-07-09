@@ -6,9 +6,11 @@ import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManif
 import { BatchesTab } from "./components/BatchesTab";
 import { HealthTab } from "./components/HealthTab";
 import { MachinesTab } from "./components/MachinesTab";
+import { OperatorView } from "./components/OperatorView";
 import { OverviewTab } from "./components/OverviewTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { WorkTab } from "./components/WorkTab";
+import { operatorDeepLinkFromSearchParams } from "./operatorRows";
 
 type Tab = "overview" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
@@ -18,6 +20,10 @@ const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
   return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
+}
+
+function readOperatorDeepLink() {
+  return operatorDeepLinkFromSearchParams(new URLSearchParams(window.location.search));
 }
 
 function canSelectWorkItem(item: WorkItem): boolean {
@@ -53,6 +59,7 @@ export function App() {
   const dashboardRequestVersion = useRef(0);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
+  const operatorDeepLink = useMemo(readOperatorDeepLink, []);
 
   function beginUserAction() {
     userActionInFlightCount.current += 1;
@@ -306,6 +313,8 @@ export function App() {
 
       <div className="dashboard-layout">
         <section className="content-region">
+          <OperatorView dashboard={dashboard} deepLink={operatorDeepLink} />
+
           <nav className="tabs" aria-label="Dashboard views">
             <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")} type="button">
               Overview

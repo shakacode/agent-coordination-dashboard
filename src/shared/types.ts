@@ -17,8 +17,12 @@ export interface ClaimRecord {
   target: string;
   agentId: string;
   machineId?: string;
+  threadHandle?: string;
+  host?: string;
+  operator?: string;
   batchId?: string;
   branch?: string;
+  prUrl?: string;
   status: ClaimStatus;
   claimedAt?: string;
   updatedAt?: string;
@@ -30,10 +34,14 @@ export interface HeartbeatRecord {
   schemaVersion: number;
   agentId: string;
   machineId?: string;
+  threadHandle?: string;
+  host?: string;
+  operator?: string;
   repo?: string;
   target?: string;
   batchId?: string;
   branch?: string;
+  prUrl?: string;
   status: string;
   updatedAt: string;
   expiresAt: string;
@@ -49,6 +57,11 @@ export interface BatchLane {
   status: string;
   liveness: Liveness;
   blockedOn: string[];
+  threadHandle?: string;
+  host?: string;
+  operator?: string;
+  branch?: string;
+  prUrl?: string;
 }
 
 export interface BatchTarget {
@@ -92,8 +105,13 @@ export interface BatchEvent {
   laneName?: string;
   machineId?: string;
   agentId?: string;
+  threadHandle?: string;
+  host?: string;
+  operator?: string;
   repo?: string;
   target?: string;
+  branch?: string;
+  prUrl?: string;
   status?: string;
   message?: string;
   timestamp?: string;

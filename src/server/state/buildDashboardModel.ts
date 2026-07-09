@@ -17,7 +17,8 @@ import type {
   WorkItem
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
-import { repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { isQaEventType } from "../../shared/qaEvents";
+import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
 const REDACTED_DEPENDENCY_REF = "outside saved target repositories";
@@ -208,17 +209,7 @@ function isStoppedEvent(event: BatchEvent): boolean {
 }
 
 function isQaEvent(event: BatchEvent): boolean {
-  const type = event.type.toLowerCase();
-  return (
-    type === "qa" ||
-    type === "validation" ||
-    type.startsWith("qa.") ||
-    type.startsWith("qa_") ||
-    type.startsWith("qa-") ||
-    type.startsWith("validation.") ||
-    type.startsWith("validation_") ||
-    type.startsWith("validation-")
-  );
+  return isQaEventType(event.type);
 }
 
 function scopedBatchEvent(event: BatchEvent, batch: BatchRecord): BatchEvent {
@@ -304,6 +295,48 @@ function repoRefsFromPrompt(value: string | undefined): string[] {
   return Array.from(new Set([...repoRefsFromText(value), ...repoRefsFromPromptHeaders(value)]));
 }
 
+interface OperatorMetadata {
+  threadHandle?: string;
+  host?: string;
+  operator?: string;
+  branch?: string;
+  prUrl?: string;
+}
+
+function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
+  return [
+    ...repoRefsFromText(metadata.threadHandle),
+    ...repoRefsFromText(metadata.host),
+    ...repoRefsFromText(metadata.operator),
+    ...repoRefsFromBranch(metadata.branch),
+    ...repoRefsFromText(metadata.prUrl)
+  ];
+}
+
+function hasOutOfScopeRepoRef(refs: string[], targetRepoSet: Set<string>): boolean {
+  return refs.some((repo) => !targetRepoSet.has(repo));
+}
+
+function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: T, targetRepoSet: Set<string>): T {
+  const redacted = { ...metadata };
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.threadHandle), targetRepoSet)) {
+    delete redacted.threadHandle;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.host), targetRepoSet)) {
+    delete redacted.host;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.operator), targetRepoSet)) {
+    delete redacted.operator;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromBranch(redacted.branch), targetRepoSet)) {
+    delete redacted.branch;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.prUrl), targetRepoSet)) {
+    delete redacted.prUrl;
+  }
+  return redacted;
+}
+
 function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): boolean {
   const explicitRepos = [
     ...(batch.targets || []).map((target) => target.repo),
@@ -312,6 +345,7 @@ function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): 
       ...repoRefsFromText(lane.name),
       ...repoRefsFromText(lane.owner),
       ...repoRefsFromText(lane.status),
+      ...repoRefsFromOperatorMetadata(lane),
       ...lane.dependsOn.flatMap((dependency) => repoRefsFromText(dependency)),
       ...lane.blockedOn.flatMap((blockedOn) => repoRefsFromText(blockedOn))
     ]),
@@ -339,6 +373,7 @@ function laneHasOutOfScopeMetadata(lane: BatchLane, targetRepoSet: Set<string>):
     ...repoRefsFromText(lane.name),
     ...repoRefsFromText(lane.owner),
     ...repoRefsFromText(lane.status),
+    ...repoRefsFromOperatorMetadata(lane),
     ...lane.dependsOn.flatMap((dependency) => repoRefsFromText(dependency)),
     ...lane.blockedOn.flatMap((blockedOn) => repoRefsFromText(blockedOn))
   ];
@@ -669,8 +704,11 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const inputEvents = input.events || [];
   const scopeWarnings: CoordinationWarning[] = [];
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
-  const currentClaims = nonReleasedClaims.filter((claim) => targetRepoSet.has(claim.repo));
-  const repoScopedHeartbeats = input.heartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
+  const sanitizedClaims = nonReleasedClaims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet));
+  const sanitizedHeartbeats = input.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet));
+  const sanitizedEvents = inputEvents.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet));
+  const currentClaims = sanitizedClaims.filter((claim) => targetRepoSet.has(claim.repo));
+  const repoScopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
   const reposByBatchTarget = new Map<string, Set<string>>();
   for (const claim of currentClaims) {
@@ -803,7 +841,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       .filter((batch) => !batch.repo)
       .flatMap((batch) => batch.lanes.flatMap((lane) => lane.targets.map((target) => `${batch.batchId}:${lane.owner}:${target}`)))
   );
-  const scopedHeartbeats = input.heartbeats.filter((heartbeat) => {
+  const scopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => {
     if (heartbeat.repo) {
       return targetRepoSet.has(heartbeat.repo);
     }
@@ -816,7 +854,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   for (const batch of scopedBatches) {
     batchesById.set(batch.batchId, [...(batchesById.get(batch.batchId) || []), batch]);
   }
-  const scopedEvents = inputEvents
+  const scopedEvents = sanitizedEvents
     .flatMap((event) => {
       const batchId = event.batchId;
       if (!batchId) {
