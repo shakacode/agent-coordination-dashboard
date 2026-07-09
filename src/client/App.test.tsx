@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, backgroundRefreshTimeoutMs } from "./App";
 
 const model = {
   generatedAt: "2026-06-17T20:00:00Z",
@@ -202,6 +202,191 @@ describe("App", () => {
         method: "PUT"
       })
     );
+  });
+
+  it("auto-refreshes the dashboard when a refresh interval is configured", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(init.body))
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => (url === "/api/settings" ? { ...settings, refreshIntervalMs: 100 } : model)
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    const dashboardCallCount = () => fetchMock.mock.calls.filter(([input]) => String(input) === "/api/dashboard").length;
+    await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(0));
+    const initialCount = dashboardCallCount();
+    await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(initialCount));
+  });
+
+  it("sizes background refresh timeouts from the configured polling interval", () => {
+    expect(backgroundRefreshTimeoutMs(100)).toBe(4000);
+    expect(backgroundRefreshTimeoutMs(10000)).toBe(11000);
+    expect(backgroundRefreshTimeoutMs(Number.NaN)).toBe(4000);
+  });
+
+  it("preserves selected work items across background refreshes", async () => {
+    let dashboardCalls = 0;
+    const unselectedModel = {
+      ...model,
+      workItems: model.workItems.map((item) => ({ ...item, selected: false }))
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(init.body))
+        } as Response;
+      }
+      if (url === "/api/settings") {
+        return {
+          ok: true,
+          json: async () => ({ ...settings, refreshIntervalMs: 100 })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return {
+        ok: true,
+        json: async () => unselectedModel
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+    const firstCheckbox = screen.getAllByRole("checkbox")[0];
+    expect(firstCheckbox).not.toBeChecked();
+    await userEvent.click(firstCheckbox);
+    expect(firstCheckbox).toBeChecked();
+
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
+    expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
+  });
+
+  it("keeps the current dashboard visible when a background refresh fails", async () => {
+    let dashboardCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(init.body))
+        } as Response;
+      }
+      if (url === "/api/settings") {
+        return {
+          ok: true,
+          json: async () => ({ ...settings, refreshIntervalMs: 100 })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls > 1) {
+        throw new Error("temporary API failure");
+      }
+      return {
+        ok: true,
+        json: async () => model
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
+    expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument();
+    expect(screen.queryByText("temporary API failure")).not.toBeInTheDocument();
+  });
+
+  it("keeps foreground refresh disabled until overlapping user actions settle", async () => {
+    const batchModel = {
+      ...model,
+      targetRepos: ["repo-a/app", "repo-b/app"],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-overlap",
+          targets: [
+            { type: "pull_request", target: "1", repo: "repo-a/app" },
+            { type: "pull_request", target: "2", repo: "repo-b/app" }
+          ],
+          lanes: [],
+          path: "/state/batches/batch-overlap.json"
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "batch-overlap",
+          batchPath: "/state/batches/batch-overlap.json",
+          controlStatus: "running",
+          eventCount: 0,
+          qa: {
+            total: 0,
+            missing: 0,
+            requested: 0,
+            inProgress: 0,
+            passed: 0,
+            failed: 0,
+            unknown: 0
+          }
+        }
+      ]
+    };
+    const releaseStopResponses: Array<() => void> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings") {
+        return {
+          ok: true,
+          json: async () => ({ targetRepos: ["repo-a/app", "repo-b/app"], refreshIntervalMs: 100 })
+        } as Response;
+      }
+      if (url === "/api/batches/stop" && init?.method === "POST") {
+        return new Promise<Response>((resolve) => {
+          releaseStopResponses.push(() =>
+            resolve({
+              ok: true,
+              json: async () => ({ path: "/state/events/batches/batch-overlap.jsonl" })
+            } as Response)
+          );
+        });
+      }
+      return {
+        ok: true,
+        json: async () => batchModel
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    const refreshButton = screen.getByRole("button", { name: "Refresh dashboard" });
+    await userEvent.click(screen.getByRole("button", { name: "Batches" }));
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-overlap in repo-a/app" }));
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-overlap in repo-b/app" }));
+
+    await waitFor(() => expect(releaseStopResponses).toHaveLength(1));
+    expect(refreshButton).toBeDisabled();
+    releaseStopResponses[0]();
+    await screen.findByText("Batch stop requested for repo-a/app.");
+    expect(refreshButton).toBeDisabled();
+    await waitFor(() => expect(releaseStopResponses).toHaveLength(2));
+    releaseStopResponses[1]();
+    await screen.findByText("Batch stop requested for repo-b/app.");
+    await waitFor(() => expect(refreshButton).not.toBeDisabled());
   });
 
   it("keeps batch import validation failures local to the Batches view", async () => {

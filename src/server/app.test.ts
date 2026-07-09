@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDashboardApp } from "./app";
+import { canBypassDashboardCache, createDashboardApp } from "./app";
 import type { ServerConfig } from "./config";
 
 const servers: Server[] = [];
@@ -14,6 +14,7 @@ function testConfig(stateRoot: string, overrides: Partial<ServerConfig> = {}): S
     host: "127.0.0.1",
     allowedHosts: ["127.0.0.1", "localhost"],
     stateRoot,
+    refreshIntervalMs: 0,
     targetRepos: ["shakacode/react_on_rails"],
     settingsPath: join(stateRoot, "settings.json"),
     nodeEnv: "test",
@@ -52,6 +53,117 @@ async function listenEmptyCoordinationApi(): Promise<string> {
 describe("dashboard app import endpoint", () => {
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  it("returns runtime refresh settings with target repositories", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-settings-"));
+    const baseUrl = await listen(stateRoot, { refreshIntervalMs: 2500 });
+
+    const initial = await fetch(`${baseUrl}/api/settings`);
+    await expect(initial.json()).resolves.toEqual({
+      targetRepos: ["shakacode/react_on_rails"],
+      refreshIntervalMs: 2500
+    });
+
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+
+    await expect(saved.json()).resolves.toEqual({
+      targetRepos: ["repo-a/app"],
+      refreshIntervalMs: 2500
+    });
+  });
+
+  it("coalesces dashboard reads while API refresh caching is active", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-"));
+    let githubLoads = 0;
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5000 }), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => {
+        githubLoads += 1;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return { items: [], warnings: [] };
+      }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const [first, second] = await Promise.all([fetch(`${baseUrl}/api/dashboard`), fetch(`${baseUrl}/api/dashboard`)]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(githubLoads).toBe(1);
+
+    const cached = await fetch(`${baseUrl}/api/dashboard`);
+    expect(cached.ok).toBe(true);
+    expect(githubLoads).toBe(1);
+
+    const fresh = await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+    expect(fresh.ok).toBe(true);
+    expect(githubLoads).toBe(2);
+
+    const cachedAfterFresh = await fetch(`${baseUrl}/api/dashboard`);
+    expect(cachedAfterFresh.ok).toBe(true);
+    expect(githubLoads).toBe(2);
+
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.ok).toBe(true);
+    const refreshed = await fetch(`${baseUrl}/api/dashboard`);
+    expect(refreshed.ok).toBe(true);
+    expect(githubLoads).toBe(3);
+  });
+
+  it("does not cache in-flight dashboard reads after a local write invalidates them", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-inflight-"));
+    let githubLoads = 0;
+    let resolveFirstLoadStarted: () => void = () => undefined;
+    let releaseFirstLoad: () => void = () => undefined;
+    const firstLoadStarted = new Promise<void>((resolve) => {
+      resolveFirstLoadStarted = resolve;
+    });
+    const firstLoadReleased = new Promise<void>((resolve) => {
+      releaseFirstLoad = resolve;
+    });
+
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5000 }), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => {
+        githubLoads += 1;
+        if (githubLoads === 1) {
+          resolveFirstLoadStarted();
+          await firstLoadReleased;
+        }
+        return { items: [], warnings: [] };
+      }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const firstDashboard = fetch(`${baseUrl}/api/dashboard`);
+    await firstLoadStarted;
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["shakacode/react_on_rails"] })
+    });
+    expect(saved.ok).toBe(true);
+    releaseFirstLoad();
+    await firstDashboard;
+
+    const afterInvalidation = await fetch(`${baseUrl}/api/dashboard`);
+    expect(afterInvalidation.ok).toBe(true);
+    expect(githubLoads).toBe(2);
+  });
+
+  it("allows dashboard cache bypass only from loopback foreground refreshes", () => {
+    expect(canBypassDashboardCache("foreground", "127.0.0.1")).toBe(true);
+    expect(canBypassDashboardCache("foreground", "::1")).toBe(true);
+    expect(canBypassDashboardCache("foreground", "203.0.113.8")).toBe(false);
+    expect(canBypassDashboardCache(undefined, "127.0.0.1")).toBe(false);
   });
 
   it("writes imported batch manifests into the coordination root batches directory", async () => {

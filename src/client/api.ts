@@ -1,15 +1,23 @@
 import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
 
-export async function fetchDashboard(): Promise<DashboardModel> {
-  const response = await fetch("/api/dashboard");
+export async function fetchDashboard(options: { fresh?: boolean; signal?: AbortSignal } = {}): Promise<DashboardModel> {
+  const response = await fetch(
+    "/api/dashboard",
+    options.fresh || options.signal
+      ? {
+          headers: options.fresh ? { "X-Dashboard-Refresh": "foreground" } : undefined,
+          signal: options.signal
+        }
+      : undefined
+  );
   if (!response.ok) {
     throw new Error(`Dashboard API failed with ${response.status}`);
   }
   return (await response.json()) as DashboardModel;
 }
 
-export async function fetchSettings(): Promise<DashboardSettings> {
-  const response = await fetch("/api/settings");
+export async function fetchSettings(options: { signal?: AbortSignal } = {}): Promise<DashboardSettings> {
+  const response = await fetch("/api/settings", options.signal ? { signal: options.signal } : undefined);
   if (!response.ok) {
     throw new Error(`Settings API failed with ${response.status}`);
   }

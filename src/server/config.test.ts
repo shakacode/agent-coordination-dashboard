@@ -10,6 +10,7 @@ describe("readConfig", () => {
     expect(config.stateRoot).toContain(".local/state/agent-coordination");
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");
+    expect(config.refreshIntervalMs).toBe(0);
     expect(config.targetRepos).toEqual([]);
   });
 
@@ -27,6 +28,7 @@ describe("readConfig", () => {
 
     expect(config.coordApiUrl).toBe("https://coord.example.test");
     expect(config.coordApiToken).toBe("secret");
+    expect(config.refreshIntervalMs).toBe(5000);
   });
 
   it("treats blank coordination API settings as unset", () => {
@@ -34,5 +36,12 @@ describe("readConfig", () => {
 
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");
+    expect(config.refreshIntervalMs).toBe(0);
+  });
+
+  it("allows dashboard refresh interval overrides", () => {
+    expect(readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", DASHBOARD_REFRESH_MS: "2500" }).refreshIntervalMs).toBe(2500);
+    expect(readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", DASHBOARD_REFRESH_MS: "0" }).refreshIntervalMs).toBe(0);
+    expect(() => readConfig({ DASHBOARD_REFRESH_MS: "-1" })).toThrow(/DASHBOARD_REFRESH_MS/);
   });
 });
