@@ -121,7 +121,7 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
     () => (hasStructuredLink ? rows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : rows),
     [deepLink, hasStructuredLink, rows]
   );
-  const visibleRows = useMemo(() => filterOperatorRows(linkedRows, query), [linkedRows, query]);
+  const visibleRows = useMemo(() => filterOperatorRows(linkedRows, query, dashboard.targetRepos), [dashboard.targetRepos, linkedRows, query]);
   const noStructuredLinkMatch = hasStructuredLink && linkedRows.length === 0;
 
   return (

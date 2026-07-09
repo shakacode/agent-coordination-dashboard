@@ -102,6 +102,7 @@ const settings = {
 
 describe("App", () => {
   beforeEach(() => {
+    window.history.pushState({}, "", "/");
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -152,6 +153,16 @@ describe("App", () => {
     expect(screen.getByText(/auth required/)).toBeInTheDocument();
     expect(screen.getByText(/Use \$pr-batch/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+  });
+
+  it("passes root search query params to the Operator View", async () => {
+    window.history.pushState({}, "", "/?q=4005");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005"));
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
   });
 
   it("labels info-only coordination messages as notices", async () => {

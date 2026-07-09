@@ -511,7 +511,7 @@ export function buildOperatorRows(dashboard: DashboardModel, options: BuildOpera
   return sortRows(rows, dashboard.targetRepos);
 }
 
-export function filterOperatorRows(rows: OperatorRow[], query: string): OperatorRow[] {
+export function filterOperatorRows(rows: OperatorRow[], query: string, targetRepos = Array.from(new Set(rows.map((row) => row.repo)))): OperatorRow[] {
   const normalized = normalizeSearch(query);
   if (!normalized) {
     return rows;
@@ -520,7 +520,7 @@ export function filterOperatorRows(rows: OperatorRow[], query: string): Operator
   const filtered = exactTarget
     ? rows.filter((row) => row.target === exactTarget || Boolean(row.prUrl?.endsWith(`/pull/${exactTarget}`)))
     : rows.filter((row) => row.searchText.includes(normalized));
-  return sortRows(filtered, Array.from(new Set(rows.map((row) => row.repo))));
+  return sortRows(filtered, targetRepos);
 }
 
 export function operatorDeepLinkFromSearchParams(params: URLSearchParams): OperatorDeepLink {
