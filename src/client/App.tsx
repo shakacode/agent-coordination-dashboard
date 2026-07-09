@@ -61,7 +61,7 @@ export function App() {
     const requestVersion = ++dashboardRequestVersion.current;
     try {
       const loadedSettings = await fetchSettings();
-      const loadedDashboard = await fetchDashboard();
+      const loadedDashboard = await fetchDashboard({ fresh: !isBackground });
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
@@ -108,7 +108,7 @@ export function App() {
       if (requestVersion === dashboardRequestVersion.current) {
         setSettings(saved);
       }
-      const loadedDashboard = await fetchDashboard();
+      const loadedDashboard = await fetchDashboard({ fresh: true });
       if (requestVersion === dashboardRequestVersion.current) {
         setDashboard(loadedDashboard);
       }
@@ -145,7 +145,7 @@ export function App() {
       return {
         ...current,
         workItems: current.workItems.map((item) =>
-          item.id === id && item.schedulingState !== "in_process" && !item.batchSignals?.length
+          item.id === id && canSelectWorkItem(item)
             ? { ...item, selected: !item.selected }
             : item
         )
@@ -159,7 +159,7 @@ export function App() {
     setIsRefreshing(true);
     try {
       await saveImportedBatchManifest(manifest);
-      const loadedDashboard = await fetchDashboard();
+      const loadedDashboard = await fetchDashboard({ fresh: true });
       if (requestVersion === dashboardRequestVersion.current) {
         setDashboard(loadedDashboard);
       }
@@ -177,7 +177,7 @@ export function App() {
     setIsRefreshing(true);
     try {
       await requestBatchStop(input);
-      const loadedDashboard = await fetchDashboard();
+      const loadedDashboard = await fetchDashboard({ fresh: true });
       if (requestVersion === dashboardRequestVersion.current) {
         setDashboard(loadedDashboard);
       }

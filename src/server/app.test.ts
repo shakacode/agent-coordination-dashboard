@@ -99,6 +99,14 @@ describe("dashboard app import endpoint", () => {
     expect(cached.ok).toBe(true);
     expect(githubLoads).toBe(1);
 
+    const fresh = await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+    expect(fresh.ok).toBe(true);
+    expect(githubLoads).toBe(2);
+
+    const cachedAfterFresh = await fetch(`${baseUrl}/api/dashboard`);
+    expect(cachedAfterFresh.ok).toBe(true);
+    expect(githubLoads).toBe(2);
+
     const saved = await fetch(`${baseUrl}/api/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -107,6 +115,47 @@ describe("dashboard app import endpoint", () => {
     expect(saved.ok).toBe(true);
     const refreshed = await fetch(`${baseUrl}/api/dashboard`);
     expect(refreshed.ok).toBe(true);
+    expect(githubLoads).toBe(3);
+  });
+
+  it("does not cache in-flight dashboard reads after a local write invalidates them", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-inflight-"));
+    let githubLoads = 0;
+    let resolveFirstLoadStarted: () => void = () => undefined;
+    let releaseFirstLoad: () => void = () => undefined;
+    const firstLoadStarted = new Promise<void>((resolve) => {
+      resolveFirstLoadStarted = resolve;
+    });
+    const firstLoadReleased = new Promise<void>((resolve) => {
+      releaseFirstLoad = resolve;
+    });
+
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5000 }), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => {
+        githubLoads += 1;
+        if (githubLoads === 1) {
+          resolveFirstLoadStarted();
+          await firstLoadReleased;
+        }
+        return { items: [], warnings: [] };
+      }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const firstDashboard = fetch(`${baseUrl}/api/dashboard`);
+    await firstLoadStarted;
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["shakacode/react_on_rails"] })
+    });
+    expect(saved.ok).toBe(true);
+    releaseFirstLoad();
+    await firstDashboard;
+
+    const afterInvalidation = await fetch(`${baseUrl}/api/dashboard`);
+    expect(afterInvalidation.ok).toBe(true);
     expect(githubLoads).toBe(2);
   });
 

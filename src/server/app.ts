@@ -29,6 +29,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
   const dashboardCacheTtlMs = config.refreshIntervalMs > 0 ? Math.min(config.refreshIntervalMs, 5000) : 0;
+  let dashboardCacheGeneration = 0;
   let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
   let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
 
@@ -49,7 +50,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   function invalidateDashboardCache() {
+    dashboardCacheGeneration += 1;
     cachedDashboard = undefined;
+    dashboardBuildInFlight = undefined;
   }
 
   async function buildScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
@@ -75,10 +78,29 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
-  async function readScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
+  function cacheDashboardModel(key: string, model: DashboardModel, generation: number) {
+    if (generation !== dashboardCacheGeneration) {
+      return;
+    }
+    cachedDashboard = {
+      expiresAt: Date.now() + dashboardCacheTtlMs,
+      key,
+      model
+    };
+  }
+
+  async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
     const key = dashboardCacheKey(settings);
     if (dashboardCacheTtlMs <= 0) {
       return buildScopedDashboard(settings);
+    }
+
+    if (options.bypassCache) {
+      invalidateDashboardCache();
+      const generation = dashboardCacheGeneration;
+      const model = await buildScopedDashboard(settings);
+      cacheDashboardModel(key, model, generation);
+      return model;
     }
 
     const nowMs = Date.now();
@@ -89,13 +111,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return dashboardBuildInFlight.promise;
     }
 
+    const generation = dashboardCacheGeneration;
     const promise = buildScopedDashboard(settings)
       .then((model) => {
-        cachedDashboard = {
-          expiresAt: Date.now() + dashboardCacheTtlMs,
-          key,
-          model
-        };
+        cacheDashboardModel(key, model, generation);
         return model;
       })
       .finally(() => {
@@ -248,9 +267,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
   });
 
-  app.get("/api/dashboard", async (_req, res) => {
+  app.get("/api/dashboard", async (req, res) => {
     const settings = await currentSettings();
-    res.json(await readScopedDashboard(settings));
+    res.json(await readScopedDashboard(settings, { bypassCache: req.get("X-Dashboard-Refresh") === "foreground" }));
   });
 
   if (options.serveFrontend !== false) {
