@@ -77,6 +77,39 @@ describe("dashboard app import endpoint", () => {
     });
   });
 
+  it("coalesces dashboard reads while API refresh caching is active", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-"));
+    let githubLoads = 0;
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5000 }), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => {
+        githubLoads += 1;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return { items: [], warnings: [] };
+      }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const [first, second] = await Promise.all([fetch(`${baseUrl}/api/dashboard`), fetch(`${baseUrl}/api/dashboard`)]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(githubLoads).toBe(1);
+
+    const cached = await fetch(`${baseUrl}/api/dashboard`);
+    expect(cached.ok).toBe(true);
+    expect(githubLoads).toBe(1);
+
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.ok).toBe(true);
+    const refreshed = await fetch(`${baseUrl}/api/dashboard`);
+    expect(refreshed.ok).toBe(true);
+    expect(githubLoads).toBe(2);
+  });
+
   it("writes imported batch manifests into the coordination root batches directory", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-"));
     const baseUrl = await listen(stateRoot);

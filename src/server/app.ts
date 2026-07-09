@@ -2,7 +2,7 @@ import express from "express";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
-import type { BatchRecord, DashboardSettings } from "../shared/types";
+import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
 import type { ServerConfig } from "./config";
 import { loadOpenGitHubItems as defaultLoadOpenGitHubItems } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
@@ -28,6 +28,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
+  const dashboardCacheTtlMs = config.refreshIntervalMs > 0 ? Math.min(config.refreshIntervalMs, 5000) : 0;
+  let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
+  let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -39,6 +42,69 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   async function currentSettings() {
     const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
     return { ...settings, refreshIntervalMs: config.refreshIntervalMs };
+  }
+
+  function dashboardCacheKey(settings: DashboardSettings): string {
+    return settings.targetRepos.join("\n");
+  }
+
+  function invalidateDashboardCache() {
+    cachedDashboard = undefined;
+  }
+
+  async function buildScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
+    const now = new Date();
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
+    const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
+    const githubItems = githubResults.flatMap((result) => result.items);
+    const githubWarnings = githubResults.flatMap((result) => result.warnings);
+
+    return buildDashboardModel({
+      stateRoot: displayedStateRoot,
+      targetRepos: settings.targetRepos,
+      claims: state.claims,
+      heartbeats: state.heartbeats,
+      batches: state.batches,
+      events: state.events,
+      githubItems,
+      warnings: [...state.warnings, ...githubWarnings],
+      now
+    });
+  }
+
+  async function readScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
+    const key = dashboardCacheKey(settings);
+    if (dashboardCacheTtlMs <= 0) {
+      return buildScopedDashboard(settings);
+    }
+
+    const nowMs = Date.now();
+    if (cachedDashboard?.key === key && cachedDashboard.expiresAt > nowMs) {
+      return cachedDashboard.model;
+    }
+    if (dashboardBuildInFlight?.key === key) {
+      return dashboardBuildInFlight.promise;
+    }
+
+    const promise = buildScopedDashboard(settings)
+      .then((model) => {
+        cachedDashboard = {
+          expiresAt: Date.now() + dashboardCacheTtlMs,
+          key,
+          model
+        };
+        return model;
+      })
+      .finally(() => {
+        if (dashboardBuildInFlight?.promise === promise) {
+          dashboardBuildInFlight = undefined;
+        }
+      });
+    dashboardBuildInFlight = { key, promise };
+    return promise;
   }
 
   function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
@@ -122,6 +188,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const saved = await writeDashboardSettings(persistedSettingsPath, { targetRepos });
+    invalidateDashboardCache();
     res.json({ ...saved, refreshIntervalMs: config.refreshIntervalMs });
   });
 
@@ -141,6 +208,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       const draft = normalizeBatchManifestDraft(req.body);
       assertImportWithinTargetRepos(draft, settings.targetRepos);
       const result = await writeImportedBatchManifest(config.stateRoot, draft);
+      invalidateDashboardCache();
       res.status(201).json(result);
     } catch (error) {
       const status = error instanceof BatchManifestImportError ? error.statusCode : 400;
@@ -172,6 +240,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         repo: stopRepo,
         reason: typeof req.body?.reason === "string" ? req.body.reason : undefined
       });
+      invalidateDashboardCache();
       res.status(201).json(result);
     } catch (error) {
       const status = error instanceof BatchManifestImportError ? error.statusCode : 400;
@@ -180,29 +249,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   app.get("/api/dashboard", async (_req, res) => {
-    const now = new Date();
     const settings = await currentSettings();
-    const state = await readCoordinationState(config.stateRoot, now, {
-      apiUrl: coordApiUrl,
-      token: coordApiToken
-    });
-    const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
-    const githubItems = githubResults.flatMap((result) => result.items);
-    const githubWarnings = githubResults.flatMap((result) => result.warnings);
-
-    res.json(
-      buildDashboardModel({
-        stateRoot: displayedStateRoot,
-        targetRepos: settings.targetRepos,
-        claims: state.claims,
-        heartbeats: state.heartbeats,
-        batches: state.batches,
-        events: state.events,
-        githubItems,
-        warnings: [...state.warnings, ...githubWarnings],
-        now
-      })
-    );
+    res.json(await readScopedDashboard(settings));
   });
 
   if (options.serveFrontend !== false) {
