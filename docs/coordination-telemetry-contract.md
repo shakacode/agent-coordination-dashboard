@@ -39,6 +39,11 @@ Every claim, heartbeat, and batch event should include:
 Use a stable `AGENT_COORD_MACHINE_ID` value in batch launch environments so
 every worker writes the same machine label consistently.
 
+Compatibility note: older local records may have used `host` for a machine
+name. New telemetry should not do that. The dashboard treats `host` as the app
+surface and requires `machine_id`, `machine`, or `hostname` for machine
+identity; otherwise it reports the existing missing-machine health warning.
+
 ## Retained Batch Manifests
 
 Coordinators should create a private retained manifest before spawning workers.

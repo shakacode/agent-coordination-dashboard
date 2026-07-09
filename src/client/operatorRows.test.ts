@@ -177,6 +177,115 @@ describe("operatorRows", () => {
     expect(rows.find((row) => row.target === "124")?.blockedOn).toEqual(["repo/app#123"]);
   });
 
+  it("preserves queued target rows as ready before workers start", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: undefined,
+            heartbeat: undefined,
+            schedulingState: "started_not_processing",
+            batchSignals: [{ batchId: "batch-1", laneName: "queued-lane", status: "queued", blockedOn: [] }]
+          })
+        ],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "batch-1",
+            repo: "repo/app",
+            path: "batches/batch-1.json",
+            lanes: [
+              {
+                name: "queued-lane",
+                owner: "agent-a",
+                targets: ["123"],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("ready");
+  });
+
+  it("does not classify rows from target-specific events for other targets in the same lane", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim,
+            heartbeat,
+            batchSignals: [{ batchId: "batch-1", laneName: "shared-lane", status: "coding", blockedOn: [] }]
+          }),
+          workItem({
+            id: "repo/app#124",
+            target: "124",
+            schedulingState: "started_not_processing",
+            batchSignals: [{ batchId: "batch-1", laneName: "shared-lane", status: "coding", blockedOn: [] }],
+            github: {
+              repo: "repo/app",
+              target: "124",
+              type: "pull_request",
+              title: "Second PR",
+              url: "https://github.com/repo/app/pull/124",
+              state: "OPEN",
+              labels: [],
+              loadState: "loaded"
+            }
+          })
+        ],
+        events: [
+          {
+            eventId: "event-124-done",
+            type: "done",
+            batchId: "batch-1",
+            laneName: "shared-lane",
+            agentId: "agent-a",
+            repo: "repo/app",
+            target: "124",
+            status: "done",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-1.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows.find((row) => row.target === "123")?.operatorState).toBe("running");
+    expect(rows.find((row) => row.target === "124")?.operatorState).toBe("done");
+  });
+
+  it("keeps freeform event messages out of operator-state classification", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [workItem({ claim, heartbeat })],
+        events: [
+          {
+            eventId: "event-message",
+            type: "phase",
+            batchId: "batch-1",
+            laneName: "lane-a",
+            agentId: "agent-a",
+            repo: "repo/app",
+            target: "123",
+            status: "coding",
+            message: "Passed lint and not blocked anymore; tests are still running.",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-1.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("running");
+    expect(rows[0].activityMessage).toContain("Passed lint");
+  });
+
   it("adds fallback rows for batch lanes without loaded target rows", () => {
     const batch: BatchRecord = {
       schemaVersion: 1,

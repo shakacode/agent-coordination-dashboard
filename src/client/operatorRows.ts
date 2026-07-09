@@ -203,6 +203,7 @@ function deriveOperatorState(input: {
   claim?: ClaimRecord;
   lane?: BatchLane;
   event?: BatchEvent;
+  signalStatus?: string;
   blockedOn: string[];
   nowMs: number;
 }): OperatorState {
@@ -213,9 +214,11 @@ function deriveOperatorState(input: {
     input.lane?.status,
     input.event?.type,
     input.event?.status,
-    input.event?.message,
+    input.signalStatus,
     ...input.blockedOn
   ]);
+
+  const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
 
   if (DONE_PATTERN.test(text)) {
     return "done";
@@ -239,10 +242,13 @@ function deriveOperatorState(input: {
     }
     return "running";
   }
+  if (!input.claim && !input.heartbeat && hasReadySignal) {
+    return "ready";
+  }
   if (input.workItem?.schedulingState === "started_not_processing" || input.claim || input.heartbeat) {
     return "dead";
   }
-  if (input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text)) {
+  if (hasReadySignal) {
     return "ready";
   }
   return "unknown";
@@ -346,7 +352,7 @@ function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent
   const signals = item.batchSignals || [];
   return events.filter((event) => {
     const targetMatch = event.target === item.target && (!event.repo || event.repo === item.repo);
-    const laneMatch = signals.some((signal) => event.batchId === signal.batchId && event.laneName === signal.laneName);
+    const laneMatch = !event.target && signals.some((signal) => event.batchId === signal.batchId && event.laneName === signal.laneName);
     return targetMatch || laneMatch;
   });
 }
@@ -395,6 +401,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     claim: item.claim,
     lane,
     event: latest,
+    signalStatus: signal?.status,
     blockedOn,
     nowMs
   });

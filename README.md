@@ -163,6 +163,12 @@ for the fields batches should write so the dashboard can show machine ownership,
 token-limit pauses, continues, stop requests, QA validation, and reliable
 history.
 
+Rollout note: older telemetry that used `host` as a machine label should start
+writing `machine_id`, `machine`, or `hostname`. The dashboard now treats `host`
+as the app/runner surface (`codex`, `claude`, etc.) and no longer uses it as a
+machine-id fallback; records without a machine identity intentionally produce
+machine health warnings.
+
 For a system-level map of where coordination data lives, how often it is
 updated, how PRs join to claims/heartbeats/batches/machines, and how to view
 the diagrams full-size, see
