@@ -11,6 +11,27 @@ import { PromptDrawer } from "./components/PromptDrawer";
 import { WorkTab } from "./components/WorkTab";
 
 type Tab = "overview" | "work" | "batches" | "machines" | "health";
+type WorkItem = DashboardModel["workItems"][number];
+
+function canSelectWorkItem(item: WorkItem): boolean {
+  return item.schedulingState !== "in_process" && !item.batchSignals?.length;
+}
+
+function preserveWorkItemSelections(current: DashboardModel | null, next: DashboardModel): DashboardModel {
+  if (!current) {
+    return next;
+  }
+
+  const selectedIds = new Set(current.workItems.filter((item) => item.selected && canSelectWorkItem(item)).map((item) => item.id));
+  if (selectedIds.size === 0) {
+    return next;
+  }
+
+  return {
+    ...next,
+    workItems: next.workItems.map((item) => (selectedIds.has(item.id) && canSelectWorkItem(item) ? { ...item, selected: true } : item))
+  };
+}
 
 export function App() {
   const [dashboard, setDashboard] = useState<DashboardModel | null>(null);
@@ -19,30 +40,42 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const loadInFlight = useRef(false);
+  const backgroundLoadInFlight = useRef(false);
+  const userActionInFlight = useRef(false);
+  const dashboardRequestVersion = useRef(0);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
 
   const loadDashboard = useCallback(async (options: { background?: boolean } = {}) => {
-    if (loadInFlight.current) {
+    const isBackground = Boolean(options.background);
+    if (isBackground && (backgroundLoadInFlight.current || userActionInFlight.current)) {
       return;
     }
-    loadInFlight.current = true;
-    if (!options.background) {
+    if (isBackground) {
+      backgroundLoadInFlight.current = true;
+    } else {
+      userActionInFlight.current = true;
       setError(null);
       setIsRefreshing(true);
     }
+    const requestVersion = ++dashboardRequestVersion.current;
     try {
       const loadedSettings = await fetchSettings();
+      const loadedDashboard = await fetchDashboard();
+      if (requestVersion !== dashboardRequestVersion.current) {
+        return;
+      }
       setSettings(loadedSettings);
-      setDashboard(await fetchDashboard());
+      setDashboard((current) => (isBackground ? preserveWorkItemSelections(current, loadedDashboard) : loadedDashboard));
     } catch (caught: unknown) {
-      if (!options.background) {
+      if (!isBackground) {
         setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
       }
     } finally {
-      loadInFlight.current = false;
-      if (!options.background) {
+      if (isBackground) {
+        backgroundLoadInFlight.current = false;
+      } else {
+        userActionInFlight.current = false;
         setIsRefreshing(false);
       }
     }
@@ -66,15 +99,23 @@ export function App() {
   }, [loadDashboard, settings?.refreshIntervalMs]);
 
   async function persistRepos(nextRepos: string[]) {
+    userActionInFlight.current = true;
+    const requestVersion = ++dashboardRequestVersion.current;
     setError(null);
     setIsRefreshing(true);
     try {
       const saved = await saveSettings({ targetRepos: nextRepos });
-      setSettings(saved);
-      setDashboard(await fetchDashboard());
+      if (requestVersion === dashboardRequestVersion.current) {
+        setSettings(saved);
+      }
+      const loadedDashboard = await fetchDashboard();
+      if (requestVersion === dashboardRequestVersion.current) {
+        setDashboard(loadedDashboard);
+      }
     } catch (caught: unknown) {
       setError(caught instanceof Error ? caught.message : "Settings failed to save");
     } finally {
+      userActionInFlight.current = false;
       setIsRefreshing(false);
     }
   }
@@ -113,25 +154,37 @@ export function App() {
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
+    userActionInFlight.current = true;
+    const requestVersion = ++dashboardRequestVersion.current;
     setIsRefreshing(true);
     try {
       await saveImportedBatchManifest(manifest);
-      setDashboard(await fetchDashboard());
+      const loadedDashboard = await fetchDashboard();
+      if (requestVersion === dashboardRequestVersion.current) {
+        setDashboard(loadedDashboard);
+      }
     } catch (caught: unknown) {
       throw caught instanceof Error ? caught : new Error("Batch plan import failed");
     } finally {
+      userActionInFlight.current = false;
       setIsRefreshing(false);
     }
   }
 
   async function stopBatch(input: { batchId: string; repo?: string; reason?: string }) {
+    userActionInFlight.current = true;
+    const requestVersion = ++dashboardRequestVersion.current;
     setIsRefreshing(true);
     try {
       await requestBatchStop(input);
-      setDashboard(await fetchDashboard());
+      const loadedDashboard = await fetchDashboard();
+      if (requestVersion === dashboardRequestVersion.current) {
+        setDashboard(loadedDashboard);
+      }
     } catch (caught: unknown) {
       throw caught instanceof Error ? caught : new Error("Batch stop request failed");
     } finally {
+      userActionInFlight.current = false;
       setIsRefreshing(false);
     }
   }

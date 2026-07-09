@@ -228,6 +228,47 @@ describe("App", () => {
     await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(initialCount));
   });
 
+  it("preserves selected work items across background refreshes", async () => {
+    let dashboardCalls = 0;
+    const unselectedModel = {
+      ...model,
+      workItems: model.workItems.map((item) => ({ ...item, selected: false }))
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(init.body))
+        } as Response;
+      }
+      if (url === "/api/settings") {
+        return {
+          ok: true,
+          json: async () => ({ ...settings, refreshIntervalMs: 100 })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return {
+        ok: true,
+        json: async () => unselectedModel
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+    const firstCheckbox = screen.getAllByRole("checkbox")[0];
+    expect(firstCheckbox).not.toBeChecked();
+    await userEvent.click(firstCheckbox);
+    expect(firstCheckbox).toBeChecked();
+
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
+    expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
+  });
+
   it("keeps the current dashboard visible when a background refresh fails", async () => {
     let dashboardCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
