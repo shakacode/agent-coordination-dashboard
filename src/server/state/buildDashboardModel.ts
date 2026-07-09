@@ -304,7 +304,7 @@ interface OperatorMetadata {
 }
 
 function repoRefsFromBranch(value: string | undefined): string[] {
-  return value && /github\.com\//i.test(value) ? repoRefsFromText(value) : [];
+  return value && (/github\.com\//i.test(value) || /\s/.test(value)) ? repoRefsFromText(value) : [];
 }
 
 function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {

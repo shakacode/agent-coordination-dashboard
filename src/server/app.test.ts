@@ -609,6 +609,40 @@ describe("dashboard app import endpoint", () => {
     });
   });
 
+  it("rejects imports whose lane branch prose references repositories outside the dashboard scope", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-out-of-scope-lane-branch-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/batches/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: "batch-hidden-lane-branch",
+        repo: "shakacode/react_on_rails",
+        objective: "Do not persist hidden lane branch details.",
+        targets: [{ type: "pull_request", target: "4005" }],
+        lanes: [
+          {
+            name: "tests",
+            owner: "worker-a",
+            targets: ["4005"],
+            dependsOn: [],
+            status: "queued",
+            liveness: "no-heartbeat",
+            blockedOn: [],
+            branch: "fix for other/private-repo"
+          }
+        ],
+        launchPrompt:
+          "Use $pr-batch to complete this batch.\nRepository: shakacode/react_on_rails\nBatch id: batch-hidden-lane-branch\nItems:\n- PR #4005"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(readFile(join(stateRoot, "batches", "batch-hidden-lane-branch.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
   it("rejects imports whose launch prompt repository header references out-of-scope repos", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-import-header-scope-"));
     const baseUrl = await listen(stateRoot);

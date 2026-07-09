@@ -320,7 +320,7 @@ function assertImportWithinTargetRepos(draft: BatchManifestDraft, targetRepos: s
     }
   };
   const addBranchRepoRefs = (value: string | undefined) => {
-    if (/github\.com\//i.test(value || "")) {
+    if (/github\.com\//i.test(value || "") || /\s/.test(value || "")) {
       addRepoRefs(value);
     }
   };

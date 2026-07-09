@@ -251,6 +251,47 @@ describe("buildDashboardModel", () => {
     );
   });
 
+  it("redacts prose branch metadata that references out-of-scope repos", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [
+        {
+          ...claim,
+          repo: "repo-a/app",
+          target: "4005",
+          branch: "fix for secret/repo"
+        }
+      ],
+      heartbeats: [
+        {
+          ...heartbeat,
+          repo: "repo-a/app",
+          target: "4005",
+          branch: "feature/operator-view"
+        }
+      ],
+      batches: [],
+      githubItems: [
+        {
+          repo: "repo-a/app",
+          target: "4005",
+          type: "pull_request",
+          title: "Scoped PR",
+          url: "https://github.com/repo-a/app/pull/4005",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded"
+        }
+      ],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].claim?.branch).toBeUndefined();
+    expect(model.workItems[0].heartbeat?.branch).toBe("feature/operator-view");
+  });
+
   it("drops leaky lanes and redacts in-scope event operator metadata", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
