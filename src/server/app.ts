@@ -314,6 +314,16 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 function assertImportWithinTargetRepos(draft: BatchManifestDraft, targetRepos: string[]) {
   const targetRepoSet = new Set(targetRepos);
   const repos = new Set<string>();
+  const addRepoRefs = (value: string | undefined) => {
+    for (const repo of repoRefsFromText(value)) {
+      repos.add(repo);
+    }
+  };
+  const addBranchRepoRefs = (value: string | undefined) => {
+    if (/github\.com\//i.test(value || "")) {
+      addRepoRefs(value);
+    }
+  };
   if (draft.repo) {
     repos.add(draft.repo);
   }
@@ -321,54 +331,35 @@ function assertImportWithinTargetRepos(draft: BatchManifestDraft, targetRepos: s
     if (target.repo) {
       repos.add(target.repo);
     }
-    for (const repo of repoRefsFromText(target.url)) {
-      repos.add(repo);
-    }
-    for (const repo of repoRefsFromText(target.title)) {
-      repos.add(repo);
-    }
+    addRepoRefs(target.url);
+    addRepoRefs(target.title);
   }
   for (const reservation of draft.reservations) {
     if (reservation.repo) {
       repos.add(reservation.repo);
     }
-    for (const repo of repoRefsFromText(reservation.reason)) {
-      repos.add(repo);
-    }
-    for (const repo of repoRefsFromText(reservation.owner)) {
-      repos.add(repo);
-    }
-    for (const repo of repoRefsFromText(reservation.laneName)) {
-      repos.add(repo);
-    }
+    addRepoRefs(reservation.reason);
+    addRepoRefs(reservation.owner);
+    addRepoRefs(reservation.laneName);
   }
   for (const lane of draft.lanes) {
-    for (const repo of repoRefsFromText(lane.name)) {
-      repos.add(repo);
-    }
-    for (const repo of repoRefsFromText(lane.owner)) {
-      repos.add(repo);
-    }
-    for (const repo of repoRefsFromText(lane.status)) {
-      repos.add(repo);
-    }
+    addRepoRefs(lane.name);
+    addRepoRefs(lane.owner);
+    addRepoRefs(lane.status);
+    addRepoRefs(lane.threadHandle);
+    addRepoRefs(lane.host);
+    addRepoRefs(lane.operator);
+    addBranchRepoRefs(lane.branch);
+    addRepoRefs(lane.prUrl);
     for (const dependency of lane.dependsOn) {
-      for (const repo of repoRefsFromText(dependency)) {
-        repos.add(repo);
-      }
+      addRepoRefs(dependency);
     }
     for (const blockedOn of lane.blockedOn) {
-      for (const repo of repoRefsFromText(blockedOn)) {
-        repos.add(repo);
-      }
+      addRepoRefs(blockedOn);
     }
   }
-  for (const repo of repoRefsFromText(draft.objective)) {
-    repos.add(repo);
-  }
-  for (const repo of repoRefsFromText(draft.launchPrompt)) {
-    repos.add(repo);
-  }
+  addRepoRefs(draft.objective);
+  addRepoRefs(draft.launchPrompt);
   for (const repo of repoRefsFromPromptHeaders(draft.launchPrompt)) {
     repos.add(repo);
   }

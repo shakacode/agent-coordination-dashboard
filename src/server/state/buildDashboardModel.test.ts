@@ -251,7 +251,7 @@ describe("buildDashboardModel", () => {
     );
   });
 
-  it("drops lane and event operator metadata that references out-of-scope repos", () => {
+  it("drops leaky lanes and redacts in-scope event operator metadata", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
       targetRepos: ["repo-a/app"],
@@ -311,9 +311,15 @@ describe("buildDashboardModel", () => {
 
     expect(model.batches[0].lanes.map((lane) => lane.name)).toEqual(["safe"]);
     expect(model.batches[0].lanes[0].branch).toBe("feature/operator-view");
-    expect(model.events).toEqual([]);
-    expect(model.warnings.map((warning) => warning.message)).toEqual(
-      expect.arrayContaining(["Skipped 1 batch history records outside saved target repositories."])
+    expect(model.events).toHaveLength(1);
+    expect(model.events[0]).toMatchObject({
+      eventId: "event-leaky",
+      repo: "repo-a/app",
+      target: "10"
+    });
+    expect(model.events[0].prUrl).toBeUndefined();
+    expect(model.warnings.map((warning) => warning.message)).not.toContain(
+      "Skipped 1 batch history records outside saved target repositories."
     );
   });
 

@@ -714,6 +714,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
   const sanitizedClaims = nonReleasedClaims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet));
   const sanitizedHeartbeats = input.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet));
+  const sanitizedEvents = inputEvents.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet));
   const currentClaims = sanitizedClaims.filter((claim) => targetRepoSet.has(claim.repo));
   const repoScopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
@@ -861,7 +862,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   for (const batch of scopedBatches) {
     batchesById.set(batch.batchId, [...(batchesById.get(batch.batchId) || []), batch]);
   }
-  const scopedEvents = inputEvents
+  const scopedEvents = sanitizedEvents
     .flatMap((event) => {
       const isRedactableBatchControlEvent =
         !event.repo && !event.target && (isStopRequestEvent(event) || isStoppedEvent(event));

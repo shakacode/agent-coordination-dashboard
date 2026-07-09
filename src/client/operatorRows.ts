@@ -369,9 +369,16 @@ function activeBatchIdsForWork(item: WorkItem): Set<string> {
   );
 }
 
+function hasActiveWorkSignal(item: WorkItem): boolean {
+  return Boolean(item.heartbeat || (item.claim && item.claim.status !== "released"));
+}
+
 function currentBatchIdsForWork(item: WorkItem): Set<string> {
   const activeBatchIds = activeBatchIdsForWork(item);
   if (activeBatchIds.size > 0) {
+    return activeBatchIds;
+  }
+  if (hasActiveWorkSignal(item)) {
     return activeBatchIds;
   }
   return new Set(
@@ -415,6 +422,9 @@ function preferredSignalForWork(item: WorkItem) {
     if (activeSignal) {
       return activeSignal;
     }
+  }
+  if (hasActiveWorkSignal(item)) {
+    return undefined;
   }
   return signals[0];
 }
