@@ -54,6 +54,9 @@ Older Worker deployments that do not expose the `events` prefix still render the
 rest of API mode with a visible warning. `history/` remains filesystem-only.
 API mode is read-only in this slice; batch import and stop-request writes remain
 local recovery tools for filesystem mode.
+API mode also refreshes the dashboard every 5 seconds by default; set
+`DASHBOARD_REFRESH_MS=0` to disable polling or another non-negative millisecond
+value to tune it.
 
 ## What It Shows
 
@@ -98,6 +101,7 @@ cleanly; it does not kill processes or release claims by itself.
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
 | `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
 | `AGENT_COORD_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
+| `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 

@@ -37,7 +37,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   async function currentSettings() {
-    return readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
+    const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
+    return { ...settings, refreshIntervalMs: config.refreshIntervalMs };
   }
 
   function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
@@ -120,7 +121,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return;
     }
 
-    res.json(await writeDashboardSettings(persistedSettingsPath, { targetRepos }));
+    const saved = await writeDashboardSettings(persistedSettingsPath, { targetRepos });
+    res.json({ ...saved, refreshIntervalMs: config.refreshIntervalMs });
   });
 
   app.post("/api/batches/import", async (req, res) => {

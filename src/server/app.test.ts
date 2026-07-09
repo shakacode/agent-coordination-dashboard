@@ -14,6 +14,7 @@ function testConfig(stateRoot: string, overrides: Partial<ServerConfig> = {}): S
     host: "127.0.0.1",
     allowedHosts: ["127.0.0.1", "localhost"],
     stateRoot,
+    refreshIntervalMs: 0,
     targetRepos: ["shakacode/react_on_rails"],
     settingsPath: join(stateRoot, "settings.json"),
     nodeEnv: "test",
@@ -52,6 +53,28 @@ async function listenEmptyCoordinationApi(): Promise<string> {
 describe("dashboard app import endpoint", () => {
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  it("returns runtime refresh settings with target repositories", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-settings-"));
+    const baseUrl = await listen(stateRoot, { refreshIntervalMs: 2500 });
+
+    const initial = await fetch(`${baseUrl}/api/settings`);
+    await expect(initial.json()).resolves.toEqual({
+      targetRepos: ["shakacode/react_on_rails"],
+      refreshIntervalMs: 2500
+    });
+
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+
+    await expect(saved.json()).resolves.toEqual({
+      targetRepos: ["repo-a/app"],
+      refreshIntervalMs: 2500
+    });
   });
 
   it("writes imported batch manifests into the coordination root batches directory", async () => {

@@ -8,6 +8,7 @@ export type QaValidationStatus = "missing" | "requested" | "in_progress" | "pass
 
 export interface DashboardSettings {
   targetRepos: string[];
+  refreshIntervalMs?: number;
 }
 
 export interface ClaimRecord {

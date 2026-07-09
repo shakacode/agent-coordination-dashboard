@@ -204,6 +204,30 @@ describe("App", () => {
     );
   });
 
+  it("auto-refreshes the dashboard when a refresh interval is configured", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(init.body))
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => (url === "/api/settings" ? { ...settings, refreshIntervalMs: 100 } : model)
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    const dashboardCallCount = () => fetchMock.mock.calls.filter(([input]) => String(input) === "/api/dashboard").length;
+    await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(0));
+    const initialCount = dashboardCallCount();
+    await waitFor(() => expect(dashboardCallCount()).toBeGreaterThan(initialCount));
+  });
+
   it("keeps batch import validation failures local to the Batches view", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

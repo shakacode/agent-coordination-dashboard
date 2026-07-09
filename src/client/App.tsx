@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
 import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
@@ -20,15 +20,13 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  useEffect(() => {
-    void loadDashboard();
-  }, []);
-
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
 
-  async function loadDashboard() {
+  const loadDashboard = useCallback(async (options: { background?: boolean } = {}) => {
     setError(null);
-    setIsRefreshing(true);
+    if (!options.background) {
+      setIsRefreshing(true);
+    }
     try {
       const loadedSettings = await fetchSettings();
       setSettings(loadedSettings);
@@ -36,9 +34,28 @@ export function App() {
     } catch (caught: unknown) {
       setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
     } finally {
-      setIsRefreshing(false);
+      if (!options.background) {
+        setIsRefreshing(false);
+      }
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    const refreshIntervalMs = settings?.refreshIntervalMs || 0;
+    if (refreshIntervalMs <= 0) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadDashboard({ background: true });
+    }, refreshIntervalMs);
+
+    return () => window.clearInterval(intervalId);
+  }, [loadDashboard, settings?.refreshIntervalMs]);
 
   async function persistRepos(nextRepos: string[]) {
     setError(null);

@@ -8,6 +8,7 @@ export interface ServerConfig {
   stateRoot: string;
   coordApiUrl?: string;
   coordApiToken?: string;
+  refreshIntervalMs: number;
   targetRepos: string[];
   settingsPath: string;
   nodeEnv: string;
@@ -32,6 +33,17 @@ function isWildcardHost(host: string): boolean {
   return host === "0.0.0.0" || host === "::";
 }
 
+function refreshIntervalFromEnv(value: string | undefined, fallback: number): number {
+  if (!value?.trim()) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error("DASHBOARD_REFRESH_MS must be a non-negative number.");
+  }
+  return parsed;
+}
+
 export function readConfig(env = process.env): ServerConfig {
   const host = env.HOST || "127.0.0.1";
   const coordApiUrl = env.AGENT_COORD_API_URL?.trim() || "";
@@ -46,6 +58,7 @@ export function readConfig(env = process.env): ServerConfig {
     stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),
     coordApiUrl,
     coordApiToken: env.AGENT_COORD_TOKEN?.trim() || "",
+    refreshIntervalMs: refreshIntervalFromEnv(env.DASHBOARD_REFRESH_MS, coordApiUrl ? 5000 : 0),
     targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",
     nodeEnv: env.NODE_ENV || "development"
