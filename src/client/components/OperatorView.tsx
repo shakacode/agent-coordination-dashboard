@@ -17,6 +17,25 @@ interface OperatorViewProps {
   deepLink?: OperatorDeepLink;
 }
 
+function safeGithubUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "github.com") {
+      return undefined;
+    }
+    const pathParts = url.pathname.split("/").filter(Boolean);
+    if (pathParts.length !== 4 || !["pull", "issues"].includes(pathParts[2]) || !/^\d+$/.test(pathParts[3])) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 function display(value: string | undefined): string {
   return value?.trim() || UNKNOWN;
 }
@@ -35,17 +54,18 @@ function workLabel(row: OperatorRow): string {
 }
 
 function WorkLink({ row }: { row: OperatorRow }) {
+  const href = safeGithubUrl(row.url);
   const content = (
     <>
       <strong>{workLabel(row)}</strong>
       <span>{row.title}</span>
     </>
   );
-  if (!row.url) {
+  if (!href) {
     return <div className="operator-work-main">{content}</div>;
   }
   return (
-    <a className="operator-work-main" href={row.url} rel="noreferrer" target="_blank">
+    <a className="operator-work-main" href={href} rel="noreferrer" target="_blank">
       {content}
       <ExternalLink size={13} aria-hidden="true" />
     </a>
@@ -70,11 +90,12 @@ function batchDetail(row: OperatorRow): string {
 }
 
 function BranchPr({ row }: { row: OperatorRow }) {
+  const prUrl = safeGithubUrl(row.prUrl);
   return (
     <div className="operator-stack">
       <strong>{display(row.branch)}</strong>
-      {row.prUrl ? (
-        <a href={row.prUrl} rel="noreferrer" target="_blank">
+      {prUrl ? (
+        <a href={prUrl} rel="noreferrer" target="_blank">
           PR
           <ExternalLink size={13} aria-hidden="true" />
         </a>

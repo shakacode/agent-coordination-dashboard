@@ -219,6 +219,7 @@ function deriveOperatorState(input: {
   ]);
 
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
+  const hasActiveClaim = Boolean(input.claim && input.claim.status !== "released");
 
   if (DONE_PATTERN.test(text)) {
     return "done";
@@ -245,8 +246,11 @@ function deriveOperatorState(input: {
   if (!input.claim && !input.heartbeat && hasReadySignal) {
     return "ready";
   }
-  if (input.workItem?.schedulingState === "started_not_processing" || input.claim || input.heartbeat) {
+  if (input.workItem?.schedulingState === "started_not_processing" || hasActiveClaim) {
     return "dead";
+  }
+  if (input.heartbeat) {
+    return "unknown";
   }
   if (hasReadySignal) {
     return "ready";

@@ -213,6 +213,22 @@ describe("operatorRows", () => {
     expect(rows[0].operatorState).toBe("ready");
   });
 
+  it("treats released claims on ready work as available instead of dead", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: { ...claim, status: "released" },
+            heartbeat: undefined,
+            schedulingState: "ready_for_batch"
+          })
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("ready");
+  });
+
   it("does not classify rows from target-specific events for other targets in the same lane", () => {
     const rows = buildOperatorRows(
       dashboard({

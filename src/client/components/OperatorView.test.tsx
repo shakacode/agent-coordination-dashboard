@@ -121,4 +121,26 @@ describe("OperatorView", () => {
 
     expect(screen.getByText("No loaded row matches this link.")).toBeInTheDocument();
   });
+
+  it("does not render unsafe coordination URLs as links", () => {
+    const unsafeDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) =>
+        index === 0
+          ? {
+              ...item,
+              claim: item.claim ? { ...item.claim, prUrl: "javascript:alert(1)" } : undefined,
+              heartbeat: item.heartbeat ? { ...item.heartbeat, prUrl: "data:text/html,boom" } : undefined,
+              github: item.github ? { ...item.github, url: "javascript:alert(2)" } : undefined
+            }
+          : item
+      )
+    };
+    const { container } = render(<OperatorView dashboard={unsafeDashboard} />);
+
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+    expect(container.querySelector('a[href^="data:"]')).toBeNull();
+    expect(screen.getByText("PR #123").closest("a")).toBeNull();
+    expect(Array.from(container.querySelectorAll("a")).map((link) => link.textContent)).not.toContain("PR");
+  });
 });
