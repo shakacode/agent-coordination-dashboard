@@ -28,6 +28,10 @@ export function repoRefsFromText(value: string | undefined): string[] {
   return Array.from(refs);
 }
 
+export function repoRefsFromBranch(value: string | undefined): string[] {
+  return value && (/github\.com\//i.test(value) || /\s/.test(value)) ? repoRefsFromText(value) : [];
+}
+
 export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
   if (!value) {
     return [];

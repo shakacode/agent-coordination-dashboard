@@ -362,12 +362,12 @@ function sortRows(rows: OperatorRow[], targetRepos: string[]): OperatorRow[] {
 }
 
 function activeBatchIdsForWork(item: WorkItem): Set<string> {
+  const claimBatchId = item.claim && item.claim.status !== "released" ? item.claim.batchId : undefined;
+  if (claimBatchId) {
+    return new Set([claimBatchId]);
+  }
   const heartbeatBatchId = item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat.batchId : undefined;
-  return new Set(
-    [heartbeatBatchId, item.claim && item.claim.status !== "released" ? item.claim.batchId : undefined].filter(
-      (batchId): batchId is string => Boolean(batchId)
-    )
-  );
+  return new Set([heartbeatBatchId].filter((batchId): batchId is string => Boolean(batchId)));
 }
 
 function hasActiveWorkSignal(item: WorkItem): boolean {
@@ -427,7 +427,11 @@ function preferredSignalForWork(item: WorkItem) {
   if (hasActiveWorkSignal(item)) {
     return undefined;
   }
-  return signals[0];
+  return (
+    signals.find((signal) => READY_PATTERN.test(signal.status)) ||
+    signals.find((signal) => !DONE_PATTERN.test(signal.status) && !BLOCKED_PATTERN.test(signal.status)) ||
+    signals[0]
+  );
 }
 
 function eventMatchesBatchRecord(batch: BatchRecord, event: BatchEvent): boolean {

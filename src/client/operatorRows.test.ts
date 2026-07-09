@@ -301,6 +301,97 @@ describe("operatorRows", () => {
     expect(rows[0].lastEventAt).toBeUndefined();
   });
 
+  it("prefers the active claim batch over a mismatched live heartbeat batch", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: { ...claim, batchId: "batch-current" },
+            heartbeat: { ...heartbeat, batchId: "batch-old" },
+            batchSignals: [
+              { batchId: "batch-old", laneName: "docs", status: "done", blockedOn: [] },
+              { batchId: "batch-current", laneName: "docs", status: "coding", blockedOn: [] }
+            ]
+          })
+        ],
+        events: [
+          {
+            eventId: "old-done",
+            type: "done",
+            batchId: "batch-old",
+            laneName: "docs",
+            repo: "repo/app",
+            target: "123",
+            status: "done",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-old.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("running");
+    expect(rows[0].batchId).toBe("batch-current");
+    expect(rows[0].lastEventAt).toBeUndefined();
+  });
+
+  it("prefers queued retained signals over older terminal signals before workers start", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: undefined,
+            heartbeat: undefined,
+            schedulingState: "started_not_processing",
+            batchSignals: [
+              { batchId: "batch-old", laneName: "docs", status: "done", blockedOn: [] },
+              { batchId: "batch-current", laneName: "docs", status: "queued", blockedOn: [] }
+            ]
+          })
+        ],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "batch-old",
+            repo: "repo/app",
+            path: "batches/batch-old.json",
+            lanes: [
+              {
+                name: "docs",
+                owner: "agent-old",
+                targets: ["123"],
+                dependsOn: [],
+                status: "done",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          },
+          {
+            schemaVersion: 1,
+            batchId: "batch-current",
+            repo: "repo/app",
+            path: "batches/batch-current.json",
+            lanes: [
+              {
+                name: "docs",
+                owner: "agent-current",
+                targets: ["123"],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("ready");
+    expect(rows[0].batchId).toBe("batch-current");
+  });
+
   it("does not classify rows from target-specific events for other targets in the same lane", () => {
     const rows = buildOperatorRows(
       dashboard({

@@ -18,7 +18,7 @@ import type {
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { isQaEventType } from "../../shared/qaEvents";
-import { repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
 const REDACTED_DEPENDENCY_REF = "outside saved target repositories";
@@ -303,10 +303,6 @@ interface OperatorMetadata {
   prUrl?: string;
 }
 
-function repoRefsFromBranch(value: string | undefined): string[] {
-  return value && (/github\.com\//i.test(value) || /\s/.test(value)) ? repoRefsFromText(value) : [];
-}
-
 function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
   return [
     ...repoRefsFromText(metadata.threadHandle),
@@ -339,10 +335,6 @@ function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: 
     delete redacted.prUrl;
   }
   return redacted;
-}
-
-function hasOutOfScopeOperatorMetadata(metadata: OperatorMetadata, targetRepoSet: Set<string>): boolean {
-  return repoRefsFromOperatorMetadata(metadata).some((repo) => !targetRepoSet.has(repo));
 }
 
 function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): boolean {

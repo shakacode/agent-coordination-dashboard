@@ -12,7 +12,7 @@ import { BatchManifestImportError, writeImportedBatchManifest } from "./state/ba
 import { writeBatchStopRequest } from "./state/batchControl";
 import { buildDashboardModel } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
-import { repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
+import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
@@ -320,8 +320,8 @@ function assertImportWithinTargetRepos(draft: BatchManifestDraft, targetRepos: s
     }
   };
   const addBranchRepoRefs = (value: string | undefined) => {
-    if (/github\.com\//i.test(value || "") || /\s/.test(value || "")) {
-      addRepoRefs(value);
+    for (const repo of repoRefsFromBranch(value)) {
+      repos.add(repo);
     }
   };
   if (draft.repo) {
