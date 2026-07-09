@@ -378,11 +378,12 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-overlap in repo-a/app" }));
     await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-overlap in repo-b/app" }));
 
-    await waitFor(() => expect(releaseStopResponses).toHaveLength(2));
+    await waitFor(() => expect(releaseStopResponses).toHaveLength(1));
     expect(refreshButton).toBeDisabled();
     releaseStopResponses[0]();
     await screen.findByText("Batch stop requested for repo-a/app.");
     expect(refreshButton).toBeDisabled();
+    await waitFor(() => expect(releaseStopResponses).toHaveLength(2));
     releaseStopResponses[1]();
     await screen.findByText("Batch stop requested for repo-b/app.");
     await waitFor(() => expect(refreshButton).not.toBeDisabled());

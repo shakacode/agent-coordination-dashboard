@@ -18,6 +18,7 @@ type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
 
 export function canBypassDashboardCache(refreshHeader: string | undefined, remoteAddress: string | undefined): boolean {
+  // Same-host reverse proxies make remote callers appear loopback; keep exposed deployments direct and host-guarded.
   return refreshHeader === "foreground" && isLoopbackAddress(remoteAddress);
 }
 

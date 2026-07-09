@@ -49,6 +49,7 @@ export function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
+  const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
@@ -63,6 +64,16 @@ export function App() {
     if (userActionInFlightCount.current === 0) {
       setIsRefreshing(false);
     }
+  }
+
+  function enqueueUserAction<T>(action: () => Promise<T>): Promise<T> {
+    beginUserAction();
+    const run = userActionQueue.current.then(action, action).finally(finishUserAction);
+    userActionQueue.current = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   const loadDashboard = useCallback(async (options: { background?: boolean; backgroundTimeoutMs?: number } = {}) => {
@@ -125,23 +136,22 @@ export function App() {
   }, [loadDashboard, settings?.refreshIntervalMs]);
 
   async function persistRepos(nextRepos: string[]) {
-    const requestVersion = ++dashboardRequestVersion.current;
-    setError(null);
-    beginUserAction();
-    try {
-      const saved = await saveSettings({ targetRepos: nextRepos });
-      if (requestVersion === dashboardRequestVersion.current) {
-        setSettings(saved);
+    return enqueueUserAction(async () => {
+      const requestVersion = ++dashboardRequestVersion.current;
+      setError(null);
+      try {
+        const saved = await saveSettings({ targetRepos: nextRepos });
+        if (requestVersion === dashboardRequestVersion.current) {
+          setSettings(saved);
+        }
+        const loadedDashboard = await fetchDashboard({ fresh: true });
+        if (requestVersion === dashboardRequestVersion.current) {
+          setDashboard(loadedDashboard);
+        }
+      } catch (caught: unknown) {
+        setError(caught instanceof Error ? caught.message : "Settings failed to save");
       }
-      const loadedDashboard = await fetchDashboard({ fresh: true });
-      if (requestVersion === dashboardRequestVersion.current) {
-        setDashboard(loadedDashboard);
-      }
-    } catch (caught: unknown) {
-      setError(caught instanceof Error ? caught.message : "Settings failed to save");
-    } finally {
-      finishUserAction();
-    }
+    });
   }
 
   function addRepo(event: FormEvent<HTMLFormElement>) {
@@ -178,35 +188,33 @@ export function App() {
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
-    const requestVersion = ++dashboardRequestVersion.current;
-    beginUserAction();
-    try {
-      await saveImportedBatchManifest(manifest);
-      const loadedDashboard = await fetchDashboard({ fresh: true });
-      if (requestVersion === dashboardRequestVersion.current) {
-        setDashboard(loadedDashboard);
+    return enqueueUserAction(async () => {
+      const requestVersion = ++dashboardRequestVersion.current;
+      try {
+        await saveImportedBatchManifest(manifest);
+        const loadedDashboard = await fetchDashboard({ fresh: true });
+        if (requestVersion === dashboardRequestVersion.current) {
+          setDashboard(loadedDashboard);
+        }
+      } catch (caught: unknown) {
+        throw caught instanceof Error ? caught : new Error("Batch plan import failed");
       }
-    } catch (caught: unknown) {
-      throw caught instanceof Error ? caught : new Error("Batch plan import failed");
-    } finally {
-      finishUserAction();
-    }
+    });
   }
 
   async function stopBatch(input: { batchId: string; repo?: string; reason?: string }) {
-    const requestVersion = ++dashboardRequestVersion.current;
-    beginUserAction();
-    try {
-      await requestBatchStop(input);
-      const loadedDashboard = await fetchDashboard({ fresh: true });
-      if (requestVersion === dashboardRequestVersion.current) {
-        setDashboard(loadedDashboard);
+    return enqueueUserAction(async () => {
+      const requestVersion = ++dashboardRequestVersion.current;
+      try {
+        await requestBatchStop(input);
+        const loadedDashboard = await fetchDashboard({ fresh: true });
+        if (requestVersion === dashboardRequestVersion.current) {
+          setDashboard(loadedDashboard);
+        }
+      } catch (caught: unknown) {
+        throw caught instanceof Error ? caught : new Error("Batch stop request failed");
       }
-    } catch (caught: unknown) {
-      throw caught instanceof Error ? caught : new Error("Batch stop request failed");
-    } finally {
-      finishUserAction();
-    }
+    });
   }
 
   if (error) {
