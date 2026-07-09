@@ -12,6 +12,7 @@ import { WorkTab } from "./components/WorkTab";
 
 type Tab = "overview" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
+const BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 
 function canSelectWorkItem(item: WorkItem): boolean {
   return item.schedulingState !== "in_process" && !item.batchSignals?.length;
@@ -58,10 +59,12 @@ export function App() {
       setError(null);
       setIsRefreshing(true);
     }
+    const abortController = isBackground ? new AbortController() : undefined;
+    const timeoutId = abortController ? window.setTimeout(() => abortController.abort(), BACKGROUND_REFRESH_TIMEOUT_MS) : undefined;
     const requestVersion = ++dashboardRequestVersion.current;
     try {
-      const loadedSettings = await fetchSettings();
-      const loadedDashboard = await fetchDashboard({ fresh: !isBackground });
+      const loadedSettings = await fetchSettings({ signal: abortController?.signal });
+      const loadedDashboard = await fetchDashboard({ fresh: !isBackground, signal: abortController?.signal });
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
@@ -72,6 +75,9 @@ export function App() {
         setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
       }
     } finally {
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
       if (isBackground) {
         backgroundLoadInFlight.current = false;
       } else {

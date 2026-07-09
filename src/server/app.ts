@@ -15,6 +15,7 @@ import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
+const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
 
 interface CreateDashboardAppOptions {
   serveFrontend?: boolean;
@@ -28,7 +29,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
-  const dashboardCacheTtlMs = config.refreshIntervalMs > 0 ? Math.min(config.refreshIntervalMs, 5000) : 0;
+  const dashboardCacheTtlMs = config.refreshIntervalMs > 0 ? Math.min(config.refreshIntervalMs, MAX_DASHBOARD_CACHE_TTL_MS) : 0;
   let dashboardCacheGeneration = 0;
   let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
   let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
@@ -78,12 +79,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
-  function cacheDashboardModel(key: string, model: DashboardModel, generation: number) {
+  function cacheDashboardModel(key: string, model: DashboardModel, generation: number, expiresAt: number) {
     if (generation !== dashboardCacheGeneration) {
       return;
     }
     cachedDashboard = {
-      expiresAt: Date.now() + dashboardCacheTtlMs,
+      expiresAt,
       key,
       model
     };
@@ -99,7 +100,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       invalidateDashboardCache();
       const generation = dashboardCacheGeneration;
       const model = await buildScopedDashboard(settings);
-      cacheDashboardModel(key, model, generation);
+      cacheDashboardModel(key, model, generation, Date.now() + dashboardCacheTtlMs);
       return model;
     }
 
@@ -112,9 +113,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const generation = dashboardCacheGeneration;
+    const expiresAt = Date.now() + dashboardCacheTtlMs;
     const promise = buildScopedDashboard(settings)
       .then((model) => {
-        cacheDashboardModel(key, model, generation);
+        cacheDashboardModel(key, model, generation, expiresAt);
         return model;
       })
       .finally(() => {
@@ -269,7 +271,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   app.get("/api/dashboard", async (req, res) => {
     const settings = await currentSettings();
-    res.json(await readScopedDashboard(settings, { bypassCache: req.get("X-Dashboard-Refresh") === "foreground" }));
+    const bypassCache = req.get("X-Dashboard-Refresh") === "foreground" && isLoopbackAddress(req.socket.remoteAddress);
+    res.json(await readScopedDashboard(settings, { bypassCache }));
   });
 
   if (options.serveFrontend !== false) {
