@@ -330,7 +330,7 @@ describe("operatorRows", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      id: "lane:batch-standalone:docs",
+      id: "lane:repo/app:batch-standalone:docs",
       source: "lane",
       repo: "repo/app",
       operatorState: "ready",
@@ -341,6 +341,270 @@ describe("operatorRows", () => {
       host: "claude",
       operator: "maintainer",
       branch: "docs/batch"
+    });
+  });
+
+  it("uses lane liveness for fallback lane rows", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "batch-live-lane",
+            repo: "repo/app",
+            path: "batches/batch-live-lane.json",
+            lanes: [
+              {
+                name: "ops",
+                owner: "agent-ops",
+                targets: [],
+                dependsOn: [],
+                status: "coding",
+                liveness: "live",
+                blockedOn: [],
+                threadHandle: "thread-ops",
+                host: "codex",
+                operator: "justin"
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      id: "lane:repo/app:batch-live-lane:ops",
+      operatorState: "running",
+      liveness: "live"
+    });
+  });
+
+  it("keeps fallback lane ids distinct across repos with reused batch ids", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: ["repo/app", "repo/api"].map((repo) => ({
+          schemaVersion: 1,
+          batchId: "batch-reused",
+          repo,
+          path: `batches/${repo.replace("/", "__")}/batch-reused.json`,
+          lanes: [
+            {
+              name: "docs",
+              owner: "agent-docs",
+              targets: [],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }))
+      })
+    );
+
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+  });
+
+  it("does not let QA validation events complete live operator work", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [workItem({ claim, heartbeat })],
+        events: [
+          {
+            eventId: "qa-passed",
+            type: "qa.validation_passed",
+            batchId: "batch-1",
+            laneName: "qa",
+            repo: "repo/app",
+            target: "123",
+            status: "passed",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-1.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("running");
+  });
+
+  it("restricts targetless lane events to the work item repo", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim,
+            heartbeat,
+            batchSignals: [{ batchId: "batch-shared", laneName: "shared", status: "coding", blockedOn: [] }]
+          })
+        ],
+        events: [
+          {
+            eventId: "other-repo-done",
+            type: "done",
+            batchId: "batch-shared",
+            laneName: "shared",
+            repo: "repo/api",
+            status: "done",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/batch-shared.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("running");
+  });
+
+  it("chooses signal lanes from the work item's repo when batch ids are reused", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            id: "repo/api#123",
+            repo: "repo/api",
+            target: "123",
+            schedulingState: "started_not_processing",
+            batchSignals: [{ batchId: "batch-reused", laneName: "shared", status: "queued", blockedOn: [] }],
+            github: {
+              repo: "repo/api",
+              target: "123",
+              type: "issue",
+              title: "API issue",
+              url: "https://github.com/repo/api/issues/123",
+              state: "OPEN",
+              labels: [],
+              loadState: "loaded"
+            }
+          })
+        ],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "batch-reused",
+            repo: "repo/app",
+            targets: [{ type: "issue", target: "123", repo: "repo/app" }],
+            path: "batches/repo-app.json",
+            lanes: [
+              {
+                name: "shared",
+                owner: "agent-app",
+                targets: ["123"],
+                dependsOn: [],
+                status: "blocked",
+                liveness: "no-heartbeat",
+                blockedOn: ["repo/app#122"],
+                threadHandle: "thread-app"
+              }
+            ]
+          },
+          {
+            schemaVersion: 1,
+            batchId: "batch-reused",
+            repo: "repo/api",
+            targets: [{ type: "issue", target: "123", repo: "repo/api" }],
+            path: "batches/repo-api.json",
+            lanes: [
+              {
+                name: "shared",
+                owner: "agent-api",
+                targets: ["123"],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: [],
+                threadHandle: "thread-api"
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    const apiRow = rows.find((row) => row.repo === "repo/api" && row.target === "123");
+    expect(apiRow).toMatchObject({
+      operatorState: "ready",
+      threadHandle: "thread-api",
+      blockedOn: []
+    });
+  });
+
+  it("does not require PR URLs for active issue rows", () => {
+    const issueHeartbeat = {
+      ...heartbeat,
+      prUrl: undefined
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            type: "issue",
+            claim: { ...claim, prUrl: undefined },
+            heartbeat: issueHeartbeat,
+            github: {
+              repo: "repo/app",
+              target: "123",
+              type: "issue",
+              title: "Active issue",
+              url: "https://github.com/repo/app/issues/123",
+              state: "OPEN",
+              labels: [],
+              loadState: "loaded"
+            }
+          })
+        ]
+      })
+    );
+
+    expect(rows[0].operatorState).toBe("running");
+    expect(rows[0].warnings).not.toContain("PR URL UNKNOWN");
+  });
+
+  it("falls back to manifest target metadata when GitHub previews are unavailable", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            type: "unknown",
+            github: undefined,
+            schedulingState: "started_not_processing",
+            batchSignals: [{ batchId: "batch-1", laneName: "docs", status: "queued", blockedOn: [] }]
+          })
+        ],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "batch-1",
+            repo: "repo/app",
+            targets: [
+              {
+                type: "pull_request",
+                target: "123",
+                title: "Manifest title",
+                url: "https://github.com/repo/app/pull/123"
+              }
+            ],
+            path: "batches/batch-1.json",
+            lanes: [
+              {
+                name: "docs",
+                owner: "agent-docs",
+                targets: ["123"],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      type: "pull_request",
+      title: "Manifest title",
+      url: "https://github.com/repo/app/pull/123"
     });
   });
 

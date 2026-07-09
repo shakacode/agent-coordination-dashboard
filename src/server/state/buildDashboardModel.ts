@@ -854,7 +854,9 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
   const scopedEvents = inputEvents
     .flatMap((event) => {
-      if (hasOutOfScopeOperatorMetadata(event, targetRepoSet)) {
+      const isRedactableBatchControlEvent =
+        !event.repo && !event.target && (isStopRequestEvent(event) || isStoppedEvent(event));
+      if (hasOutOfScopeOperatorMetadata(event, targetRepoSet) && !isRedactableBatchControlEvent) {
         return [];
       }
       const batchId = event.batchId;

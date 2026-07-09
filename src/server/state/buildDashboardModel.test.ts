@@ -309,6 +309,56 @@ describe("buildDashboardModel", () => {
     );
   });
 
+  it("keeps targetless stop events while redacting leaky operator metadata", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-a/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-stop",
+          targets: [{ type: "pull_request", target: "10", repo: "repo-a/app" }],
+          path: "batches/batch-stop.json",
+          lanes: [
+            {
+              name: "safe",
+              owner: "worker-a",
+              targets: ["10"],
+              dependsOn: [],
+              status: "running",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "stop-leaky",
+          type: "batch.stop_requested",
+          batchId: "batch-stop",
+          status: "stop_requested",
+          prUrl: "https://github.com/secret/repo/pull/10",
+          timestamp: "2026-06-17T19:55:00Z",
+          path: "events/batch-stop.jsonl:1"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.events[0]).toMatchObject({
+      type: "batch.stop_requested",
+      batchId: "batch-stop",
+      message: "Unscoped batch-level event details hidden by dashboard scoping."
+    });
+    expect(model.events[0].prUrl).toBeUndefined();
+    expect(model.batchOperations[0]).toEqual(expect.objectContaining({ controlStatus: "stop_requested" }));
+  });
+
   it("preserves global coordination API warnings while scoping dashboard data", () => {
     const model = buildDashboardModel({
       stateRoot: "coordination-api",

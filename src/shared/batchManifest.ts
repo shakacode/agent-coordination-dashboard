@@ -29,6 +29,11 @@ export interface BatchManifestFile {
     targets: string[];
     depends_on: string[];
     status: string;
+    thread_handle?: string;
+    host?: string;
+    operator?: string;
+    branch?: string;
+    pr_url?: string;
   }>;
   reservations: Array<Record<string, string>>;
   created_at?: string;
@@ -381,7 +386,12 @@ function normalizeLaneForDraft(lane: BatchLane | Record<string, unknown>): Batch
       ? lane.blockedOn.map(String).filter(Boolean)
       : Array.isArray(record.blocked_on)
         ? record.blocked_on.map(String).filter(Boolean)
-        : []
+        : [],
+    threadHandle: stringValue(lane.threadHandle) || stringValue(record.thread_handle) || undefined,
+    host: stringValue(lane.host) || undefined,
+    operator: stringValue(lane.operator) || undefined,
+    branch: stringValue(lane.branch) || undefined,
+    prUrl: stringValue(lane.prUrl) || stringValue(record.pr_url) || stringValue(record.prUrl) || undefined
   };
 }
 
@@ -427,7 +437,14 @@ export function normalizeBatchManifestForWrite(input: Partial<BatchManifestDraft
       owner: lane.owner,
       targets: lane.targets,
       depends_on: lane.dependsOn,
-      status: lane.status
+      status: lane.status,
+      ...compactRecord({
+        thread_handle: lane.threadHandle,
+        host: lane.host,
+        operator: lane.operator,
+        branch: lane.branch,
+        pr_url: lane.prUrl
+      })
     })),
     reservations: draft.reservations.map((reservation) =>
       compactRecord({

@@ -74,6 +74,7 @@ const DONE_PATTERN = /\b(complete|completed|done|merged|closed|passed|released)\
 const PAUSED_PATTERN = /\b(paused?|token[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?limit|context[_\-\s]?window)/i;
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
+const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
   return values.find((value) => Boolean(value?.trim()));
@@ -204,21 +205,24 @@ function deriveOperatorState(input: {
   lane?: BatchLane;
   event?: BatchEvent;
   signalStatus?: string;
+  liveness?: Liveness | "none";
   blockedOn: string[];
   nowMs: number;
 }): OperatorState {
+  const eventDrivesOperatorState = !input.event || !isQaLikeEvent(input.event);
   const text = stateText([
     input.workItem?.schedulingState,
     input.heartbeat?.status,
     input.claim?.status,
     input.lane?.status,
-    input.event?.type,
-    input.event?.status,
+    eventDrivesOperatorState ? input.event?.type : undefined,
+    eventDrivesOperatorState ? input.event?.status : undefined,
     input.signalStatus
   ]);
 
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
   const hasActiveClaim = Boolean(input.claim && input.claim.status !== "released");
+  const liveness = input.heartbeat?.liveness || input.liveness;
 
   if (DONE_PATTERN.test(text)) {
     return "done";
@@ -229,14 +233,14 @@ function deriveOperatorState(input: {
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(text)) {
     return "blocked";
   }
-  if (input.heartbeat?.liveness === "dead") {
+  if (liveness === "dead") {
     return "dead";
   }
-  if (input.heartbeat?.liveness === "stale") {
+  if (liveness === "stale") {
     return "stale";
   }
-  if (input.heartbeat?.liveness === "live") {
-    const transitionAt = input.event?.timestamp || input.heartbeat.updatedAt;
+  if (liveness === "live") {
+    const transitionAt = input.event?.timestamp || input.heartbeat?.updatedAt;
     if (timestampMs(transitionAt) > 0 && input.nowMs - timestampMs(transitionAt) >= WEDGED_THRESHOLD_MS) {
       return "wedged";
     }
@@ -246,6 +250,9 @@ function deriveOperatorState(input: {
     return "ready";
   }
   if (input.workItem?.schedulingState === "started_not_processing" || hasActiveClaim) {
+    return "dead";
+  }
+  if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(text)) {
     return "dead";
   }
   if (input.heartbeat) {
@@ -261,7 +268,7 @@ function isActiveOperatorState(state: OperatorState): boolean {
   return ["running", "wedged", "paused", "blocked", "stale", "dead"].includes(state);
 }
 
-function metadataWarnings(row: Pick<OperatorRow, "operatorState" | "threadHandle" | "operator" | "host" | "prUrl">): string[] {
+function metadataWarnings(row: Pick<OperatorRow, "operatorState" | "type" | "threadHandle" | "operator" | "host" | "prUrl">): string[] {
   if (!isActiveOperatorState(row.operatorState)) {
     return [];
   }
@@ -269,7 +276,7 @@ function metadataWarnings(row: Pick<OperatorRow, "operatorState" | "threadHandle
     row.threadHandle ? "" : "Thread UNKNOWN",
     row.operator ? "" : "Operator UNKNOWN",
     row.host ? "" : "Host UNKNOWN",
-    row.prUrl ? "" : "PR URL UNKNOWN"
+    row.type === "pull_request" && !row.prUrl ? "PR URL UNKNOWN" : ""
   ].filter(Boolean);
 }
 
@@ -355,7 +362,10 @@ function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent
   const signals = item.batchSignals || [];
   return events.filter((event) => {
     const targetMatch = event.target === item.target && (!event.repo || event.repo === item.repo);
-    const laneMatch = !event.target && signals.some((signal) => event.batchId === signal.batchId && event.laneName === signal.laneName);
+    const laneMatch =
+      !event.target &&
+      (!event.repo || event.repo === item.repo) &&
+      signals.some((signal) => event.batchId === signal.batchId && event.laneName === signal.laneName);
     return targetMatch || laneMatch;
   });
 }
@@ -376,12 +386,40 @@ function matchingEventsForLane(batch: BatchRecord, lane: BatchLane, events: Batc
   });
 }
 
+function isQaLikeEvent(event: BatchEvent): boolean {
+  const type = event.type.toLowerCase();
+  return (
+    type === "qa" ||
+    type === "validation" ||
+    type.startsWith("qa.") ||
+    type.startsWith("qa_") ||
+    type.startsWith("qa-") ||
+    type.startsWith("validation.") ||
+    type.startsWith("validation_") ||
+    type.startsWith("validation-")
+  );
+}
+
+function batchContainsWork(batch: BatchRecord, item: WorkItem, lane: BatchLane): boolean {
+  if (!lane.targets.includes(item.target)) {
+    return batch.repo === item.repo;
+  }
+  const targetRepo = uniqueManifestRepoForTarget(batch, item.target) || batch.repo;
+  return !targetRepo || targetRepo === item.repo;
+}
+
 function findSignalLane(item: WorkItem, batches: BatchRecord[]): { batch?: BatchRecord; lane?: BatchLane } {
   const signal = item.batchSignals?.[0];
   if (!signal) {
     return {};
   }
-  const batch = batches.find((candidate) => candidate.batchId === signal.batchId);
+  const batch = batches.find((candidate) => {
+    if (candidate.batchId !== signal.batchId) {
+      return false;
+    }
+    const lane = candidate.lanes.find((candidateLane) => candidateLane.name === signal.laneName);
+    return Boolean(lane && batchContainsWork(candidate, item, lane));
+  });
   return {
     batch,
     lane: batch?.lanes.find((lane) => lane.name === signal.laneName)
@@ -392,10 +430,21 @@ function workTitle(item: WorkItem): string {
   return item.github?.title || `${item.type === "pull_request" ? "Pull request" : item.type === "issue" ? "Issue" : "Target"} #${item.target}`;
 }
 
+function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): NonNullable<BatchRecord["targets"]>[number] | undefined {
+  return batch?.targets?.find((target) => {
+    if (target.target !== item.target) {
+      return false;
+    }
+    const targetRepo = target.repo || batch.repo;
+    return !targetRepo || targetRepo === item.repo;
+  });
+}
+
 function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number): OperatorRow {
   const latest = latestEvent(matchingEventsForWork(item, dashboard.events));
   const { batch, lane } = findSignalLane(item, dashboard.batches);
   const signal = item.batchSignals?.[0];
+  const batchTarget = batchTargetForWork(batch, item);
   const blockedOn = [...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean);
   const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventMetadata(latest));
   const state = deriveOperatorState({
@@ -414,9 +463,9 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     source: "target",
     repo: item.repo,
     target: item.target,
-    type: item.type,
-    title: workTitle(item),
-    url: item.github?.url,
+    type: item.type === "unknown" ? batchTarget?.type || "unknown" : item.type,
+    title: item.github?.title || batchTarget?.title || workTitle(item),
+    url: item.github?.url || batchTarget?.url,
     operatorState: state,
     liveness: item.heartbeat?.liveness || "none",
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
@@ -454,13 +503,14 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
   const state = deriveOperatorState({
     lane,
     event: latest,
+    liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,
     nowMs
   });
   const lastActivityAt = maxTimestamp(latest?.timestamp, batch.updatedAt, batch.createdAt);
   const title = firstValue(target ? targetTitleFromBatch(batch, target) : undefined, batch.objective, `Batch lane ${lane.name}`) || UNKNOWN;
   const baseRow: Omit<OperatorRow, "searchText"> = {
-    id: `lane:${batch.batchId}:${lane.name}`,
+    id: `lane:${batch.repo || batch.path}:${batch.batchId}:${lane.name}`,
     source: "lane",
     repo,
     target,

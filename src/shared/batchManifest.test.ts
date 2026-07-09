@@ -92,7 +92,12 @@ describe("batch manifest helpers", () => {
           owner: "worker-a",
           targets: ["4005"],
           depends_on: ["prep"],
-          status: "queued"
+          status: "queued",
+          thread_handle: "thread-a",
+          host: "codex",
+          operator: "justin",
+          branch: "feature/operator",
+          pr_url: "https://github.com/shakacode/react_on_rails/pull/4005"
         }
       ],
       reservations: [],
@@ -109,7 +114,16 @@ describe("batch manifest helpers", () => {
         launchPrompt
       })
     );
-    expect(normalized.lanes[0]).toEqual(expect.objectContaining({ dependsOn: ["prep"] }));
+    expect(normalized.lanes[0]).toEqual(
+      expect.objectContaining({
+        dependsOn: ["prep"],
+        threadHandle: "thread-a",
+        host: "codex",
+        operator: "justin",
+        branch: "feature/operator",
+        prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+      })
+    );
   });
 
   it("normalizes imported manifests to the retained snake_case JSON shape", () => {
@@ -126,7 +140,12 @@ describe("batch manifest helpers", () => {
           dependsOn: [],
           status: "queued",
           liveness: "no-heartbeat",
-          blockedOn: []
+          blockedOn: [],
+          threadHandle: "thread-a",
+          host: "codex",
+          operator: "justin",
+          branch: "feature/operator",
+          prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
         }
       ],
       reservations: [{ type: "issue", target: "4010", reason: "Blocked on upstream feedback." }],
@@ -147,7 +166,12 @@ describe("batch manifest helpers", () => {
           owner: "worker-a",
           targets: ["4005"],
           depends_on: [],
-          status: "queued"
+          status: "queued",
+          thread_handle: "thread-a",
+          host: "codex",
+          operator: "justin",
+          branch: "feature/operator",
+          pr_url: "https://github.com/shakacode/react_on_rails/pull/4005"
         }
       ],
       reservations: [{ type: "issue", target: "4010", reason: "Blocked on upstream feedback." }],
