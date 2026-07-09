@@ -31,6 +31,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
   const dashboardCacheTtlMs = config.refreshIntervalMs > 0 ? Math.min(config.refreshIntervalMs, MAX_DASHBOARD_CACHE_TTL_MS) : 0;
   let dashboardCacheGeneration = 0;
+  let dashboardBuildSequence = 0;
+  let latestCacheableDashboardBuild = 0;
   let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
   let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
 
@@ -56,6 +58,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     dashboardBuildInFlight = undefined;
   }
 
+  function nextCacheableDashboardBuild(): number {
+    dashboardBuildSequence += 1;
+    latestCacheableDashboardBuild = dashboardBuildSequence;
+    return dashboardBuildSequence;
+  }
+
   async function buildScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
     const now = new Date();
     const state = await readCoordinationState(config.stateRoot, now, {
@@ -79,8 +87,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
-  function cacheDashboardModel(key: string, model: DashboardModel, generation: number, expiresAt: number) {
-    if (generation !== dashboardCacheGeneration) {
+  function cacheDashboardModel(key: string, model: DashboardModel, generation: number, sequence: number, expiresAt: number) {
+    if (generation !== dashboardCacheGeneration || sequence !== latestCacheableDashboardBuild) {
       return;
     }
     cachedDashboard = {
@@ -99,8 +107,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     if (options.bypassCache) {
       invalidateDashboardCache();
       const generation = dashboardCacheGeneration;
+      const sequence = nextCacheableDashboardBuild();
       const model = await buildScopedDashboard(settings);
-      cacheDashboardModel(key, model, generation, Date.now() + dashboardCacheTtlMs);
+      cacheDashboardModel(key, model, generation, sequence, Date.now() + dashboardCacheTtlMs);
       return model;
     }
 
@@ -113,10 +122,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const generation = dashboardCacheGeneration;
+    const sequence = nextCacheableDashboardBuild();
     const expiresAt = Date.now() + dashboardCacheTtlMs;
     const promise = buildScopedDashboard(settings)
       .then((model) => {
-        cacheDashboardModel(key, model, generation, expiresAt);
+        cacheDashboardModel(key, model, generation, sequence, expiresAt);
         return model;
       })
       .finally(() => {

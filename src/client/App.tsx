@@ -63,8 +63,10 @@ export function App() {
     const timeoutId = abortController ? window.setTimeout(() => abortController.abort(), BACKGROUND_REFRESH_TIMEOUT_MS) : undefined;
     const requestVersion = ++dashboardRequestVersion.current;
     try {
-      const loadedSettings = await fetchSettings({ signal: abortController?.signal });
-      const loadedDashboard = await fetchDashboard({ fresh: !isBackground, signal: abortController?.signal });
+      const [loadedSettings, loadedDashboard] = await Promise.all([
+        fetchSettings({ signal: abortController?.signal }),
+        fetchDashboard({ fresh: !isBackground, signal: abortController?.signal })
+      ]);
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
