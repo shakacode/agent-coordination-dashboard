@@ -20,7 +20,7 @@
     "preview": "NODE_ENV=production node node_modules/tsx/dist/cli.mjs src/server/index.ts",
     "test": "node node_modules/vitest/vitest.mjs run",
     "test:watch": "node node_modules/vitest/vitest.mjs",
-    "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json"
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.scripts.json"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.3",

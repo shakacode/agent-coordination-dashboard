@@ -244,8 +244,14 @@ async function installOfflineGitHubStub(root: string): Promise<string> {
 export async function runDemo(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "agent-coordination-dashboard-demo-"));
   const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const offlineBin = await installOfflineGitHubStub(root);
-  await initializeDemoState(root);
+  let offlineBin: string;
+  try {
+    offlineBin = await installOfflineGitHubStub(root);
+    await initializeDemoState(root);
+  } catch (error) {
+    await rm(root, { force: true, recursive: true });
+    throw error;
+  }
 
   const serverEnv = { ...process.env };
   delete serverEnv.AGENT_COORD_API_URL;
