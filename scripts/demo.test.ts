@@ -118,7 +118,7 @@ describe("demo coordination state", () => {
     const port = await unusedPort();
     const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/demo.ts"], {
       cwd: process.cwd(),
-      env: { ...process.env, NODE_ENV: "development", PORT: String(port) },
+      env: { ...process.env, NODE_ENV: "production", PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"]
     });
     const output = captureOutput(child);
@@ -133,6 +133,10 @@ describe("demo coordination state", () => {
       const health = await fetch(`http://127.0.0.1:${port}/api/health`);
       expect(health.ok).toBe(true);
       await expect(health.json()).resolves.toEqual({ ok: true });
+
+      const page = await fetch(`http://127.0.0.1:${port}/`);
+      expect(page.ok).toBe(true);
+      await expect(page.text()).resolves.toContain('<div id="root"></div>');
 
       const settings = await fetch(`http://127.0.0.1:${port}/api/settings`);
       await expect(settings.json()).resolves.toEqual({ targetRepos: [DEMO_REPO], refreshIntervalMs: 2000 });

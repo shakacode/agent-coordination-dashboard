@@ -256,6 +256,7 @@ export async function runDemo(): Promise<void> {
     DASHBOARD_REFRESH_MS: "2000",
     DASHBOARD_SETTINGS_PATH: join(root, "settings.json"),
     HOST: "127.0.0.1",
+    NODE_ENV: "development",
     PATH: `${offlineBin}${delimiter}${process.env.PATH || ""}`,
     PORT: process.env.PORT || "4317",
     TARGET_REPOS: DEMO_REPO
