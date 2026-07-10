@@ -3,6 +3,7 @@ import { appendFile, chmod, mkdir, mkdtemp, rename, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_PORT } from "../src/server/config";
 
 export const DEMO_REPO = "demo/coordination-showcase";
 
@@ -262,9 +263,9 @@ export async function runDemo(): Promise<void> {
     DASHBOARD_REFRESH_MS: "2000",
     DASHBOARD_SETTINGS_PATH: join(root, "settings.json"),
     HOST: "127.0.0.1",
-    NODE_ENV: "development",
+    NODE_ENV: process.env.AGENT_COORD_DASHBOARD_DEMO_NODE_ENV || "development",
     PATH: `${offlineBin}${delimiter}${process.env.PATH || ""}`,
-    PORT: process.env.PORT || "4317",
+    PORT: process.env.PORT || String(DEFAULT_PORT),
     TARGET_REPOS: DEMO_REPO
   });
 
@@ -274,7 +275,7 @@ export async function runDemo(): Promise<void> {
 
   const server = spawn(
     process.execPath,
-    [join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs"), join(projectRoot, "src", "server", "index.ts")],
+    [fileURLToPath(import.meta.resolve("tsx/cli")), join(projectRoot, "src", "server", "index.ts")],
     {
       cwd: projectRoot,
       env: serverEnv,

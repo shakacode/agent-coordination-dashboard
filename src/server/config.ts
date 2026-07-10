@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+export const DEFAULT_PORT = 4319;
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -52,7 +54,7 @@ export function readConfig(env = process.env): ServerConfig {
   }
 
   return {
-    port: Number(env.PORT || 4317),
+    port: Number(env.PORT || DEFAULT_PORT),
     host,
     allowedHosts: env.ALLOWED_HOSTS ? listFromEnv(env.ALLOWED_HOSTS) : defaultAllowedHosts(host),
     stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),

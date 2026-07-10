@@ -1,4 +1,4 @@
-# Agents Coordination Dashboard
+# Agent Coordination Dashboard
 
 Local dashboard for agent coordination state, coordinator triage, machine/lane
 visibility, batch prompt planning, batch audit, and QA validation tracking.
@@ -12,13 +12,36 @@ separate repository and license boundary while consuming the same protocol API.
 
 ## Run
 
+The dashboard requires Node.js 22.12.0 or newer. This repository uses Node 24
+for development, but the public package floor follows the runtime requirements
+of its current toolchain.
+
 ```bash
 npm install
 AGENT_COORD_STATE_ROOT="$HOME/.local/state/agent-coordination" \
 npm run dev
 ```
 
-Open <http://localhost:4317>.
+Open <http://localhost:4319>.
+
+The future npm package name is `agent-coordination-dashboard`. After that
+package is published, normal invocation will start the dashboard server:
+
+```bash
+npx agent-coordination-dashboard
+```
+
+To try the packaged command before publication, build a local tarball and
+install it in a disposable directory:
+
+```bash
+npm pack
+npm install /path/to/agent-coordination-dashboard-0.1.0.tgz
+npx agent-coordination-dashboard
+```
+
+This repository is package-ready only: these steps do not publish to npm,
+create a Git tag, or change registry state.
 
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
 If it has not been populated yet, the dashboard shows a setup notice rather
@@ -118,7 +141,7 @@ cleanly; it does not kill processes or release claims by itself.
 
 | Variable | Default |
 | --- | --- |
-| `PORT` | `4317` |
+| `PORT` | `4319` (avoids the conventional OTLP ports `4317` and `4318`) |
 | `HOST` | `127.0.0.1` |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` plus non-wildcard `HOST` |
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
@@ -198,7 +221,20 @@ npm test
 npm run typecheck
 npm run build
 npm run dev
+npm run demo
 ```
 
 The npm scripts call package entrypoints through `node` directly for consistent
 local execution.
+
+`npm run demo` starts a disposable local dashboard with synthetic coordination
+state that ticks every 3 seconds and refreshes in the UI every 2 seconds. The
+installed equivalent is:
+
+```bash
+npx agent-coordination-dashboard --demo
+```
+
+Demo mode removes coordination API credentials from the child environment,
+uses an offline `gh` stub, binds to loopback, and deletes its temporary state
+when it stops.
