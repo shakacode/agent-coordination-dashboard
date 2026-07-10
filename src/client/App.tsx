@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
-import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
+import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { HealthTab } from "./components/HealthTab";
@@ -9,8 +9,10 @@ import { MachinesTab } from "./components/MachinesTab";
 import { OperatorView } from "./components/OperatorView";
 import { OverviewTab } from "./components/OverviewTab";
 import { PromptDrawer } from "./components/PromptDrawer";
+import { SignalGroupList } from "./components/SignalGroups";
 import { WorkTab } from "./components/WorkTab";
 import { hasStructuredOperatorDeepLink, operatorDeepLinkFromSearchParams } from "./operatorRows";
+import { groupWarnings } from "./signalGroups";
 
 type Tab = "overview" | "operator" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
@@ -236,8 +238,18 @@ export function App() {
 
   const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
-  const visibleWarnings = dashboard.warnings.slice(0, 2);
-  const overflowWarnings = dashboard.warnings.slice(2);
+  const warningGroups = groupWarnings(dashboard.warnings);
+  const visibleWarningGroups = warningGroups.slice(0, 3);
+  const overflowWarningGroups = warningGroups.slice(3);
+  const renderWarning = (warning: CoordinationWarning) => {
+    const context = warning.repo ? `${warning.repo}${warning.target ? `#${warning.target}` : ""}` : undefined;
+    return (
+      <>
+        <strong>{warning.severity}</strong>
+        <span>{context ? `${context}: ${warning.message}` : warning.message}</span>
+      </>
+    );
+  };
 
   return (
     <main className="app-shell">
@@ -313,27 +325,17 @@ export function App() {
               {dashboard.warnings.length} {warningLabel}
             </span>
           </div>
-          <ul className="warnings-preview-list">
-            {visibleWarnings.map((warning, index) => (
-              <li key={`${warning.message}-${index}`}>
-                <strong>{warning.severity}</strong>
-                <span>{warning.message}</span>
-              </li>
-            ))}
-          </ul>
-          {overflowWarnings.length > 0 && (
+          <SignalGroupList
+            ariaLabel={`Coordination ${warningLabel} grouped by type`}
+            groups={visibleWarningGroups}
+            renderItem={renderWarning}
+          />
+          {overflowWarningGroups.length > 0 && (
             <details className="warnings-overflow">
               <summary>
-                {overflowWarnings.length} more {warningLabel}
+                {overflowWarningGroups.length} more {overflowWarningGroups.length === 1 ? "type" : "types"}
               </summary>
-              <ul>
-                {overflowWarnings.map((warning, index) => (
-                  <li key={`${warning.message}-${index + visibleWarnings.length}`}>
-                    <strong>{warning.severity}</strong>
-                    <span>{warning.message}</span>
-                  </li>
-                ))}
-              </ul>
+              <SignalGroupList groups={overflowWarningGroups} renderItem={renderWarning} />
             </details>
           )}
         </section>
