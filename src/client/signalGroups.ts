@@ -18,7 +18,6 @@ const SEVERITY_RANK: Record<WarningSeverity, number> = { critical: 0, warning: 1
  */
 function normalizeMessage(message: string): string {
   return message
-    .replace(/#\d+/g, "#N")
     .replace(/\b\d+\b/g, "N")
     .replace(/\s+/g, " ")
     .trim()

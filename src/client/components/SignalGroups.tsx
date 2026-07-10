@@ -24,7 +24,6 @@ export function SignalGroupList<T>({
           {group.count === 1 ? (
             <div className="signal-group-single">
               <div className="signal-group-item">{renderItem(group.items[0], 0)}</div>
-              <StatusBadge value={group.severity} />
             </div>
           ) : (
             <details className="signal-group-collapsible">
