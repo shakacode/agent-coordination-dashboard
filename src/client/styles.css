@@ -272,6 +272,10 @@ textarea {
   min-width: 0;
 }
 
+.health-list .signal-group-item {
+  display: block;
+}
+
 .dashboard-layout {
   min-height: calc(100vh - 48px);
 }
