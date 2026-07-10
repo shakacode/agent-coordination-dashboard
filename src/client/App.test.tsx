@@ -231,10 +231,14 @@ describe("App", () => {
                   warnings: [
                     {
                       severity: "warning",
+                      repo: "shakacode/react_on_rails",
+                      target: "4005",
                       message: "Work has a heartbeat from worker-a but the claim is held by owner-a."
                     },
                     {
                       severity: "warning",
+                      repo: "shakacode/react_on_rails",
+                      target: "4010",
                       message: "Work has a heartbeat from worker-b but the claim is held by owner-b."
                     },
                     { severity: "warning", message: "Active claim has no matching heartbeat." },
@@ -258,8 +262,16 @@ describe("App", () => {
     expect(panel.getByText("1 more type")).toBeInTheDocument();
 
     await userEvent.click(groupedLabel);
-    expect(panel.getByText(/heartbeat from worker-a/)).toBeInTheDocument();
-    expect(panel.getByText(/heartbeat from worker-b/)).toBeInTheDocument();
+    expect(
+      panel.getByText(
+        "shakacode/react_on_rails#4005: Work has a heartbeat from worker-a but the claim is held by owner-a."
+      )
+    ).toBeInTheDocument();
+    expect(
+      panel.getByText(
+        "shakacode/react_on_rails#4010: Work has a heartbeat from worker-b but the claim is held by owner-b."
+      )
+    ).toBeInTheDocument();
 
     await userEvent.click(panel.getByText("1 more type"));
     expect(panel.getByText("Another distinct warning.")).toBeInTheDocument();

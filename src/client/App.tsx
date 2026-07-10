@@ -241,12 +241,15 @@ export function App() {
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
   const overflowWarningGroups = warningGroups.slice(3);
-  const renderWarning = (warning: CoordinationWarning) => (
-    <>
-      <strong>{warning.severity}</strong>
-      <span>{warning.message}</span>
-    </>
-  );
+  const renderWarning = (warning: CoordinationWarning) => {
+    const context = warning.repo ? `${warning.repo}${warning.target ? `#${warning.target}` : ""}` : undefined;
+    return (
+      <>
+        <strong>{warning.severity}</strong>
+        <span>{context ? `${context}: ${warning.message}` : warning.message}</span>
+      </>
+    );
+  };
 
   return (
     <main className="app-shell">

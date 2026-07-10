@@ -15,6 +15,9 @@ type CanonicalWarningType = {
   label: string | ((match: RegExpMatchArray) => string);
 };
 
+// These patterns mirror warning templates in buildDashboardModel.ts. When a
+// server template changes, update its identity and coverage here in the same PR
+// so the warning does not silently fall back to exact-message grouping.
 const CANONICAL_WARNING_TYPES: CanonicalWarningType[] = [
   {
     pattern: /^Claim holder heartbeat currently points at .+#.+\.$/,
