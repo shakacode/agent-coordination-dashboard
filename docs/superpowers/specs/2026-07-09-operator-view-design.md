@@ -2,8 +2,9 @@
 
 ## Goal
 
-Implement the first #9 dashboard slice as a read-only Operator View. The first
-screen should answer three operator questions without tab hunting:
+Implement the first #9 dashboard slice as a read-only Operator View. The
+Operator tab should answer three operator questions without forcing the default
+Overview landing view to become a dense ledger:
 
 - What is running?
 - What is stuck?
@@ -16,8 +17,9 @@ screen should answer three operator questions without tab hunting:
   test seam.
 - #9 does not add Worker/API writes, batch registration, launch controls, or new
   coordination mutation from the dashboard.
-- Existing tabs stay as secondary drill-down surfaces while Operator View becomes
-  the default first screen.
+- Overview remains the default landing view for large coordination roots.
+- Operator View is the dense drill-down tab and opens automatically for operator
+  query/deep-link parameters.
 
 ## Operator Rows
 
@@ -61,7 +63,7 @@ No-match links show a visible no-match state.
 
 ## UI Shape
 
-Add an Operator View above the existing tab drill-down. It should be a dense,
+Add an Operator tab to the existing dashboard views. It should be a dense,
 work-focused table with compact badges and `UNKNOWN` in missing cells. Missing
 thread handle, operator, host, or PR URL is warning-worthy only for active rows.
 
@@ -74,8 +76,8 @@ Update:
 
 - `CONTEXT.md` with domain terms.
 - `README.md` for API-primary and filesystem fallback language.
-- `docs/coordination-architecture.md` so Operator View is canonical and tabs are
-  drill-down.
+- `docs/coordination-architecture.md` so Overview is the default landing view
+  and Operator View is the dense drill-down.
 - `docs/coordination-telemetry-contract.md` with the identity fields that make
   Operator View useful.
 
@@ -88,4 +90,3 @@ Run:
 - `npm test`
 - `npm run typecheck`
 - `npm run build`
-

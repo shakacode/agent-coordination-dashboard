@@ -248,9 +248,10 @@ sequenceDiagram
 
 In the UI, that one PR can appear in multiple contexts:
 
-- **Operator View**: first-screen row keyed by repo/target, searchable by PR,
-  issue, branch, thread, agent, machine, operator, host, or PR URL.
-- **Overview**: active, recoverable, ready, missing QA, or needs attention.
+- **Overview**: default landing view with active, recoverable, ready, missing QA,
+  or needs-attention summaries.
+- **Operator View**: dense drill-down row keyed by repo/target, searchable by
+  PR, issue, branch, thread, agent, machine, operator, host, or PR URL.
 - **Work**: target row grouped by scheduling state.
 - **Batches**: lane target with batch lifecycle, launch prompt, and history.
 - **Machines**: worker grouped under the reporting machine.

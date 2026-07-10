@@ -10,9 +10,9 @@ import { OperatorView } from "./components/OperatorView";
 import { OverviewTab } from "./components/OverviewTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { WorkTab } from "./components/WorkTab";
-import { operatorDeepLinkFromSearchParams } from "./operatorRows";
+import { hasStructuredOperatorDeepLink, operatorDeepLinkFromSearchParams } from "./operatorRows";
 
-type Tab = "overview" | "work" | "batches" | "machines" | "health";
+type Tab = "overview" | "operator" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
@@ -51,7 +51,11 @@ export function App() {
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [operatorDeepLink] = useState(readOperatorDeepLink);
+  const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
+  const [activeTab, setActiveTab] = useState<Tab>(() =>
+    operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) ? "operator" : "overview"
+  );
   const [isRefreshing, setIsRefreshing] = useState(false);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
@@ -59,8 +63,6 @@ export function App() {
   const dashboardRequestVersion = useRef(0);
 
   const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
-  const operatorDeepLink = useMemo(readOperatorDeepLink, []);
-
   function beginUserAction() {
     userActionInFlightCount.current += 1;
     setIsRefreshing(true);
@@ -234,17 +236,17 @@ export function App() {
 
   const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
+  const visibleWarnings = dashboard.warnings.slice(0, 2);
+  const overflowWarnings = dashboard.warnings.slice(2);
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div>
           <h1>Agent Coordination</h1>
-          <p>Coordination workspace · {dashboard.workItems.length} open or coordinated items</p>
-          <details className="state-root-details">
-            <summary>State root</summary>
-            <code>{dashboard.stateRoot}</code>
-          </details>
+          <p>
+            {dashboard.stateRoot} · {dashboard.workItems.length} open or coordinated items
+          </p>
         </div>
         <div className="summary-strip">
           <span>{dashboard.agents.length} agents</span>
@@ -267,57 +269,84 @@ export function App() {
         </div>
       </header>
 
-      <section className="repo-filter" aria-label="Target repositories">
-        <div className="repo-chips">
-          {settings.targetRepos.map((repo) => (
-            <span className="repo-chip" key={repo}>
-              {repo}
-              <button
-                aria-label={`Remove ${repo}`}
-                disabled={settings.targetRepos.length === 1 || isRefreshing}
-                onClick={() => removeRepo(repo)}
-                title={`Remove ${repo}`}
-                type="button"
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
-            </span>
-          ))}
+      <details className="repo-filter" aria-label="Target repositories">
+        <summary>
+          <span>Target repositories</span>
+          <span>{settings.targetRepos.length} configured</span>
+        </summary>
+        <div className="repo-filter-body">
+          <div className="repo-chips">
+            {settings.targetRepos.map((repo) => (
+              <span className="repo-chip" key={repo}>
+                {repo}
+                <button
+                  aria-label={`Remove ${repo}`}
+                  disabled={settings.targetRepos.length === 1 || isRefreshing}
+                  onClick={() => removeRepo(repo)}
+                  title={`Remove ${repo}`}
+                  type="button"
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+          </div>
+          <form className="repo-add-form" onSubmit={addRepo}>
+            <input
+              aria-label="Add target repository"
+              onChange={(event) => setRepoDraft(event.target.value)}
+              placeholder="owner/repo"
+              value={repoDraft}
+            />
+            <button aria-label="Add repository" disabled={isRefreshing} title="Add repository" type="submit">
+              <Plus size={16} aria-hidden="true" />
+            </button>
+          </form>
         </div>
-        <form className="repo-add-form" onSubmit={addRepo}>
-          <input
-            aria-label="Add target repository"
-            onChange={(event) => setRepoDraft(event.target.value)}
-            placeholder="owner/repo"
-            value={repoDraft}
-          />
-          <button aria-label="Add repository" disabled={isRefreshing} title="Add repository" type="submit">
-            <Plus size={16} aria-hidden="true" />
-          </button>
-        </form>
-      </section>
+      </details>
 
       {dashboard.warnings.length > 0 && (
         <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`}>
-          <div className="warnings-heading">{warningsHeading}</div>
-          <ul>
-            {dashboard.warnings.map((warning, index) => (
+          <div className="warnings-panel-summary">
+            <span className="warnings-heading">{warningsHeading}</span>
+            <span>
+              {dashboard.warnings.length} {warningLabel}
+            </span>
+          </div>
+          <ul className="warnings-preview-list">
+            {visibleWarnings.map((warning, index) => (
               <li key={`${warning.message}-${index}`}>
                 <strong>{warning.severity}</strong>
                 <span>{warning.message}</span>
               </li>
             ))}
           </ul>
+          {overflowWarnings.length > 0 && (
+            <details className="warnings-overflow">
+              <summary>
+                {overflowWarnings.length} more {warningLabel}
+              </summary>
+              <ul>
+                {overflowWarnings.map((warning, index) => (
+                  <li key={`${warning.message}-${index + visibleWarnings.length}`}>
+                    <strong>{warning.severity}</strong>
+                    <span>{warning.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </section>
       )}
 
       <div className="dashboard-layout">
         <section className="content-region">
-          <OperatorView dashboard={dashboard} deepLink={operatorDeepLink} />
-
           <nav className="tabs" aria-label="Dashboard views">
             <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")} type="button">
               Overview
+            </button>
+            <button className={activeTab === "operator" ? "active" : ""} onClick={() => setActiveTab("operator")} type="button">
+              Operator
             </button>
             <button className={activeTab === "work" ? "active" : ""} onClick={() => setActiveTab("work")} type="button">
               Work
@@ -334,6 +363,9 @@ export function App() {
           </nav>
 
           {activeTab === "overview" && <OverviewTab dashboard={dashboard} />}
+          {activeTab === "operator" && (
+            <OperatorView dashboard={dashboard} deepLink={operatorDeepLink} onQueryChange={setOperatorQuery} query={operatorQuery} />
+          )}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
           {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
           {activeTab === "batches" && (
@@ -346,9 +378,11 @@ export function App() {
             />
           )}
           {activeTab === "health" && <HealthTab items={dashboard.healthItems} />}
+          <details className="prompt-drawer-shell">
+            <summary>PR-batch prompt</summary>
+            <PromptDrawer prompt={prompt} />
+          </details>
         </section>
-
-        <PromptDrawer prompt={prompt} />
       </div>
     </main>
   );

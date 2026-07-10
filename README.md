@@ -66,12 +66,13 @@ coalescing window.
 
 ## What It Shows
 
-- **Operator View**: default first screen for live operations. It is a dense,
-  searchable table keyed by `repo + target` when a PR/issue target exists, with
-  `batch_id + lane_name` fallback rows for batch-only telemetry. It shows state,
-  liveness age, work, owner, thread, batch, activity, branch/PR, and warnings.
 - **Overview**: needs-attention queue, active/recoverable work, batch repairs,
-  QA validation gaps, ready work, and high-level counts.
+  QA validation gaps, ready work, and high-level counts. This is the default
+  landing view so large coordination roots do not open into a dense ledger.
+- **Operator View**: dense searchable drill-down keyed by `repo + target` when
+  a PR/issue target exists, with `batch_id + lane_name` fallback rows for
+  batch-only telemetry. It shows state, liveness age, work, owner/thread,
+  batch/branch, activity, PR links, and warning counts.
 - **Work**: open GitHub issues and pull requests joined to coordination state,
   grouped as recovery, active, and ready-to-batch queues.
 - **Batches**: saved batch plans, inferred batches from `batch_id` claims/heartbeats,
@@ -81,14 +82,15 @@ coalescing window.
 - **Health**: missing machine IDs, missing heartbeats, missing batch plans,
   missing coordination prompts, prompt/target drift, missing history, and other
   coordination data gaps.
-- **Prompt drawer**: copyable `$pr-batch` prompt for checked work items.
+- **Prompt drawer**: collapsed copyable `$pr-batch` prompt for checked work
+  items.
 
-Operator View search is client-side over loaded rows. It matches target numbers
+Operator tab search is client-side over loaded rows. It matches target numbers
 such as `123`, `#123`, `PR #123`, and `issue #123`, plus branch names, thread
 handles, agent ids, machine ids, operators, hosts, and PR URLs. Query parameters
 on the root route can deep-link loaded rows: `?target=<target>&repo=<owner/repo>`,
-`?batch=<batch_id>&lane=<lane_name>`, or `?q=<search>`. Deep links do not widen
-target repository scope or fetch hidden data.
+`?batch=<batch_id>&lane=<lane_name>`, or `?q=<search>`. Deep links open the
+Operator tab, but do not widen target repository scope or fetch hidden data.
 
 Operator states are `running`, `wedged`, `paused`, `blocked`, `stale`, `dead`,
 `ready`, `done`, and `unknown`. A row is `wedged` when it has a live heartbeat

@@ -98,9 +98,8 @@ describe("OperatorView", () => {
     expect(screen.getByRole("heading", { name: "Operator View" })).toBeInTheDocument();
     expect(screen.getByText("PR #123")).toBeInTheDocument();
     expect(screen.getByText("Issue #124")).toBeInTheDocument();
-    expect(screen.getByText("justin")).toBeInTheDocument();
-    expect(screen.getByText("codex / m5")).toBeInTheDocument();
-    expect(screen.getByText("thread-a")).toBeInTheDocument();
+    expect(screen.getByText("justin / codex / m5")).toBeInTheDocument();
+    expect(screen.getByText("thread-a / agent-a")).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("Search operator rows"), "feature/operator");
 
@@ -129,6 +128,28 @@ describe("OperatorView", () => {
 
     expect(stateCell).toHaveTextContent("UNKNOWN");
     expect(stateCell).not.toHaveTextContent("none");
+  });
+
+  it("keeps row warning details reachable without hover-only titles", () => {
+    const warningDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) =>
+        index === 0
+          ? {
+              ...item,
+              warnings: [{ severity: "warning", message: "Thread UNKNOWN" }]
+            }
+          : item
+      )
+    };
+
+    render(<OperatorView dashboard={warningDashboard} />);
+
+    const warningSummary = screen.getByText("1 warning").closest("details");
+
+    expect(warningSummary).toBeInTheDocument();
+    expect(warningSummary).not.toHaveAttribute("title");
+    expect(screen.getByText("Thread UNKNOWN")).toBeInTheDocument();
   });
 
   it("does not render unsafe coordination URLs as links", () => {
