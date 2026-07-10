@@ -89,44 +89,49 @@ function batchDetail(row: OperatorRow): string {
   return hints.length > 0 ? hints.join(" · ") : UNKNOWN;
 }
 
-function BranchPr({ row }: { row: OperatorRow }) {
+function PrLink({ row }: { row: OperatorRow }) {
   const prUrl = safeGithubUrl(row.prUrl);
+  if (!prUrl) {
+    return null;
+  }
   return (
-    <div className="operator-stack">
-      <strong>{display(row.branch)}</strong>
-      {prUrl ? (
-        <a href={prUrl} rel="noreferrer" target="_blank">
-          PR
-          <ExternalLink size={13} aria-hidden="true" />
-        </a>
-      ) : (
-        <span>{UNKNOWN}</span>
-      )}
-    </div>
+    <a className="operator-pr-link" href={prUrl} rel="noreferrer" target="_blank">
+      PR
+      <ExternalLink size={13} aria-hidden="true" />
+    </a>
   );
 }
 
-function Warnings({ warnings }: { warnings: string[] }) {
+function WarningSummary({ warnings }: { warnings: string[] }) {
   if (warnings.length === 0) {
     return <span className="operator-ok">OK</span>;
   }
+  const label = warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`;
   return (
-    <ul className="operator-warning-list">
-      {warnings.map((warning, index) => (
-        <li key={`${warning}-${index}`}>{warning}</li>
-      ))}
-    </ul>
+    <span className="operator-warning-summary" title={warnings.join("\n")}>
+      {label}
+    </span>
   );
 }
 
-function stateCounts(rows: OperatorRow[]): string {
+function StateCounts({ rows }: { rows: OperatorRow[] }) {
   const counts = rows.reduce<Record<string, number>>((memo, row) => {
     memo[row.operatorState] = (memo[row.operatorState] || 0) + 1;
     return memo;
   }, {});
-  return Object.entries(counts)
-    .map(([state, count]) => `${count} ${state}`)
-    .join(" · ");
+  const orderedStates = ["wedged", "blocked", "dead", "stale", "paused", "running", "ready", "done", "unknown"];
+  return (
+    <>
+      {orderedStates
+        .filter((state) => counts[state])
+        .map((state) => (
+          <span className={`status-badge status-${state}`} key={state}>
+            {counts[state]} {state}
+          </span>
+        ))}
+      {Object.keys(counts).length === 0 ? <span>0 unknown</span> : null}
+    </>
+  );
 }
 
 export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
@@ -152,7 +157,7 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
           <h2>Operator View</h2>
           <div className="operator-counts">
             <span>{rows.length} rows</span>
-            <span>{stateCounts(rows) || "0 unknown"}</span>
+            <StateCounts rows={rows} />
           </div>
         </div>
         <label className="search-field operator-search">
@@ -177,12 +182,9 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
               <tr>
                 <th>State</th>
                 <th>Work</th>
-                <th>Owner</th>
-                <th>Thread</th>
-                <th>Batch</th>
+                <th>Owner / Thread</th>
+                <th>Batch / Branch</th>
                 <th>Activity</th>
-                <th>Branch/PR</th>
-                <th>Warnings</th>
               </tr>
             </thead>
             <tbody>
@@ -203,32 +205,29 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
                     <td>
                       <div className="operator-work">
                         <WorkLink row={row} />
-                        <span>{row.repo}</span>
+                        <span>
+                          {row.repo} · <WarningSummary warnings={row.warnings} />
+                        </span>
                       </div>
                     </td>
                     <td>
-                      <MetadataStack primary={row.operator} secondary={[row.host, row.machineId].filter(Boolean).join(" / ")} />
-                    </td>
-                    <td>
-                      <MetadataStack primary={row.threadHandle} secondary={row.agentId} />
+                      <MetadataStack
+                        primary={[row.operator, row.host, row.machineId].filter(Boolean).join(" / ")}
+                        secondary={[row.threadHandle, row.agentId].filter(Boolean).join(" / ")}
+                      />
                     </td>
                     <td>
                       <MetadataStack
                         primary={[row.batchId, row.laneName].filter(Boolean).join(" / ")}
-                        secondary={batchDetail(row)}
+                        secondary={[row.branch, batchDetail(row)].filter((item) => item && item !== UNKNOWN).join(" · ")}
                       />
+                      <PrLink row={row} />
                     </td>
                     <td>
                       <div className="operator-stack">
                         <strong>{display(row.activityStatus)}</strong>
                         <span>{row.lastActivityAge === UNKNOWN ? UNKNOWN : `${row.lastActivityAge} ago`}</span>
                       </div>
-                    </td>
-                    <td>
-                      <BranchPr row={row} />
-                    </td>
-                    <td>
-                      <Warnings warnings={row.warnings} />
                     </td>
                   </tr>
                 );

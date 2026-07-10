@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a read-only, default Operator View that answers what is running, what is stuck, and where a PR/issue/branch/thread is.
+**Goal:** Add a read-only Operator View that answers what is running, what is stuck, and where a PR/issue/branch/thread is.
 
-**Architecture:** Build Operator rows from the existing `DashboardModel` on the client so API mode and filesystem mode share one view. Keep existing tabs as drill-down, and keep dashboard writes unchanged.
+**Architecture:** Build Operator rows from the existing `DashboardModel` on the client so API mode and filesystem mode share one view. Keep Overview as the default landing view, add Operator as the dense drill-down, and keep dashboard writes unchanged.
 
 **Tech Stack:** React, TypeScript, Vitest, Testing Library, Vite, Express.
 
@@ -42,7 +42,7 @@
 - Modify: `src/client/App.tsx`
 - Test: `src/client/App.test.tsx`
 
-- [ ] Make Operator View the default first screen above the existing drill-down tabs.
+- [ ] Add Operator View as a tab and open it automatically for operator search/deep-link params.
 - [ ] Parse `?q=`, `?batch=&lane=`, and `?target=&repo=` on load.
 - [ ] Use query params to seed search/highlight state without fetching more data.
 - [ ] Keep existing tab views and write actions unchanged.
@@ -56,7 +56,7 @@
 - Modify: `docs/coordination-telemetry-contract.md`
 
 - [ ] Document API mode as the primary live mode and filesystem mode as fallback/local inspection.
-- [ ] Document Operator View as canonical and tabs as drill-down.
+- [ ] Document Overview as the default landing view and Operator View as the dense drill-down.
 - [ ] Document useful telemetry fields: thread handle/name, host, operator, branch, PR URL, and phase/event timestamps.
 
 ### Task 5: Full Verification And PR
@@ -71,4 +71,3 @@
 - [ ] Commit implementation.
 - [ ] Push branch and open PR for #9.
 - [ ] Poll checks/reviews; fix must-fix feedback; merge when gates pass.
-

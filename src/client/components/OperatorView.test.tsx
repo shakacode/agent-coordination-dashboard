@@ -98,9 +98,8 @@ describe("OperatorView", () => {
     expect(screen.getByRole("heading", { name: "Operator View" })).toBeInTheDocument();
     expect(screen.getByText("PR #123")).toBeInTheDocument();
     expect(screen.getByText("Issue #124")).toBeInTheDocument();
-    expect(screen.getByText("justin")).toBeInTheDocument();
-    expect(screen.getByText("codex / m5")).toBeInTheDocument();
-    expect(screen.getByText("thread-a")).toBeInTheDocument();
+    expect(screen.getByText("justin / codex / m5")).toBeInTheDocument();
+    expect(screen.getByText("thread-a / agent-a")).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("Search operator rows"), "feature/operator");
 

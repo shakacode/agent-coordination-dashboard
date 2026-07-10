@@ -134,15 +134,14 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
-    expect(screen.getByText("Coordination workspace · 2 open or coordinated items")).toBeInTheDocument();
-    const stateRootDisclosure = screen.getByText("State root").closest("details");
+    expect(screen.getByText("/state · 2 open or coordinated items")).toBeInTheDocument();
+    const stateRootDisclosure = screen.getByText("Details").closest("details");
     expect(stateRootDisclosure).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText("State root"));
+    await userEvent.click(screen.getByText("Details"));
     expect(stateRootDisclosure).toHaveAttribute("open");
     expect(screen.getByText("/state")).toBeInTheDocument();
-    expect(screen.queryByText(/\/state ·/)).not.toBeInTheDocument();
-    expect(screen.getByText("1 ready")).toBeInTheDocument();
-    expect(screen.getByText("1 started")).toBeInTheDocument();
+    expect(screen.getAllByText("1 ready").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 started").length).toBeGreaterThan(0);
     expect(screen.getByText("1 missing QA")).toBeInTheDocument();
     expect(screen.getByText("In progress")).toBeInTheDocument();
 
@@ -194,7 +193,7 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Notices")).toBeInTheDocument());
-    expect(screen.getByText("1 notices")).toBeInTheDocument();
+    expect(screen.getAllByText("1 notices").length).toBeGreaterThan(0);
     expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
     expect(screen.getAllByText(/No coordination state found/).length).toBeGreaterThan(0);
   });
