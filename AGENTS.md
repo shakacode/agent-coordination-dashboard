@@ -15,7 +15,7 @@ AGENT_COORD_STATE_ROOT="$HOME/.local/state/agent-coordination" \
 npm run dev
 ```
 
-The dev server listens on <http://127.0.0.1:4317> by default. Keep that local
+The dev server listens on <http://127.0.0.1:4319> by default. Keep that local
 default unless the user explicitly asks to expose the dashboard on the network.
 When using `HOST=0.0.0.0`, also require a specific `ALLOWED_HOSTS` value for the
 browser hostnames or IP addresses. Settings, imports, and stop requests must
