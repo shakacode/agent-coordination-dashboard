@@ -224,7 +224,8 @@ textarea {
   min-width: 0;
 }
 
-.signal-group {
+.signal-group,
+.warnings-panel .signal-group {
   display: block;
   min-width: 0;
 }

@@ -42,6 +42,48 @@ describe("groupWarnings", () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0].count).toBe(2);
+    expect(groups[0].label).toBe("Target #… has no manifest");
+  });
+
+  it("groups known warning templates with nonnumeric ids under an honest type label", () => {
+    const groups = groupWarnings([
+      warning({ message: "Work has a heartbeat from worker-a but the claim is held by owner-a." }),
+      warning({ message: "Work has a heartbeat from 7eaf31b2 but the claim is held by owner-b." })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("Work has a heartbeat from an agent other than the claim holder.");
+    expect(groups[0].items.map((item) => item.message)).toEqual([
+      "Work has a heartbeat from worker-a but the claim is held by owner-a.",
+      "Work has a heartbeat from 7eaf31b2 but the claim is held by owner-b."
+    ]);
+  });
+
+  it("uses a type label when grouped records contain different meaningful counts", () => {
+    const groups = groupWarnings([
+      warning({ message: "Work has 2 heartbeat records for the same target." }),
+      warning({ message: "Work has 7 heartbeat records for the same target." })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("Work has multiple heartbeat records for the same target.");
+    expect(groups[0].items.map((item) => item.message)).toEqual([
+      "Work has 2 heartbeat records for the same target.",
+      "Work has 7 heartbeat records for the same target."
+    ]);
+  });
+
+  it("keeps scheduled-work warnings with different statuses separate", () => {
+    const groups = groupWarnings([
+      warning({ message: "Work is already scheduled in batch batch-a:lane-1 (running)." }),
+      warning({ message: "Work is already scheduled in batch batch-b:lane-2 (blocked)." })
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.label)).toEqual([
+      "Work is already scheduled in a batch (blocked).",
+      "Work is already scheduled in a batch (running)."
+    ]);
   });
 
   it("keeps distinct messages and severities separate", () => {

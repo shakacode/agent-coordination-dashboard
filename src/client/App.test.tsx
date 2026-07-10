@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, backgroundRefreshTimeoutMs } from "./App";
@@ -209,6 +209,60 @@ describe("App", () => {
     expect(screen.getAllByText("1 notices").length).toBeGreaterThan(0);
     expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
     expect(screen.getAllByText(/No coordination state found/).length).toBeGreaterThan(0);
+  });
+
+  it("groups repeated warning types and keeps overflow details inspectable", async () => {
+    vi.mocked(fetch).mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/settings" && init?.method === "PUT") {
+          return {
+            ok: true,
+            json: async () => JSON.parse(String(init.body))
+          } as Response;
+        }
+        return {
+          ok: true,
+          json: async () =>
+            url === "/api/settings"
+              ? settings
+              : {
+                  ...model,
+                  warnings: [
+                    {
+                      severity: "warning",
+                      message: "Work has a heartbeat from worker-a but the claim is held by owner-a."
+                    },
+                    {
+                      severity: "warning",
+                      message: "Work has a heartbeat from worker-b but the claim is held by owner-b."
+                    },
+                    { severity: "warning", message: "Active claim has no matching heartbeat." },
+                    { severity: "warning", message: "A distinct warning." },
+                    { severity: "warning", message: "Another distinct warning." }
+                  ]
+                }
+        } as Response;
+      }
+    );
+
+    render(<App />);
+
+    const warningsPanel = await screen.findByLabelText("Coordination warnings");
+    const panel = within(warningsPanel);
+    const groupedLabel = panel.getByText(
+      "Work has a heartbeat from an agent other than the claim holder.",
+      { selector: "summary .signal-group-label" }
+    );
+    expect(panel.getByLabelText("2 occurrences")).toBeInTheDocument();
+    expect(panel.getByText("1 more type")).toBeInTheDocument();
+
+    await userEvent.click(groupedLabel);
+    expect(panel.getByText(/heartbeat from worker-a/)).toBeInTheDocument();
+    expect(panel.getByText(/heartbeat from worker-b/)).toBeInTheDocument();
+
+    await userEvent.click(panel.getByText("1 more type"));
+    expect(panel.getByText("Another distinct warning.")).toBeInTheDocument();
   });
 
   it("saves target repository filters and reloads the dashboard", async () => {
