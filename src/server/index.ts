@@ -5,5 +5,5 @@ const config = readConfig();
 const app = await createDashboardApp(config);
 
 app.listen(config.port, config.host, () => {
-  console.log(`agents-coordination-dashboard listening on http://${config.host}:${config.port}`);
+  console.log(`agent-coordination-dashboard listening on http://${config.host}:${config.port}`);
 });

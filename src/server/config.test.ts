@@ -5,6 +5,7 @@ describe("readConfig", () => {
   it("defaults to loopback host protections", () => {
     const config = readConfig({});
 
+    expect(config.port).toBe(4319);
     expect(config.host).toBe("127.0.0.1");
     expect(config.allowedHosts).toEqual(expect.arrayContaining(["localhost", "127.0.0.1", "::1"]));
     expect(config.stateRoot).toContain(".local/state/agent-coordination");
