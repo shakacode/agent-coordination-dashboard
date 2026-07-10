@@ -130,6 +130,28 @@ describe("OperatorView", () => {
     expect(stateCell).not.toHaveTextContent("none");
   });
 
+  it("keeps row warning details reachable without hover-only titles", () => {
+    const warningDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) =>
+        index === 0
+          ? {
+              ...item,
+              warnings: [{ severity: "warning", message: "Thread UNKNOWN" }]
+            }
+          : item
+      )
+    };
+
+    render(<OperatorView dashboard={warningDashboard} />);
+
+    const warningSummary = screen.getByText("1 warning").closest("details");
+
+    expect(warningSummary).toBeInTheDocument();
+    expect(warningSummary).not.toHaveAttribute("title");
+    expect(screen.getByText("Thread UNKNOWN")).toBeInTheDocument();
+  });
+
   it("does not render unsafe coordination URLs as links", () => {
     const unsafeDashboard: DashboardModel = {
       ...dashboard,

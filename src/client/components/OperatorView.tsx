@@ -15,6 +15,8 @@ import { StatusBadge } from "./StatusBadge";
 interface OperatorViewProps {
   dashboard: DashboardModel;
   deepLink?: OperatorDeepLink;
+  onQueryChange?: (query: string) => void;
+  query?: string;
 }
 
 function safeGithubUrl(value: string | undefined): string | undefined {
@@ -108,9 +110,14 @@ function WarningSummary({ warnings }: { warnings: string[] }) {
   }
   const label = warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`;
   return (
-    <span className="operator-warning-summary" title={warnings.join("\n")}>
-      {label}
-    </span>
+    <details className="operator-warning-summary">
+      <summary>{label}</summary>
+      <ul>
+        {warnings.map((warning, index) => (
+          <li key={`${warning}-${index}`}>{warning}</li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -134,13 +141,24 @@ function StateCounts({ rows }: { rows: OperatorRow[] }) {
   );
 }
 
-export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
+export function OperatorView({ dashboard, deepLink, onQueryChange, query: controlledQuery }: OperatorViewProps) {
   const rows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
-  const [query, setQuery] = useState(deepLink?.query || "");
+  const [localQuery, setLocalQuery] = useState(deepLink?.query || "");
+  const query = controlledQuery ?? localQuery;
 
   useEffect(() => {
-    setQuery(deepLink?.query || "");
-  }, [deepLink?.query]);
+    if (controlledQuery === undefined) {
+      setLocalQuery(deepLink?.query || "");
+    }
+  }, [controlledQuery, deepLink?.query]);
+
+  function updateQuery(value: string) {
+    if (onQueryChange) {
+      onQueryChange(value);
+    } else {
+      setLocalQuery(value);
+    }
+  }
 
   const hasStructuredLink = hasStructuredOperatorDeepLink(deepLink);
   const linkedRows = useMemo(
@@ -164,7 +182,7 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
           <Search size={15} aria-hidden="true" />
           <input
             aria-label="Search operator rows"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateQuery(event.target.value)}
             placeholder="Search"
             value={query}
           />
@@ -205,9 +223,10 @@ export function OperatorView({ dashboard, deepLink }: OperatorViewProps) {
                     <td>
                       <div className="operator-work">
                         <WorkLink row={row} />
-                        <span>
-                          {row.repo} · <WarningSummary warnings={row.warnings} />
-                        </span>
+                        <div className="operator-work-meta">
+                          <span>{row.repo}</span>
+                          <WarningSummary warnings={row.warnings} />
+                        </div>
                       </div>
                     </td>
                     <td>

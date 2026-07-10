@@ -52,6 +52,7 @@ export function App() {
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [operatorDeepLink] = useState(readOperatorDeepLink);
+  const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
   const [activeTab, setActiveTab] = useState<Tab>(() =>
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) ? "operator" : "overview"
   );
@@ -235,6 +236,8 @@ export function App() {
 
   const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
+  const visibleWarnings = dashboard.warnings.slice(0, 2);
+  const overflowWarnings = dashboard.warnings.slice(2);
 
   return (
     <main className="app-shell">
@@ -244,10 +247,6 @@ export function App() {
           <p>
             {dashboard.stateRoot} · {dashboard.workItems.length} open or coordinated items
           </p>
-          <details className="state-root-details">
-            <summary>Details</summary>
-            <code>{dashboard.stateRoot}</code>
-          </details>
         </div>
         <div className="summary-strip">
           <span>{dashboard.agents.length} agents</span>
@@ -307,22 +306,37 @@ export function App() {
       </details>
 
       {dashboard.warnings.length > 0 && (
-        <details className="warnings-panel" aria-label={`Coordination ${warningLabel}`}>
-          <summary>
+        <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`}>
+          <div className="warnings-panel-summary">
             <span className="warnings-heading">{warningsHeading}</span>
             <span>
               {dashboard.warnings.length} {warningLabel}
             </span>
-          </summary>
-          <ul>
-            {dashboard.warnings.map((warning, index) => (
+          </div>
+          <ul className="warnings-preview-list">
+            {visibleWarnings.map((warning, index) => (
               <li key={`${warning.message}-${index}`}>
                 <strong>{warning.severity}</strong>
                 <span>{warning.message}</span>
               </li>
             ))}
           </ul>
-        </details>
+          {overflowWarnings.length > 0 && (
+            <details className="warnings-overflow">
+              <summary>
+                {overflowWarnings.length} more {warningLabel}
+              </summary>
+              <ul>
+                {overflowWarnings.map((warning, index) => (
+                  <li key={`${warning.message}-${index + visibleWarnings.length}`}>
+                    <strong>{warning.severity}</strong>
+                    <span>{warning.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
       )}
 
       <div className="dashboard-layout">
@@ -349,7 +363,9 @@ export function App() {
           </nav>
 
           {activeTab === "overview" && <OverviewTab dashboard={dashboard} />}
-          {activeTab === "operator" && <OperatorView dashboard={dashboard} deepLink={operatorDeepLink} />}
+          {activeTab === "operator" && (
+            <OperatorView dashboard={dashboard} deepLink={operatorDeepLink} onQueryChange={setOperatorQuery} query={operatorQuery} />
+          )}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
           {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
           {activeTab === "batches" && (

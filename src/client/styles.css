@@ -60,31 +60,6 @@ textarea {
   font-size: 12px;
 }
 
-.state-root-details {
-  margin-top: 2px;
-  color: #5f6b7a;
-  font-size: 12px;
-}
-
-.state-root-details summary {
-  display: inline-flex;
-  cursor: pointer;
-  color: #175cd3;
-}
-
-.state-root-details code {
-  display: block;
-  max-width: min(640px, 60vw);
-  margin-top: 4px;
-  overflow-x: auto;
-  border: 1px solid #d8e0e8;
-  border-radius: 6px;
-  background: #f8fafc;
-  padding: 4px 6px;
-  color: #344054;
-  font-size: 12px;
-}
-
 .summary-strip {
   display: flex;
   align-items: center;
@@ -111,7 +86,7 @@ textarea {
 }
 
 .repo-filter summary,
-.warnings-panel summary,
+.warnings-panel-summary,
 .prompt-drawer-shell summary {
   display: flex;
   align-items: center;
@@ -122,7 +97,7 @@ textarea {
 }
 
 .repo-filter summary span:last-child,
-.warnings-panel summary span:last-child {
+.warnings-panel-summary span:last-child {
   overflow: hidden;
   color: #5f6b7a;
   text-overflow: ellipsis;
@@ -207,8 +182,26 @@ textarea {
   display: grid;
   gap: 6px;
   margin: 0;
-  padding: 0 14px 9px;
   list-style: none;
+}
+
+.warnings-preview-list {
+  padding: 0 14px 7px;
+}
+
+.warnings-overflow {
+  padding: 0 14px 9px;
+  font-size: 12px;
+}
+
+.warnings-overflow summary {
+  display: inline-flex;
+  cursor: pointer;
+  color: #175cd3;
+}
+
+.warnings-overflow ul {
+  padding: 7px 0 0;
 }
 
 .warnings-panel li {
@@ -316,7 +309,7 @@ textarea {
 
 .operator-state span:not(.status-badge),
 .operator-stack span,
-.operator-work > span,
+.operator-work-meta,
 .operator-work-main span {
   color: #5f6b7a;
   font-size: 11px;
@@ -342,6 +335,13 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.operator-work-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
 .operator-stack a,
 .operator-work-main {
   color: #175cd3;
@@ -354,16 +354,6 @@ textarea {
   text-decoration: none;
 }
 
-.operator-warning-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.operator-warning-list li,
 .operator-ok,
 .operator-warning-summary {
   border: 1px solid #d8e0e8;
@@ -374,11 +364,22 @@ textarea {
   font-size: 10px;
 }
 
-.operator-warning-list li,
 .operator-warning-summary {
   border-color: #fedf89;
   background: #fffaeb;
   color: #92400e;
+}
+
+.operator-warning-summary summary {
+  cursor: pointer;
+}
+
+.operator-warning-summary ul {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .operator-pr-link {

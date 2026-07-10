@@ -135,11 +135,6 @@ describe("App", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
     expect(screen.getByText("/state · 2 open or coordinated items")).toBeInTheDocument();
-    const stateRootDisclosure = screen.getByText("Details").closest("details");
-    expect(stateRootDisclosure).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText("Details"));
-    expect(stateRootDisclosure).toHaveAttribute("open");
-    expect(screen.getByText("/state")).toBeInTheDocument();
     expect(screen.getAllByText("1 ready").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1 started").length).toBeGreaterThan(0);
     expect(screen.getByText("1 missing QA")).toBeInTheDocument();
@@ -160,6 +155,24 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005"));
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
+  });
+
+  it("preserves operator search when switching away from the Operator tab", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Operator" }));
+    await userEvent.type(screen.getByLabelText("Search operator rows"), "4005");
+
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+    await userEvent.click(screen.getByRole("button", { name: "Operator" }));
+
+    expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005");
     expect(screen.getByText("PR #4005")).toBeInTheDocument();
     expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
   });
