@@ -718,6 +718,12 @@ function rowMatchesOperationScope(row: OperatorRow, operation: BatchOperation): 
 }
 
 function rowMatchesBatchTarget(row: OperatorRow, batch: BatchRecord): boolean {
+  if (row.batchId && row.batchId !== batch.batchId) {
+    return false;
+  }
+  if (row.batchPath && batch.path && row.batchPath !== batch.path) {
+    return false;
+  }
   if (!row.target || !batch.lanes.some((lane) => lane.targets.includes(row.target as string))) {
     return false;
   }

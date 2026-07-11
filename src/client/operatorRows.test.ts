@@ -1251,6 +1251,64 @@ describe("operatorRows", () => {
     ]);
   });
 
+  it("does not retag active work from a healthy batch when an old repair manifest names the same target", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          claim: { ...claim, batchId: "healthy-new" },
+          heartbeat: { ...heartbeat, batchId: "healthy-new" }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "broken-old",
+          repo: "repo/app",
+          objective: "Repair stale batch",
+          path: "batches/broken-old.json",
+          lanes: [
+            {
+              name: "old-lane",
+              owner: "old-agent",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "healthy-new",
+          repo: "repo/app",
+          path: "batches/healthy-new.json",
+          launchPrompt: "Use $pr-batch",
+          lanes: [
+            {
+              name: "active-lane",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "coding",
+              liveness: "live"
+            }
+          ]
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+    expect(rows[0]).toMatchObject({ target: "123", batchId: "healthy-new" });
+
+    const repairRows = filterOperatorRowsForOverview(rows, model, "batch_repair");
+    expect(repairRows).toEqual([
+      expect.objectContaining({ source: "batch", batchId: "broken-old", title: "Repair stale batch" })
+    ]);
+    expect(repairRows[0].target).toBeUndefined();
+    expect(repairRows.some((row) => row.id.includes("target:repo/app#123"))).toBe(false);
+  });
+
   it("parses only supported overview filters from shareable search params", () => {
     const supported = ["ready_for_batch", "needs_recovery", "processing_now", "qa_attention", "batch_repair"];
     for (const value of supported) {
