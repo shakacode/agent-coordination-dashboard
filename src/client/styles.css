@@ -638,6 +638,11 @@ textarea {
   font-size: 12px;
 }
 
+.overview-row a {
+  color: #175cd3;
+  text-decoration: none;
+}
+
 .machine-groups,
 .health-list {
   display: grid;
@@ -1102,6 +1107,8 @@ textarea {
 .status-started_not_processing,
 .status-info,
 .status-missing,
+.status-batch_plan_missing,
+.status-prompt_missing,
 .status-requested,
 .status-paused,
 .warning {

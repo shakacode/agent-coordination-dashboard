@@ -14,6 +14,14 @@ import { isQaEventType } from "../shared/qaEvents";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
+export const REPAIR_ACTIVITY_STATUS_LABELS: Record<string, string> = {
+  batch_plan_missing: "Batch plan missing",
+  prompt_missing: "Prompt missing"
+};
+
+export function operatorActivityLabel(status: string): string {
+  return REPAIR_ACTIVITY_STATUS_LABELS[status] || status;
+}
 
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
 export type OperatorRowSource = "target" | "lane" | "batch";
@@ -752,8 +760,8 @@ function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOpe
     operation?.controlStatus !== undefined && operation.controlStatus !== "running"
       ? operation.controlStatus
       : batch?.source === "inferred"
-        ? "batch plan missing"
-        : "prompt missing";
+        ? "batch_plan_missing"
+        : "prompt_missing";
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `batch-repair:${batchPath || repo}:${batchId}`,
     source: "batch",

@@ -189,6 +189,23 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch"));
   });
 
+  it("keeps an unrelated dashboard tab selected while Operator history moves back and forward", async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Show 1 ready for batch rows in Operator view" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reset filter" }));
+    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+    window.history.back();
+    await waitFor(() => expect(window.location.search).toBe("?operatorFilter=ready_for_batch"));
+    expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+
+    window.history.forward();
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+  });
+
   it("uses the exact filtered Operator row count for every Overview summary", async () => {
     const { container } = render(<App />);
     const cases = [
@@ -204,6 +221,38 @@ describe("App", () => {
       await userEvent.click(screen.getByRole("button", { name: item.name }));
       expect(container.querySelectorAll(".operator-table tbody tr")).toHaveLength(item.rows);
       await userEvent.click(screen.getByRole("button", { name: "Overview" }));
+    }
+  });
+
+  it("uses the exact Operator presentation rows for Current Work and Ready To Batch panels", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [
+                ...model.workItems,
+                { ...model.workItems[0], id: "duplicate-ready-signal" },
+                { ...model.workItems[1], id: "duplicate-current-signal" }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const currentPanel = within((await screen.findByRole("heading", { name: "Current Work" })).closest("article") as HTMLElement);
+    const readyPanel = within(screen.getByRole("heading", { name: "Ready To Batch" }).closest("article") as HTMLElement);
+    expect(screen.getByRole("button", { name: "Show 2 claimed, not processing rows in Operator view" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show 2 ready for batch rows in Operator view" })).toBeInTheDocument();
+    expect(currentPanel.getAllByText("PR #4005: Stale PR")).toHaveLength(2);
+    expect(readyPanel.getAllByText("Issue #4010: Unscheduled issue")).toHaveLength(2);
+    for (const link of currentPanel.getAllByRole("link", { name: "PR #4005: Stale PR" })) {
+      expect(link).toHaveAttribute("href", "https://github.com/shakacode/react_on_rails/pull/4005");
+    }
+    for (const link of readyPanel.getAllByRole("link", { name: "Issue #4010: Unscheduled issue" })) {
+      expect(link).toHaveAttribute("href", "https://github.com/shakacode/react_on_rails/issues/4010");
     }
   });
 
@@ -292,6 +341,47 @@ describe("App", () => {
     expect(operator.getByText("Batch")).toBeInTheDocument();
     expect(operator.getByText("Repair retained batch metadata")).toBeInTheDocument();
     expect(operator.getByText("rowless-batch")).toBeInTheDocument();
+  });
+
+  it("renders rowless repair reasons with a safe status token and an explicit human label", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [],
+              qaValidations: [],
+              batches: [
+                {
+                  schemaVersion: 1,
+                  batchId: "inferred-rowless",
+                  repo: "shakacode/react_on_rails",
+                  objective: "Repair inferred metadata",
+                  path: "batches/inferred.json",
+                  source: "inferred",
+                  lanes: []
+                },
+                {
+                  schemaVersion: 1,
+                  batchId: "promptless-rowless",
+                  repo: "shakacode/react_on_rails",
+                  objective: "Restore a missing launch prompt",
+                  path: "batches/promptless.json",
+                  lanes: []
+                }
+              ],
+              batchOperations: []
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const repairPanel = within((await screen.findByRole("heading", { name: "Batch Repair" })).closest("article") as HTMLElement);
+    expect(repairPanel.getByText("Batch plan missing")).toHaveClass("status-badge", "status-batch_plan_missing");
+    expect(repairPanel.getByText("Batch plan missing").className.split(/\s+/)).not.toContain("plan");
+    expect(repairPanel.getByText("Prompt missing")).toHaveClass("status-badge", "status-prompt_missing");
   });
 
   it("clears a failed exact link without misattributing or removing the active Overview filter", async () => {

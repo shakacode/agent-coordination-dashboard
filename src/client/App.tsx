@@ -168,7 +168,12 @@ export function App() {
       const nextDeepLink = readOperatorDeepLink();
       setOperatorDeepLink(nextDeepLink);
       setOperatorQuery(nextDeepLink.query || "");
-      setActiveTab(nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) ? "operator" : "overview");
+      setActiveTab((currentTab) => {
+        if (currentTab !== "overview" && currentTab !== "operator") {
+          return currentTab;
+        }
+        return nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) ? "operator" : "overview";
+      });
     }
     window.addEventListener("popstate", restoreLocation);
     return () => window.removeEventListener("popstate", restoreLocation);

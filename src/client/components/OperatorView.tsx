@@ -7,6 +7,7 @@ import {
   filterOperatorRowsForOverview,
   hasExactOperatorDeepLink,
   OVERVIEW_OPERATOR_FILTER_LABELS,
+  operatorActivityLabel,
   operatorRowMatchesDeepLink,
   UNKNOWN,
   type OperatorDeepLink,
@@ -291,7 +292,7 @@ export function OperatorView({
                     </td>
                     <td>
                       <div className="operator-stack">
-                        <strong>{display(row.activityStatus)}</strong>
+                        <strong>{operatorActivityLabel(display(row.activityStatus))}</strong>
                         <span>{row.lastActivityAge === UNKNOWN ? UNKNOWN : `${row.lastActivityAge} ago`}</span>
                       </div>
                     </td>

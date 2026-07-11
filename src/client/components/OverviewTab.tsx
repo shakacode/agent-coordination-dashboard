@@ -1,9 +1,10 @@
 import { useMemo } from "react";
 import { Activity, AlertTriangle, CheckCircle2, GitPullRequest, PackageOpen } from "lucide-react";
-import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem, WorkItem } from "../../shared/types";
+import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem } from "../../shared/types";
 import {
   buildOperatorRows,
   filterOperatorRowsForOverview,
+  operatorActivityLabel,
   UNKNOWN,
   type OperatorRow,
   type OverviewOperatorFilter
@@ -12,14 +13,37 @@ import { groupHealthItems, groupWarnings } from "../signalGroups";
 import { SignalGroupList } from "./SignalGroups";
 import { StatusBadge } from "./StatusBadge";
 
-function workTitle(item: WorkItem): string {
-  const kind = item.type === "pull_request" ? "PR" : item.type === "issue" ? "Issue" : "Target";
-  return `${kind} #${item.target}: ${item.github?.title || "UNKNOWN title"}`;
-}
-
-function qaRowTitle(row: OperatorRow): string {
+function operatorRowTitle(row: OperatorRow): string {
   const kind = row.type === "pull_request" ? "PR" : row.type === "issue" ? "Issue" : "Target";
   return `${kind} #${row.target || UNKNOWN}: ${row.title}`;
+}
+
+function safeGithubUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    return url.protocol === "https:" && url.hostname === "github.com" && parts.length === 4 &&
+      ["pull", "issues"].includes(parts[2]) && /^\d+$/.test(parts[3])
+      ? url.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function OperatorRowLink({ row }: { row: OperatorRow }) {
+  const title = operatorRowTitle(row);
+  const href = safeGithubUrl(row.url);
+  return href ? (
+    <a href={href} rel="noreferrer" target="_blank">
+      <strong>{title}</strong>
+    </a>
+  ) : (
+    <strong>{title}</strong>
+  );
 }
 
 function qaValidationScope(item: QaValidationItem): string {
@@ -38,9 +62,6 @@ export function OverviewTab({
   dashboard: DashboardModel;
   onOpenOperatorFilter: (filter: OverviewOperatorFilter) => void;
 }) {
-  const readyItems = dashboard.workItems.filter((item) => item.schedulingState === "ready_for_batch");
-  const startedItems = dashboard.workItems.filter((item) => item.schedulingState === "started_not_processing");
-  const activeItems = dashboard.workItems.filter((item) => item.schedulingState === "in_process");
   const attentionItems = dashboard.healthItems.filter((item) => item.severity !== "info");
   const qaAttentionValidations = dashboard.qaValidations.filter((item) =>
     ["failed", "missing", "requested", "in_progress"].includes(item.status)
@@ -66,6 +87,10 @@ export function OverviewTab({
     row,
     validations: qaAttentionValidations.filter((item) => row.repo === item.repo && row.target === item.target)
   }));
+  const currentPresentationRows = [
+    ...overviewRows.processing_now.map((row) => ({ row, status: "in_process" })),
+    ...overviewRows.needs_recovery.map((row) => ({ row, status: "started_not_processing" }))
+  ];
   const renderHealth = (item: HealthItem) => (
     <>
       <div>
@@ -165,17 +190,17 @@ export function OverviewTab({
             <Activity size={18} aria-hidden="true" />
             <h2>Current Work</h2>
           </header>
-          {[...startedItems, ...activeItems].length === 0 ? (
+          {currentPresentationRows.length === 0 ? (
             <p className="empty-state">No processing or claimed-but-idle work.</p>
           ) : (
             <div className="overview-list">
-              {firstItems([...activeItems, ...startedItems]).map((item) => (
-                <div className="overview-row" key={item.id}>
+              {firstItems(currentPresentationRows).map(({ row, status }) => (
+                <div className="overview-row" key={`${status}:${row.id}`}>
                   <div>
-                    <strong>{workTitle(item)}</strong>
-                    <span>{item.claim?.agentId || item.heartbeat?.agentId || item.batchSignals?.[0]?.laneName || "Unassigned"}</span>
+                    <OperatorRowLink row={row} />
+                    <span>{row.agentId || row.laneName || "Unassigned"}</span>
                   </div>
-                  <StatusBadge value={item.schedulingState} />
+                  <StatusBadge value={status} />
                 </div>
               ))}
             </div>
@@ -197,7 +222,7 @@ export function OverviewTab({
                     <strong>{row.batchId || UNKNOWN}</strong>
                     <span>{row.title}</span>
                   </div>
-                  <StatusBadge value={row.activityStatus} />
+                  <span className={`status-badge status-${row.activityStatus}`}>{operatorActivityLabel(row.activityStatus)}</span>
                 </div>
               ))}
             </div>
@@ -216,7 +241,7 @@ export function OverviewTab({
               {firstItems(qaPresentationRows).map(({ row, validations }) => (
                 <div className="overview-row" key={row.id}>
                   <div>
-                    <strong>{qaRowTitle(row)}</strong>
+                    <OperatorRowLink row={row} />
                     <span>{validations.map(qaValidationScope).join(" · ")}</span>
                   </div>
                   <div className="overview-row-statuses">
@@ -235,17 +260,17 @@ export function OverviewTab({
             <GitPullRequest size={18} aria-hidden="true" />
             <h2>Ready To Batch</h2>
           </header>
-          {readyItems.length === 0 ? (
+          {overviewRows.ready_for_batch.length === 0 ? (
             <p className="empty-state">No ready work items.</p>
           ) : (
             <div className="overview-list">
-              {firstItems(readyItems, 10).map((item) => (
-                <div className="overview-row" key={item.id}>
+              {firstItems(overviewRows.ready_for_batch, 10).map((row) => (
+                <div className="overview-row" key={row.id}>
                   <div>
-                    <strong>{workTitle(item)}</strong>
-                    <span>{item.repo}</span>
+                    <OperatorRowLink row={row} />
+                    <span>{row.repo}</span>
                   </div>
-                  <StatusBadge value={item.schedulingState} />
+                  <StatusBadge value="ready_for_batch" />
                 </div>
               ))}
             </div>
