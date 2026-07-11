@@ -4,6 +4,7 @@ import type { DashboardModel } from "../../shared/types";
 import {
   buildOperatorRows,
   filterOperatorRows,
+  filterOperatorRowsByProvenance,
   filterOperatorRowsForOverview,
   hasExactOperatorDeepLink,
   OVERVIEW_OPERATOR_FILTER_LABELS,
@@ -23,6 +24,16 @@ interface OperatorViewProps {
   onQueryChange?: (query: string) => void;
   query?: string;
   onResetOverviewFilter?: () => void;
+}
+
+const SHOW_DERIVED_ROWS_STORAGE_KEY = "agent-coordination-dashboard:show-derived-operator-rows";
+
+function savedDerivedRowsPreference(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_DERIVED_ROWS_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function display(value: string | undefined): string {
@@ -127,10 +138,15 @@ function metadataStateText(row: OperatorRow, key: keyof OperatorRow["metadata"],
 }
 
 function MetadataDisclosure({ row }: { row: OperatorRow }) {
+  const evidence = row.provenance.evidence.length > 0
+    ? row.provenance.evidence.map((source) => source.replace("_", " ")).join(", ")
+    : UNKNOWN;
   return (
     <details className="operator-metadata-disclosure">
       <summary>Metadata provenance</summary>
       <ul>
+        <li>Row provenance: {row.provenance.classification}</li>
+        <li>Row evidence: {evidence}</li>
         {METADATA_LABELS.map(([key, label]) => (
           <li key={key}>{metadataStateText(row, key, label)}</li>
         ))}
@@ -167,7 +183,22 @@ export function OperatorView({
   onResetOverviewFilter,
   query: controlledQuery
 }: OperatorViewProps) {
-  const rows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
+  const allRows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
+  const [showDerivedRows, setShowDerivedRows] = useState(savedDerivedRowsPreference);
+  const summaryFilterUsesOrdinaryWork = Boolean(deepLink?.overviewFilter && deepLink.overviewFilter !== "batch_repair");
+  const includeDerivedRows = deepLink?.overviewFilter === "batch_repair"
+    ? true
+    : showDerivedRows && !summaryFilterUsesOrdinaryWork;
+  const rows = useMemo(
+    () => filterOperatorRowsByProvenance(allRows, includeDerivedRows),
+    [allRows, includeDerivedRows]
+  );
+  const scopedAllRows = useMemo(
+    () => filterOperatorRowsForOverview(allRows, dashboard, deepLink?.overviewFilter),
+    [allRows, dashboard, deepLink?.overviewFilter]
+  );
+  const hiddenDerivedRowCount =
+    scopedAllRows.length - filterOperatorRowsByProvenance(scopedAllRows, false).length;
   const [localQuery, setLocalQuery] = useState(deepLink?.query || "");
   const query = controlledQuery ?? localQuery;
 
@@ -176,6 +207,14 @@ export function OperatorView({
       setLocalQuery(deepLink?.query || "");
     }
   }, [controlledQuery, deepLink?.query]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SHOW_DERIVED_ROWS_STORAGE_KEY, String(showDerivedRows));
+    } catch {
+      // Storage can be unavailable in restricted browser contexts; the in-memory control still works.
+    }
+  }, [showDerivedRows]);
 
   function updateQuery(value: string) {
     if (onQueryChange) {
@@ -187,8 +226,8 @@ export function OperatorView({
 
   const hasExactLink = hasExactOperatorDeepLink(deepLink);
   const overviewRows = useMemo(
-    () => filterOperatorRowsForOverview(rows, dashboard, deepLink?.overviewFilter),
-    [dashboard, deepLink?.overviewFilter, rows]
+    () => filterOperatorRowsByProvenance(scopedAllRows, includeDerivedRows),
+    [includeDerivedRows, scopedAllRows]
   );
   const linkedRows = useMemo(
     () => (hasExactLink ? overviewRows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : overviewRows),
@@ -218,6 +257,24 @@ export function OperatorView({
           />
         </label>
       </header>
+
+      <label className="operator-provenance-filter">
+        <input
+          aria-label="Show inferred and synthetic rows"
+          checked={includeDerivedRows}
+          disabled={summaryFilterUsesOrdinaryWork || deepLink?.overviewFilter === "batch_repair"}
+          onChange={(event) => setShowDerivedRows(event.target.checked)}
+          type="checkbox"
+        />
+        <span>Show inferred and synthetic rows</span>
+        {!includeDerivedRows && hiddenDerivedRowCount > 0 ? (
+          <small>{hiddenDerivedRowCount} inferred or synthetic rows hidden</small>
+        ) : null}
+        {summaryFilterUsesOrdinaryWork ? <small>Overview summary filters use observed and UNKNOWN rows only.</small> : null}
+        {deepLink?.overviewFilter === "batch_repair" ? (
+          <small>Batch repair includes diagnostic inferred and synthetic evidence.</small>
+        ) : null}
+      </label>
 
       {deepLink?.overviewFilter && (
         <div className="operator-filter" role="status">

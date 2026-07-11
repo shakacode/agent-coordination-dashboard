@@ -324,6 +324,24 @@ textarea {
   width: min(360px, 100%);
 }
 
+.operator-provenance-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  color: #344054;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.operator-provenance-filter input {
+  margin: 0;
+}
+
+.operator-provenance-filter small {
+  color: #667085;
+}
+
 .operator-filter {
   display: flex;
   align-items: center;

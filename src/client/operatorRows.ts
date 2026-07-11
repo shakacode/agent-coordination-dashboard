@@ -9,6 +9,7 @@ import type {
   Liveness,
   MetadataProvenance,
   MetadataSource,
+  OperatorRowProvenance,
   WorkItem,
   WorkItemType
 } from "../shared/types";
@@ -70,6 +71,7 @@ export interface OperatorDeepLink {
 export interface OperatorRow {
   id: string;
   source: OperatorRowSource;
+  provenance: OperatorRowProvenance;
   repo: string;
   target?: string;
   type: WorkItemType;
@@ -209,6 +211,26 @@ function repoTargetKey(repo: string | undefined, target: string | undefined): st
   return repo && target ? `${repo}#${target}` : undefined;
 }
 
+function uniqueSources(sources: Array<MetadataSource | undefined>): MetadataSource[] {
+  return Array.from(new Set(sources.filter((source): source is MetadataSource => Boolean(source))));
+}
+
+function targetProvenance(item: WorkItem, matchingEvents: BatchEvent[], batch: BatchRecord | undefined): OperatorRowProvenance {
+  if (item.provenance) {
+    return item.provenance;
+  }
+  const evidence = uniqueSources([
+    item.claim ? "claim" : undefined,
+    item.heartbeat ? "heartbeat" : undefined,
+    matchingEvents.length > 0 ? "event" : undefined,
+    item.github ? "github" : undefined,
+    batch ? (batch.source === "inferred" ? "inferred_batch" : "manifest") : undefined
+  ]);
+  const observed = Boolean(item.claim || item.heartbeat || matchingEvents.length > 0 || item.github?.loadState === "loaded");
+  const inferred = Boolean(batch);
+  return { classification: observed ? "observed" : inferred ? "inferred" : "unknown", evidence };
+}
+
 function uniqueManifestRepoForTarget(batch: BatchRecord, target: string): string | undefined {
   const repos = new Set(
     (batch.targets || [])
@@ -217,6 +239,17 @@ function uniqueManifestRepoForTarget(batch: BatchRecord, target: string): string
       .filter((repo): repo is string => Boolean(repo))
   );
   return repos.size === 1 ? Array.from(repos)[0] : undefined;
+}
+
+function manifestReposForTarget(batch: BatchRecord, target: string): string[] {
+  return Array.from(
+    new Set(
+      (batch.targets || [])
+        .filter((batchTarget) => batchTarget.target === target)
+        .map((batchTarget) => batchTarget.repo || batch.repo)
+        .filter((repo): repo is string => Boolean(repo))
+    )
+  );
 }
 
 function targetTypeFromBatch(batch: BatchRecord, target: string): WorkItemType {
@@ -551,7 +584,11 @@ function matchingEventsForLane(batch: BatchRecord, lane: BatchLane, events: Batc
     if (!event.target || !lane.targets.includes(event.target)) {
       return false;
     }
-    const targetRepo = uniqueManifestRepoForTarget(batch, event.target) || batch.repo;
+    const targetRepos = manifestReposForTarget(batch, event.target);
+    if (targetRepos.length > 1) {
+      return event.batchPath === batch.path && (!event.repo || targetRepos.includes(event.repo));
+    }
+    const targetRepo = targetRepos[0] || batch.repo;
     return !event.repo || !targetRepo || event.repo === targetRepo;
   });
 }
@@ -684,6 +721,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `target:${item.repo}#${item.target}`,
     source: "target",
+    provenance: targetProvenance(item, matchingEvents, batch),
     repo: item.repo,
     target: item.target,
     type: item.type === "unknown" ? batchTarget?.type || "unknown" : item.type,
@@ -730,15 +768,27 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   return { ...row, searchText: rowSearchText(row) };
 }
 
-function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[], nowMs: number): OperatorRow {
+function buildLaneRow(
+  batch: BatchRecord,
+  lane: BatchLane,
+  events: BatchEvent[],
+  nowMs: number,
+  options: {
+    target?: string;
+    repo?: string;
+    provenance?: OperatorRowProvenance;
+    warnings?: string[];
+  } = {}
+): OperatorRow {
   const matchingEvents = matchingEventsForLane(batch, lane, events);
   const latest = latestEvent(matchingEvents);
   const eventHistoryMetadata = eventMetadataFromHistory(matchingEvents);
   const transitionEvent = latestTransitionEvent(matchingEvents);
-  const firstTarget = lane.targets[0];
-  const repo = (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
+  const firstTarget = options.target ?? lane.targets[0];
+  const repo = options.repo || (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
   const target = firstTarget || undefined;
-  const type = firstTarget ? targetTypeFromBatch(batch, firstTarget) : "unknown";
+  const targetRepoUnknown = Boolean(firstTarget && repo === UNKNOWN);
+  const type = firstTarget && !targetRepoUnknown ? targetTypeFromBatch(batch, firstTarget) : "unknown";
   const metadata = metadataFrom(laneMetadata(lane), eventHistoryMetadata);
   const ownerMetadata = firstObserved(
     notApplicable(),
@@ -785,15 +835,26 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     nowMs
   });
   const lastActivityAt = maxTimestamp(latest?.timestamp, batch.updatedAt, batch.createdAt);
-  const title = firstValue(target ? targetTitleFromBatch(batch, target) : undefined, batch.objective, `Batch lane ${lane.name}`) || UNKNOWN;
+  const title = targetRepoUnknown
+    ? `Target #${target} (repository UNKNOWN)`
+    : firstValue(target ? targetTitleFromBatch(batch, target) : undefined, batch.objective, `Batch lane ${lane.name}`) || UNKNOWN;
   const baseRow: Omit<OperatorRow, "searchText"> = {
-    id: `lane:${batch.repo || batch.path}:${batch.batchId}:${lane.name}`,
+    id: `lane:${batch.repo || batch.path}:${batch.batchId}:${lane.name}${lane.targets.length > 1 && firstTarget ? `:${firstTarget}` : ""}`,
     source: "lane",
+    provenance:
+      options.provenance || {
+        classification:
+          matchingEvents.length > 0 ? "observed" : batch.source === "inferred" ? "inferred" : "synthetic",
+        evidence: uniqueSources([
+          batch.source === "inferred" ? "inferred_batch" : "manifest",
+          matchingEvents.length > 0 ? "event" : undefined
+        ])
+      },
     repo,
     target,
     type,
     title,
-    url: target ? targetUrlFromBatch(batch, target) : undefined,
+    url: target && !targetRepoUnknown ? targetUrlFromBatch(batch, target) : undefined,
     operatorState: state,
     liveness: lane.liveness || "no-heartbeat",
     livenessAge: UNKNOWN,
@@ -824,9 +885,9 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
       batch: batchMetadata,
       activity: activityMetadata
     },
-    warnings: []
+    warnings: options.warnings || []
   };
-  const warnings = metadataWarnings(baseRow);
+  const warnings = [...baseRow.warnings, ...metadataWarnings(baseRow)];
   const row = { ...baseRow, warnings };
   return { ...row, searchText: rowSearchText(row) };
 }
@@ -836,20 +897,51 @@ export function buildOperatorRows(dashboard: DashboardModel, options: BuildOpera
   const nowMs = Number.isNaN(now.getTime()) ? Date.now() : now.getTime();
   const rows = dashboard.workItems.map((item) => buildTargetRow(item, dashboard, nowMs));
   const rowTargetKeys = new Set(rows.map((row) => repoTargetKey(row.repo, row.target)).filter((value): value is string => Boolean(value)));
+  const ambiguousLaneKeys = new Set<string>();
 
   for (const batch of dashboard.batches) {
     for (const lane of batch.lanes) {
-      const hasTargetRow = lane.targets.some((target) => {
-        const repo = uniqueManifestRepoForTarget(batch, target) || batch.repo;
-        return rowTargetKeys.has(`${repo}#${target}`);
-      });
-      if (!hasTargetRow) {
+      if (lane.targets.length === 0) {
         rows.push(buildLaneRow(batch, lane, dashboard.events, nowMs));
+      } else {
+        for (const target of lane.targets) {
+          const manifestRepos = manifestReposForTarget(batch, target);
+          if (manifestRepos.length > 1) {
+            if (manifestRepos.every((repo) => rowTargetKeys.has(`${repo}#${target}`))) {
+              continue;
+            }
+            const unknownKey = `${batch.path}:${batch.batchId}:${lane.name}:${target}`;
+            if (!ambiguousLaneKeys.has(unknownKey)) {
+              rows.push(
+                buildLaneRow(batch, lane, dashboard.events, nowMs, {
+                  target,
+                  repo: UNKNOWN,
+                  provenance: { classification: "unknown", evidence: ["manifest"] },
+                  warnings: [`Target repository UNKNOWN: manifest target #${target} matches multiple saved repositories.`]
+                })
+              );
+              ambiguousLaneKeys.add(unknownKey);
+            }
+            continue;
+          }
+          const repo = manifestRepos[0] || batch.repo || UNKNOWN;
+          const key = `${repo}#${target}`;
+          if (!rowTargetKeys.has(key)) {
+            rows.push(buildLaneRow(batch, lane, dashboard.events, nowMs, { target, repo }));
+            rowTargetKeys.add(key);
+          }
+        }
       }
     }
   }
 
   return sortRows(rows, dashboard.targetRepos);
+}
+
+export function filterOperatorRowsByProvenance(rows: OperatorRow[], includeDerived: boolean): OperatorRow[] {
+  return includeDerived
+    ? rows
+    : rows.filter((row) => !["inferred", "synthetic"].includes(row.provenance.classification));
 }
 
 export function filterOperatorRows(rows: OperatorRow[], query: string, targetRepos = Array.from(new Set(rows.map((row) => row.repo)))): OperatorRow[] {
@@ -994,6 +1086,13 @@ function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOpe
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `batch-repair:${batchPath || repo}:${batchId}`,
     source: "batch",
+    provenance: operation?.eventCount
+      ? { classification: "observed", evidence: ["event"] }
+      : batch?.source === "inferred"
+        ? { classification: "inferred", evidence: ["inferred_batch"] }
+        : batch
+          ? { classification: "synthetic", evidence: ["manifest"] }
+          : { classification: "unknown", evidence: [] },
     repo,
     type: "unknown",
     title: batch?.objective || `Batch ${batchId}`,

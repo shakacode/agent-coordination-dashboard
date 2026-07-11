@@ -14,7 +14,9 @@ import type {
   QaValidationItem,
   QaValidationStatus,
   SchedulingState,
-  WorkItem
+  WorkItem,
+  MetadataSource,
+  OperatorRowProvenance
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { isQaEventType } from "../../shared/qaEvents";
@@ -416,7 +418,7 @@ function safeScopedTargetNumbers(batch: BatchRecord, targetRepoSet: Set<string>)
   }
   return new Set(
     Array.from(groups.entries())
-      .filter(([, group]) => !group.hasOutOfScope && group.inScopeRepos.size <= 1)
+      .filter(([, group]) => !group.hasOutOfScope)
       .map(([target]) => target)
   );
 }
@@ -983,20 +985,41 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
   const batchTargetsByWork = new Map<string, NonNullable<BatchRecord["targets"]>[number]>();
+  const batchEvidenceByWork = new Map<string, MetadataSource[]>();
   for (const batch of batches) {
     for (const target of batch.targets || []) {
       const repo = target.repo || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target.target);
       if (repo) {
-        batchTargetsByWork.set(workId(repo, target.target), target);
+        const id = workId(repo, target.target);
+        batchTargetsByWork.set(id, target);
+        const source: MetadataSource = batch.source === "inferred" ? "inferred_batch" : "manifest";
+        const existingEvidence = batchEvidenceByWork.get(id) || [];
+        if (!existingEvidence.includes(source)) {
+          batchEvidenceByWork.set(id, [...existingEvidence, source]);
+        }
       }
     }
     for (const lane of batch.lanes) {
       for (const target of lane.targets) {
-        const repo = uniqueManifestRepoForTarget(batch, target) || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
+        const manifestRepos = new Set(
+          (batch.targets || [])
+            .filter((batchTarget) => batchTarget.target === target)
+            .map((batchTarget) => batchTarget.repo || batch.repo)
+            .filter((repo): repo is string => Boolean(repo))
+        );
+        if (manifestRepos.size > 1) {
+          continue;
+        }
+        const repo = Array.from(manifestRepos)[0] || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
         if (!repo) {
           continue;
         }
         const id = workId(repo, target);
+        const source: MetadataSource = batch.source === "inferred" ? "inferred_batch" : "manifest";
+        const existingEvidence = batchEvidenceByWork.get(id) || [];
+        if (!existingEvidence.includes(source)) {
+          batchEvidenceByWork.set(id, [...existingEvidence, source]);
+        }
         batchSignalsByWork.set(id, [
           ...(batchSignalsByWork.get(id) || []),
           {
@@ -1012,6 +1035,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const workKeys = new Set<string>([
     ...claimsByWork.keys(),
     ...previewsByWork.keys(),
+    ...batchTargetsByWork.keys(),
     ...batchSignalsByWork.keys(),
     ...nonterminalEventWorkKeys
   ]);
@@ -1042,6 +1066,20 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const eventRecovery = !claim && !heartbeat && batchSignals.length === 0 && nonterminalEventWorkKeys.has(id);
       const schedulingState = eventRecovery ? "started_not_processing" : classifyWork(claim, heartbeat, batchSignals);
       const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, batchSignals, schedulingState);
+      const evidence: MetadataSource[] = [];
+      if (claim) evidence.push("claim");
+      if (heartbeat) evidence.push("heartbeat");
+      if ((eventsByWork.get(id) || []).length > 0) evidence.push("event");
+      if (github) evidence.push("github");
+      for (const source of batchEvidenceByWork.get(id) || []) {
+        if (!evidence.includes(source)) evidence.push(source);
+      }
+      const hasObservedEvidence = Boolean(claim || heartbeat || (eventsByWork.get(id) || []).length > 0 || github?.loadState === "loaded");
+      const hasInferredEvidence = (batchEvidenceByWork.get(id) || []).length > 0;
+      const provenance: OperatorRowProvenance = {
+        classification: hasObservedEvidence ? "observed" : hasInferredEvidence ? "inferred" : "unknown",
+        evidence
+      };
 
       return {
         id,
@@ -1052,6 +1090,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         heartbeat,
         batchSignals,
         github,
+        provenance,
         schedulingState,
         warnings,
         selected: false

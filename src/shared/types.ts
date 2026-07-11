@@ -7,6 +7,12 @@ export type BatchControlStatus = "running" | "stop_requested" | "stopped";
 export type QaValidationStatus = "missing" | "requested" | "in_progress" | "passed" | "failed" | "unknown";
 export type MetadataProvenanceState = "observed" | "inferred" | "missing" | "not_applicable";
 export type MetadataSource = "claim" | "heartbeat" | "event" | "manifest" | "inferred_batch" | "github" | "dashboard";
+export type OperatorRowProvenanceClassification = "observed" | "inferred" | "synthetic" | "unknown";
+
+export interface OperatorRowProvenance {
+  classification: OperatorRowProvenanceClassification;
+  evidence: MetadataSource[];
+}
 
 export type MetadataProvenance =
   | { state: "observed" | "inferred"; value: string; source: MetadataSource }
@@ -198,6 +204,7 @@ export interface WorkItem {
   heartbeat?: HeartbeatRecord;
   batchSignals?: BatchWorkSignal[];
   github?: GitHubPreview;
+  provenance?: OperatorRowProvenance;
   schedulingState: SchedulingState;
   warnings: CoordinationWarning[];
   selected: boolean;

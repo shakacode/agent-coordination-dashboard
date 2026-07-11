@@ -37,6 +37,101 @@ const preview: GitHubPreview = {
 };
 
 describe("buildDashboardModel", () => {
+  it("classifies target provenance from direct, inferred, and degraded evidence", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [claim],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "manifest-only",
+          repo: "shakacode/react_on_rails",
+          source: "manifest",
+          targets: [{ type: "issue", target: "4020", repo: "shakacode/react_on_rails" }],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "worker-b",
+              targets: ["4020"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ],
+          path: "batches/manifest-only.json"
+        }
+      ],
+      githubItems: [{ ...preview, target: "4030", loadState: "unknown" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems.find((item) => item.target === "4005")?.provenance).toEqual({
+      classification: "observed",
+      evidence: ["claim"]
+    });
+    expect(model.workItems.find((item) => item.target === "4020")?.provenance).toEqual({
+      classification: "inferred",
+      evidence: ["manifest"]
+    });
+    expect(model.workItems.find((item) => item.target === "4030")?.provenance).toEqual({
+      classification: "unknown",
+      evidence: ["github"]
+    });
+  });
+
+  it("emits both structured same-number repo targets without assigning an ambiguous lane to the batch repo", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo/app", "repo/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "multi-repo",
+          repo: "repo/app",
+          source: "manifest",
+          targets: [
+            { type: "issue", target: "123", repo: "repo/app" },
+            { type: "issue", target: "123", repo: "repo/api" }
+          ],
+          lanes: [
+            {
+              name: "ambiguous",
+              owner: "worker-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ],
+          path: "batches/multi-repo.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems.map((item) => ({ id: item.id, signals: item.batchSignals, provenance: item.provenance }))).toEqual([
+      {
+        id: "repo/api#123",
+        signals: [],
+        provenance: { classification: "inferred", evidence: ["manifest"] }
+      },
+      {
+        id: "repo/app#123",
+        signals: [],
+        provenance: { classification: "inferred", evidence: ["manifest"] }
+      }
+    ]);
+  });
+
   it("classifies live claimed work as in process and open unclaimed work as ready", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
