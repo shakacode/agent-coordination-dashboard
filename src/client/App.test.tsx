@@ -343,7 +343,7 @@ describe("App", () => {
     expect(operator.getByText("rowless-batch")).toBeInTheDocument();
   });
 
-  it("renders rowless repair reasons with a safe status token and an explicit human label", async () => {
+  it("renders every rowless repair status with a safe token and shared human label", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
       ok: true,
       json: async () =>
@@ -372,7 +372,22 @@ describe("App", () => {
                   lanes: []
                 }
               ],
-              batchOperations: []
+              batchOperations: [
+                {
+                  batchId: "stopped-rowless",
+                  repo: "shakacode/react_on_rails",
+                  controlStatus: "stopped",
+                  eventCount: 1,
+                  qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+                },
+                {
+                  batchId: "stop-requested-rowless",
+                  repo: "shakacode/react_on_rails",
+                  controlStatus: "stop_requested",
+                  eventCount: 1,
+                  qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+                }
+              ]
             }
     }) as Response);
 
@@ -382,6 +397,8 @@ describe("App", () => {
     expect(repairPanel.getByText("Batch plan missing")).toHaveClass("status-badge", "status-batch_plan_missing");
     expect(repairPanel.getByText("Batch plan missing").className.split(/\s+/)).not.toContain("plan");
     expect(repairPanel.getByText("Prompt missing")).toHaveClass("status-badge", "status-prompt_missing");
+    expect(repairPanel.getByText("Stopped")).toHaveClass("status-badge", "status-stopped");
+    expect(repairPanel.getByText("Stop requested")).toHaveClass("status-badge", "status-stop_requested");
   });
 
   it("clears a failed exact link without misattributing or removing the active Overview filter", async () => {

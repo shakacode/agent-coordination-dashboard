@@ -14,13 +14,15 @@ import { isQaEventType } from "../shared/qaEvents";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
-export const REPAIR_ACTIVITY_STATUS_LABELS: Record<string, string> = {
+export const OPERATOR_ACTIVITY_STATUS_LABELS: Record<string, string> = {
+  stopped: "Stopped",
+  stop_requested: "Stop requested",
   batch_plan_missing: "Batch plan missing",
   prompt_missing: "Prompt missing"
 };
 
 export function operatorActivityLabel(status: string): string {
-  return REPAIR_ACTIVITY_STATUS_LABELS[status] || status;
+  return OPERATOR_ACTIVITY_STATUS_LABELS[status] || status;
 }
 
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
