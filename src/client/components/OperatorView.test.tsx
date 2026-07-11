@@ -133,6 +133,7 @@ describe("OperatorView", () => {
 
     expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
     expect(screen.getByText("Issue #124")).toBeInTheDocument();
+    expect(screen.getByText("Issue #124").closest("tr")).not.toHaveClass("operator-row-highlight");
     expect(screen.queryByText("PR #123")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Reset filter" }));

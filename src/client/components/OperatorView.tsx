@@ -5,7 +5,7 @@ import {
   buildOperatorRows,
   filterOperatorRows,
   filterOperatorRowsForOverview,
-  hasStructuredOperatorDeepLink,
+  hasExactOperatorDeepLink,
   OVERVIEW_OPERATOR_FILTER_LABELS,
   operatorRowMatchesDeepLink,
   UNKNOWN,
@@ -163,17 +163,18 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, onResetOvervi
     }
   }
 
-  const hasStructuredLink = hasStructuredOperatorDeepLink(deepLink);
+  const hasExactLink = hasExactOperatorDeepLink(deepLink);
   const overviewRows = useMemo(
     () => filterOperatorRowsForOverview(rows, dashboard, deepLink?.overviewFilter),
     [dashboard, deepLink?.overviewFilter, rows]
   );
   const linkedRows = useMemo(
-    () => (hasStructuredLink ? overviewRows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : overviewRows),
-    [deepLink, hasStructuredLink, overviewRows]
+    () => (hasExactLink ? overviewRows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : overviewRows),
+    [deepLink, hasExactLink, overviewRows]
   );
   const visibleRows = useMemo(() => filterOperatorRows(linkedRows, query, dashboard.targetRepos), [dashboard.targetRepos, linkedRows, query]);
-  const noStructuredLinkMatch = hasStructuredLink && linkedRows.length === 0;
+  const noExactLinkMatch = hasExactLink && linkedRows.length === 0;
+  const noOverviewFilterMatch = Boolean(deepLink?.overviewFilter && overviewRows.length === 0);
 
   return (
     <section className="operator-view" aria-label="Operator view">
@@ -207,7 +208,7 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, onResetOvervi
         </div>
       )}
 
-      {noStructuredLinkMatch ? (
+      {noExactLinkMatch || noOverviewFilterMatch ? (
         <div className="empty-state">
           <p>
             No loaded row matches

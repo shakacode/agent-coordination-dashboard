@@ -678,6 +678,10 @@ export function hasStructuredOperatorDeepLink(deepLink?: OperatorDeepLink): bool
   return Boolean(deepLink?.batchId || deepLink?.laneName || deepLink?.repo || deepLink?.target || deepLink?.overviewFilter);
 }
 
+export function hasExactOperatorDeepLink(deepLink?: OperatorDeepLink): boolean {
+  return Boolean(deepLink?.batchId || deepLink?.laneName || deepLink?.repo || deepLink?.target);
+}
+
 function rowMatchesRepoTarget(row: OperatorRow, repo: string, target: string): boolean {
   return row.repo === repo && row.target === target;
 }
@@ -722,7 +726,7 @@ export function filterOperatorRowsForOverview(
 }
 
 export function operatorRowMatchesDeepLink(row: OperatorRow, deepLink?: OperatorDeepLink): boolean {
-  if (!hasStructuredOperatorDeepLink(deepLink)) {
+  if (!hasExactOperatorDeepLink(deepLink)) {
     return false;
   }
   if (deepLink?.batchId && row.batchId !== deepLink.batchId) {
