@@ -1059,6 +1059,7 @@ describe("operatorRows", () => {
       batchOperations: [
         {
           batchId: "batch-1",
+          repo: "repo/app",
           controlStatus: "stopped",
           eventCount: 1,
           stopRequestedAt: "2026-07-09T19:50:00Z",
@@ -1074,6 +1075,78 @@ describe("operatorRows", () => {
     expect(filterOperatorRowsForOverview(rows, model, "needs_recovery").map((row) => row.target)).toEqual(["125"]);
     expect(filterOperatorRowsForOverview(rows, model, "qa_attention").map((row) => row.target)).toEqual(["125"]);
     expect(filterOperatorRowsForOverview(rows, model, "batch_repair").map((row) => row.target)).toEqual(["123"]);
+  });
+
+  it("scopes batch-repair filters when different repos reuse a batch id", () => {
+    const appClaim = { ...claim, batchId: "shared-batch" };
+    const appHeartbeat = { ...heartbeat, batchId: "shared-batch" };
+    const apiClaim = { ...claim, repo: "repo/api", agentId: "agent-api", batchId: "shared-batch" };
+    const apiHeartbeat = { ...heartbeat, repo: "repo/api", agentId: "agent-api", batchId: "shared-batch" };
+    const model = dashboard({
+      workItems: [
+        workItem({ claim: appClaim, heartbeat: appHeartbeat }),
+        workItem({ id: "repo/api#123", repo: "repo/api", claim: apiClaim, heartbeat: apiHeartbeat })
+      ],
+      batchOperations: [
+        {
+          batchId: "shared-batch",
+          repo: "repo/app",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair").map((row) => row.repo)).toEqual([
+      "repo/app"
+    ]);
+  });
+
+  it("returns one repair row when inferred and stopped signals overlap", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          claim,
+          heartbeat,
+          batchSignals: [{ batchId: "batch-1", laneName: "implementation", status: "coding", blockedOn: [] }]
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "repo/app",
+          source: "inferred",
+          path: "batches/repo-app/batch-1.json",
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "coding",
+              liveness: "live"
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "batch-1",
+          repo: "repo/app",
+          batchPath: "batches/repo-app/batch-1.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    const repairRows = filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair");
+    expect(repairRows).toHaveLength(1);
+    expect(repairRows[0]).toMatchObject({ repo: "repo/app", batchId: "batch-1", batchPath: "batches/repo-app/batch-1.json" });
   });
 
   it("parses only supported overview filters from shareable search params", () => {

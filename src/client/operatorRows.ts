@@ -53,6 +53,7 @@ export interface OperatorRow {
   lastEventAt?: string;
   heartbeatUpdatedAt?: string;
   batchId?: string;
+  batchPath?: string;
   laneName?: string;
   dependencies: string[];
   blockedOn: string[];
@@ -308,6 +309,7 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.activityStatus,
       row.activityMessage,
       row.batchId,
+      row.batchPath,
       row.laneName,
       row.dependencies.join(" "),
       row.blockedOn.join(" "),
@@ -552,6 +554,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
     batchId: signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId,
+    batchPath: batch?.path,
     laneName: signal?.laneName || lane?.name,
     dependencies: lane?.dependsOn || [],
     blockedOn,
@@ -605,6 +608,7 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
     lastEventAt: latest?.timestamp,
     batchId: batch.batchId,
+    batchPath: batch.path,
     laneName: lane.name,
     dependencies: lane.dependsOn,
     blockedOn: lane.blockedOn,
@@ -696,11 +700,25 @@ export function filterOperatorRowsForOverview(
     const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
     return rows.filter((row) => qaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
-  const repairBatchIds = new Set([
-    ...dashboard.batches.filter((batch) => batch.source === "inferred" || !batch.launchPrompt).map((batch) => batch.batchId),
-    ...dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running").map((operation) => operation.batchId)
-  ]);
-  return rows.filter((row) => Boolean(row.batchId && repairBatchIds.has(row.batchId)));
+  const repairScopes = [
+    ...dashboard.batches
+      .filter((batch) => batch.source === "inferred" || !batch.launchPrompt)
+      .map((batch) => ({ batchId: batch.batchId, batchPath: batch.path, repo: batch.repo })),
+    ...dashboard.batchOperations
+      .filter((operation) => operation.controlStatus !== "running")
+      .map((operation) => ({ batchId: operation.batchId, batchPath: operation.batchPath, repo: operation.repo }))
+  ];
+  return rows.filter((row) =>
+    repairScopes.some((repair) => {
+      if (!row.batchId || row.batchId !== repair.batchId) {
+        return false;
+      }
+      if (row.batchPath && repair.batchPath) {
+        return row.batchPath === repair.batchPath;
+      }
+      return Boolean(row.repo && repair.repo && row.repo === repair.repo);
+    })
+  );
 }
 
 export function operatorRowMatchesDeepLink(row: OperatorRow, deepLink?: OperatorDeepLink): boolean {

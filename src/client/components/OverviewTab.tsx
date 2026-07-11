@@ -1,6 +1,11 @@
 import { Activity, AlertTriangle, CheckCircle2, GitPullRequest, PackageOpen } from "lucide-react";
 import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem, WorkItem } from "../../shared/types";
-import type { OverviewOperatorFilter } from "../operatorRows";
+import {
+  buildOperatorRows,
+  filterOperatorRowsForOverview,
+  type OperatorRow,
+  type OverviewOperatorFilter
+} from "../operatorRows";
 import { groupHealthItems, groupWarnings } from "../signalGroups";
 import { SignalGroupList } from "./SignalGroups";
 import { StatusBadge } from "./StatusBadge";
@@ -34,6 +39,14 @@ export function OverviewTab({
   const failedQa = dashboard.qaValidations.filter((item) => item.status === "failed");
   const activeQa = dashboard.qaValidations.filter((item) => item.status === "requested" || item.status === "in_progress");
   const stoppedBatches = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
+  const operatorRows = buildOperatorRows(dashboard);
+  const overviewRows: Record<OverviewOperatorFilter, OperatorRow[]> = {
+    ready_for_batch: filterOperatorRowsForOverview(operatorRows, dashboard, "ready_for_batch"),
+    needs_recovery: filterOperatorRowsForOverview(operatorRows, dashboard, "needs_recovery"),
+    processing_now: filterOperatorRowsForOverview(operatorRows, dashboard, "processing_now"),
+    qa_attention: filterOperatorRowsForOverview(operatorRows, dashboard, "qa_attention"),
+    batch_repair: filterOperatorRowsForOverview(operatorRows, dashboard, "batch_repair")
+  };
   const healthGroups = groupHealthItems(attentionItems);
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleHealthGroups = healthGroups.slice(0, 6);
@@ -41,7 +54,6 @@ export function OverviewTab({
   const overflowHealthGroups = healthGroups.slice(visibleHealthGroups.length);
   const overflowWarningGroups = warningGroups.slice(visibleWarningGroups.length);
   const overflowTypeCount = overflowHealthGroups.length + overflowWarningGroups.length;
-  const qaAttentionCount = failedQa.length + missingQa.length + activeQa.length;
   const renderHealth = (item: HealthItem) => (
     <>
       <div>
@@ -65,48 +77,48 @@ export function OverviewTab({
     <section className="overview-view">
       <section className="summary-cards" aria-label="Coordination summary">
         <button
-          aria-label={`Show ${readyItems.length} ready for batch rows in Operator view`}
+          aria-label={`Show ${overviewRows.ready_for_batch.length} ready for batch rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("ready_for_batch")}
           type="button"
         >
-          <strong>{readyItems.length} ready</strong>
+          <strong>{overviewRows.ready_for_batch.length} ready</strong>
           <span>Ready to batch</span>
         </button>
         <button
-          aria-label={`Show ${startedItems.length} claimed, not processing rows in Operator view`}
+          aria-label={`Show ${overviewRows.needs_recovery.length} claimed, not processing rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("needs_recovery")}
           type="button"
         >
-          <strong>{startedItems.length} claimed</strong>
+          <strong>{overviewRows.needs_recovery.length} claimed</strong>
           <span>Not processing · recover</span>
         </button>
         <button
-          aria-label={`Show ${activeItems.length} processing now rows in Operator view`}
+          aria-label={`Show ${overviewRows.processing_now.length} processing now rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("processing_now")}
           type="button"
         >
-          <strong>{activeItems.length} processing</strong>
+          <strong>{overviewRows.processing_now.length} processing</strong>
           <span>Processing now</span>
         </button>
         <button
-          aria-label={`Show ${qaAttentionCount} QA attention rows in Operator view`}
+          aria-label={`Show ${overviewRows.qa_attention.length} QA attention rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("qa_attention")}
           type="button"
         >
-          <strong>{qaAttentionCount} QA attention</strong>
+          <strong>{overviewRows.qa_attention.length} QA attention</strong>
           <span>Missing, failed, or active</span>
         </button>
         <button
-          aria-label={`Show ${batchRepairItems.length + stoppedBatches.length} batch repair rows in Operator view`}
+          aria-label={`Show ${overviewRows.batch_repair.length} batch repair rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("batch_repair")}
           type="button"
         >
-          <strong>{batchRepairItems.length + stoppedBatches.length} batch repairs</strong>
+          <strong>{overviewRows.batch_repair.length} batch repairs</strong>
           <span>Manifest, prompt, or stopped batch</span>
         </button>
       </section>
