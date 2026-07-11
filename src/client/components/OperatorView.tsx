@@ -9,6 +9,7 @@ import {
   OVERVIEW_OPERATOR_FILTER_LABELS,
   operatorActivityLabel,
   operatorRowMatchesDeepLink,
+  safeGithubUrl,
   UNKNOWN,
   type OperatorDeepLink,
   type OperatorRow
@@ -22,25 +23,6 @@ interface OperatorViewProps {
   onQueryChange?: (query: string) => void;
   query?: string;
   onResetOverviewFilter?: () => void;
-}
-
-function safeGithubUrl(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "github.com") {
-      return undefined;
-    }
-    const pathParts = url.pathname.split("/").filter(Boolean);
-    if (pathParts.length !== 4 || !["pull", "issues"].includes(pathParts[2]) || !/^\d+$/.test(pathParts[3])) {
-      return undefined;
-    }
-    return url.toString();
-  } catch {
-    return undefined;
-  }
 }
 
 function display(value: string | undefined): string {

@@ -25,6 +25,25 @@ export function operatorActivityLabel(status: string): string {
   return OPERATOR_ACTIVITY_STATUS_LABELS[status] || status;
 }
 
+export function safeGithubUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "github.com") {
+      return undefined;
+    }
+    const pathParts = url.pathname.split("/").filter(Boolean);
+    if (pathParts.length !== 4 || !["pull", "issues"].includes(pathParts[2]) || !/^\d+$/.test(pathParts[3])) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
 export type OperatorRowSource = "target" | "lane" | "batch";
 export type OverviewOperatorFilter = "ready_for_batch" | "needs_recovery" | "processing_now" | "qa_attention" | "batch_repair";
@@ -741,14 +760,27 @@ function rowMatchesBatchTarget(row: OperatorRow, batch: BatchRecord): boolean {
   return Boolean(targetRepo && row.repo === targetRepo);
 }
 
-function batchTargetPresentationRow(row: OperatorRow, batch: BatchRecord): OperatorRow {
+function repairActivityStatus(batch: BatchRecord | undefined, operation: BatchOperation | undefined): string {
+  if (operation?.controlStatus !== undefined && operation.controlStatus !== "running") {
+    return operation.controlStatus;
+  }
+  return batch?.source === "inferred" ? "batch_plan_missing" : "prompt_missing";
+}
+
+function repairStatusPresentationRow(row: OperatorRow, activityStatus: string): OperatorRow {
+  const presentation = { ...row, activityStatus };
+  return { ...presentation, searchText: rowSearchText(presentation) };
+}
+
+function batchTargetPresentationRow(row: OperatorRow, batch: BatchRecord, activityStatus: string): OperatorRow {
   const lane = batch.lanes.find((candidate) => Boolean(row.target && candidate.targets.includes(row.target)));
   const presentation = {
     ...row,
     id: `batch-repair-target:${batch.path}:${row.id}`,
     batchId: batch.batchId,
     batchPath: batch.path,
-    laneName: lane?.name || row.laneName
+    laneName: lane?.name || row.laneName,
+    activityStatus
   };
   return { ...presentation, searchText: rowSearchText(presentation) };
 }
@@ -758,12 +790,7 @@ function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOpe
   const repo = batch?.repo || operation?.repo || UNKNOWN;
   const batchPath = batch?.path || operation?.batchPath;
   const lastActivityAt = maxTimestamp(operation?.latestEventAt, batch?.updatedAt, batch?.createdAt);
-  const activityStatus =
-    operation?.controlStatus !== undefined && operation.controlStatus !== "running"
-      ? operation.controlStatus
-      : batch?.source === "inferred"
-        ? "batch_plan_missing"
-        : "prompt_missing";
+  const activityStatus = repairActivityStatus(batch, operation);
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `batch-repair:${batchPath || repo}:${batchId}`,
     source: "batch",
@@ -814,15 +841,18 @@ export function filterOperatorRowsForOverview(
   const nowMs = timestampMs(dashboard.generatedAt) || Date.now();
 
   for (const batch of repairBatches) {
+    const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
+    const activityStatus = repairActivityStatus(batch, operation);
     const matchingRows = rows.filter((row) => rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch));
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
-        const presentationRow = rowMatchesBatchScope(row, batch) ? row : batchTargetPresentationRow(row, batch);
+        const presentationRow = rowMatchesBatchScope(row, batch)
+          ? repairStatusPresentationRow(row, activityStatus)
+          : batchTargetPresentationRow(row, batch, activityStatus);
         results.set(presentationRow.id, presentationRow);
       }
       continue;
     }
-    const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
     const repairRow = buildRepairBatchRow(batch, operation, nowMs);
     results.set(repairRow.id, repairRow);
   }
@@ -834,7 +864,7 @@ export function filterOperatorRowsForOverview(
     const matchingRows = rows.filter((row) => rowMatchesOperationScope(row, operation));
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
-        results.set(row.id, row);
+        results.set(row.id, repairStatusPresentationRow(row, operation.controlStatus));
       }
       continue;
     }

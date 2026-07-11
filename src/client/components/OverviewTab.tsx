@@ -5,6 +5,7 @@ import {
   buildOperatorRows,
   filterOperatorRowsForOverview,
   operatorActivityLabel,
+  safeGithubUrl,
   UNKNOWN,
   type OperatorRow,
   type OverviewOperatorFilter
@@ -16,22 +17,6 @@ import { StatusBadge } from "./StatusBadge";
 function operatorRowTitle(row: OperatorRow): string {
   const kind = row.type === "pull_request" ? "PR" : row.type === "issue" ? "Issue" : "Target";
   return `${kind} #${row.target || UNKNOWN}: ${row.title}`;
-}
-
-function safeGithubUrl(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    const url = new URL(value);
-    const parts = url.pathname.split("/").filter(Boolean);
-    return url.protocol === "https:" && url.hostname === "github.com" && parts.length === 4 &&
-      ["pull", "issues"].includes(parts[2]) && /^\d+$/.test(parts[3])
-      ? url.toString()
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function OperatorRowLink({ row }: { row: OperatorRow }) {
