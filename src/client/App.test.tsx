@@ -1,8 +1,14 @@
+/// <reference types="node" />
+
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, backgroundRefreshTimeoutMs, operatorDeepLinkForOverviewFilter } from "./App";
 import * as operatorRows from "./operatorRows";
+
+const stylesheet = readFileSync(`${cwd()}/src/client/styles.css`, "utf8");
 
 const model = {
   generatedAt: "2026-06-17T20:00:00Z",
@@ -150,6 +156,15 @@ describe("App", () => {
     expect(screen.getByText(/auth required/)).toBeInTheDocument();
     expect(screen.getByText(/Use \$pr-batch/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+  });
+
+  it("wraps dashboard tabs without removing the Operator table's local scroller", async () => {
+    render(<App />);
+
+    await screen.findByRole("navigation", { name: "Dashboard views" });
+
+    expect(stylesheet).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(stylesheet).toMatch(/\.operator-table-wrap\s*\{[^}]*overflow-x:\s*auto/);
   });
 
   it("passes root search query params to the Operator View", async () => {
