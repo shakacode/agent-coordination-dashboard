@@ -603,7 +603,7 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
 
   if (
     warning.message.startsWith("Invalid AGENT_COORD_API_URL:") ||
-    warning.message.startsWith("AGENT_COORD_TOKEN is required") ||
+    warning.message.startsWith("AGENT_COORD_API_TOKEN is required") ||
     warning.message.startsWith("Could not read coordination API ") ||
     /^Malformed coordination API (claims|heartbeats|batches|events) entry at index \d+$/.test(warning.message)
   ) {

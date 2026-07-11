@@ -256,7 +256,7 @@ export async function runDemo(): Promise<void> {
 
   const serverEnv = { ...process.env };
   delete serverEnv.AGENT_COORD_API_URL;
-  delete serverEnv.AGENT_COORD_TOKEN;
+  delete serverEnv.AGENT_COORD_API_TOKEN;
   Object.assign(serverEnv, {
     AGENT_COORD_STATE_ROOT: root,
     ALLOWED_HOSTS: "localhost,127.0.0.1,::1",

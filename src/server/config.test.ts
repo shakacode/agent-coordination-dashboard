@@ -25,7 +25,7 @@ describe("readConfig", () => {
   });
 
   it("reads optional coordination API settings", () => {
-    const config = readConfig({ AGENT_COORD_API_URL: " https://coord.example.test\n", AGENT_COORD_TOKEN: " secret\n" });
+    const config = readConfig({ AGENT_COORD_API_URL: " https://coord.example.test\n", AGENT_COORD_API_TOKEN: " secret\n" });
 
     expect(config.coordApiUrl).toBe("https://coord.example.test");
     expect(config.coordApiToken).toBe("secret");
@@ -33,7 +33,7 @@ describe("readConfig", () => {
   });
 
   it("treats blank coordination API settings as unset", () => {
-    const config = readConfig({ AGENT_COORD_API_URL: "   ", AGENT_COORD_TOKEN: "\n" });
+    const config = readConfig({ AGENT_COORD_API_URL: "   ", AGENT_COORD_API_TOKEN: "\n" });
 
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");

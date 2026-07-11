@@ -65,7 +65,7 @@ state root, set the same API variables used by `agent-coord`:
 
 ```bash
 AGENT_COORD_API_URL="https://coord.example.test" \
-AGENT_COORD_TOKEN="..." \
+AGENT_COORD_API_TOKEN="..." \
 npm run dev
 ```
 
@@ -146,7 +146,7 @@ cleanly; it does not kill processes or release claims by itself.
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` plus non-wildcard `HOST` |
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
 | `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
-| `AGENT_COORD_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
+| `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
 | `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling; dashboard read cache is capped at 5s |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |

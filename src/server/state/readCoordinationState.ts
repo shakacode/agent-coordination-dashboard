@@ -186,7 +186,7 @@ async function readApiCoordinationState(options: Required<CoordinationApiOptions
 
   const token = options.token.trim();
   if (!token) {
-    warnings.push(apiWarning("AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set."));
+    warnings.push(apiWarning("AGENT_COORD_API_TOKEN is required when AGENT_COORD_API_URL is set."));
     return emptyState(warnings);
   }
 
