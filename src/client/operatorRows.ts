@@ -573,15 +573,30 @@ function eventMatchesBatchRecord(batch: BatchRecord, event: BatchEvent): boolean
   return true;
 }
 
-function matchingEventsForLane(batch: BatchRecord, lane: BatchLane, events: BatchEvent[]): BatchEvent[] {
+function matchingEventsForLane(
+  batch: BatchRecord,
+  lane: BatchLane,
+  events: BatchEvent[],
+  target?: string,
+  repo?: string
+): BatchEvent[] {
   return events.filter((event) => {
     if (!eventMatchesBatchRecord(batch, event)) {
       return false;
     }
     if (event.laneName === lane.name) {
-      return true;
+      if (!event.target || !target) {
+        return true;
+      }
+      return event.target === target && (!event.repo || !repo || repo === UNKNOWN || event.repo === repo);
     }
     if (!event.target || !lane.targets.includes(event.target)) {
+      return false;
+    }
+    if (target && event.target !== target) {
+      return false;
+    }
+    if (repo && repo !== UNKNOWN && event.repo && event.repo !== repo) {
       return false;
     }
     const targetRepos = manifestReposForTarget(batch, event.target);
@@ -780,12 +795,12 @@ function buildLaneRow(
     warnings?: string[];
   } = {}
 ): OperatorRow {
-  const matchingEvents = matchingEventsForLane(batch, lane, events);
+  const firstTarget = options.target ?? lane.targets[0];
+  const repo = options.repo || (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
+  const matchingEvents = matchingEventsForLane(batch, lane, events, firstTarget, repo);
   const latest = latestEvent(matchingEvents);
   const eventHistoryMetadata = eventMetadataFromHistory(matchingEvents);
   const transitionEvent = latestTransitionEvent(matchingEvents);
-  const firstTarget = options.target ?? lane.targets[0];
-  const repo = options.repo || (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
   const target = firstTarget || undefined;
   const targetRepoUnknown = Boolean(firstTarget && repo === UNKNOWN);
   const type = firstTarget && !targetRepoUnknown ? targetTypeFromBatch(batch, firstTarget) : "unknown";
@@ -1022,6 +1037,13 @@ function rowMatchesBatchTarget(row: OperatorRow, batch: BatchRecord): boolean {
   }
   if (!row.target || !batch.lanes.some((lane) => lane.targets.includes(row.target as string))) {
     return false;
+  }
+  const explicitTargets = (batch.targets || []).filter((target) => target.target === row.target);
+  if (explicitTargets.length > 0) {
+    return explicitTargets.some((target) => {
+      const targetRepo = target.repo || batch.repo;
+      return Boolean(targetRepo && targetRepo === row.repo);
+    });
   }
   const targetRepo = uniqueManifestRepoForTarget(batch, row.target) || batch.repo;
   return Boolean(targetRepo && row.repo === targetRepo);
