@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Activity, AlertTriangle, CheckCircle2, GitPullRequest, PackageOpen } from "lucide-react";
 import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem, WorkItem } from "../../shared/types";
 import {
@@ -39,14 +40,16 @@ export function OverviewTab({
   const failedQa = dashboard.qaValidations.filter((item) => item.status === "failed");
   const activeQa = dashboard.qaValidations.filter((item) => item.status === "requested" || item.status === "in_progress");
   const stoppedBatches = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
-  const operatorRows = buildOperatorRows(dashboard);
-  const overviewRows: Record<OverviewOperatorFilter, OperatorRow[]> = {
-    ready_for_batch: filterOperatorRowsForOverview(operatorRows, dashboard, "ready_for_batch"),
-    needs_recovery: filterOperatorRowsForOverview(operatorRows, dashboard, "needs_recovery"),
-    processing_now: filterOperatorRowsForOverview(operatorRows, dashboard, "processing_now"),
-    qa_attention: filterOperatorRowsForOverview(operatorRows, dashboard, "qa_attention"),
-    batch_repair: filterOperatorRowsForOverview(operatorRows, dashboard, "batch_repair")
-  };
+  const overviewRows = useMemo<Record<OverviewOperatorFilter, OperatorRow[]>>(() => {
+    const operatorRows = buildOperatorRows(dashboard);
+    return {
+      ready_for_batch: filterOperatorRowsForOverview(operatorRows, dashboard, "ready_for_batch"),
+      needs_recovery: filterOperatorRowsForOverview(operatorRows, dashboard, "needs_recovery"),
+      processing_now: filterOperatorRowsForOverview(operatorRows, dashboard, "processing_now"),
+      qa_attention: filterOperatorRowsForOverview(operatorRows, dashboard, "qa_attention"),
+      batch_repair: filterOperatorRowsForOverview(operatorRows, dashboard, "batch_repair")
+    };
+  }, [dashboard]);
   const healthGroups = groupHealthItems(attentionItems);
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleHealthGroups = healthGroups.slice(0, 6);

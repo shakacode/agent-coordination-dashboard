@@ -33,6 +33,10 @@ function readOperatorDeepLink() {
   return operatorDeepLinkFromSearchParams(new URLSearchParams(window.location.search));
 }
 
+export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter, query: string): OperatorDeepLink {
+  return { overviewFilter: filter, query: query || undefined };
+}
+
 function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: "push" | "replace") {
   const url = new URL(window.location.href);
   for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q"]) {
@@ -44,7 +48,7 @@ function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: 
     repo: deepLink.repo,
     target: deepLink.target,
     operatorFilter: deepLink.overviewFilter,
-    q: query.trim() || undefined
+    q: query || undefined
   };
   for (const [key, value] of Object.entries(values)) {
     if (value) {
@@ -236,7 +240,7 @@ export function App() {
   }
 
   function openOverviewFilter(filter: OverviewOperatorFilter) {
-    const nextDeepLink: OperatorDeepLink = { overviewFilter: filter };
+    const nextDeepLink = operatorDeepLinkForOverviewFilter(filter, operatorQuery);
     setOperatorDeepLink(nextDeepLink);
     setActiveTab("operator");
     writeOperatorLocation(nextDeepLink, operatorQuery, "push");

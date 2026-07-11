@@ -1,7 +1,8 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, backgroundRefreshTimeoutMs } from "./App";
+import { App, backgroundRefreshTimeoutMs, operatorDeepLinkForOverviewFilter } from "./App";
+import * as operatorRows from "./operatorRows";
 
 const model = {
   generatedAt: "2026-06-17T20:00:00Z",
@@ -127,6 +128,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -231,6 +233,36 @@ describe("App", () => {
     expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005");
     expect(screen.getByText("PR #4005")).toBeInTheDocument();
     expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
+  });
+
+  it("preserves the live query in structured filter state when opening an Overview action", async () => {
+    expect(operatorDeepLinkForOverviewFilter("ready_for_batch", "4005")).toEqual({
+      overviewFilter: "ready_for_batch",
+      query: "4005"
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Needs Attention" });
+    await userEvent.click(screen.getByRole("button", { name: "Operator" }));
+    await userEvent.type(screen.getByLabelText("Search operator rows"), "4005");
+    await userEvent.click(screen.getByRole("button", { name: "Overview" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 ready for batch rows in Operator view" }));
+
+    expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005");
+    expect(window.location.search).toBe("?operatorFilter=ready_for_batch&q=4005");
+  });
+
+  it("memoizes Overview operator row derivation across unrelated App rerenders", async () => {
+    const buildRows = vi.spyOn(operatorRows, "buildOperatorRows");
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Needs Attention" });
+    const initialCalls = buildRows.mock.calls.length;
+    expect(initialCalls).toBeGreaterThan(0);
+
+    await userEvent.type(screen.getByLabelText("Add target repository"), "other/repo");
+
+    expect(buildRows).toHaveBeenCalledTimes(initialCalls);
   });
 
   it("labels info-only coordination messages as notices", async () => {
