@@ -1150,17 +1150,18 @@ describe("operatorRows", () => {
   });
 
   it("parses only supported overview filters from shareable search params", () => {
+    const supported = ["ready_for_batch", "needs_recovery", "processing_now", "qa_attention", "batch_repair"];
+    for (const value of supported) {
+      expect(operatorDeepLinkFromSearchParams(new URLSearchParams(`operatorFilter=${value}`)).overviewFilter).toBe(value);
+    }
+
     expect(operatorDeepLinkFromSearchParams(new URLSearchParams("operatorFilter=needs_recovery&q=owner"))).toMatchObject({
       overviewFilter: "needs_recovery",
       query: "owner"
     });
-    expect(operatorDeepLinkFromSearchParams(new URLSearchParams("operatorFilter=made_up"))).toEqual({
-      batchId: undefined,
-      laneName: undefined,
-      overviewFilter: undefined,
-      query: undefined,
-      repo: undefined,
-      target: undefined
-    });
+
+    for (const hostile of ["__proto__", "constructor", "toString", "hasOwnProperty", "made_up"]) {
+      expect(operatorDeepLinkFromSearchParams(new URLSearchParams(`operatorFilter=${hostile}`)).overviewFilter).toBeUndefined();
+    }
   });
 });

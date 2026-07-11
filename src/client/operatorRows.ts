@@ -668,7 +668,7 @@ export function operatorDeepLinkFromSearchParams(params: URLSearchParams): Opera
     target: params.get("target") || undefined,
     query: params.get("q") || undefined,
     overviewFilter:
-      overviewFilter && overviewFilter in OVERVIEW_OPERATOR_FILTER_LABELS
+      overviewFilter && Object.prototype.hasOwnProperty.call(OVERVIEW_OPERATOR_FILTER_LABELS, overviewFilter)
         ? (overviewFilter as OverviewOperatorFilter)
         : undefined
   };
