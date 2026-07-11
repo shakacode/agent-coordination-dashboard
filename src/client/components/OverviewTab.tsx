@@ -107,16 +107,16 @@ export function OverviewTab({
           <span>Processing now</span>
         </button>
         <button
-          aria-label={`Show ${overviewRows.qa_attention.length} QA attention rows in Operator view`}
+          aria-label={`Show ${overviewRows.qa_attention.length} QA needs attention rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("qa_attention")}
           type="button"
         >
-          <strong>{overviewRows.qa_attention.length} QA attention</strong>
+          <strong>{overviewRows.qa_attention.length} QA needs attention</strong>
           <span>Missing, failed, or active</span>
         </button>
         <button
-          aria-label={`Show ${overviewRows.batch_repair.length} batch repair rows in Operator view`}
+          aria-label={`Show ${overviewRows.batch_repair.length} batch repairs in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("batch_repair")}
           type="button"

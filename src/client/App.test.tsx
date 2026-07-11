@@ -139,7 +139,8 @@ describe("App", () => {
     expect(screen.getByText("/state · 2 open or coordinated items")).toBeInTheDocument();
     expect(screen.getAllByText("1 ready").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1 claimed").length).toBeGreaterThan(0);
-    expect(screen.getByText("1 QA attention")).toBeInTheDocument();
+    expect(screen.getByText("1 QA needs attention")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show 0 batch repairs in Operator view" })).toHaveTextContent("0 batch repairs");
     expect(screen.getByText("In progress")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Work" }));
@@ -194,8 +195,8 @@ describe("App", () => {
       { name: "Show 1 ready for batch rows in Operator view", rows: 1 },
       { name: "Show 1 claimed, not processing rows in Operator view", rows: 1 },
       { name: "Show 0 processing now rows in Operator view", rows: 0 },
-      { name: "Show 1 QA attention rows in Operator view", rows: 1 },
-      { name: "Show 0 batch repair rows in Operator view", rows: 0 }
+      { name: "Show 1 QA needs attention rows in Operator view", rows: 1 },
+      { name: "Show 0 batch repairs in Operator view", rows: 0 }
     ];
 
     await screen.findByRole("heading", { name: "Needs Attention" });
