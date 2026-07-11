@@ -205,6 +205,65 @@ describe("operatorRows", () => {
     expect(filterOperatorRowsForOverview(rows, model, "ready_for_batch")).toEqual([]);
   });
 
+  it("merges lane-wide event evidence into server-supplied inferred provenance", () => {
+    const savedSignal = { batchId: "saved-batch", laneName: "implementation", status: "queued", blockedOn: [] };
+    const model = dashboard({
+      workItems: [
+        workItem({
+          github: undefined,
+          batchSignals: [savedSignal],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "saved-batch",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/saved-batch.json",
+          targets: [{ type: "issue", target: "123", repo: "repo/app" }],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "lane-wide-observed",
+          type: "phase",
+          batchId: "saved-batch",
+          laneName: "implementation",
+          repo: "repo/app",
+          status: "lane-observed",
+          timestamp: "2026-07-09T19:59:00Z",
+          path: "events/saved-batch.jsonl:1"
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+
+    expect(rows).toMatchObject([
+      {
+        target: "123",
+        activityStatus: "lane-observed",
+        provenance: { classification: "observed", evidence: ["manifest", "event"] }
+      }
+    ]);
+    const defaultOperatorRows = filterOperatorRowsByProvenance(rows, false);
+    expect(defaultOperatorRows).toHaveLength(1);
+    expect(filterOperatorRowsForOverview(defaultOperatorRows, model, "needs_recovery")).toHaveLength(1);
+  });
+
   it("deduplicates a matching fallback by repo and target without hiding a same-number target in another repo", () => {
     const observed = workItem({ provenance: { classification: "observed", evidence: ["github"] } } as Partial<WorkItem>);
     const rows = buildOperatorRows(

@@ -56,12 +56,11 @@ export function OverviewTab({
     const allOperatorRows = buildOperatorRows(dashboard);
     const operatorRows = filterOperatorRowsByProvenance(allOperatorRows, false);
     const rowsFor = (filter: OverviewOperatorFilter) => {
-      const rows = filterOperatorRowsForOverview(
+      return filterOperatorRowsForOverview(
         filter === "batch_repair" ? allOperatorRows : operatorRows,
         dashboard,
         filter
       );
-      return filter === "batch_repair" ? rows : filterOperatorRowsByProvenance(rows, false);
     };
     return {
       ready_for_batch: rowsFor("ready_for_batch"),

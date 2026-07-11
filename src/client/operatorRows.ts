@@ -217,7 +217,13 @@ function uniqueSources(sources: Array<MetadataSource | undefined>): MetadataSour
 
 function targetProvenance(item: WorkItem, matchingEvents: BatchEvent[], batch: BatchRecord | undefined): OperatorRowProvenance {
   if (item.provenance) {
-    return item.provenance;
+    return {
+      classification: matchingEvents.length > 0 ? "observed" : item.provenance.classification,
+      evidence: uniqueSources([
+        ...item.provenance.evidence,
+        matchingEvents.length > 0 ? "event" : undefined
+      ])
+    };
   }
   const evidence = uniqueSources([
     item.claim ? "claim" : undefined,
