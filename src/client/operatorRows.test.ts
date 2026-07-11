@@ -150,6 +150,61 @@ describe("operatorRows", () => {
     expect(filterOperatorRowsByProvenance(rows, true)).toEqual(rows);
   });
 
+  it("does not select inferred saved-batch targets as independent ready work", () => {
+    const savedSignal = { batchId: "saved-batch", laneName: "implementation", status: "queued", blockedOn: [] };
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/app#123",
+          repo: "repo/app",
+          target: "123",
+          github: undefined,
+          batchSignals: [savedSignal],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        }),
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          target: "123",
+          github: undefined,
+          batchSignals: [savedSignal],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "saved-batch",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/saved-batch.json",
+          targets: [
+            { type: "issue", target: "123", repo: "repo/app" },
+            { type: "issue", target: "123", repo: "repo/api" }
+          ],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+
+    expect(rows.map((row) => row.provenance.classification)).toEqual(["inferred", "inferred"]);
+    expect(filterOperatorRowsByProvenance(rows, false)).toEqual([]);
+    expect(filterOperatorRowsForOverview(rows, model, "ready_for_batch")).toEqual([]);
+  });
+
   it("deduplicates a matching fallback by repo and target without hiding a same-number target in another repo", () => {
     const observed = workItem({ provenance: { classification: "observed", evidence: ["github"] } } as Partial<WorkItem>);
     const rows = buildOperatorRows(

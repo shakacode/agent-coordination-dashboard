@@ -437,6 +437,17 @@ function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
   return batch.repo === repo || Boolean((batch.targets || []).some((target) => target.repo === repo));
 }
 
+function explicitBatchTargetRepoMatch(batch: BatchRecord, target: string, repo: string): boolean | undefined {
+  const explicitRepos = (batch.targets || [])
+    .filter((batchTarget) => batchTarget.target === target)
+    .map((batchTarget) => batchTarget.repo || batch.repo)
+    .filter((targetRepo): targetRepo is string => Boolean(targetRepo));
+  if (explicitRepos.length === 0) {
+    return undefined;
+  }
+  return explicitRepos.includes(repo);
+}
+
 function eventMatchesBatch(
   event: BatchEvent,
   batch: BatchRecord,
@@ -458,6 +469,10 @@ function eventMatchesBatch(
       return event.repo === batch.repo || Boolean((batch.targets || []).some((target) => target.repo === event.repo));
     }
     if (event.target) {
+      const explicitMatch = explicitBatchTargetRepoMatch(batch, event.target, event.repo);
+      if (explicitMatch !== undefined) {
+        return explicitMatch;
+      }
       if (!batchTargets(batch).has(event.target)) {
         return false;
       }
@@ -476,7 +491,11 @@ function eventMatchesBatch(
         Boolean((batch.targets || []).some((target) => target.repo === event.repo))
       );
     }
-    if (!event.target || !batchTargets(batch).has(event.target)) {
+    const explicitMatch = explicitBatchTargetRepoMatch(batch, event.target, event.repo);
+    if (explicitMatch !== undefined) {
+      return explicitMatch;
+    }
+    if (!batchTargets(batch).has(event.target)) {
       return false;
     }
     return inferredRepoForBatchTarget(batch.batchId, event.target) === event.repo;
@@ -1007,28 +1026,32 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             .map((batchTarget) => batchTarget.repo || batch.repo)
             .filter((repo): repo is string => Boolean(repo))
         );
-        if (manifestRepos.size > 1) {
+        const repos =
+          manifestRepos.size > 0
+            ? Array.from(manifestRepos)
+            : [batch.repo || uniqueRepoForBatchTarget(batch.batchId, target)].filter(
+                (repo): repo is string => Boolean(repo)
+              );
+        if (repos.length === 0) {
           continue;
         }
-        const repo = Array.from(manifestRepos)[0] || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
-        if (!repo) {
-          continue;
-        }
-        const id = workId(repo, target);
-        const source: MetadataSource = batch.source === "inferred" ? "inferred_batch" : "manifest";
-        const existingEvidence = batchEvidenceByWork.get(id) || [];
-        if (!existingEvidence.includes(source)) {
-          batchEvidenceByWork.set(id, [...existingEvidence, source]);
-        }
-        batchSignalsByWork.set(id, [
-          ...(batchSignalsByWork.get(id) || []),
-          {
-            batchId: batch.batchId,
-            laneName: lane.name,
-            status: lane.status,
-            blockedOn: lane.blockedOn
+        for (const repo of repos) {
+          const id = workId(repo, target);
+          const source: MetadataSource = batch.source === "inferred" ? "inferred_batch" : "manifest";
+          const existingEvidence = batchEvidenceByWork.get(id) || [];
+          if (!existingEvidence.includes(source)) {
+            batchEvidenceByWork.set(id, [...existingEvidence, source]);
           }
-        ]);
+          batchSignalsByWork.set(id, [
+            ...(batchSignalsByWork.get(id) || []),
+            {
+              batchId: batch.batchId,
+              laneName: lane.name,
+              status: lane.status,
+              blockedOn: lane.blockedOn
+            }
+          ]);
+        }
       }
     }
   }

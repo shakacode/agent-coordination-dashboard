@@ -118,17 +118,100 @@ describe("buildDashboardModel", () => {
       now: new Date("2026-06-17T20:00:00Z")
     });
 
-    expect(model.workItems.map((item) => ({ id: item.id, signals: item.batchSignals, provenance: item.provenance }))).toEqual([
+    expect(
+      model.workItems.map((item) => ({
+        id: item.id,
+        schedulingState: item.schedulingState,
+        signals: item.batchSignals,
+        provenance: item.provenance
+      }))
+    ).toEqual([
       {
         id: "repo/api#123",
-        signals: [],
+        schedulingState: "started_not_processing",
+        signals: [{ batchId: "multi-repo", laneName: "ambiguous", status: "queued", blockedOn: [] }],
         provenance: { classification: "inferred", evidence: ["manifest"] }
       },
       {
         id: "repo/app#123",
-        signals: [],
+        schedulingState: "started_not_processing",
+        signals: [{ batchId: "multi-repo", laneName: "ambiguous", status: "queued", blockedOn: [] }],
         provenance: { classification: "inferred", evidence: ["manifest"] }
       }
+    ]);
+  });
+
+  it("scopes same-number target events by explicit repo identity instead of the batch repo", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo/app", "repo/api", "repo/other"],
+      claims: [],
+      heartbeats: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "multi-repo-events",
+          repo: "repo/app",
+          source: "manifest",
+          targets: [
+            { type: "pull_request", target: "123", repo: "repo/app" },
+            { type: "pull_request", target: "123", repo: "repo/api" }
+          ],
+          lanes: [],
+          path: "batches/multi-repo-events.json"
+        }
+      ],
+      events: [
+        {
+          eventId: "api-phase",
+          type: "phase",
+          batchId: "multi-repo-events",
+          repo: "repo/api",
+          target: "123",
+          status: "working",
+          timestamp: "2026-06-17T19:58:00Z",
+          path: "events/multi-repo-events.jsonl:1"
+        },
+        {
+          eventId: "api-qa",
+          type: "qa_passed",
+          batchId: "multi-repo-events",
+          repo: "repo/api",
+          target: "123",
+          status: "passed",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/multi-repo-events.jsonl:2"
+        },
+        {
+          eventId: "wrong-repo",
+          type: "phase",
+          batchId: "multi-repo-events",
+          repo: "repo/other",
+          target: "123",
+          status: "working",
+          timestamp: "2026-06-17T20:00:00Z",
+          path: "events/multi-repo-events.jsonl:3"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.events.map((event) => event.eventId)).toEqual(["api-qa", "api-phase"]);
+    expect(model.workItems.find((item) => item.repo === "repo/api")?.provenance).toEqual({
+      classification: "observed",
+      evidence: ["event", "manifest"]
+    });
+    expect(model.workItems.find((item) => item.repo === "repo/app")?.provenance).toEqual({
+      classification: "inferred",
+      evidence: ["manifest"]
+    });
+    expect(
+      model.qaValidations.map((item) => ({ repo: item.repo, target: item.target, status: item.status }))
+    ).toEqual([
+      { repo: "repo/api", target: "123", status: "passed" },
+      { repo: "repo/app", target: "123", status: "missing" }
     ]);
   });
 
