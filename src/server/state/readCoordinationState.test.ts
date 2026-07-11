@@ -525,7 +525,7 @@ describe("readCoordinationState", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.claims).toEqual([]);
-    expect(state.warnings[0].message).toContain("AGENT_COORD_TOKEN");
+    expect(state.warnings[0].message).toContain("AGENT_COORD_API_TOKEN");
   });
 
   it("keeps host app metadata separate from machine id", async () => {

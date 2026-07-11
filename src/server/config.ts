@@ -59,7 +59,7 @@ export function readConfig(env = process.env): ServerConfig {
     allowedHosts: env.ALLOWED_HOSTS ? listFromEnv(env.ALLOWED_HOSTS) : defaultAllowedHosts(host),
     stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),
     coordApiUrl,
-    coordApiToken: env.AGENT_COORD_TOKEN?.trim() || "",
+    coordApiToken: env.AGENT_COORD_API_TOKEN?.trim() || env.AGENT_COORD_TOKEN?.trim() || "",
     refreshIntervalMs: refreshIntervalFromEnv(env.DASHBOARD_REFRESH_MS, coordApiUrl ? 5000 : 0),
     targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",

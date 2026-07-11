@@ -25,15 +25,20 @@ describe("readConfig", () => {
   });
 
   it("reads optional coordination API settings", () => {
-    const config = readConfig({ AGENT_COORD_API_URL: " https://coord.example.test\n", AGENT_COORD_TOKEN: " secret\n" });
+    const config = readConfig({ AGENT_COORD_API_URL: " https://coord.example.test\n", AGENT_COORD_API_TOKEN: " secret\n" });
 
     expect(config.coordApiUrl).toBe("https://coord.example.test");
     expect(config.coordApiToken).toBe("secret");
     expect(config.refreshIntervalMs).toBe(5000);
   });
 
+  it("falls back to the legacy coordination token and prefers the API token", () => {
+    expect(readConfig({ AGENT_COORD_TOKEN: " legacy-secret\n" }).coordApiToken).toBe("legacy-secret");
+    expect(readConfig({ AGENT_COORD_API_TOKEN: " current-secret ", AGENT_COORD_TOKEN: "legacy-secret" }).coordApiToken).toBe("current-secret");
+  });
+
   it("treats blank coordination API settings as unset", () => {
-    const config = readConfig({ AGENT_COORD_API_URL: "   ", AGENT_COORD_TOKEN: "\n" });
+    const config = readConfig({ AGENT_COORD_API_URL: "   ", AGENT_COORD_API_TOKEN: "\n" });
 
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");

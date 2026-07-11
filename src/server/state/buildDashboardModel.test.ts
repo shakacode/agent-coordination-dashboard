@@ -885,7 +885,7 @@ describe("buildDashboardModel", () => {
       githubItems: [],
       warnings: [
         { severity: "warning", message: "Invalid AGENT_COORD_API_URL: expected http(s) URL with host" },
-        { severity: "warning", message: "AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set." },
+        { severity: "warning", message: "AGENT_COORD_API_TOKEN is required when AGENT_COORD_API_URL is set." },
         { severity: "warning", message: "Could not read coordination API heartbeats: timed out after 5000ms" },
         { severity: "warning", message: "Malformed coordination API claims entry at index 2" },
         { severity: "warning", message: "Malformed coordination API events entry at index 1" },
@@ -910,7 +910,7 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([
         "Invalid AGENT_COORD_API_URL: expected http(s) URL with host",
-        "AGENT_COORD_TOKEN is required when AGENT_COORD_API_URL is set.",
+        "AGENT_COORD_API_TOKEN is required when AGENT_COORD_API_URL is set.",
         "Could not read coordination API heartbeats: timed out after 5000ms",
         "Malformed coordination API claims entry at index 2",
         "Malformed coordination API events entry at index 1",
