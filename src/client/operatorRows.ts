@@ -132,11 +132,18 @@ const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
-  return values.find((value) => Boolean(value?.trim()));
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
 }
 
 function observed(value: string | undefined, source: MetadataSource): MetadataProvenance {
-  return value?.trim() ? { value, state: "observed", source } : { state: "missing", source };
+  const normalized = value?.trim();
+  return normalized ? { value: normalized, state: "observed", source } : { state: "missing", source };
 }
 
 function notApplicable(): MetadataProvenance {
@@ -475,7 +482,10 @@ function eventMatchesCurrentWorkBatch(item: WorkItem, event: BatchEvent): boolea
     return true;
   }
   const batchIds = currentBatchIdsForWork(item);
-  return batchIds.has(event.batchId);
+  return (
+    batchIds.has(event.batchId) ||
+    (batchIds.size === 0 && item.schedulingState === "started_not_processing" && !hasActiveWorkSignal(item))
+  );
 }
 
 function matchingEventsForWork(item: WorkItem, events: BatchEvent[]): BatchEvent[] {
@@ -650,7 +660,8 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["event", eventHistoryMetadata?.prUrl],
     ["github", item.type === "pull_request" ? item.github?.url : undefined]
   );
-  const batchId = signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId;
+  const batchId =
+    signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId || latest?.batchId;
   const batchMetadata = batchId
     ? batch?.source === "inferred"
       ? { value: batchId, state: "inferred" as const, source: "inferred_batch" as const }
@@ -734,6 +745,37 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     ["manifest", lane.operator],
     ["event", eventHistoryMetadata?.operator]
   );
+  const threadMetadata = firstObserved(
+    notApplicable(),
+    ["manifest", lane.threadHandle],
+    ["event", eventHistoryMetadata?.threadHandle]
+  );
+  const hostMetadata = firstObserved(notApplicable(), ["manifest", lane.host], ["event", eventHistoryMetadata?.host]);
+  const machineMetadata = eventHistoryMetadata?.machineId
+    ? observed(eventHistoryMetadata.machineId, "event")
+    : notApplicable();
+  const branchMetadata = firstObserved(
+    notApplicable(),
+    ["manifest", lane.branch],
+    ["event", eventHistoryMetadata?.branch]
+  );
+  const prUrlMetadata =
+    type === "pull_request"
+      ? firstObserved(
+          { state: "missing", source: "manifest" },
+          ["manifest", lane.prUrl],
+          ["event", eventHistoryMetadata?.prUrl]
+        )
+      : notApplicable();
+  const batchMetadata =
+    batch.source === "inferred"
+      ? { value: batch.batchId, state: "inferred" as const, source: "inferred_batch" as const }
+      : observed(batch.batchId, "manifest");
+  const activityMetadata = firstObserved(
+    { state: "missing", source: "manifest" },
+    ["event", latest?.status || latest?.type],
+    ["manifest", lane.status]
+  );
   const state = deriveOperatorState({
     lane,
     event: latest,
@@ -755,7 +797,7 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     operatorState: state,
     liveness: lane.liveness || "no-heartbeat",
     livenessAge: UNKNOWN,
-    activityStatus: firstValue(latest?.status, latest?.type, lane.status) || UNKNOWN,
+    activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
     lastActivityAt,
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
@@ -766,39 +808,21 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     dependencies: lane.dependsOn,
     blockedOn: lane.blockedOn,
     agentId: metadata.agentId,
-    machineId: metadata.machineId,
-    threadHandle: metadata.threadHandle,
-    host: metadata.host,
+    machineId: machineMetadata.value,
+    threadHandle: threadMetadata.value,
+    host: hostMetadata.value,
     operator: ownerMetadata.value,
-    branch: metadata.branch,
-    prUrl: metadata.prUrl,
+    branch: branchMetadata.value,
+    prUrl: prUrlMetadata.value,
     metadata: {
       owner: ownerMetadata,
-      thread: firstObserved(
-        notApplicable(),
-        ["manifest", lane.threadHandle],
-        ["event", eventHistoryMetadata?.threadHandle]
-      ),
-      host: firstObserved(notApplicable(), ["manifest", lane.host], ["event", eventHistoryMetadata?.host]),
-      machine: eventHistoryMetadata?.machineId ? observed(eventHistoryMetadata.machineId, "event") : notApplicable(),
-      branch: firstObserved(notApplicable(), ["manifest", lane.branch], ["event", eventHistoryMetadata?.branch]),
-      prUrl:
-        type === "pull_request"
-          ? firstObserved(
-              { state: "missing", source: "manifest" },
-              ["manifest", lane.prUrl],
-              ["event", eventHistoryMetadata?.prUrl]
-            )
-          : notApplicable(),
-      batch:
-        batch.source === "inferred"
-          ? { value: batch.batchId, state: "inferred", source: "inferred_batch" }
-          : observed(batch.batchId, "manifest"),
-      activity: firstObserved(
-        { state: "missing", source: "manifest" },
-        ["event", latest?.status || latest?.type],
-        ["manifest", lane.status]
-      )
+      thread: threadMetadata,
+      host: hostMetadata,
+      machine: machineMetadata,
+      branch: branchMetadata,
+      prUrl: prUrlMetadata,
+      batch: batchMetadata,
+      activity: activityMetadata
     },
     warnings: []
   };

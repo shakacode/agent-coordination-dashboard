@@ -163,6 +163,25 @@ describe("buildDashboardModel", () => {
     expect(model.healthItems.map((item) => item.title)).toContain("Heartbeat missing machine id");
   });
 
+  it("treats a whitespace-only heartbeat machine identity as missing", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, machineId: "   " }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      machineId: undefined,
+      machineMetadata: { state: "missing", source: "heartbeat" }
+    });
+    expect(model.healthItems.map((item) => item.title)).toContain("Heartbeat missing machine id");
+  });
+
   it("uses claim machine metadata when the heartbeat omits it", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
@@ -180,6 +199,115 @@ describe("buildDashboardModel", () => {
       machineMetadata: { value: "m-claim", state: "observed", source: "claim" }
     });
     expect(model.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("uses the first valid claim machine when the heartbeat machine is whitespace", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [
+        { ...claim, machineId: "   " },
+        { ...claim, target: "4006", machineId: "  m-claim  ", path: "claims/shakacode/react_on_rails/4006.json" }
+      ],
+      heartbeats: [{ ...heartbeat, machineId: "   " }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      machineId: "m-claim",
+      machineMetadata: { value: "m-claim", state: "observed", source: "claim" }
+    });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("uses a valid event machine when heartbeat and claim machines are whitespace", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [{ ...claim, machineId: "   " }],
+      heartbeats: [{ ...heartbeat, machineId: "   " }],
+      batches: [],
+      events: [
+        {
+          eventId: "machine-fallback",
+          type: "phase",
+          agentId: "worker-a",
+          machineId: "  m-event  ",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/machine-fallback.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      machineId: "m-event",
+      machineMetadata: { value: "m-event", state: "observed", source: "event" }
+    });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("preserves per-agent event recency and machine fallback across interleaved history", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "worker-a-machine",
+          type: "phase",
+          agentId: "worker-a",
+          machineId: "  m-event  ",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:57:00Z",
+          path: "events/worker-a-machine.json"
+        },
+        {
+          eventId: "worker-b-latest",
+          type: "phase",
+          agentId: "worker-b",
+          machineId: "m-worker-b",
+          repo: "shakacode/react_on_rails",
+          target: "4006",
+          status: "validating",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/worker-b-latest.json"
+        },
+        {
+          eventId: "worker-a-latest",
+          type: "phase",
+          agentId: "worker-a",
+          machineId: "   ",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "reviewing",
+          timestamp: "2026-06-17T19:58:00Z",
+          path: "events/worker-a-latest.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    const workerA = model.agents.find((agent) => agent.agentId === "worker-a");
+    expect(workerA).toMatchObject({
+      latestEvent: { eventId: "worker-a-latest", status: "reviewing" },
+      machineId: "m-event",
+      machineMetadata: { value: "m-event", state: "observed", source: "event" }
+    });
   });
 
   it("keeps event-only work and its observed machine source visible", () => {
@@ -248,6 +376,98 @@ describe("buildDashboardModel", () => {
 
     expect(model.workItems).toEqual([]);
     expect(model.agents[0]).toMatchObject({ agentId: "worker-event", currentWork: [] });
+  });
+
+  it("keeps GitHub work ready when its only event history is terminal", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-done",
+          type: "done",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "complete",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/event-done.json"
+        }
+      ],
+      githubItems: [{ ...preview, target: "4005" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems).toHaveLength(1);
+    expect(model.workItems[0].schedulingState).toBe("ready_for_batch");
+  });
+
+  it("uses the later JSONL record when lifecycle events share a timestamp", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-phase",
+          type: "phase",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/lifecycle.jsonl:2"
+        },
+        {
+          eventId: "event-done",
+          type: "done",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "complete",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/lifecycle.jsonl:10"
+        }
+      ],
+      githubItems: [{ ...preview, target: "4005" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].schedulingState).toBe("ready_for_batch");
+  });
+
+  it("does not create recovery work from stopped event history", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-stopped",
+          type: "batch.stopped",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "stopped",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/stopped.jsonl:1"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems).toEqual([]);
   });
 
   it("uses the newest event that names an agent when newer QA events are agentless", () => {

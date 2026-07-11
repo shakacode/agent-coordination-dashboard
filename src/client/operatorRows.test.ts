@@ -263,6 +263,39 @@ describe("operatorRows", () => {
     });
   });
 
+  it("normalizes padded displayed values and their provenance at selection", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: {
+              ...claim,
+              agentId: "  agent-a  ",
+              machineId: "  claim-machine  ",
+              operator: "  claim-owner  "
+            },
+            heartbeat: {
+              ...heartbeat,
+              agentId: "  agent-a  ",
+              machineId: "  heartbeat-machine  ",
+              operator: "  heartbeat-owner  "
+            }
+          })
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      agentId: "agent-a",
+      machineId: "heartbeat-machine",
+      operator: "claim-owner"
+    });
+    expect(rows[0].metadata).toMatchObject({
+      machine: { value: "heartbeat-machine", state: "observed", source: "heartbeat" },
+      owner: { value: "claim-owner", state: "observed", source: "claim" }
+    });
+  });
+
   it("uses claim activity as both the visible and disclosed claim-only value", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -399,6 +432,59 @@ describe("operatorRows", () => {
         activity: { value: "passed", state: "observed", source: "event" }
       }
     });
+  });
+
+  it("keeps batch-backed event metadata on event-recovery rows without batch signals", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: undefined,
+            heartbeat: undefined,
+            github: undefined,
+            schedulingState: "started_not_processing"
+          })
+        ],
+        events: [
+          {
+            eventId: "event-recovery",
+            type: "phase",
+            batchId: "history-batch",
+            laneName: "implementation",
+            agentId: "event-agent",
+            machineId: "event-machine",
+            threadHandle: "event-thread",
+            host: "codex",
+            operator: "maintainer",
+            repo: "repo/app",
+            target: "123",
+            branch: "feature/recovery",
+            prUrl: "https://github.com/repo/app/pull/123",
+            status: "coding",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/history-batch.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      activityStatus: "coding",
+      batchId: "history-batch",
+      agentId: "event-agent",
+      machineId: "event-machine",
+      threadHandle: "event-thread",
+      host: "codex",
+      operator: "maintainer",
+      branch: "feature/recovery",
+      prUrl: "https://github.com/repo/app/pull/123"
+    });
+    expect(rows[0].metadata.batch).toEqual({
+      value: "history-batch",
+      state: "observed",
+      source: "event"
+    });
+    expect(rows[0].metadata.activity).toEqual({ value: "coding", state: "observed", source: "event" });
   });
 
   it("marks optional manifest-only metadata not applicable", () => {
@@ -956,6 +1042,74 @@ describe("operatorRows", () => {
       host: "claude",
       operator: "maintainer",
       branch: "docs/batch"
+    });
+  });
+
+  it("derives fallback lane display values from the selected provenance values", () => {
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "batch-provenance",
+      repo: "repo/app",
+      targets: [{ type: "pull_request", target: "123", repo: "repo/app" }],
+      path: "batches/batch-provenance.json",
+      lanes: [
+        {
+          name: "implementation",
+          owner: "agent-manifest",
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: [],
+          threadHandle: "manifest-thread",
+          branch: "manifest-branch"
+        }
+      ]
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: [batch],
+        events: [
+          {
+            eventId: "lane-event",
+            type: "phase",
+            batchId: "batch-provenance",
+            laneName: "implementation",
+            agentId: "agent-event",
+            machineId: "event-machine",
+            threadHandle: "event-thread",
+            host: "codex",
+            operator: "maintainer",
+            repo: "repo/app",
+            target: "123",
+            branch: "event-branch",
+            prUrl: "https://github.com/repo/app/pull/123",
+            status: "coding",
+            timestamp: "2026-07-09T19:59:00Z",
+            path: "events/lane-event.json"
+          }
+        ]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      agentId: "agent-manifest",
+      machineId: "event-machine",
+      threadHandle: "manifest-thread",
+      host: "codex",
+      operator: "maintainer",
+      branch: "manifest-branch",
+      prUrl: "https://github.com/repo/app/pull/123",
+      activityStatus: "coding"
+    });
+    expect(rows[0].metadata).toMatchObject({
+      machine: { value: rows[0].machineId },
+      thread: { value: rows[0].threadHandle },
+      host: { value: rows[0].host },
+      owner: { value: rows[0].operator },
+      branch: { value: rows[0].branch },
+      prUrl: { value: rows[0].prUrl },
+      activity: { value: rows[0].activityStatus }
     });
   });
 
