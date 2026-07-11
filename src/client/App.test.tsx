@@ -207,6 +207,65 @@ describe("App", () => {
     }
   });
 
+  it("keeps a rowless repair batch consistent across the summary, panel, and Operator destination", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [],
+              qaValidations: [],
+              batches: [
+                {
+                  schemaVersion: 1,
+                  batchId: "rowless-batch",
+                  repo: "shakacode/react_on_rails",
+                  objective: "Repair retained batch metadata",
+                  path: "batches/rowless.json",
+                  lanes: []
+                }
+              ],
+              batchOperations: [
+                {
+                  batchId: "rowless-batch",
+                  repo: "shakacode/react_on_rails",
+                  batchPath: "batches/rowless.json",
+                  controlStatus: "stopped",
+                  eventCount: 1,
+                  qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+                }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const repairAction = await screen.findByRole("button", { name: "Show 1 batch repairs in Operator view" });
+    expect(screen.getByRole("heading", { name: "Batch Repair" }).closest("article")).toHaveTextContent("rowless-batch");
+    await userEvent.click(repairAction);
+
+    const operator = within(screen.getByLabelText("Operator view"));
+    expect(operator.getByText("Batch")).toBeInTheDocument();
+    expect(operator.getByText("Repair retained batch metadata")).toBeInTheDocument();
+    expect(operator.getByText("rowless-batch")).toBeInTheDocument();
+  });
+
+  it("clears a failed exact link without misattributing or removing the active Overview filter", async () => {
+    window.history.pushState({}, "", "/?operatorFilter=ready_for_batch&repo=missing%2Frepo&target=999");
+
+    render(<App />);
+
+    expect(await screen.findByText("No loaded row matches this link.")).toBeInTheDocument();
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    await userEvent.click(screen.getByRole("button", { name: "Clear link" }));
+
+    expect(screen.getByText("Issue #4010")).toBeInTheDocument();
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    expect(window.location.search).toBe("?operatorFilter=ready_for_batch");
+  });
+
   it("restores a shareable overview filter on reload while free-text search still applies", async () => {
     window.history.pushState({}, "", "/?operatorFilter=needs_recovery&q=4005");
 

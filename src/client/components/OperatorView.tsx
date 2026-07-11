@@ -17,6 +17,7 @@ import { StatusBadge } from "./StatusBadge";
 interface OperatorViewProps {
   dashboard: DashboardModel;
   deepLink?: OperatorDeepLink;
+  onClearExactLink?: () => void;
   onQueryChange?: (query: string) => void;
   query?: string;
   onResetOverviewFilter?: () => void;
@@ -47,7 +48,7 @@ function display(value: string | undefined): string {
 
 function workLabel(row: OperatorRow): string {
   if (!row.target) {
-    return "Batch lane";
+    return row.source === "batch" ? "Batch" : "Batch lane";
   }
   if (row.type === "pull_request") {
     return `PR #${row.target}`;
@@ -144,7 +145,14 @@ function StateCounts({ rows }: { rows: OperatorRow[] }) {
   );
 }
 
-export function OperatorView({ dashboard, deepLink, onQueryChange, onResetOverviewFilter, query: controlledQuery }: OperatorViewProps) {
+export function OperatorView({
+  dashboard,
+  deepLink,
+  onClearExactLink,
+  onQueryChange,
+  onResetOverviewFilter,
+  query: controlledQuery
+}: OperatorViewProps) {
   const rows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
   const [localQuery, setLocalQuery] = useState(deepLink?.query || "");
   const query = controlledQuery ?? localQuery;
@@ -212,12 +220,22 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, onResetOvervi
         <div className="empty-state">
           <p>
             No loaded row matches
-            {deepLink?.overviewFilter ? ` the ${OVERVIEW_OPERATOR_FILTER_LABELS[deepLink.overviewFilter]} filter` : " this link"}.
+            {noExactLinkMatch
+              ? " this link"
+              : deepLink?.overviewFilter
+                ? ` the ${OVERVIEW_OPERATOR_FILTER_LABELS[deepLink.overviewFilter]} filter`
+                : " this link"}.
           </p>
-          {deepLink?.overviewFilter && (
-            <button onClick={onResetOverviewFilter} type="button">
-              Reset filter
+          {noExactLinkMatch ? (
+            <button onClick={onClearExactLink} type="button">
+              Clear link
             </button>
+          ) : (
+            deepLink?.overviewFilter && (
+              <button onClick={onResetOverviewFilter} type="button">
+                Reset filter
+              </button>
+            )
           )}
         </div>
       ) : visibleRows.length === 0 ? (

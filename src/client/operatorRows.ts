@@ -1,6 +1,7 @@
 import type {
   BatchEvent,
   BatchLane,
+  BatchOperation,
   BatchRecord,
   ClaimRecord,
   DashboardModel,
@@ -15,7 +16,7 @@ export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
 
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
-export type OperatorRowSource = "target" | "lane";
+export type OperatorRowSource = "target" | "lane" | "batch";
 export type OverviewOperatorFilter = "ready_for_batch" | "needs_recovery" | "processing_now" | "qa_attention" | "batch_repair";
 
 export const OVERVIEW_OPERATOR_FILTER_LABELS: Record<OverviewOperatorFilter, string> = {
@@ -686,6 +687,88 @@ function rowMatchesRepoTarget(row: OperatorRow, repo: string, target: string): b
   return row.repo === repo && row.target === target;
 }
 
+function batchMatchesOperation(batch: BatchRecord, operation: BatchOperation): boolean {
+  if (batch.batchId !== operation.batchId) {
+    return false;
+  }
+  if (batch.path && operation.batchPath) {
+    return batch.path === operation.batchPath;
+  }
+  return Boolean(batch.repo && operation.repo && batch.repo === operation.repo);
+}
+
+function rowMatchesBatchScope(row: OperatorRow, batch: BatchRecord): boolean {
+  if (!row.batchId || row.batchId !== batch.batchId) {
+    return false;
+  }
+  if (row.batchPath && batch.path) {
+    return row.batchPath === batch.path;
+  }
+  return Boolean(row.repo && batch.repo && row.repo === batch.repo);
+}
+
+function rowMatchesOperationScope(row: OperatorRow, operation: BatchOperation): boolean {
+  if (!row.batchId || row.batchId !== operation.batchId) {
+    return false;
+  }
+  if (row.batchPath && operation.batchPath) {
+    return row.batchPath === operation.batchPath;
+  }
+  return Boolean(row.repo && operation.repo && row.repo === operation.repo);
+}
+
+function rowMatchesBatchTarget(row: OperatorRow, batch: BatchRecord): boolean {
+  if (!row.target || !batch.lanes.some((lane) => lane.targets.includes(row.target as string))) {
+    return false;
+  }
+  const targetRepo = uniqueManifestRepoForTarget(batch, row.target) || batch.repo;
+  return Boolean(targetRepo && row.repo === targetRepo);
+}
+
+function batchTargetPresentationRow(row: OperatorRow, batch: BatchRecord): OperatorRow {
+  const lane = batch.lanes.find((candidate) => Boolean(row.target && candidate.targets.includes(row.target)));
+  const presentation = {
+    ...row,
+    id: `batch-repair-target:${batch.path}:${row.id}`,
+    batchId: batch.batchId,
+    batchPath: batch.path,
+    laneName: lane?.name || row.laneName
+  };
+  return { ...presentation, searchText: rowSearchText(presentation) };
+}
+
+function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOperation | undefined, nowMs: number): OperatorRow {
+  const batchId = batch?.batchId || operation?.batchId || UNKNOWN;
+  const repo = batch?.repo || operation?.repo || UNKNOWN;
+  const batchPath = batch?.path || operation?.batchPath;
+  const lastActivityAt = maxTimestamp(operation?.latestEventAt, batch?.updatedAt, batch?.createdAt);
+  const activityStatus =
+    operation?.controlStatus !== undefined && operation.controlStatus !== "running"
+      ? operation.controlStatus
+      : batch?.source === "inferred"
+        ? "batch plan missing"
+        : "prompt missing";
+  const baseRow: Omit<OperatorRow, "searchText"> = {
+    id: `batch-repair:${batchPath || repo}:${batchId}`,
+    source: "batch",
+    repo,
+    type: "unknown",
+    title: batch?.objective || `Batch ${batchId}`,
+    operatorState: "unknown",
+    liveness: "none",
+    livenessAge: UNKNOWN,
+    activityStatus,
+    lastActivityAt,
+    lastActivityAge: ageLabel(lastActivityAt, nowMs),
+    batchId,
+    batchPath,
+    dependencies: [],
+    blockedOn: [],
+    warnings: []
+  };
+  return { ...baseRow, searchText: rowSearchText(baseRow) };
+}
+
 export function filterOperatorRowsForOverview(
   rows: OperatorRow[],
   dashboard: DashboardModel,
@@ -704,25 +787,46 @@ export function filterOperatorRowsForOverview(
     const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
     return rows.filter((row) => qaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
-  const repairScopes = [
-    ...dashboard.batches
-      .filter((batch) => batch.source === "inferred" || !batch.launchPrompt)
-      .map((batch) => ({ batchId: batch.batchId, batchPath: batch.path, repo: batch.repo })),
-    ...dashboard.batchOperations
-      .filter((operation) => operation.controlStatus !== "running")
-      .map((operation) => ({ batchId: operation.batchId, batchPath: operation.batchPath, repo: operation.repo }))
-  ];
-  return rows.filter((row) =>
-    repairScopes.some((repair) => {
-      if (!row.batchId || row.batchId !== repair.batchId) {
-        return false;
-      }
-      if (row.batchPath && repair.batchPath) {
-        return row.batchPath === repair.batchPath;
-      }
-      return Boolean(row.repo && repair.repo && row.repo === repair.repo);
-    })
+  const stoppedOperations = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
+  const repairBatches = dashboard.batches.filter(
+    (batch) =>
+      batch.source === "inferred" ||
+      !batch.launchPrompt ||
+      stoppedOperations.some((operation) => batchMatchesOperation(batch, operation))
   );
+  const results = new Map<string, OperatorRow>();
+  const nowMs = timestampMs(dashboard.generatedAt) || Date.now();
+
+  for (const batch of repairBatches) {
+    const matchingRows = rows.filter((row) => rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch));
+    if (matchingRows.length > 0) {
+      for (const row of matchingRows) {
+        const presentationRow = rowMatchesBatchScope(row, batch) ? row : batchTargetPresentationRow(row, batch);
+        results.set(presentationRow.id, presentationRow);
+      }
+      continue;
+    }
+    const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
+    const repairRow = buildRepairBatchRow(batch, operation, nowMs);
+    results.set(repairRow.id, repairRow);
+  }
+
+  for (const operation of stoppedOperations) {
+    if (dashboard.batches.some((batch) => batchMatchesOperation(batch, operation))) {
+      continue;
+    }
+    const matchingRows = rows.filter((row) => rowMatchesOperationScope(row, operation));
+    if (matchingRows.length > 0) {
+      for (const row of matchingRows) {
+        results.set(row.id, row);
+      }
+      continue;
+    }
+    const repairRow = buildRepairBatchRow(undefined, operation, nowMs);
+    results.set(repairRow.id, repairRow);
+  }
+
+  return sortRows(Array.from(results.values()), dashboard.targetRepos);
 }
 
 export function operatorRowMatchesDeepLink(row: OperatorRow, deepLink?: OperatorDeepLink): boolean {

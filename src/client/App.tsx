@@ -252,6 +252,18 @@ export function App() {
     writeOperatorLocation(nextDeepLink, operatorQuery, "push");
   }
 
+  function clearExactOperatorLink() {
+    const nextDeepLink = {
+      ...operatorDeepLink,
+      batchId: undefined,
+      laneName: undefined,
+      repo: undefined,
+      target: undefined
+    };
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
+  }
+
   function updateOperatorQuery(query: string) {
     setOperatorQuery(query);
     const nextDeepLink = { ...operatorDeepLink, query: query || undefined };
@@ -430,6 +442,7 @@ export function App() {
             <OperatorView
               dashboard={dashboard}
               deepLink={operatorDeepLink}
+              onClearExactLink={clearExactOperatorLink}
               onQueryChange={updateOperatorQuery}
               onResetOverviewFilter={resetOverviewFilter}
               query={operatorQuery}

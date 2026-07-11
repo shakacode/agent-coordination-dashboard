@@ -1149,6 +1149,108 @@ describe("operatorRows", () => {
     expect(repairRows[0]).toMatchObject({ repo: "repo/app", batchId: "batch-1", batchPath: "batches/repo-app/batch-1.json" });
   });
 
+  it("maps prompt-missing and stopped batch lane targets before coordination signals attach batch identity", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({ claim: undefined, heartbeat: undefined, schedulingState: "ready_for_batch" }),
+        workItem({ id: "repo/app#124", target: "124", claim: undefined, heartbeat: undefined, schedulingState: "ready_for_batch" })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "prompt-missing",
+          repo: "repo/app",
+          path: "batches/prompt-missing.json",
+          lanes: [
+            {
+              name: "docs",
+              owner: "agent-docs",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "stopped-batch",
+          repo: "repo/app",
+          path: "batches/stopped.json",
+          launchPrompt: "Use $pr-batch",
+          lanes: [
+            {
+              name: "code",
+              owner: "agent-code",
+              targets: ["124"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "stopped-batch",
+          repo: "repo/app",
+          batchPath: "batches/stopped.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(
+      filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair").map((row) => ({
+        target: row.target,
+        batchId: row.batchId,
+        laneName: row.laneName
+      }))
+    ).toEqual([
+      { target: "123", batchId: "prompt-missing", laneName: "docs" },
+      { target: "124", batchId: "stopped-batch", laneName: "code" }
+    ]);
+  });
+
+  it("creates one read-only presentation row for a rowless repair batch with overlapping evidence", () => {
+    const model = dashboard({
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "rowless-batch",
+          repo: "repo/app",
+          objective: "Repair retained batch metadata",
+          path: "batches/rowless.json",
+          lanes: []
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "rowless-batch",
+          repo: "repo/app",
+          batchPath: "batches/rowless.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair")).toEqual([
+      expect.objectContaining({
+        source: "batch",
+        batchId: "rowless-batch",
+        repo: "repo/app",
+        title: "Repair retained batch metadata",
+        activityStatus: "stopped"
+      })
+    ]);
+  });
+
   it("parses only supported overview filters from shareable search params", () => {
     const supported = ["ready_for_batch", "needs_recovery", "processing_now", "qa_attention", "batch_repair"];
     for (const value of supported) {

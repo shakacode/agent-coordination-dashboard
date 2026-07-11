@@ -4,6 +4,7 @@ import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem,
 import {
   buildOperatorRows,
   filterOperatorRowsForOverview,
+  UNKNOWN,
   type OperatorRow,
   type OverviewOperatorFilter
 } from "../operatorRows";
@@ -35,11 +36,9 @@ export function OverviewTab({
   const startedItems = dashboard.workItems.filter((item) => item.schedulingState === "started_not_processing");
   const activeItems = dashboard.workItems.filter((item) => item.schedulingState === "in_process");
   const attentionItems = dashboard.healthItems.filter((item) => item.severity !== "info");
-  const batchRepairItems = dashboard.batches.filter((batch) => batch.source === "inferred" || !batch.launchPrompt);
   const missingQa = dashboard.qaValidations.filter((item) => item.status === "missing");
   const failedQa = dashboard.qaValidations.filter((item) => item.status === "failed");
   const activeQa = dashboard.qaValidations.filter((item) => item.status === "requested" || item.status === "in_progress");
-  const stoppedBatches = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
   const overviewRows = useMemo<Record<OverviewOperatorFilter, OperatorRow[]>>(() => {
     const operatorRows = buildOperatorRows(dashboard);
     return {
@@ -178,26 +177,17 @@ export function OverviewTab({
             <PackageOpen size={18} aria-hidden="true" />
             <h2>Batch Repair</h2>
           </header>
-          {batchRepairItems.length === 0 && stoppedBatches.length === 0 ? (
+          {overviewRows.batch_repair.length === 0 ? (
             <p className="empty-state">No batch repair items.</p>
           ) : (
             <div className="overview-list">
-              {firstItems(batchRepairItems).map((batch) => (
-                <div className="overview-row" key={`${batch.repo || batch.path}:${batch.batchId}`}>
+              {firstItems(overviewRows.batch_repair).map((row) => (
+                <div className="overview-row" key={row.id}>
                   <div>
-                    <strong>{batch.batchId}</strong>
-                    <span>{batch.source === "inferred" ? "Batch plan missing" : "Prompt missing"}</span>
+                    <strong>{row.batchId || UNKNOWN}</strong>
+                    <span>{row.title}</span>
                   </div>
-                  <StatusBadge value="warning" />
-                </div>
-              ))}
-              {firstItems(stoppedBatches, Math.max(0, 6 - batchRepairItems.length)).map((operation) => (
-                <div className="overview-row" key={`${operation.repo || operation.batchPath}:${operation.batchId}`}>
-                  <div>
-                    <strong>{operation.batchId}</strong>
-                    <span>{operation.latestEventType || operation.controlStatus}</span>
-                  </div>
-                  <StatusBadge value={operation.controlStatus} />
+                  <StatusBadge value={row.activityStatus} />
                 </div>
               ))}
             </div>
