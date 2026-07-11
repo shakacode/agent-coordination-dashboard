@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { BatchRecord, ClaimRecord, DashboardModel, HeartbeatRecord, WorkItem } from "../shared/types";
-import { buildOperatorRows, filterOperatorRows } from "./operatorRows";
+import {
+  buildOperatorRows,
+  filterOperatorRows,
+  filterOperatorRowsForOverview,
+  operatorDeepLinkFromSearchParams,
+  safeGithubUrl
+} from "./operatorRows";
 
 const claim: ClaimRecord = {
   schemaVersion: 1,
@@ -79,6 +85,24 @@ function dashboard(partial: Partial<DashboardModel> = {}): DashboardModel {
 }
 
 describe("operatorRows", () => {
+  it("allows only exact HTTPS GitHub issue and pull-request URLs", () => {
+    expect(safeGithubUrl("https://github.com/repo/app/pull/123")).toBe("https://github.com/repo/app/pull/123");
+    expect(safeGithubUrl("https://github.com/repo/app/issues/456?tab=activity#comment")).toBe(
+      "https://github.com/repo/app/issues/456?tab=activity#comment"
+    );
+    for (const value of [
+      undefined,
+      "http://github.com/repo/app/pull/123",
+      "https://example.com/repo/app/pull/123",
+      "https://github.com/repo/app/actions/123",
+      "https://github.com/repo/app/pull/not-a-number",
+      "javascript:alert(1)",
+      "not a url"
+    ]) {
+      expect(safeGithubUrl(value)).toBeUndefined();
+    }
+  });
+
   it("builds target-first rows with owner, thread, batch, branch, and PR metadata", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -1032,5 +1056,347 @@ describe("operatorRows", () => {
     expect(filterOperatorRows(rows, "justin").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "codex").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "github.com/repo/app/pull/123").map((row) => row.repo)).toEqual(["repo/app"]);
+  });
+
+  it("maps every overview filter to rows from explicit dashboard state", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({ claim, heartbeat }),
+        workItem({ id: "repo/app#124", target: "124", schedulingState: "ready_for_batch", claim: undefined, heartbeat: undefined }),
+        workItem({ id: "repo/app#125", target: "125", schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined })
+      ],
+      qaValidations: [
+        {
+          id: "repo/app#125",
+          repo: "repo/app",
+          target: "125",
+          type: "pull_request",
+          status: "missing",
+          detail: "Separate QA evidence is missing."
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "batch-1",
+          repo: "repo/app",
+          controlStatus: "stopped",
+          eventCount: 1,
+          stopRequestedAt: "2026-07-09T19:50:00Z",
+          stoppedAt: "2026-07-09T19:51:00Z",
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+
+    expect(filterOperatorRowsForOverview(rows, model, "processing_now").map((row) => row.target)).toEqual(["123"]);
+    expect(filterOperatorRowsForOverview(rows, model, "ready_for_batch").map((row) => row.target)).toEqual(["124"]);
+    expect(filterOperatorRowsForOverview(rows, model, "needs_recovery").map((row) => row.target)).toEqual(["125"]);
+    expect(filterOperatorRowsForOverview(rows, model, "qa_attention").map((row) => row.target)).toEqual(["125"]);
+    expect(filterOperatorRowsForOverview(rows, model, "batch_repair").map((row) => row.target)).toEqual(["123"]);
+  });
+
+  it("scopes batch-repair filters when different repos reuse a batch id", () => {
+    const appClaim = { ...claim, batchId: "shared-batch" };
+    const appHeartbeat = { ...heartbeat, batchId: "shared-batch" };
+    const apiClaim = { ...claim, repo: "repo/api", agentId: "agent-api", batchId: "shared-batch" };
+    const apiHeartbeat = { ...heartbeat, repo: "repo/api", agentId: "agent-api", batchId: "shared-batch" };
+    const model = dashboard({
+      workItems: [
+        workItem({ claim: appClaim, heartbeat: appHeartbeat }),
+        workItem({ id: "repo/api#123", repo: "repo/api", claim: apiClaim, heartbeat: apiHeartbeat })
+      ],
+      batchOperations: [
+        {
+          batchId: "shared-batch",
+          repo: "repo/app",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair").map((row) => row.repo)).toEqual([
+      "repo/app"
+    ]);
+  });
+
+  it("returns one repair row when inferred and stopped signals overlap", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          claim,
+          heartbeat,
+          batchSignals: [{ batchId: "batch-1", laneName: "implementation", status: "coding", blockedOn: [] }]
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "repo/app",
+          source: "inferred",
+          path: "batches/repo-app/batch-1.json",
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "coding",
+              liveness: "live"
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "batch-1",
+          repo: "repo/app",
+          batchPath: "batches/repo-app/batch-1.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    const rows = buildOperatorRows(model);
+    const repairRows = filterOperatorRowsForOverview(rows, model, "batch_repair");
+    expect(repairRows).toHaveLength(1);
+    expect(repairRows[0]).toMatchObject({
+      repo: "repo/app",
+      batchId: "batch-1",
+      batchPath: "batches/repo-app/batch-1.json",
+      activityStatus: "stopped"
+    });
+    expect(rows[0].activityStatus).toBe("coding");
+  });
+
+  it("presents every repair cause on matched batch targets before coordination signals attach batch identity", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({ claim: undefined, heartbeat: undefined, schedulingState: "ready_for_batch" }),
+        workItem({ id: "repo/app#124", target: "124", claim: undefined, heartbeat: undefined, schedulingState: "ready_for_batch" }),
+        workItem({ id: "repo/app#125", target: "125", claim: undefined, heartbeat: undefined, schedulingState: "ready_for_batch" }),
+        workItem({ id: "repo/app#126", target: "126", claim: undefined, heartbeat: undefined, schedulingState: "ready_for_batch" })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "prompt-missing",
+          repo: "repo/app",
+          path: "batches/prompt-missing.json",
+          lanes: [
+            {
+              name: "docs",
+              owner: "agent-docs",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "stopped-batch",
+          repo: "repo/app",
+          path: "batches/stopped.json",
+          launchPrompt: "Use $pr-batch",
+          lanes: [
+            {
+              name: "code",
+              owner: "agent-code",
+              targets: ["124"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "inferred-batch",
+          repo: "repo/app",
+          source: "inferred",
+          path: "batches/inferred.json",
+          lanes: [
+            {
+              name: "qa",
+              owner: "agent-qa",
+              targets: ["125"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "stop-requested-batch",
+          repo: "repo/app",
+          path: "batches/stop-requested.json",
+          launchPrompt: "Use $pr-batch",
+          lanes: [
+            {
+              name: "release",
+              owner: "agent-release",
+              targets: ["126"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "stopped-batch",
+          repo: "repo/app",
+          batchPath: "batches/stopped.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        },
+        {
+          batchId: "stop-requested-batch",
+          repo: "repo/app",
+          batchPath: "batches/stop-requested.json",
+          controlStatus: "stop_requested",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(
+      filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair").map((row) => ({
+        target: row.target,
+        batchId: row.batchId,
+        laneName: row.laneName,
+        activityStatus: row.activityStatus
+      }))
+    ).toEqual([
+      { target: "123", batchId: "prompt-missing", laneName: "docs", activityStatus: "prompt_missing" },
+      { target: "124", batchId: "stopped-batch", laneName: "code", activityStatus: "stopped" },
+      { target: "125", batchId: "inferred-batch", laneName: "qa", activityStatus: "batch_plan_missing" },
+      { target: "126", batchId: "stop-requested-batch", laneName: "release", activityStatus: "stop_requested" }
+    ]);
+  });
+
+  it("creates one read-only presentation row for a rowless repair batch with overlapping evidence", () => {
+    const model = dashboard({
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "rowless-batch",
+          repo: "repo/app",
+          objective: "Repair retained batch metadata",
+          path: "batches/rowless.json",
+          lanes: []
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "rowless-batch",
+          repo: "repo/app",
+          batchPath: "batches/rowless.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair")).toEqual([
+      expect.objectContaining({
+        source: "batch",
+        batchId: "rowless-batch",
+        repo: "repo/app",
+        title: "Repair retained batch metadata",
+        activityStatus: "stopped"
+      })
+    ]);
+  });
+
+  it("does not retag active work from a healthy batch when an old repair manifest names the same target", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          claim: { ...claim, batchId: "healthy-new" },
+          heartbeat: { ...heartbeat, batchId: "healthy-new" }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "broken-old",
+          repo: "repo/app",
+          objective: "Repair stale batch",
+          path: "batches/broken-old.json",
+          lanes: [
+            {
+              name: "old-lane",
+              owner: "old-agent",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "queued",
+              liveness: "no-heartbeat"
+            }
+          ]
+        },
+        {
+          schemaVersion: 1,
+          batchId: "healthy-new",
+          repo: "repo/app",
+          path: "batches/healthy-new.json",
+          launchPrompt: "Use $pr-batch",
+          lanes: [
+            {
+              name: "active-lane",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              blockedOn: [],
+              status: "coding",
+              liveness: "live"
+            }
+          ]
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+    expect(rows[0]).toMatchObject({ target: "123", batchId: "healthy-new" });
+
+    const repairRows = filterOperatorRowsForOverview(rows, model, "batch_repair");
+    expect(repairRows).toEqual([
+      expect.objectContaining({ source: "batch", batchId: "broken-old", title: "Repair stale batch" })
+    ]);
+    expect(repairRows[0].target).toBeUndefined();
+    expect(repairRows.some((row) => row.id.includes("target:repo/app#123"))).toBe(false);
+  });
+
+  it("parses only supported overview filters from shareable search params", () => {
+    const supported = ["ready_for_batch", "needs_recovery", "processing_now", "qa_attention", "batch_repair"];
+    for (const value of supported) {
+      expect(operatorDeepLinkFromSearchParams(new URLSearchParams(`operatorFilter=${value}`)).overviewFilter).toBe(value);
+    }
+
+    expect(operatorDeepLinkFromSearchParams(new URLSearchParams("operatorFilter=needs_recovery&q=owner"))).toMatchObject({
+      overviewFilter: "needs_recovery",
+      query: "owner"
+    });
+
+    for (const hostile of ["__proto__", "constructor", "toString", "hasOwnProperty", "made_up"]) {
+      expect(operatorDeepLinkFromSearchParams(new URLSearchParams(`operatorFilter=${hostile}`)).overviewFilter).toBeUndefined();
+    }
   });
 });

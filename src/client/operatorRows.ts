@@ -1,6 +1,7 @@
 import type {
   BatchEvent,
   BatchLane,
+  BatchOperation,
   BatchRecord,
   ClaimRecord,
   DashboardModel,
@@ -13,9 +14,47 @@ import { isQaEventType } from "../shared/qaEvents";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
+export const OPERATOR_ACTIVITY_STATUS_LABELS: Record<string, string> = {
+  stopped: "Stopped",
+  stop_requested: "Stop requested",
+  batch_plan_missing: "Batch plan missing",
+  prompt_missing: "Prompt missing"
+};
+
+export function operatorActivityLabel(status: string): string {
+  return OPERATOR_ACTIVITY_STATUS_LABELS[status] || status;
+}
+
+export function safeGithubUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "github.com") {
+      return undefined;
+    }
+    const pathParts = url.pathname.split("/").filter(Boolean);
+    if (pathParts.length !== 4 || !["pull", "issues"].includes(pathParts[2]) || !/^\d+$/.test(pathParts[3])) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
 
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
-export type OperatorRowSource = "target" | "lane";
+export type OperatorRowSource = "target" | "lane" | "batch";
+export type OverviewOperatorFilter = "ready_for_batch" | "needs_recovery" | "processing_now" | "qa_attention" | "batch_repair";
+
+export const OVERVIEW_OPERATOR_FILTER_LABELS: Record<OverviewOperatorFilter, string> = {
+  ready_for_batch: "Ready for batch",
+  needs_recovery: "Claimed, not processing",
+  processing_now: "Processing now",
+  qa_attention: "QA needs attention",
+  batch_repair: "Batch repair"
+};
 
 export interface OperatorDeepLink {
   batchId?: string;
@@ -23,6 +62,7 @@ export interface OperatorDeepLink {
   repo?: string;
   target?: string;
   query?: string;
+  overviewFilter?: OverviewOperatorFilter;
 }
 
 export interface OperatorRow {
@@ -43,6 +83,7 @@ export interface OperatorRow {
   lastEventAt?: string;
   heartbeatUpdatedAt?: string;
   batchId?: string;
+  batchPath?: string;
   laneName?: string;
   dependencies: string[];
   blockedOn: string[];
@@ -298,6 +339,7 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.activityStatus,
       row.activityMessage,
       row.batchId,
+      row.batchPath,
       row.laneName,
       row.dependencies.join(" "),
       row.blockedOn.join(" "),
@@ -542,6 +584,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
     batchId: signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId,
+    batchPath: batch?.path,
     laneName: signal?.laneName || lane?.name,
     dependencies: lane?.dependsOn || [],
     blockedOn,
@@ -595,6 +638,7 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
     lastEventAt: latest?.timestamp,
     batchId: batch.batchId,
+    batchPath: batch.path,
     laneName: lane.name,
     dependencies: lane.dependsOn,
     blockedOn: lane.blockedOn,
@@ -646,21 +690,193 @@ export function filterOperatorRows(rows: OperatorRow[], query: string, targetRep
 }
 
 export function operatorDeepLinkFromSearchParams(params: URLSearchParams): OperatorDeepLink {
+  const overviewFilter = params.get("operatorFilter");
   return {
     batchId: params.get("batch") || undefined,
     laneName: params.get("lane") || undefined,
     repo: params.get("repo") || undefined,
     target: params.get("target") || undefined,
-    query: params.get("q") || undefined
+    query: params.get("q") || undefined,
+    overviewFilter:
+      overviewFilter && Object.prototype.hasOwnProperty.call(OVERVIEW_OPERATOR_FILTER_LABELS, overviewFilter)
+        ? (overviewFilter as OverviewOperatorFilter)
+        : undefined
   };
 }
 
 export function hasStructuredOperatorDeepLink(deepLink?: OperatorDeepLink): boolean {
+  return Boolean(deepLink?.batchId || deepLink?.laneName || deepLink?.repo || deepLink?.target || deepLink?.overviewFilter);
+}
+
+export function hasExactOperatorDeepLink(deepLink?: OperatorDeepLink): boolean {
   return Boolean(deepLink?.batchId || deepLink?.laneName || deepLink?.repo || deepLink?.target);
 }
 
+function rowMatchesRepoTarget(row: OperatorRow, repo: string, target: string): boolean {
+  return row.repo === repo && row.target === target;
+}
+
+function batchMatchesOperation(batch: BatchRecord, operation: BatchOperation): boolean {
+  if (batch.batchId !== operation.batchId) {
+    return false;
+  }
+  if (batch.path && operation.batchPath) {
+    return batch.path === operation.batchPath;
+  }
+  return Boolean(batch.repo && operation.repo && batch.repo === operation.repo);
+}
+
+function rowMatchesBatchScope(row: OperatorRow, batch: BatchRecord): boolean {
+  if (!row.batchId || row.batchId !== batch.batchId) {
+    return false;
+  }
+  if (row.batchPath && batch.path) {
+    return row.batchPath === batch.path;
+  }
+  return Boolean(row.repo && batch.repo && row.repo === batch.repo);
+}
+
+function rowMatchesOperationScope(row: OperatorRow, operation: BatchOperation): boolean {
+  if (!row.batchId || row.batchId !== operation.batchId) {
+    return false;
+  }
+  if (row.batchPath && operation.batchPath) {
+    return row.batchPath === operation.batchPath;
+  }
+  return Boolean(row.repo && operation.repo && row.repo === operation.repo);
+}
+
+function rowMatchesBatchTarget(row: OperatorRow, batch: BatchRecord): boolean {
+  if (row.batchId && row.batchId !== batch.batchId) {
+    return false;
+  }
+  if (row.batchPath && batch.path && row.batchPath !== batch.path) {
+    return false;
+  }
+  if (!row.target || !batch.lanes.some((lane) => lane.targets.includes(row.target as string))) {
+    return false;
+  }
+  const targetRepo = uniqueManifestRepoForTarget(batch, row.target) || batch.repo;
+  return Boolean(targetRepo && row.repo === targetRepo);
+}
+
+function repairActivityStatus(batch: BatchRecord | undefined, operation: BatchOperation | undefined): string {
+  if (operation?.controlStatus !== undefined && operation.controlStatus !== "running") {
+    return operation.controlStatus;
+  }
+  return batch?.source === "inferred" ? "batch_plan_missing" : "prompt_missing";
+}
+
+function repairStatusPresentationRow(row: OperatorRow, activityStatus: string): OperatorRow {
+  const presentation = { ...row, activityStatus };
+  return { ...presentation, searchText: rowSearchText(presentation) };
+}
+
+function batchTargetPresentationRow(row: OperatorRow, batch: BatchRecord, activityStatus: string): OperatorRow {
+  const lane = batch.lanes.find((candidate) => Boolean(row.target && candidate.targets.includes(row.target)));
+  const presentation = {
+    ...row,
+    id: `batch-repair-target:${batch.path}:${row.id}`,
+    batchId: batch.batchId,
+    batchPath: batch.path,
+    laneName: lane?.name || row.laneName,
+    activityStatus
+  };
+  return { ...presentation, searchText: rowSearchText(presentation) };
+}
+
+function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOperation | undefined, nowMs: number): OperatorRow {
+  const batchId = batch?.batchId || operation?.batchId || UNKNOWN;
+  const repo = batch?.repo || operation?.repo || UNKNOWN;
+  const batchPath = batch?.path || operation?.batchPath;
+  const lastActivityAt = maxTimestamp(operation?.latestEventAt, batch?.updatedAt, batch?.createdAt);
+  const activityStatus = repairActivityStatus(batch, operation);
+  const baseRow: Omit<OperatorRow, "searchText"> = {
+    id: `batch-repair:${batchPath || repo}:${batchId}`,
+    source: "batch",
+    repo,
+    type: "unknown",
+    title: batch?.objective || `Batch ${batchId}`,
+    operatorState: "unknown",
+    liveness: "none",
+    livenessAge: UNKNOWN,
+    activityStatus,
+    lastActivityAt,
+    lastActivityAge: ageLabel(lastActivityAt, nowMs),
+    batchId,
+    batchPath,
+    dependencies: [],
+    blockedOn: [],
+    warnings: []
+  };
+  return { ...baseRow, searchText: rowSearchText(baseRow) };
+}
+
+export function filterOperatorRowsForOverview(
+  rows: OperatorRow[],
+  dashboard: DashboardModel,
+  filter: OverviewOperatorFilter | undefined
+): OperatorRow[] {
+  if (!filter) {
+    return rows;
+  }
+  if (["ready_for_batch", "needs_recovery", "processing_now"].includes(filter)) {
+    const schedulingState =
+      filter === "ready_for_batch" ? "ready_for_batch" : filter === "needs_recovery" ? "started_not_processing" : "in_process";
+    const items = dashboard.workItems.filter((item) => item.schedulingState === schedulingState);
+    return rows.filter((row) => items.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
+  }
+  if (filter === "qa_attention") {
+    const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
+    return rows.filter((row) => qaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
+  }
+  const stoppedOperations = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
+  const repairBatches = dashboard.batches.filter(
+    (batch) =>
+      batch.source === "inferred" ||
+      !batch.launchPrompt ||
+      stoppedOperations.some((operation) => batchMatchesOperation(batch, operation))
+  );
+  const results = new Map<string, OperatorRow>();
+  const nowMs = timestampMs(dashboard.generatedAt) || Date.now();
+
+  for (const batch of repairBatches) {
+    const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
+    const activityStatus = repairActivityStatus(batch, operation);
+    const matchingRows = rows.filter((row) => rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch));
+    if (matchingRows.length > 0) {
+      for (const row of matchingRows) {
+        const presentationRow = rowMatchesBatchScope(row, batch)
+          ? repairStatusPresentationRow(row, activityStatus)
+          : batchTargetPresentationRow(row, batch, activityStatus);
+        results.set(presentationRow.id, presentationRow);
+      }
+      continue;
+    }
+    const repairRow = buildRepairBatchRow(batch, operation, nowMs);
+    results.set(repairRow.id, repairRow);
+  }
+
+  for (const operation of stoppedOperations) {
+    if (dashboard.batches.some((batch) => batchMatchesOperation(batch, operation))) {
+      continue;
+    }
+    const matchingRows = rows.filter((row) => rowMatchesOperationScope(row, operation));
+    if (matchingRows.length > 0) {
+      for (const row of matchingRows) {
+        results.set(row.id, repairStatusPresentationRow(row, operation.controlStatus));
+      }
+      continue;
+    }
+    const repairRow = buildRepairBatchRow(undefined, operation, nowMs);
+    results.set(repairRow.id, repairRow);
+  }
+
+  return sortRows(Array.from(results.values()), dashboard.targetRepos);
+}
+
 export function operatorRowMatchesDeepLink(row: OperatorRow, deepLink?: OperatorDeepLink): boolean {
-  if (!hasStructuredOperatorDeepLink(deepLink)) {
+  if (!hasExactOperatorDeepLink(deepLink)) {
     return false;
   }
   if (deepLink?.batchId && row.batchId !== deepLink.batchId) {

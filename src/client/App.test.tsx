@@ -1,7 +1,14 @@
+/// <reference types="node" />
+
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, backgroundRefreshTimeoutMs } from "./App";
+import { App, backgroundRefreshTimeoutMs, operatorDeepLinkForOverviewFilter } from "./App";
+import * as operatorRows from "./operatorRows";
+
+const stylesheet = readFileSync(`${cwd()}/src/client/styles.css`, "utf8");
 
 const model = {
   generatedAt: "2026-06-17T20:00:00Z",
@@ -127,6 +134,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -136,9 +144,10 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
     expect(screen.getByText("/state · 2 open or coordinated items")).toBeInTheDocument();
     expect(screen.getAllByText("1 ready").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("1 started").length).toBeGreaterThan(0);
-    expect(screen.getByText("1 missing QA")).toBeInTheDocument();
-    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.getAllByText("1 claimed").length).toBeGreaterThan(0);
+    expect(screen.getByText("1 QA needs attention")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show 0 batch repairs in Operator view" })).toHaveTextContent("0 batch repairs");
+    expect(screen.getByText("Missing")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Work" }));
 
@@ -149,12 +158,285 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
   });
 
+  it("wraps dashboard tabs without removing the Operator table's local scroller", async () => {
+    render(<App />);
+
+    await screen.findByRole("navigation", { name: "Dashboard views" });
+
+    expect(stylesheet).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(stylesheet).toMatch(/\.operator-table-wrap\s*\{[^}]*overflow-x:\s*auto/);
+  });
+
   it("passes root search query params to the Operator View", async () => {
     window.history.pushState({}, "", "/?q=4005");
 
     render(<App />);
 
     await waitFor(() => expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005"));
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
+  });
+
+  it("opens summary filters with keyboard activation and restores them through browser history", async () => {
+    render(<App />);
+
+    const readyAction = await screen.findByRole("button", { name: "Show 1 ready for batch rows in Operator view" });
+    readyAction.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(screen.getByRole("heading", { name: "Operator View" })).toBeInTheDocument();
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    expect(screen.getByText("Issue #4010")).toBeInTheDocument();
+    expect(screen.queryByText("PR #4005")).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?operatorFilter=ready_for_batch");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset filter" }));
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+
+    window.history.back();
+    await waitFor(() => expect(window.location.search).toBe("?operatorFilter=ready_for_batch"));
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+
+    window.history.back();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    window.history.forward();
+    await waitFor(() => expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch"));
+  });
+
+  it("keeps an unrelated dashboard tab selected while Operator history moves back and forward", async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Show 1 ready for batch rows in Operator view" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reset filter" }));
+    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+    window.history.back();
+    await waitFor(() => expect(window.location.search).toBe("?operatorFilter=ready_for_batch"));
+    expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+
+    window.history.forward();
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(screen.getByRole("heading", { name: "Issue #4010: Unscheduled issue" })).toBeInTheDocument();
+  });
+
+  it("uses the exact filtered Operator row count for every Overview summary", async () => {
+    const { container } = render(<App />);
+    const cases = [
+      { name: "Show 1 ready for batch rows in Operator view", rows: 1 },
+      { name: "Show 1 claimed, not processing rows in Operator view", rows: 1 },
+      { name: "Show 0 processing now rows in Operator view", rows: 0 },
+      { name: "Show 1 QA needs attention rows in Operator view", rows: 1 },
+      { name: "Show 0 batch repairs in Operator view", rows: 0 }
+    ];
+
+    await screen.findByRole("heading", { name: "Needs Attention" });
+    for (const item of cases) {
+      await userEvent.click(screen.getByRole("button", { name: item.name }));
+      expect(container.querySelectorAll(".operator-table tbody tr")).toHaveLength(item.rows);
+      await userEvent.click(screen.getByRole("button", { name: "Overview" }));
+    }
+  });
+
+  it("uses the exact Operator presentation rows for Current Work and Ready To Batch panels", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [
+                ...model.workItems,
+                { ...model.workItems[0], id: "duplicate-ready-signal" },
+                { ...model.workItems[1], id: "duplicate-current-signal" }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const currentPanel = within((await screen.findByRole("heading", { name: "Current Work" })).closest("article") as HTMLElement);
+    const readyPanel = within(screen.getByRole("heading", { name: "Ready To Batch" }).closest("article") as HTMLElement);
+    expect(screen.getByRole("button", { name: "Show 2 claimed, not processing rows in Operator view" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show 2 ready for batch rows in Operator view" })).toBeInTheDocument();
+    expect(currentPanel.getAllByText("PR #4005: Stale PR")).toHaveLength(2);
+    expect(readyPanel.getAllByText("Issue #4010: Unscheduled issue")).toHaveLength(2);
+    for (const link of currentPanel.getAllByRole("link", { name: "PR #4005: Stale PR" })) {
+      expect(link).toHaveAttribute("href", "https://github.com/shakacode/react_on_rails/pull/4005");
+    }
+    for (const link of readyPanel.getAllByRole("link", { name: "Issue #4010: Unscheduled issue" })) {
+      expect(link).toHaveAttribute("href", "https://github.com/shakacode/react_on_rails/issues/4010");
+    }
+  });
+
+  it("groups duplicate QA validation signals into the same target row used by the Operator filter", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [model.workItems[1]],
+              qaValidations: [
+                {
+                  ...model.qaValidations[0],
+                  id: "qa-batch-a",
+                  batchId: "batch-a",
+                  laneName: "qa-a",
+                  status: "missing"
+                },
+                {
+                  ...model.qaValidations[0],
+                  id: "qa-batch-b",
+                  batchId: "batch-b",
+                  laneName: "qa-b",
+                  status: "in_progress"
+                }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const qaPanel = (await screen.findByRole("heading", { name: "QA Validation" })).closest("article");
+    const panel = within(qaPanel as HTMLElement);
+    expect(screen.getByRole("button", { name: "Show 1 QA needs attention rows in Operator view" })).toBeInTheDocument();
+    expect(panel.getAllByText("PR #4005: Stale PR")).toHaveLength(1);
+    expect(panel.getByText("batch-a:qa-a (missing) · batch-b:qa-b (in_progress)")).toBeInTheDocument();
+    expect(panel.getByText("Missing")).toBeInTheDocument();
+    expect(panel.getByText("In progress")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 QA needs attention rows in Operator view" }));
+    expect(document.querySelectorAll(".operator-table tbody tr")).toHaveLength(1);
+  });
+
+  it("keeps a rowless repair batch consistent across the summary, panel, and Operator destination", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [],
+              qaValidations: [],
+              batches: [
+                {
+                  schemaVersion: 1,
+                  batchId: "rowless-batch",
+                  repo: "shakacode/react_on_rails",
+                  objective: "Repair retained batch metadata",
+                  path: "batches/rowless.json",
+                  lanes: []
+                }
+              ],
+              batchOperations: [
+                {
+                  batchId: "rowless-batch",
+                  repo: "shakacode/react_on_rails",
+                  batchPath: "batches/rowless.json",
+                  controlStatus: "stopped",
+                  eventCount: 1,
+                  qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+                }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const repairAction = await screen.findByRole("button", { name: "Show 1 batch repairs in Operator view" });
+    expect(screen.getByRole("heading", { name: "Batch Repair" }).closest("article")).toHaveTextContent("rowless-batch");
+    await userEvent.click(repairAction);
+
+    const operator = within(screen.getByLabelText("Operator view"));
+    expect(operator.getByText("Batch")).toBeInTheDocument();
+    expect(operator.getByText("Repair retained batch metadata")).toBeInTheDocument();
+    expect(operator.getByText("rowless-batch")).toBeInTheDocument();
+  });
+
+  it("renders every rowless repair status with a safe token and shared human label", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [],
+              qaValidations: [],
+              batches: [
+                {
+                  schemaVersion: 1,
+                  batchId: "inferred-rowless",
+                  repo: "shakacode/react_on_rails",
+                  objective: "Repair inferred metadata",
+                  path: "batches/inferred.json",
+                  source: "inferred",
+                  lanes: []
+                },
+                {
+                  schemaVersion: 1,
+                  batchId: "promptless-rowless",
+                  repo: "shakacode/react_on_rails",
+                  objective: "Restore a missing launch prompt",
+                  path: "batches/promptless.json",
+                  lanes: []
+                }
+              ],
+              batchOperations: [
+                {
+                  batchId: "stopped-rowless",
+                  repo: "shakacode/react_on_rails",
+                  controlStatus: "stopped",
+                  eventCount: 1,
+                  qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+                },
+                {
+                  batchId: "stop-requested-rowless",
+                  repo: "shakacode/react_on_rails",
+                  controlStatus: "stop_requested",
+                  eventCount: 1,
+                  qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+                }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const repairPanel = within((await screen.findByRole("heading", { name: "Batch Repair" })).closest("article") as HTMLElement);
+    expect(repairPanel.getByText("Batch plan missing")).toHaveClass("status-badge", "status-batch_plan_missing");
+    expect(repairPanel.getByText("Batch plan missing").className.split(/\s+/)).not.toContain("plan");
+    expect(repairPanel.getByText("Prompt missing")).toHaveClass("status-badge", "status-prompt_missing");
+    expect(repairPanel.getByText("Stopped")).toHaveClass("status-badge", "status-stopped");
+    expect(repairPanel.getByText("Stop requested")).toHaveClass("status-badge", "status-stop_requested");
+  });
+
+  it("clears a failed exact link without misattributing or removing the active Overview filter", async () => {
+    window.history.pushState({}, "", "/?operatorFilter=ready_for_batch&repo=missing%2Frepo&target=999");
+
+    render(<App />);
+
+    expect(await screen.findByText("No loaded row matches this link.")).toBeInTheDocument();
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    await userEvent.click(screen.getByRole("button", { name: "Clear link" }));
+
+    expect(screen.getByText("Issue #4010")).toBeInTheDocument();
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    expect(window.location.search).toBe("?operatorFilter=ready_for_batch");
+  });
+
+  it("restores a shareable overview filter on reload while free-text search still applies", async () => {
+    window.history.pushState({}, "", "/?operatorFilter=needs_recovery&q=4005");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005"));
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Claimed, not processing");
     expect(screen.getByText("PR #4005")).toBeInTheDocument();
     expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
   });
@@ -175,6 +457,36 @@ describe("App", () => {
     expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005");
     expect(screen.getByText("PR #4005")).toBeInTheDocument();
     expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
+  });
+
+  it("preserves the live query in structured filter state when opening an Overview action", async () => {
+    expect(operatorDeepLinkForOverviewFilter("ready_for_batch", "4005")).toEqual({
+      overviewFilter: "ready_for_batch",
+      query: "4005"
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Needs Attention" });
+    await userEvent.click(screen.getByRole("button", { name: "Operator" }));
+    await userEvent.type(screen.getByLabelText("Search operator rows"), "4005");
+    await userEvent.click(screen.getByRole("button", { name: "Overview" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 ready for batch rows in Operator view" }));
+
+    expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005");
+    expect(window.location.search).toBe("?operatorFilter=ready_for_batch&q=4005");
+  });
+
+  it("memoizes Overview operator row derivation across unrelated App rerenders", async () => {
+    const buildRows = vi.spyOn(operatorRows, "buildOperatorRows");
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Needs Attention" });
+    const initialCalls = buildRows.mock.calls.length;
+    expect(initialCalls).toBeGreaterThan(0);
+
+    await userEvent.type(screen.getByLabelText("Add target repository"), "other/repo");
+
+    expect(buildRows).toHaveBeenCalledTimes(initialCalls);
   });
 
   it("labels info-only coordination messages as notices", async () => {
@@ -275,6 +587,42 @@ describe("App", () => {
 
     await userEvent.click(panel.getByText("1 more type"));
     expect(panel.getByText("Another distinct warning.")).toBeInTheDocument();
+  });
+
+  it("groups repeated Overview attention types while retaining exact records", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              warnings: [],
+              healthItems: [
+                { ...model.healthItems[0], id: "health-a", detail: "worker-a does not report machine_id." },
+                { ...model.healthItems[0], id: "health-b", detail: "worker-b does not report machine_id.", agentId: "worker-b" },
+                ...Array.from({ length: 6 }, (_, index) => ({
+                  ...model.healthItems[0],
+                  id: `health-unique-${index}`,
+                  category: "batch",
+                  title: `Unique health type ${index}`,
+                  detail: `Exact health detail ${index}`
+                }))
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const attentionPanel = (await screen.findByRole("heading", { name: "Needs Attention" })).closest("article");
+    const panel = within(attentionPanel as HTMLElement);
+    expect(panel.getByLabelText("2 occurrences")).toBeInTheDocument();
+    await userEvent.click(panel.getByText("Heartbeat missing machine id", { selector: "summary .signal-group-label" }));
+    expect(panel.getByText("worker-a does not report machine_id.")).toBeInTheDocument();
+    expect(panel.getByText("worker-b does not report machine_id.")).toBeInTheDocument();
+    expect(panel.getByText("1 more type")).toBeInTheDocument();
+    await userEvent.click(panel.getByText("1 more type"));
+    expect(panel.getByText("Exact health detail 5")).toBeInTheDocument();
   });
 
   it("saves target repository filters and reloads the dashboard", async () => {

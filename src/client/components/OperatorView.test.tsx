@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../../shared/types";
 import { OperatorView } from "./OperatorView";
 
@@ -119,6 +119,33 @@ describe("OperatorView", () => {
     render(<OperatorView dashboard={dashboard} deepLink={{ batchId: "missing-batch", laneName: "docs" }} />);
 
     expect(screen.getByText("No loaded row matches this link.")).toBeInTheDocument();
+  });
+
+  it("shows, applies, and resets an overview filter", async () => {
+    const onResetOverviewFilter = vi.fn();
+    render(
+      <OperatorView
+        dashboard={dashboard}
+        deepLink={{ overviewFilter: "ready_for_batch" }}
+        onResetOverviewFilter={onResetOverviewFilter}
+      />
+    );
+
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    expect(screen.getByText("Issue #124")).toBeInTheDocument();
+    expect(screen.getByText("Issue #124").closest("tr")).not.toHaveClass("operator-row-highlight");
+    expect(screen.queryByText("PR #123")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset filter" }));
+    expect(onResetOverviewFilter).toHaveBeenCalledOnce();
+  });
+
+  it("names an empty active filter and offers a reset", () => {
+    render(<OperatorView dashboard={dashboard} deepLink={{ overviewFilter: "qa_attention" }} onResetOverviewFilter={() => undefined} />);
+
+    expect(screen.getByText("No loaded row matches the QA needs attention filter.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset filter" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset filter and show all operator rows" })).toHaveTextContent("Reset filter");
   });
 
   it("renders missing liveness as UNKNOWN instead of the raw none value", () => {

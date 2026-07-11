@@ -11,7 +11,12 @@ import { OverviewTab } from "./components/OverviewTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { SignalGroupList } from "./components/SignalGroups";
 import { WorkTab } from "./components/WorkTab";
-import { hasStructuredOperatorDeepLink, operatorDeepLinkFromSearchParams } from "./operatorRows";
+import {
+  hasStructuredOperatorDeepLink,
+  operatorDeepLinkFromSearchParams,
+  type OperatorDeepLink,
+  type OverviewOperatorFilter
+} from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
 
 type Tab = "overview" | "operator" | "work" | "batches" | "machines" | "health";
@@ -26,6 +31,31 @@ export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
 
 function readOperatorDeepLink() {
   return operatorDeepLinkFromSearchParams(new URLSearchParams(window.location.search));
+}
+
+export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter, query: string): OperatorDeepLink {
+  return { overviewFilter: filter, query: query || undefined };
+}
+
+function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: "push" | "replace") {
+  const url = new URL(window.location.href);
+  for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q"]) {
+    url.searchParams.delete(key);
+  }
+  const values = {
+    batch: deepLink.batchId,
+    lane: deepLink.laneName,
+    repo: deepLink.repo,
+    target: deepLink.target,
+    operatorFilter: deepLink.overviewFilter,
+    q: query || undefined
+  };
+  for (const [key, value] of Object.entries(values)) {
+    if (value) {
+      url.searchParams.set(key, value);
+    }
+  }
+  window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function canSelectWorkItem(item: WorkItem): boolean {
@@ -53,7 +83,7 @@ export function App() {
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [operatorDeepLink] = useState(readOperatorDeepLink);
+  const [operatorDeepLink, setOperatorDeepLink] = useState(readOperatorDeepLink);
   const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
   const [activeTab, setActiveTab] = useState<Tab>(() =>
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) ? "operator" : "overview"
@@ -134,6 +164,22 @@ export function App() {
   }, [loadDashboard]);
 
   useEffect(() => {
+    function restoreLocation() {
+      const nextDeepLink = readOperatorDeepLink();
+      setOperatorDeepLink(nextDeepLink);
+      setOperatorQuery(nextDeepLink.query || "");
+      setActiveTab((currentTab) => {
+        if (currentTab !== "overview" && currentTab !== "operator") {
+          return currentTab;
+        }
+        return nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) ? "operator" : "overview";
+      });
+    }
+    window.addEventListener("popstate", restoreLocation);
+    return () => window.removeEventListener("popstate", restoreLocation);
+  }, []);
+
+  useEffect(() => {
     const refreshIntervalMs = settings?.refreshIntervalMs || 0;
     if (refreshIntervalMs <= 0) {
       return undefined;
@@ -196,6 +242,38 @@ export function App() {
         )
       };
     });
+  }
+
+  function openOverviewFilter(filter: OverviewOperatorFilter) {
+    const nextDeepLink = operatorDeepLinkForOverviewFilter(filter, operatorQuery);
+    setOperatorDeepLink(nextDeepLink);
+    setActiveTab("operator");
+    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
+  }
+
+  function resetOverviewFilter() {
+    const nextDeepLink = { ...operatorDeepLink, overviewFilter: undefined };
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
+  }
+
+  function clearExactOperatorLink() {
+    const nextDeepLink = {
+      ...operatorDeepLink,
+      batchId: undefined,
+      laneName: undefined,
+      repo: undefined,
+      target: undefined
+    };
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
+  }
+
+  function updateOperatorQuery(query: string) {
+    setOperatorQuery(query);
+    const nextDeepLink = { ...operatorDeepLink, query: query || undefined };
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, query, "replace");
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
@@ -364,9 +442,16 @@ export function App() {
             </button>
           </nav>
 
-          {activeTab === "overview" && <OverviewTab dashboard={dashboard} />}
+          {activeTab === "overview" && <OverviewTab dashboard={dashboard} onOpenOperatorFilter={openOverviewFilter} />}
           {activeTab === "operator" && (
-            <OperatorView dashboard={dashboard} deepLink={operatorDeepLink} onQueryChange={setOperatorQuery} query={operatorQuery} />
+            <OperatorView
+              dashboard={dashboard}
+              deepLink={operatorDeepLink}
+              onClearExactLink={clearExactOperatorLink}
+              onQueryChange={updateOperatorQuery}
+              onResetOverviewFilter={resetOverviewFilter}
+              query={operatorQuery}
+            />
           )}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
           {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}

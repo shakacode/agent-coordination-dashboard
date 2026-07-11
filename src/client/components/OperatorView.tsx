@@ -4,8 +4,12 @@ import type { DashboardModel } from "../../shared/types";
 import {
   buildOperatorRows,
   filterOperatorRows,
-  hasStructuredOperatorDeepLink,
+  filterOperatorRowsForOverview,
+  hasExactOperatorDeepLink,
+  OVERVIEW_OPERATOR_FILTER_LABELS,
+  operatorActivityLabel,
   operatorRowMatchesDeepLink,
+  safeGithubUrl,
   UNKNOWN,
   type OperatorDeepLink,
   type OperatorRow
@@ -15,27 +19,10 @@ import { StatusBadge } from "./StatusBadge";
 interface OperatorViewProps {
   dashboard: DashboardModel;
   deepLink?: OperatorDeepLink;
+  onClearExactLink?: () => void;
   onQueryChange?: (query: string) => void;
   query?: string;
-}
-
-function safeGithubUrl(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "github.com") {
-      return undefined;
-    }
-    const pathParts = url.pathname.split("/").filter(Boolean);
-    if (pathParts.length !== 4 || !["pull", "issues"].includes(pathParts[2]) || !/^\d+$/.test(pathParts[3])) {
-      return undefined;
-    }
-    return url.toString();
-  } catch {
-    return undefined;
-  }
+  onResetOverviewFilter?: () => void;
 }
 
 function display(value: string | undefined): string {
@@ -44,7 +31,7 @@ function display(value: string | undefined): string {
 
 function workLabel(row: OperatorRow): string {
   if (!row.target) {
-    return "Batch lane";
+    return row.source === "batch" ? "Batch" : "Batch lane";
   }
   if (row.type === "pull_request") {
     return `PR #${row.target}`;
@@ -141,7 +128,14 @@ function StateCounts({ rows }: { rows: OperatorRow[] }) {
   );
 }
 
-export function OperatorView({ dashboard, deepLink, onQueryChange, query: controlledQuery }: OperatorViewProps) {
+export function OperatorView({
+  dashboard,
+  deepLink,
+  onClearExactLink,
+  onQueryChange,
+  onResetOverviewFilter,
+  query: controlledQuery
+}: OperatorViewProps) {
   const rows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
   const [localQuery, setLocalQuery] = useState(deepLink?.query || "");
   const query = controlledQuery ?? localQuery;
@@ -160,13 +154,18 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, query: contro
     }
   }
 
-  const hasStructuredLink = hasStructuredOperatorDeepLink(deepLink);
+  const hasExactLink = hasExactOperatorDeepLink(deepLink);
+  const overviewRows = useMemo(
+    () => filterOperatorRowsForOverview(rows, dashboard, deepLink?.overviewFilter),
+    [dashboard, deepLink?.overviewFilter, rows]
+  );
   const linkedRows = useMemo(
-    () => (hasStructuredLink ? rows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : rows),
-    [deepLink, hasStructuredLink, rows]
+    () => (hasExactLink ? overviewRows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : overviewRows),
+    [deepLink, hasExactLink, overviewRows]
   );
   const visibleRows = useMemo(() => filterOperatorRows(linkedRows, query, dashboard.targetRepos), [dashboard.targetRepos, linkedRows, query]);
-  const noStructuredLinkMatch = hasStructuredLink && linkedRows.length === 0;
+  const noExactLinkMatch = hasExactLink && linkedRows.length === 0;
+  const noOverviewFilterMatch = Boolean(deepLink?.overviewFilter && overviewRows.length === 0);
 
   return (
     <section className="operator-view" aria-label="Operator view">
@@ -189,8 +188,39 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, query: contro
         </label>
       </header>
 
-      {noStructuredLinkMatch ? (
-        <p className="empty-state">No loaded row matches this link.</p>
+      {deepLink?.overviewFilter && (
+        <div className="operator-filter" role="status">
+          <span>
+            Active filter: <strong>{OVERVIEW_OPERATOR_FILTER_LABELS[deepLink.overviewFilter]}</strong>
+          </span>
+          <button onClick={onResetOverviewFilter} type="button">
+            Reset filter
+          </button>
+        </div>
+      )}
+
+      {noExactLinkMatch || noOverviewFilterMatch ? (
+        <div className="empty-state">
+          <p>
+            No loaded row matches
+            {noExactLinkMatch
+              ? " this link"
+              : deepLink?.overviewFilter
+                ? ` the ${OVERVIEW_OPERATOR_FILTER_LABELS[deepLink.overviewFilter]} filter`
+                : " this link"}.
+          </p>
+          {noExactLinkMatch ? (
+            <button onClick={onClearExactLink} type="button">
+              Clear link
+            </button>
+          ) : (
+            deepLink?.overviewFilter && (
+              <button aria-label="Reset filter and show all operator rows" onClick={onResetOverviewFilter} type="button">
+                Reset filter
+              </button>
+            )
+          )}
+        </div>
       ) : visibleRows.length === 0 ? (
         <p className="empty-state">No operator rows match.</p>
       ) : (
@@ -244,7 +274,7 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, query: contro
                     </td>
                     <td>
                       <div className="operator-stack">
-                        <strong>{display(row.activityStatus)}</strong>
+                        <strong>{operatorActivityLabel(display(row.activityStatus))}</strong>
                         <span>{row.lastActivityAge === UNKNOWN ? UNKNOWN : `${row.lastActivityAge} ago`}</span>
                       </div>
                     </td>
