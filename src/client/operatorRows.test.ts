@@ -480,6 +480,59 @@ describe("operatorRows", () => {
     ]);
   });
 
+  it("does not let a concrete repo event contaminate an ambiguous repository-UNKNOWN lane row", () => {
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "ambiguous-direct-event",
+      source: "manifest",
+      path: "batches/ambiguous-direct-event.json",
+      targets: [
+        { type: "issue", target: "123", repo: "repo/app" },
+        { type: "issue", target: "123", repo: "repo/api" }
+      ],
+      lanes: [
+        {
+          name: "implementation",
+          owner: "agent-a",
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [workItem({ provenance: { classification: "observed", evidence: ["github"] } })],
+        batches: [batch],
+        events: [
+          {
+            eventId: "api-target-event",
+            type: "phase",
+            batchId: "ambiguous-direct-event",
+            laneName: "implementation",
+            repo: "repo/api",
+            target: "123",
+            status: "working-api",
+            message: "API-only activity",
+            timestamp: "2026-07-09T19:59:00Z",
+            path: "events/ambiguous-direct-event.jsonl:1"
+          }
+        ]
+      })
+    );
+    const unknownRow = rows.find((row) => row.repo === "UNKNOWN");
+
+    expect(unknownRow).toMatchObject({
+      target: "123",
+      activityStatus: "queued",
+      activityMessage: undefined,
+      provenance: { classification: "unknown", evidence: ["manifest"] },
+      warnings: ["Target repository UNKNOWN: manifest target #123 matches multiple saved repositories."]
+    });
+  });
+
   it("allows only exact HTTPS GitHub issue and pull-request URLs", () => {
     expect(safeGithubUrl("https://github.com/repo/app/pull/123")).toBe("https://github.com/repo/app/pull/123");
     expect(safeGithubUrl("https://github.com/repo/app/issues/456?tab=activity#comment")).toBe(

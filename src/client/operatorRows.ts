@@ -584,11 +584,14 @@ function matchingEventsForLane(
     if (!eventMatchesBatchRecord(batch, event)) {
       return false;
     }
+    if (repo === UNKNOWN && event.repo) {
+      return false;
+    }
     if (event.laneName === lane.name) {
       if (!event.target || !target) {
         return true;
       }
-      return event.target === target && (!event.repo || !repo || repo === UNKNOWN || event.repo === repo);
+      return event.target === target && (!event.repo || !repo || event.repo === repo);
     }
     if (!event.target || !lane.targets.includes(event.target)) {
       return false;

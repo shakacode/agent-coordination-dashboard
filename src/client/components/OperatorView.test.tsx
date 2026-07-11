@@ -149,7 +149,7 @@ describe("OperatorView", () => {
     expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).toBeDisabled();
     expect(screen.queryByText("Issue #124")).not.toBeInTheDocument();
-    expect(screen.getByText("1 inferred or synthetic rows hidden")).toBeInTheDocument();
+    expect(screen.getByText("1 inferred or synthetic row hidden")).toBeInTheDocument();
     expect(screen.queryByText("2 inferred or synthetic rows hidden")).not.toBeInTheDocument();
     expect(screen.getByText("Overview summary filters use observed and UNKNOWN rows only.")).toBeInTheDocument();
   });

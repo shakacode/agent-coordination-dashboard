@@ -268,7 +268,9 @@ export function OperatorView({
         />
         <span>Show inferred and synthetic rows</span>
         {!includeDerivedRows && hiddenDerivedRowCount > 0 ? (
-          <small>{hiddenDerivedRowCount} inferred or synthetic rows hidden</small>
+          <small>
+            {hiddenDerivedRowCount} inferred or synthetic {hiddenDerivedRowCount === 1 ? "row" : "rows"} hidden
+          </small>
         ) : null}
         {summaryFilterUsesOrdinaryWork ? <small>Overview summary filters use observed and UNKNOWN rows only.</small> : null}
         {deepLink?.overviewFilter === "batch_repair" ? (
