@@ -466,6 +466,29 @@ textarea {
   list-style: none;
 }
 
+.operator-metadata-disclosure {
+  margin-top: 0.35rem;
+  color: #5f6b7a;
+  font-size: 0.72rem;
+}
+
+.operator-metadata-disclosure summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.operator-metadata-disclosure ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1rem;
+}
+
+.metadata-provenance-inline {
+  display: block;
+  margin-top: 0.15rem;
+  color: #5f6b7a;
+  font-size: 0.72rem;
+}
+
 .operator-pr-link {
   display: inline-flex;
   align-items: center;

@@ -7,23 +7,26 @@ export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
     return <p className="empty-state">No agents or heartbeats found.</p>;
   }
 
-  const agentsByMachine = agents.reduce<Map<string, AgentSummary[]>>((groups, agent) => {
-    const machineId = agent.machineId || "UNKNOWN machine";
-    groups.set(machineId, [...(groups.get(machineId) || []), agent]);
+  const agentsByMachine = agents.reduce<Map<string, { label: string; agents: AgentSummary[] }>>((groups, agent) => {
+    const state = agent.machineMetadata?.state || (agent.machineId ? "observed" : agent.heartbeat ? "missing" : "not_applicable");
+    const label = agent.machineId || (state === "not_applicable" ? "Not applicable" : "UNKNOWN machine");
+    const key = `${state}:${label}`;
+    const group = groups.get(key) || { label, agents: [] };
+    groups.set(key, { ...group, agents: [...group.agents, agent] });
     return groups;
   }, new Map());
 
   return (
     <section className="machine-groups">
-      {Array.from(agentsByMachine.entries()).map(([machineId, machineAgents]) => (
-        <section className="machine-group" key={machineId}>
+      {Array.from(agentsByMachine.entries()).map(([machineKey, group]) => (
+        <section className="machine-group" key={machineKey}>
           <header className="machine-heading">
             <Monitor size={18} aria-hidden="true" />
-            <h2>{machineId}</h2>
-            <span>{machineAgents.length} agents</span>
+            <h2>{group.label}</h2>
+            <span>{group.agents.length} agents</span>
           </header>
           <div className="panel-grid">
-            {machineAgents.map((agent) => (
+            {group.agents.map((agent) => (
               <article className="panel" key={agent.agentId}>
                 <header className="panel-header">
                   <Monitor size={18} aria-hidden="true" />
@@ -35,7 +38,15 @@ export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
                 <dl className="detail-list">
                   <div>
                     <dt>Machine</dt>
-                    <dd>{agent.machineId || "UNKNOWN"}</dd>
+                    <dd>
+                      <span>{agent.machineId || (agent.machineMetadata?.state === "not_applicable" ? "Not applicable" : "UNKNOWN")}</span>
+                      {agent.machineMetadata && (
+                        <small className="metadata-provenance-inline">
+                          {agent.machineMetadata.state.replace("_", " ")}
+                          {agent.machineMetadata.source ? ` from ${agent.machineMetadata.source.replace("_", " ")}` : ""}
+                        </small>
+                      )}
+                    </dd>
                   </div>
                   <div>
                     <dt>Claims</dt>

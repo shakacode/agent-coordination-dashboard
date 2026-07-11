@@ -7,6 +7,8 @@ import type {
   DashboardModel,
   HeartbeatRecord,
   Liveness,
+  MetadataProvenance,
+  MetadataSource,
   WorkItem,
   WorkItemType
 } from "../shared/types";
@@ -94,6 +96,16 @@ export interface OperatorRow {
   operator?: string;
   branch?: string;
   prUrl?: string;
+  metadata: {
+    owner: MetadataProvenance;
+    thread: MetadataProvenance;
+    host: MetadataProvenance;
+    machine: MetadataProvenance;
+    branch: MetadataProvenance;
+    prUrl: MetadataProvenance;
+    batch: MetadataProvenance;
+    activity: MetadataProvenance;
+  };
   warnings: string[];
   searchText: string;
 }
@@ -102,7 +114,7 @@ interface BuildOperatorRowsOptions {
   now?: Date | string;
 }
 
-interface MetadataSource {
+interface MetadataFields {
   agentId?: string;
   machineId?: string;
   threadHandle?: string;
@@ -121,6 +133,22 @@ const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|valid
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
   return values.find((value) => Boolean(value?.trim()));
+}
+
+function observed(value: string | undefined, source: MetadataSource): MetadataProvenance {
+  return value?.trim() ? { value, state: "observed", source } : { state: "missing", source };
+}
+
+function notApplicable(): MetadataProvenance {
+  return { state: "not_applicable" };
+}
+
+function firstObserved(
+  fallback: MetadataProvenance,
+  ...candidates: Array<[MetadataSource, string | undefined]>
+): MetadataProvenance {
+  const selected = candidates.find(([, value]) => Boolean(value?.trim()));
+  return selected ? observed(selected[1], selected[0]) : fallback;
 }
 
 function timestampMs(value: string | undefined): number {
@@ -196,7 +224,7 @@ function targetUrlFromBatch(batch: BatchRecord, target: string): string | undefi
   return batch.targets?.find((batchTarget) => batchTarget.target === target)?.url;
 }
 
-function metadataFrom(...sources: Array<MetadataSource | undefined>): MetadataSource {
+function metadataFrom(...sources: Array<MetadataFields | undefined>): MetadataFields {
   return {
     agentId: firstValue(...sources.map((source) => source?.agentId)),
     machineId: firstValue(...sources.map((source) => source?.machineId)),
@@ -208,7 +236,7 @@ function metadataFrom(...sources: Array<MetadataSource | undefined>): MetadataSo
   };
 }
 
-function laneMetadata(lane: BatchLane | undefined): MetadataSource | undefined {
+function laneMetadata(lane: BatchLane | undefined): MetadataFields | undefined {
   if (!lane) {
     return undefined;
   }
@@ -222,7 +250,7 @@ function laneMetadata(lane: BatchLane | undefined): MetadataSource | undefined {
   };
 }
 
-function eventMetadata(event: BatchEvent | undefined): MetadataSource | undefined {
+function eventMetadata(event: BatchEvent | undefined): MetadataFields | undefined {
   if (!event) {
     return undefined;
   }
@@ -235,6 +263,13 @@ function eventMetadata(event: BatchEvent | undefined): MetadataSource | undefine
     branch: event.branch,
     prUrl: event.prUrl
   };
+}
+
+function eventMetadataFromHistory(events: BatchEvent[]): MetadataFields | undefined {
+  const newestFirst = [...events].sort(
+    (left, right) => timestampMs(right.timestamp) - timestampMs(left.timestamp)
+  );
+  return newestFirst.length ? metadataFrom(...newestFirst.map(eventMetadata)) : undefined;
 }
 
 function stateText(values: Array<string | undefined>): string {
@@ -312,15 +347,21 @@ function isActiveOperatorState(state: OperatorState): boolean {
   return ["running", "wedged", "paused", "blocked", "stale", "dead"].includes(state);
 }
 
-function metadataWarnings(row: Pick<OperatorRow, "operatorState" | "type" | "threadHandle" | "operator" | "host" | "prUrl">): string[] {
-  if (!isActiveOperatorState(row.operatorState)) {
+function metadataWarnings(
+  row: Pick<OperatorRow, "operatorState" | "metadata">,
+  requiresActiveOperatorFields?: boolean
+): string[] {
+  const fieldsAreRequired = requiresActiveOperatorFields ?? isActiveOperatorState(row.operatorState);
+  if (!fieldsAreRequired) {
     return [];
   }
   return [
-    row.threadHandle ? "" : "Thread UNKNOWN",
-    row.operator ? "" : "Operator UNKNOWN",
-    row.host ? "" : "Host UNKNOWN",
-    row.type === "pull_request" && !row.prUrl ? "PR URL UNKNOWN" : ""
+    !row.metadata.owner.value ? "Operator UNKNOWN" : "",
+    !row.metadata.thread.value ? "Thread UNKNOWN" : "",
+    !row.metadata.host.value ? "Host UNKNOWN" : "",
+    row.metadata.machine.state === "missing" ? "Machine UNKNOWN" : "",
+    row.metadata.prUrl.state === "missing" ? "PR URL UNKNOWN" : "",
+    row.metadata.activity.state === "missing" ? "Activity UNKNOWN" : ""
   ].filter(Boolean);
 }
 
@@ -548,12 +589,13 @@ function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): Non
 function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number): OperatorRow {
   const matchingEvents = matchingEventsForWork(item, dashboard.events);
   const latest = latestEvent(matchingEvents);
+  const eventHistoryMetadata = eventMetadataFromHistory(matchingEvents);
   const transitionEvent = latestTransitionEvent(matchingEvents);
   const { batch, lane } = findSignalLane(item, dashboard.batches);
   const signal = preferredSignalForWork(item);
   const batchTarget = batchTargetForWork(batch, item);
   const blockedOn = [...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean);
-  const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventMetadata(latest));
+  const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventHistoryMetadata);
   const state = deriveOperatorState({
     workItem: item,
     heartbeat: item.heartbeat,
@@ -566,6 +608,68 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     nowMs
   });
   const lastActivityAt = maxTimestamp(latest?.timestamp, item.heartbeat?.updatedAt, item.claim?.updatedAt);
+  const ownerMetadata = firstObserved(
+    notApplicable(),
+    ["claim", item.claim?.operator],
+    ["heartbeat", item.heartbeat?.operator],
+    ["manifest", lane?.operator],
+    ["event", eventHistoryMetadata?.operator]
+  );
+  const threadMetadata = firstObserved(
+    notApplicable(),
+    ["claim", item.claim?.threadHandle],
+    ["heartbeat", item.heartbeat?.threadHandle],
+    ["manifest", lane?.threadHandle],
+    ["event", eventHistoryMetadata?.threadHandle]
+  );
+  const hostMetadata = firstObserved(
+    notApplicable(),
+    ["claim", item.claim?.host],
+    ["heartbeat", item.heartbeat?.host],
+    ["manifest", lane?.host],
+    ["event", eventHistoryMetadata?.host]
+  );
+  const machineMetadata = firstObserved(
+    item.heartbeat ? { state: "missing", source: "heartbeat" } : notApplicable(),
+    ["heartbeat", item.heartbeat?.machineId],
+    ["claim", item.claim?.machineId],
+    ["event", eventHistoryMetadata?.machineId]
+  );
+  const branchMetadata = firstObserved(
+    notApplicable(),
+    ["claim", item.claim?.branch],
+    ["heartbeat", item.heartbeat?.branch],
+    ["manifest", lane?.branch],
+    ["event", eventHistoryMetadata?.branch]
+  );
+  const prUrlMetadata = firstObserved(
+    item.type === "pull_request" ? { state: "missing", source: "github" } : notApplicable(),
+    ["claim", item.claim?.prUrl],
+    ["heartbeat", item.heartbeat?.prUrl],
+    ["manifest", lane?.prUrl],
+    ["event", eventHistoryMetadata?.prUrl],
+    ["github", item.type === "pull_request" ? item.github?.url : undefined]
+  );
+  const batchId = signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId;
+  const batchMetadata = batchId
+    ? batch?.source === "inferred"
+      ? { value: batchId, state: "inferred" as const, source: "inferred_batch" as const }
+      : firstObserved(
+          notApplicable(),
+          ["manifest", signal?.batchId],
+          ["claim", item.claim?.batchId],
+          ["heartbeat", item.heartbeat?.batchId],
+          ["event", latest?.batchId],
+          ["manifest", batch?.batchId]
+        )
+    : notApplicable();
+  const activityMetadata = firstObserved(
+    { value: item.schedulingState, state: "inferred", source: "dashboard" },
+    ["event", latest?.status || latest?.type],
+    ["heartbeat", item.heartbeat?.status],
+    ["claim", item.claim?.status],
+    ["manifest", signal?.status || lane?.status]
+  );
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `target:${item.repo}#${item.target}`,
     source: "target",
@@ -577,27 +681,40 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     operatorState: state,
     liveness: item.heartbeat?.liveness || "none",
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
-    activityStatus: firstValue(latest?.status, latest?.type, item.heartbeat?.status, signal?.status, lane?.status, item.schedulingState) || UNKNOWN,
+    activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
     lastActivityAt,
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
-    batchId: signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId,
+    batchId,
     batchPath: batch?.path,
     laneName: signal?.laneName || lane?.name,
     dependencies: lane?.dependsOn || [],
     blockedOn,
     agentId: metadata.agentId,
-    machineId: metadata.machineId,
-    threadHandle: metadata.threadHandle,
-    host: metadata.host,
-    operator: metadata.operator,
-    branch: metadata.branch,
-    prUrl: metadata.prUrl,
+    machineId: machineMetadata.value,
+    threadHandle: threadMetadata.value,
+    host: hostMetadata.value,
+    operator: ownerMetadata.value,
+    branch: branchMetadata.value,
+    prUrl: prUrlMetadata.value,
+    metadata: {
+      owner: ownerMetadata,
+      thread: threadMetadata,
+      host: hostMetadata,
+      machine: machineMetadata,
+      branch: branchMetadata,
+      prUrl: prUrlMetadata,
+      batch: batchMetadata,
+      activity: activityMetadata
+    },
     warnings: item.warnings.map((warning) => warning.message)
   };
-  const warnings = [...baseRow.warnings, ...metadataWarnings(baseRow)];
+  const warnings = [
+    ...baseRow.warnings,
+    ...metadataWarnings(baseRow, item.schedulingState === "in_process")
+  ];
   const row = { ...baseRow, warnings };
   return { ...row, searchText: rowSearchText(row) };
 }
@@ -605,12 +722,18 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
 function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[], nowMs: number): OperatorRow {
   const matchingEvents = matchingEventsForLane(batch, lane, events);
   const latest = latestEvent(matchingEvents);
+  const eventHistoryMetadata = eventMetadataFromHistory(matchingEvents);
   const transitionEvent = latestTransitionEvent(matchingEvents);
   const firstTarget = lane.targets[0];
   const repo = (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
   const target = firstTarget || undefined;
   const type = firstTarget ? targetTypeFromBatch(batch, firstTarget) : "unknown";
-  const metadata = metadataFrom(laneMetadata(lane), eventMetadata(latest));
+  const metadata = metadataFrom(laneMetadata(lane), eventHistoryMetadata);
+  const ownerMetadata = firstObserved(
+    notApplicable(),
+    ["manifest", lane.operator],
+    ["event", eventHistoryMetadata?.operator]
+  );
   const state = deriveOperatorState({
     lane,
     event: latest,
@@ -646,9 +769,37 @@ function buildLaneRow(batch: BatchRecord, lane: BatchLane, events: BatchEvent[],
     machineId: metadata.machineId,
     threadHandle: metadata.threadHandle,
     host: metadata.host,
-    operator: metadata.operator,
+    operator: ownerMetadata.value,
     branch: metadata.branch,
     prUrl: metadata.prUrl,
+    metadata: {
+      owner: ownerMetadata,
+      thread: firstObserved(
+        notApplicable(),
+        ["manifest", lane.threadHandle],
+        ["event", eventHistoryMetadata?.threadHandle]
+      ),
+      host: firstObserved(notApplicable(), ["manifest", lane.host], ["event", eventHistoryMetadata?.host]),
+      machine: eventHistoryMetadata?.machineId ? observed(eventHistoryMetadata.machineId, "event") : notApplicable(),
+      branch: firstObserved(notApplicable(), ["manifest", lane.branch], ["event", eventHistoryMetadata?.branch]),
+      prUrl:
+        type === "pull_request"
+          ? firstObserved(
+              { state: "missing", source: "manifest" },
+              ["manifest", lane.prUrl],
+              ["event", eventHistoryMetadata?.prUrl]
+            )
+          : notApplicable(),
+      batch:
+        batch.source === "inferred"
+          ? { value: batch.batchId, state: "inferred", source: "inferred_batch" }
+          : observed(batch.batchId, "manifest"),
+      activity: firstObserved(
+        { state: "missing", source: "manifest" },
+        ["event", latest?.status || latest?.type],
+        ["manifest", lane.status]
+      )
+    },
     warnings: []
   };
   const warnings = metadataWarnings(baseRow);
@@ -767,12 +918,35 @@ function repairActivityStatus(batch: BatchRecord | undefined, operation: BatchOp
   return batch?.source === "inferred" ? "batch_plan_missing" : "prompt_missing";
 }
 
-function repairStatusPresentationRow(row: OperatorRow, activityStatus: string): OperatorRow {
-  const presentation = { ...row, activityStatus };
+function repairActivityMetadata(
+  batch: BatchRecord | undefined,
+  operation: BatchOperation | undefined,
+  activityStatus: string
+): MetadataProvenance {
+  if (operation && operation.controlStatus !== "running") {
+    return { value: activityStatus, state: "inferred", source: "event" };
+  }
+  if (batch?.source === "inferred") {
+    return { value: activityStatus, state: "inferred", source: "inferred_batch" };
+  }
+  return { value: activityStatus, state: "inferred", source: "dashboard" };
+}
+
+function repairStatusPresentationRow(
+  row: OperatorRow,
+  activityStatus: string,
+  activityMetadata: MetadataProvenance
+): OperatorRow {
+  const presentation = { ...row, activityStatus, metadata: { ...row.metadata, activity: activityMetadata } };
   return { ...presentation, searchText: rowSearchText(presentation) };
 }
 
-function batchTargetPresentationRow(row: OperatorRow, batch: BatchRecord, activityStatus: string): OperatorRow {
+function batchTargetPresentationRow(
+  row: OperatorRow,
+  batch: BatchRecord,
+  activityStatus: string,
+  activityMetadata: MetadataProvenance
+): OperatorRow {
   const lane = batch.lanes.find((candidate) => Boolean(row.target && candidate.targets.includes(row.target)));
   const presentation = {
     ...row,
@@ -780,7 +954,8 @@ function batchTargetPresentationRow(row: OperatorRow, batch: BatchRecord, activi
     batchId: batch.batchId,
     batchPath: batch.path,
     laneName: lane?.name || row.laneName,
-    activityStatus
+    activityStatus,
+    metadata: { ...row.metadata, activity: activityMetadata }
   };
   return { ...presentation, searchText: rowSearchText(presentation) };
 }
@@ -791,6 +966,7 @@ function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOpe
   const batchPath = batch?.path || operation?.batchPath;
   const lastActivityAt = maxTimestamp(operation?.latestEventAt, batch?.updatedAt, batch?.createdAt);
   const activityStatus = repairActivityStatus(batch, operation);
+  const activityMetadata = repairActivityMetadata(batch, operation, activityStatus);
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `batch-repair:${batchPath || repo}:${batchId}`,
     source: "batch",
@@ -807,6 +983,20 @@ function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOpe
     batchPath,
     dependencies: [],
     blockedOn: [],
+    metadata: {
+      owner: notApplicable(),
+      thread: notApplicable(),
+      host: notApplicable(),
+      machine: notApplicable(),
+      branch: notApplicable(),
+      prUrl: notApplicable(),
+      batch: batch?.source === "inferred"
+        ? { value: batchId, state: "inferred", source: "inferred_batch" }
+        : batch
+          ? observed(batchId, "manifest")
+          : { value: batchId, state: "inferred", source: "event" },
+      activity: activityMetadata
+    },
     warnings: []
   };
   return { ...baseRow, searchText: rowSearchText(baseRow) };
@@ -843,12 +1033,13 @@ export function filterOperatorRowsForOverview(
   for (const batch of repairBatches) {
     const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
     const activityStatus = repairActivityStatus(batch, operation);
+    const activityMetadata = repairActivityMetadata(batch, operation, activityStatus);
     const matchingRows = rows.filter((row) => rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch));
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
         const presentationRow = rowMatchesBatchScope(row, batch)
-          ? repairStatusPresentationRow(row, activityStatus)
-          : batchTargetPresentationRow(row, batch, activityStatus);
+          ? repairStatusPresentationRow(row, activityStatus, activityMetadata)
+          : batchTargetPresentationRow(row, batch, activityStatus, activityMetadata);
         results.set(presentationRow.id, presentationRow);
       }
       continue;
@@ -864,7 +1055,14 @@ export function filterOperatorRowsForOverview(
     const matchingRows = rows.filter((row) => rowMatchesOperationScope(row, operation));
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
-        results.set(row.id, repairStatusPresentationRow(row, operation.controlStatus));
+        results.set(
+          row.id,
+          repairStatusPresentationRow(
+            row,
+            operation.controlStatus,
+            repairActivityMetadata(undefined, operation, operation.controlStatus)
+          )
+        );
       }
       continue;
     }

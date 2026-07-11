@@ -21,6 +21,7 @@ import { isQaEventType } from "../../shared/qaEvents";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
+const TERMINAL_EVENT_PATTERN = /(?:^|[._-])(complete|completed|done|merged|closed|released)(?:$|[._-])/i;
 const REDACTED_DEPENDENCY_REF = "outside saved target repositories";
 
 interface BuildInput {
@@ -873,6 +874,23 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       return event.repo && targetRepoSet.has(event.repo) ? [event] : [];
     })
     .sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp) || left.path.localeCompare(right.path));
+  const eventsByWork = new Map<string, BatchEvent[]>();
+  for (const event of scopedEvents) {
+    if (event.repo && event.target) {
+      const id = workId(event.repo, event.target);
+      eventsByWork.set(id, [...(eventsByWork.get(id) || []), event]);
+    }
+  }
+  const nonterminalEventWorkKeys = Array.from(eventsByWork.entries())
+    .filter(([, events]) => {
+      const lifecycleEvent = events.find((event) => !isQaEventType(event.type));
+      return Boolean(
+        lifecycleEvent &&
+          !TERMINAL_EVENT_PATTERN.test(lifecycleEvent.type) &&
+          !TERMINAL_EVENT_PATTERN.test(lifecycleEvent.status || "")
+      );
+    })
+    .map(([id]) => id);
   const scopedInputWarnings = input.warnings
     .map((warning) => scopedInputWarning(warning, targetRepoSet))
     .filter((warning): warning is CoordinationWarning => Boolean(warning));
@@ -961,7 +979,12 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       }
     }
   }
-  const workKeys = new Set<string>([...claimsByWork.keys(), ...previewsByWork.keys(), ...batchSignalsByWork.keys()]);
+  const workKeys = new Set<string>([
+    ...claimsByWork.keys(),
+    ...previewsByWork.keys(),
+    ...batchSignalsByWork.keys(),
+    ...nonterminalEventWorkKeys
+  ]);
 
   for (const heartbeat of scopedHeartbeats) {
     if (heartbeat.repo && heartbeat.target) {
@@ -986,7 +1009,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         workHeartbeats[0];
       const github = previewsByWork.get(id);
       const batchTarget = batchTargetsByWork.get(id);
-      const schedulingState = classifyWork(claim, heartbeat, batchSignals);
+      const eventRecovery = !claim && !heartbeat && batchSignals.length === 0 && eventsByWork.has(id);
+      const schedulingState = eventRecovery ? "started_not_processing" : classifyWork(claim, heartbeat, batchSignals);
       const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, batchSignals, schedulingState);
 
       return {
@@ -1078,7 +1102,11 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const workByAgent = new Map<string, WorkItem[]>();
   for (const item of workItems) {
-    const agentIds = new Set([item.claim?.agentId, item.heartbeat?.agentId].filter((agentId): agentId is string => Boolean(agentId)));
+    const eventAgentId = eventsByWork.get(item.id)?.find((event) => event.agentId)?.agentId;
+    const coordinationAgentIds = [item.claim?.agentId, item.heartbeat?.agentId].filter(
+      (agentId): agentId is string => Boolean(agentId)
+    );
+    const agentIds = new Set(coordinationAgentIds.length > 0 ? coordinationAgentIds : eventAgentId ? [eventAgentId] : []);
     for (const agentId of agentIds) {
       workByAgent.set(agentId, [...(workByAgent.get(agentId) || []), item]);
     }
@@ -1086,21 +1114,36 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const agentIds = new Set<string>([
     ...currentClaims.map((claim) => claim.agentId),
-    ...scopedHeartbeats.map((heartbeat) => heartbeat.agentId)
+    ...scopedHeartbeats.map((heartbeat) => heartbeat.agentId),
+    ...scopedEvents.map((event) => event.agentId).filter((agentId): agentId is string => Boolean(agentId))
   ]);
   const agents: AgentSummary[] = Array.from(agentIds)
     .sort()
     .map((agentId) => {
       const heartbeat = heartbeatsByAgent.get(agentId);
       const claims = currentClaims.filter((claim) => claim.agentId === agentId);
+      const latestEvent = scopedEvents.find((event) => event.agentId === agentId);
+      const claimWithMachine = claims.find((claim) => claim.machineId);
+      const eventWithMachine = scopedEvents.find((event) => event.agentId === agentId && event.machineId);
       const currentWork = workByAgent.get(agentId) || [];
       const warnings = currentWork.flatMap((item) => item.warnings);
-      const machineId = heartbeat?.machineId || claims.find((item) => item.machineId)?.machineId;
+      const machineId = heartbeat?.machineId || claimWithMachine?.machineId || eventWithMachine?.machineId;
+      const machineMetadata = heartbeat?.machineId
+        ? { value: heartbeat.machineId, state: "observed" as const, source: "heartbeat" as const }
+        : claimWithMachine?.machineId
+          ? { value: claimWithMachine.machineId, state: "observed" as const, source: "claim" as const }
+          : eventWithMachine?.machineId
+            ? { value: eventWithMachine.machineId, state: "observed" as const, source: "event" as const }
+            : heartbeat
+              ? { state: "missing" as const, source: "heartbeat" as const }
+              : { state: "not_applicable" as const };
 
       return {
         agentId,
         machineId,
+        machineMetadata,
         heartbeat,
+        latestEvent,
         claims,
         currentWork,
         liveness: heartbeat?.liveness || "no-heartbeat",
@@ -1109,39 +1152,24 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     });
 
   const healthItems: HealthItem[] = [];
-  for (const heartbeat of scopedHeartbeats) {
-    if (!heartbeat.machineId) {
+  for (const agent of agents) {
+    if (agent.machineMetadata?.state === "missing" && agent.heartbeat) {
       healthItems.push(
         healthItem({
           severity: "warning",
           category: "machine",
           title: "Heartbeat missing machine id",
-          detail: `${heartbeat.agentId} does not report machine_id, so machine ownership cannot be shown reliably.`,
-          agentId: heartbeat.agentId,
-          repo: heartbeat.repo,
-          target: heartbeat.target,
-          batchId: heartbeat.batchId
+          detail: `${agent.agentId} does not report machine_id, so machine ownership cannot be shown reliably.`,
+          agentId: agent.agentId,
+          repo: agent.heartbeat.repo,
+          target: agent.heartbeat.target,
+          batchId: agent.heartbeat.batchId
         })
       );
     }
   }
 
   for (const claim of currentClaims) {
-    if (!claim.machineId) {
-      healthItems.push(
-        healthItem({
-          severity: "info",
-          category: "machine",
-          title: "Claim missing machine id",
-          detail: `${claim.agentId} claimed ${claim.repo}#${claim.target} without machine_id.`,
-          agentId: claim.agentId,
-          repo: claim.repo,
-          target: claim.target,
-          batchId: claim.batchId
-        })
-      );
-    }
-
     if (claim.status === "active" && !heartbeatsByWork.get(workId(claim.repo, claim.target))?.some((item) => item.agentId === claim.agentId)) {
       healthItems.push(
         healthItem({

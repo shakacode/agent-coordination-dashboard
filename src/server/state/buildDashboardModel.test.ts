@@ -54,6 +54,22 @@ describe("buildDashboardModel", () => {
     expect(model.agents[0].agentId).toBe("worker-a");
   });
 
+  it("treats machine metadata as not applicable for claim-only agents", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [claim],
+      heartbeats: [],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect((model.agents[0] as any).machineMetadata).toEqual({ state: "not_applicable" });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Claim missing machine id");
+  });
+
   it("classifies dead heartbeat claims as started but not processing", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
@@ -129,6 +145,231 @@ describe("buildDashboardModel", () => {
 
     expect(model.workItems[0].schedulingState).toBe("in_process");
     expect(model.agents[0].currentWork[0].target).toBe("4005");
+  });
+
+  it("marks a heartbeat without machine identity as genuinely missing", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, machineId: undefined }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0].machineMetadata).toEqual({ state: "missing", source: "heartbeat" });
+    expect(model.healthItems.map((item) => item.title)).toContain("Heartbeat missing machine id");
+  });
+
+  it("uses claim machine metadata when the heartbeat omits it", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [{ ...claim, machineId: "m-claim" }],
+      heartbeats: [{ ...heartbeat, machineId: undefined }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      machineId: "m-claim",
+      machineMetadata: { value: "m-claim", state: "observed", source: "claim" }
+    });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("keeps event-only work and its observed machine source visible", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-only",
+          type: "phase",
+          agentId: "worker-event",
+          machineId: "m-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/event-only.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems).toHaveLength(1);
+    expect(model.workItems[0]).toMatchObject({
+      repo: "shakacode/react_on_rails",
+      target: "4005",
+      schedulingState: "started_not_processing"
+    });
+    expect(model.agents).toHaveLength(1);
+    expect(model.agents[0]).toMatchObject({
+      agentId: "worker-event",
+      machineId: "m-event",
+      machineMetadata: { value: "m-event", state: "observed", source: "event" },
+      currentWork: [expect.objectContaining({ target: "4005" })]
+    });
+  });
+
+  it("does not create live work from terminal-only event history", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-done",
+          type: "done",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "complete",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/event-done.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems).toEqual([]);
+    expect(model.agents[0]).toMatchObject({ agentId: "worker-event", currentWork: [] });
+  });
+
+  it("uses the newest event that names an agent when newer QA events are agentless", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-phase",
+          type: "phase",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:58:00Z",
+          path: "events/event-phase.json"
+        },
+        {
+          eventId: "event-qa",
+          type: "qa.validation_requested",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "requested",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/event-qa.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      agentId: "worker-event",
+      currentWork: [expect.objectContaining({ target: "4005" })]
+    });
+  });
+
+  it("keeps open GitHub items in recovery when nonterminal events have no current coordination", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-phase",
+          type: "phase",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/event-phase.json"
+        }
+      ],
+      githubItems: [{ ...preview, target: "4005" }],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0].schedulingState).toBe("started_not_processing");
+  });
+
+  it("uses event agents only when claim and heartbeat ownership are absent", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [claim],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-old-owner",
+          type: "phase",
+          agentId: "worker-old",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:58:00Z",
+          path: "events/event-old-owner.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents.find((agent) => agent.agentId === claim.agentId)?.currentWork).toHaveLength(1);
+    expect(model.agents.find((agent) => agent.agentId === "worker-old")?.currentWork).toEqual([]);
+  });
+
+  it("does not manufacture a missing machine for an event-only agent", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [
+        {
+          eventId: "event-only",
+          type: "phase",
+          agentId: "worker-event",
+          repo: "shakacode/react_on_rails",
+          target: "4005",
+          status: "coding",
+          timestamp: "2026-06-17T19:59:00Z",
+          path: "events/event-only.json"
+        }
+      ],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0].machineMetadata).toEqual({ state: "not_applicable" });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Event missing machine id");
   });
 
   it("does not let released claims block ready GitHub work", () => {
