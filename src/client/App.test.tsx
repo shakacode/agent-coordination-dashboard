@@ -141,7 +141,7 @@ describe("App", () => {
     expect(screen.getAllByText("1 claimed").length).toBeGreaterThan(0);
     expect(screen.getByText("1 QA needs attention")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show 0 batch repairs in Operator view" })).toHaveTextContent("0 batch repairs");
-    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.getByText("Missing")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Work" }));
 
@@ -205,6 +205,48 @@ describe("App", () => {
       expect(container.querySelectorAll(".operator-table tbody tr")).toHaveLength(item.rows);
       await userEvent.click(screen.getByRole("button", { name: "Overview" }));
     }
+  });
+
+  it("groups duplicate QA validation signals into the same target row used by the Operator filter", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              workItems: [model.workItems[1]],
+              qaValidations: [
+                {
+                  ...model.qaValidations[0],
+                  id: "qa-batch-a",
+                  batchId: "batch-a",
+                  laneName: "qa-a",
+                  status: "missing"
+                },
+                {
+                  ...model.qaValidations[0],
+                  id: "qa-batch-b",
+                  batchId: "batch-b",
+                  laneName: "qa-b",
+                  status: "in_progress"
+                }
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const qaPanel = (await screen.findByRole("heading", { name: "QA Validation" })).closest("article");
+    const panel = within(qaPanel as HTMLElement);
+    expect(screen.getByRole("button", { name: "Show 1 QA needs attention rows in Operator view" })).toBeInTheDocument();
+    expect(panel.getAllByText("PR #4005: Stale PR")).toHaveLength(1);
+    expect(panel.getByText("batch-a:qa-a (missing) · batch-b:qa-b (in_progress)")).toBeInTheDocument();
+    expect(panel.getByText("Missing")).toBeInTheDocument();
+    expect(panel.getByText("In progress")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 QA needs attention rows in Operator view" }));
+    expect(document.querySelectorAll(".operator-table tbody tr")).toHaveLength(1);
   });
 
   it("keeps a rowless repair batch consistent across the summary, panel, and Operator destination", async () => {

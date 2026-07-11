@@ -17,8 +17,14 @@ function workTitle(item: WorkItem): string {
   return `${kind} #${item.target}: ${item.github?.title || "UNKNOWN title"}`;
 }
 
-function qaTitle(item: QaValidationItem): string {
-  return `PR #${item.target}: ${item.title || "UNKNOWN title"}`;
+function qaRowTitle(row: OperatorRow): string {
+  const kind = row.type === "pull_request" ? "PR" : row.type === "issue" ? "Issue" : "Target";
+  return `${kind} #${row.target || UNKNOWN}: ${row.title}`;
+}
+
+function qaValidationScope(item: QaValidationItem): string {
+  const scope = item.batchId ? `${item.batchId}${item.laneName ? `:${item.laneName}` : ""}` : item.repo;
+  return `${scope} (${item.status})`;
 }
 
 function firstItems<T>(items: T[], count = 6): T[] {
@@ -36,9 +42,9 @@ export function OverviewTab({
   const startedItems = dashboard.workItems.filter((item) => item.schedulingState === "started_not_processing");
   const activeItems = dashboard.workItems.filter((item) => item.schedulingState === "in_process");
   const attentionItems = dashboard.healthItems.filter((item) => item.severity !== "info");
-  const missingQa = dashboard.qaValidations.filter((item) => item.status === "missing");
-  const failedQa = dashboard.qaValidations.filter((item) => item.status === "failed");
-  const activeQa = dashboard.qaValidations.filter((item) => item.status === "requested" || item.status === "in_progress");
+  const qaAttentionValidations = dashboard.qaValidations.filter((item) =>
+    ["failed", "missing", "requested", "in_progress"].includes(item.status)
+  );
   const overviewRows = useMemo<Record<OverviewOperatorFilter, OperatorRow[]>>(() => {
     const operatorRows = buildOperatorRows(dashboard);
     return {
@@ -56,6 +62,10 @@ export function OverviewTab({
   const overflowHealthGroups = healthGroups.slice(visibleHealthGroups.length);
   const overflowWarningGroups = warningGroups.slice(visibleWarningGroups.length);
   const overflowTypeCount = overflowHealthGroups.length + overflowWarningGroups.length;
+  const qaPresentationRows = overviewRows.qa_attention.map((row) => ({
+    row,
+    validations: qaAttentionValidations.filter((item) => row.repo === item.repo && row.target === item.target)
+  }));
   const renderHealth = (item: HealthItem) => (
     <>
       <div>
@@ -199,17 +209,21 @@ export function OverviewTab({
             <CheckCircle2 size={18} aria-hidden="true" />
             <h2>QA Validation</h2>
           </header>
-          {[...failedQa, ...missingQa, ...activeQa].length === 0 ? (
+          {qaPresentationRows.length === 0 ? (
             <p className="empty-state">No separate QA gaps for PRs.</p>
           ) : (
             <div className="overview-list">
-              {firstItems([...failedQa, ...missingQa, ...activeQa]).map((item) => (
-                <div className="overview-row" key={item.id}>
+              {firstItems(qaPresentationRows).map(({ row, validations }) => (
+                <div className="overview-row" key={row.id}>
                   <div>
-                    <strong>{qaTitle(item)}</strong>
-                    <span>{item.batchId ? `${item.batchId}${item.laneName ? `:${item.laneName}` : ""}` : item.repo}</span>
+                    <strong>{qaRowTitle(row)}</strong>
+                    <span>{validations.map(qaValidationScope).join(" · ")}</span>
                   </div>
-                  <StatusBadge value={item.status} />
+                  <div className="overview-row-statuses">
+                    {Array.from(new Set(validations.map((item) => item.status))).map((status) => (
+                      <StatusBadge key={status} value={status} />
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
