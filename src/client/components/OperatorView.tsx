@@ -232,7 +232,7 @@ export function OperatorView({
             </button>
           ) : (
             deepLink?.overviewFilter && (
-              <button onClick={onResetOverviewFilter} type="button">
+              <button aria-label="Reset filter and show all operator rows" onClick={onResetOverviewFilter} type="button">
                 Reset filter
               </button>
             )

@@ -144,7 +144,8 @@ describe("OperatorView", () => {
     render(<OperatorView dashboard={dashboard} deepLink={{ overviewFilter: "qa_attention" }} onResetOverviewFilter={() => undefined} />);
 
     expect(screen.getByText("No loaded row matches the QA needs attention filter.")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Reset filter" })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Reset filter" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset filter and show all operator rows" })).toHaveTextContent("Reset filter");
   });
 
   it("renders missing liveness as UNKNOWN instead of the raw none value", () => {
