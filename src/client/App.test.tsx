@@ -136,8 +136,8 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
     expect(screen.getByText("/state · 2 open or coordinated items")).toBeInTheDocument();
     expect(screen.getAllByText("1 ready").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("1 started").length).toBeGreaterThan(0);
-    expect(screen.getByText("1 missing QA")).toBeInTheDocument();
+    expect(screen.getAllByText("1 claimed").length).toBeGreaterThan(0);
+    expect(screen.getByText("2 QA attention")).toBeInTheDocument();
     expect(screen.getByText("In progress")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Work" }));
@@ -155,6 +155,44 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005"));
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
+  });
+
+  it("opens summary filters with keyboard activation and restores them through browser history", async () => {
+    render(<App />);
+
+    const readyAction = await screen.findByRole("button", { name: "Show 1 ready for batch rows in Operator view" });
+    readyAction.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(screen.getByRole("heading", { name: "Operator View" })).toBeInTheDocument();
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+    expect(screen.getByText("Issue #4010")).toBeInTheDocument();
+    expect(screen.queryByText("PR #4005")).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?operatorFilter=ready_for_batch");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset filter" }));
+    expect(screen.getByText("PR #4005")).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+
+    window.history.back();
+    await waitFor(() => expect(window.location.search).toBe("?operatorFilter=ready_for_batch"));
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch");
+
+    window.history.back();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Needs Attention" })).toBeInTheDocument());
+    window.history.forward();
+    await waitFor(() => expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Ready for batch"));
+  });
+
+  it("restores a shareable overview filter on reload while free-text search still applies", async () => {
+    window.history.pushState({}, "", "/?operatorFilter=needs_recovery&q=4005");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText("Search operator rows")).toHaveValue("4005"));
+    expect(screen.getByText("Active filter:").parentElement).toHaveTextContent("Claimed, not processing");
     expect(screen.getByText("PR #4005")).toBeInTheDocument();
     expect(screen.queryByText("Issue #4010")).not.toBeInTheDocument();
   });
@@ -275,6 +313,42 @@ describe("App", () => {
 
     await userEvent.click(panel.getByText("1 more type"));
     expect(panel.getByText("Another distinct warning.")).toBeInTheDocument();
+  });
+
+  it("groups repeated Overview attention types while retaining exact records", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              warnings: [],
+              healthItems: [
+                { ...model.healthItems[0], id: "health-a", detail: "worker-a does not report machine_id." },
+                { ...model.healthItems[0], id: "health-b", detail: "worker-b does not report machine_id.", agentId: "worker-b" },
+                ...Array.from({ length: 6 }, (_, index) => ({
+                  ...model.healthItems[0],
+                  id: `health-unique-${index}`,
+                  category: "batch",
+                  title: `Unique health type ${index}`,
+                  detail: `Exact health detail ${index}`
+                }))
+              ]
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const attentionPanel = (await screen.findByRole("heading", { name: "Needs Attention" })).closest("article");
+    const panel = within(attentionPanel as HTMLElement);
+    expect(panel.getByLabelText("2 occurrences")).toBeInTheDocument();
+    await userEvent.click(panel.getByText("Heartbeat missing machine id", { selector: "summary .signal-group-label" }));
+    expect(panel.getByText("worker-a does not report machine_id.")).toBeInTheDocument();
+    expect(panel.getByText("worker-b does not report machine_id.")).toBeInTheDocument();
+    expect(panel.getByText("1 more type")).toBeInTheDocument();
+    await userEvent.click(panel.getByText("1 more type"));
+    expect(panel.getByText("Exact health detail 5")).toBeInTheDocument();
   });
 
   it("saves target repository filters and reloads the dashboard", async () => {

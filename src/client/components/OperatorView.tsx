@@ -4,7 +4,9 @@ import type { DashboardModel } from "../../shared/types";
 import {
   buildOperatorRows,
   filterOperatorRows,
+  filterOperatorRowsForOverview,
   hasStructuredOperatorDeepLink,
+  OVERVIEW_OPERATOR_FILTER_LABELS,
   operatorRowMatchesDeepLink,
   UNKNOWN,
   type OperatorDeepLink,
@@ -17,6 +19,7 @@ interface OperatorViewProps {
   deepLink?: OperatorDeepLink;
   onQueryChange?: (query: string) => void;
   query?: string;
+  onResetOverviewFilter?: () => void;
 }
 
 function safeGithubUrl(value: string | undefined): string | undefined {
@@ -141,7 +144,7 @@ function StateCounts({ rows }: { rows: OperatorRow[] }) {
   );
 }
 
-export function OperatorView({ dashboard, deepLink, onQueryChange, query: controlledQuery }: OperatorViewProps) {
+export function OperatorView({ dashboard, deepLink, onQueryChange, onResetOverviewFilter, query: controlledQuery }: OperatorViewProps) {
   const rows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
   const [localQuery, setLocalQuery] = useState(deepLink?.query || "");
   const query = controlledQuery ?? localQuery;
@@ -161,9 +164,13 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, query: contro
   }
 
   const hasStructuredLink = hasStructuredOperatorDeepLink(deepLink);
+  const overviewRows = useMemo(
+    () => filterOperatorRowsForOverview(rows, dashboard, deepLink?.overviewFilter),
+    [dashboard, deepLink?.overviewFilter, rows]
+  );
   const linkedRows = useMemo(
-    () => (hasStructuredLink ? rows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : rows),
-    [deepLink, hasStructuredLink, rows]
+    () => (hasStructuredLink ? overviewRows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : overviewRows),
+    [deepLink, hasStructuredLink, overviewRows]
   );
   const visibleRows = useMemo(() => filterOperatorRows(linkedRows, query, dashboard.targetRepos), [dashboard.targetRepos, linkedRows, query]);
   const noStructuredLinkMatch = hasStructuredLink && linkedRows.length === 0;
@@ -189,8 +196,29 @@ export function OperatorView({ dashboard, deepLink, onQueryChange, query: contro
         </label>
       </header>
 
+      {deepLink?.overviewFilter && (
+        <div className="operator-filter" role="status">
+          <span>
+            Active filter: <strong>{OVERVIEW_OPERATOR_FILTER_LABELS[deepLink.overviewFilter]}</strong>
+          </span>
+          <button onClick={onResetOverviewFilter} type="button">
+            Reset filter
+          </button>
+        </div>
+      )}
+
       {noStructuredLinkMatch ? (
-        <p className="empty-state">No loaded row matches this link.</p>
+        <div className="empty-state">
+          <p>
+            No loaded row matches
+            {deepLink?.overviewFilter ? ` the ${OVERVIEW_OPERATOR_FILTER_LABELS[deepLink.overviewFilter]} filter` : " this link"}.
+          </p>
+          {deepLink?.overviewFilter && (
+            <button onClick={onResetOverviewFilter} type="button">
+              Reset filter
+            </button>
+          )}
+        </div>
       ) : visibleRows.length === 0 ? (
         <p className="empty-state">No operator rows match.</p>
       ) : (

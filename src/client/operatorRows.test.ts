@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { BatchRecord, ClaimRecord, DashboardModel, HeartbeatRecord, WorkItem } from "../shared/types";
-import { buildOperatorRows, filterOperatorRows } from "./operatorRows";
+import {
+  buildOperatorRows,
+  filterOperatorRows,
+  filterOperatorRowsForOverview,
+  operatorDeepLinkFromSearchParams
+} from "./operatorRows";
 
 const claim: ClaimRecord = {
   schemaVersion: 1,
@@ -1032,5 +1037,57 @@ describe("operatorRows", () => {
     expect(filterOperatorRows(rows, "justin").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "codex").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "github.com/repo/app/pull/123").map((row) => row.repo)).toEqual(["repo/app"]);
+  });
+
+  it("maps every overview filter to rows from explicit dashboard state", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({ claim, heartbeat }),
+        workItem({ id: "repo/app#124", target: "124", schedulingState: "ready_for_batch", claim: undefined, heartbeat: undefined }),
+        workItem({ id: "repo/app#125", target: "125", schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined })
+      ],
+      qaValidations: [
+        {
+          id: "repo/app#125",
+          repo: "repo/app",
+          target: "125",
+          type: "pull_request",
+          status: "missing",
+          detail: "Separate QA evidence is missing."
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "batch-1",
+          controlStatus: "stopped",
+          eventCount: 1,
+          stopRequestedAt: "2026-07-09T19:50:00Z",
+          stoppedAt: "2026-07-09T19:51:00Z",
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+
+    expect(filterOperatorRowsForOverview(rows, model, "processing_now").map((row) => row.target)).toEqual(["123"]);
+    expect(filterOperatorRowsForOverview(rows, model, "ready_for_batch").map((row) => row.target)).toEqual(["124"]);
+    expect(filterOperatorRowsForOverview(rows, model, "needs_recovery").map((row) => row.target)).toEqual(["125"]);
+    expect(filterOperatorRowsForOverview(rows, model, "qa_attention").map((row) => row.target)).toEqual(["125"]);
+    expect(filterOperatorRowsForOverview(rows, model, "batch_repair").map((row) => row.target)).toEqual(["123"]);
+  });
+
+  it("parses only supported overview filters from shareable search params", () => {
+    expect(operatorDeepLinkFromSearchParams(new URLSearchParams("operatorFilter=needs_recovery&q=owner"))).toMatchObject({
+      overviewFilter: "needs_recovery",
+      query: "owner"
+    });
+    expect(operatorDeepLinkFromSearchParams(new URLSearchParams("operatorFilter=made_up"))).toEqual({
+      batchId: undefined,
+      laneName: undefined,
+      overviewFilter: undefined,
+      query: undefined,
+      repo: undefined,
+      target: undefined
+    });
   });
 });

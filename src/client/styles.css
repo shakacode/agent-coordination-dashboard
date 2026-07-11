@@ -324,6 +324,29 @@ textarea {
   width: min(360px, 100%);
 }
 
+.operator-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #b2ccff;
+  border-radius: 6px;
+  background: #eff4ff;
+  padding: 7px 9px;
+  color: #253b80;
+  font-size: 12px;
+}
+
+.operator-filter button,
+.empty-state button {
+  border: 1px solid #84adff;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 4px 8px;
+  color: #175cd3;
+  cursor: pointer;
+}
+
 .operator-table-wrap {
   overflow-x: auto;
   border: 1px solid #d8e0e8;
@@ -506,6 +529,16 @@ textarea {
   border-radius: 8px;
   background: #ffffff;
   padding: 12px;
+  color: #172026;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.summary-card:hover,
+.summary-card:focus-visible {
+  border-color: #84adff;
+  background: #f5f8ff;
 }
 
 .summary-card strong {
@@ -548,6 +581,31 @@ textarea {
 .overview-list {
   display: grid;
   gap: 8px;
+}
+
+.overview-attention-groups,
+.overview-attention-overflow {
+  display: grid;
+  gap: 8px;
+}
+
+.overview-attention-groups .signal-group-item > div {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.overview-attention-groups .signal-group-item span {
+  overflow-wrap: anywhere;
+  color: #5f6b7a;
+  font-size: 12px;
+}
+
+.overview-attention-overflow summary {
+  cursor: pointer;
+  color: #175cd3;
+  font-size: 12px;
 }
 
 .overview-row {
@@ -1147,5 +1205,10 @@ textarea {
   .operator-search {
     max-width: none;
     width: 100%;
+  }
+
+  .operator-filter {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

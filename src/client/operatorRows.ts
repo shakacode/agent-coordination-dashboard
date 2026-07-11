@@ -16,6 +16,15 @@ export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
 
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
 export type OperatorRowSource = "target" | "lane";
+export type OverviewOperatorFilter = "ready_for_batch" | "needs_recovery" | "processing_now" | "qa_attention" | "batch_repair";
+
+export const OVERVIEW_OPERATOR_FILTER_LABELS: Record<OverviewOperatorFilter, string> = {
+  ready_for_batch: "Ready for batch",
+  needs_recovery: "Claimed, not processing",
+  processing_now: "Processing now",
+  qa_attention: "QA needs attention",
+  batch_repair: "Batch repair"
+};
 
 export interface OperatorDeepLink {
   batchId?: string;
@@ -23,6 +32,7 @@ export interface OperatorDeepLink {
   repo?: string;
   target?: string;
   query?: string;
+  overviewFilter?: OverviewOperatorFilter;
 }
 
 export interface OperatorRow {
@@ -646,17 +656,51 @@ export function filterOperatorRows(rows: OperatorRow[], query: string, targetRep
 }
 
 export function operatorDeepLinkFromSearchParams(params: URLSearchParams): OperatorDeepLink {
+  const overviewFilter = params.get("operatorFilter");
   return {
     batchId: params.get("batch") || undefined,
     laneName: params.get("lane") || undefined,
     repo: params.get("repo") || undefined,
     target: params.get("target") || undefined,
-    query: params.get("q") || undefined
+    query: params.get("q") || undefined,
+    overviewFilter:
+      overviewFilter && overviewFilter in OVERVIEW_OPERATOR_FILTER_LABELS
+        ? (overviewFilter as OverviewOperatorFilter)
+        : undefined
   };
 }
 
 export function hasStructuredOperatorDeepLink(deepLink?: OperatorDeepLink): boolean {
-  return Boolean(deepLink?.batchId || deepLink?.laneName || deepLink?.repo || deepLink?.target);
+  return Boolean(deepLink?.batchId || deepLink?.laneName || deepLink?.repo || deepLink?.target || deepLink?.overviewFilter);
+}
+
+function rowMatchesRepoTarget(row: OperatorRow, repo: string, target: string): boolean {
+  return row.repo === repo && row.target === target;
+}
+
+export function filterOperatorRowsForOverview(
+  rows: OperatorRow[],
+  dashboard: DashboardModel,
+  filter: OverviewOperatorFilter | undefined
+): OperatorRow[] {
+  if (!filter) {
+    return rows;
+  }
+  if (["ready_for_batch", "needs_recovery", "processing_now"].includes(filter)) {
+    const schedulingState =
+      filter === "ready_for_batch" ? "ready_for_batch" : filter === "needs_recovery" ? "started_not_processing" : "in_process";
+    const items = dashboard.workItems.filter((item) => item.schedulingState === schedulingState);
+    return rows.filter((row) => items.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
+  }
+  if (filter === "qa_attention") {
+    const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
+    return rows.filter((row) => qaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
+  }
+  const repairBatchIds = new Set([
+    ...dashboard.batches.filter((batch) => batch.source === "inferred" || !batch.launchPrompt).map((batch) => batch.batchId),
+    ...dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running").map((operation) => operation.batchId)
+  ]);
+  return rows.filter((row) => Boolean(row.batchId && repairBatchIds.has(row.batchId)));
 }
 
 export function operatorRowMatchesDeepLink(row: OperatorRow, deepLink?: OperatorDeepLink): boolean {
