@@ -5,6 +5,13 @@ export type WorkItemType = "issue" | "pull_request" | "unknown";
 export type WarningSeverity = "info" | "warning" | "critical";
 export type BatchControlStatus = "running" | "stop_requested" | "stopped";
 export type QaValidationStatus = "missing" | "requested" | "in_progress" | "passed" | "failed" | "unknown";
+export type MetadataProvenanceState = "observed" | "inferred" | "missing" | "not_applicable";
+export type MetadataSource = "claim" | "heartbeat" | "event" | "manifest" | "inferred_batch" | "github" | "dashboard";
+
+export type MetadataProvenance =
+  | { state: "observed" | "inferred"; value: string; source: MetadataSource }
+  | { state: "missing"; value?: never; source?: MetadataSource }
+  | { state: "not_applicable"; value?: never; source?: never };
 
 export interface DashboardSettings {
   targetRepos: string[];
@@ -199,7 +206,9 @@ export interface WorkItem {
 export interface AgentSummary {
   agentId: string;
   machineId?: string;
+  machineMetadata?: MetadataProvenance;
   heartbeat?: HeartbeatRecord;
+  latestEvent?: BatchEvent;
   claims: ClaimRecord[];
   currentWork: WorkItem[];
   liveness: Liveness;

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../../shared/types";
@@ -105,6 +105,60 @@ describe("OperatorView", () => {
 
     expect(screen.getByText("PR #123")).toBeInTheDocument();
     expect(screen.queryByText("Issue #124")).not.toBeInTheDocument();
+  });
+
+  it("keeps explicit metadata states and chosen sources in an accessible disclosure", () => {
+    render(<OperatorView dashboard={dashboard} />);
+
+    const row = screen.getByText("PR #123").closest("tr");
+    const disclosure = within(row as HTMLElement).getByText("Metadata provenance").closest("details");
+
+    expect(disclosure).toBeInTheDocument();
+    expect(within(disclosure as HTMLElement).getByText("Owner: observed from claim")).toBeInTheDocument();
+    expect(within(disclosure as HTMLElement).getByText("Machine: observed from heartbeat")).toBeInTheDocument();
+    expect(within(disclosure as HTMLElement).getByText("Activity: observed from heartbeat")).toBeInTheDocument();
+  });
+
+  it("names the source of inferred batch metadata in the disclosure", () => {
+    const inferredDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) =>
+        index === 0
+          ? {
+              ...item,
+              claim: item.claim ? { ...item.claim, batchId: "inferred-batch" } : undefined,
+              heartbeat: undefined,
+              batchSignals: [{ batchId: "inferred-batch", laneName: "agent-a", status: "active", blockedOn: [] }]
+            }
+          : item
+      ),
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "inferred-batch",
+          repo: "repo/app",
+          source: "inferred",
+          path: "inferred/repo/app/inferred-batch.json",
+          lanes: [
+            {
+              name: "agent-a",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "active",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    };
+
+    render(<OperatorView dashboard={inferredDashboard} />);
+
+    const row = screen.getByText("PR #123").closest("tr");
+    const disclosure = within(row as HTMLElement).getByText("Metadata provenance").closest("details");
+    expect(within(disclosure as HTMLElement).getByText("Batch: inferred from inferred batch")).toBeInTheDocument();
   });
 
   it("filters and highlights structured deep links without fetching more data", () => {

@@ -108,6 +108,37 @@ function WarningSummary({ warnings }: { warnings: string[] }) {
   );
 }
 
+const METADATA_LABELS: Array<[keyof OperatorRow["metadata"], string]> = [
+  ["owner", "Owner"],
+  ["thread", "Thread"],
+  ["host", "Host"],
+  ["machine", "Machine"],
+  ["branch", "Branch"],
+  ["prUrl", "PR URL"],
+  ["batch", "Batch"],
+  ["activity", "Activity"]
+];
+
+function metadataStateText(row: OperatorRow, key: keyof OperatorRow["metadata"], label: string): string {
+  const metadata = row.metadata[key];
+  const state = metadata.state.replace("_", " ");
+  const source = metadata.source?.replace("_", " ");
+  return `${label}: ${state}${source ? ` from ${source}` : ""}`;
+}
+
+function MetadataDisclosure({ row }: { row: OperatorRow }) {
+  return (
+    <details className="operator-metadata-disclosure">
+      <summary>Metadata provenance</summary>
+      <ul>
+        {METADATA_LABELS.map(([key, label]) => (
+          <li key={key}>{metadataStateText(row, key, label)}</li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function StateCounts({ rows }: { rows: OperatorRow[] }) {
   const counts = rows.reduce<Record<string, number>>((memo, row) => {
     memo[row.operatorState] = (memo[row.operatorState] || 0) + 1;
@@ -264,6 +295,7 @@ export function OperatorView({
                         primary={[row.operator, row.host, row.machineId].filter(Boolean).join(" / ")}
                         secondary={[row.threadHandle, row.agentId].filter(Boolean).join(" / ")}
                       />
+                      <MetadataDisclosure row={row} />
                     </td>
                     <td>
                       <MetadataStack
