@@ -939,6 +939,24 @@ export function buildOperatorRows(dashboard: DashboardModel, options: BuildOpera
             }
             continue;
           }
+          if (manifestRepos.length === 0 && !batch.repo) {
+            const unknownKey = `${batch.path}:${batch.batchId}:${lane.name}:${target}`;
+            if (!ambiguousLaneKeys.has(unknownKey)) {
+              rows.push(
+                buildLaneRow(batch, lane, dashboard.events, nowMs, {
+                  target,
+                  repo: UNKNOWN,
+                  provenance: {
+                    classification: "unknown",
+                    evidence: [batch.source === "inferred" ? "inferred_batch" : "manifest"]
+                  },
+                  warnings: [`Target repository UNKNOWN: lane target #${target} has no explicit repository evidence.`]
+                })
+              );
+              ambiguousLaneKeys.add(unknownKey);
+            }
+            continue;
+          }
           const repo = manifestRepos[0] || batch.repo || UNKNOWN;
           const key = `${repo}#${target}`;
           if (!rowTargetKeys.has(key)) {

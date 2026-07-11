@@ -390,6 +390,47 @@ describe("operatorRows", () => {
     expect(new Set(twoAmbiguousRows.map((row) => row.id)).size).toBe(2);
   });
 
+  it("keeps repo-less no-target lane rows distinct across batches", () => {
+    const repoLessBatch = (batchId: string): BatchRecord => ({
+      schemaVersion: 1,
+      batchId,
+      source: "manifest",
+      path: `batches/${batchId}.json`,
+      lanes: [
+        {
+          name: "implementation",
+          owner: `agent-${batchId}`,
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    });
+
+    const rows = buildOperatorRows(
+      dashboard({ batches: [repoLessBatch("repo-less-a"), repoLessBatch("repo-less-b")] })
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+    expect(rows).toMatchObject([
+      {
+        repo: "UNKNOWN",
+        target: "123",
+        provenance: { classification: "unknown", evidence: ["manifest"] },
+        warnings: ["Target repository UNKNOWN: lane target #123 has no explicit repository evidence."]
+      },
+      {
+        repo: "UNKNOWN",
+        target: "123",
+        provenance: { classification: "unknown", evidence: ["manifest"] },
+        warnings: ["Target repository UNKNOWN: lane target #123 has no explicit repository evidence."]
+      }
+    ]);
+  });
+
   it("does not upgrade an ambiguous target event to observed without a direct lane or batch-path match", () => {
     const batch: BatchRecord = {
       schemaVersion: 1,
