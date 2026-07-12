@@ -79,6 +79,16 @@ describe("buildDashboardModel", () => {
     ]));
     expect(model.workItems[0].warnings.every((warning) => !warning.message.includes("undefined"))).toBe(true);
   });
+  it("uses unattributed rather than legacy UNKNOWN in default-visible model warnings", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"), stateRoot: "/state", targetRepos: [claim.repo],
+      claims: [claim],
+      heartbeats: [{ ...heartbeat, repo: claim.repo, target: undefined, machineId: "UNKNOWN machine" }],
+      batches: [], githubItems: [], warnings: []
+    });
+    expect(model.warnings.map((warning) => warning.message).join(" ")).toContain("unattributed");
+    expect(model.warnings.map((warning) => warning.message).join(" ")).not.toContain("UNKNOWN");
+  });
   it("exposes one canonical operator state on each work item", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",

@@ -1,19 +1,21 @@
 import type { WorkItem } from "../../shared/types";
+import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 
 export type DashboardSurface = "attention" | "now" | "find" | "history";
 
 function workLabel(item: WorkItem): string {
   const kind = item.type === "pull_request" ? "PR" : item.type === "issue" ? "Issue" : "Work";
-  return `${kind} #${item.target}`;
+  const target = displayAttribution(item.target);
+  return `${kind}${target === "unattributed" ? " unattributed" : ` #${target}`}`;
 }
 
 function itemTitle(item: WorkItem): string {
-  return item.github?.title || "Unattributed work item";
+  return displayAttribution(item.github?.title, "Unattributed work item");
 }
 
 function holder(item: WorkItem): string {
-  return item.claim?.agentId || item.heartbeat?.agentId || "unattributed";
+  return firstDisplayAttribution([item.claim?.agentId, item.heartbeat?.agentId]);
 }
 
 function canonicalGithubItemUrl(value: string | undefined): string | undefined {
@@ -133,17 +135,17 @@ function WorkCard({
   const reason = item.attention;
   const heartbeat = item.heartbeat;
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
-  const machine = heartbeat?.machineId || item.claim?.machineId || "unattributed";
-  const thread = heartbeat?.threadHandle || item.claim?.threadHandle || "unattributed";
+  const machine = firstDisplayAttribution([heartbeat?.machineId, item.claim?.machineId]);
+  const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
   const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
   const prUrl = pullRequestUrl(item);
   return (
     <article className="attention-card">
       <div>
-        <p className="attention-card-kicker">{item.repo}</p>
+        <p className="attention-card-kicker">{displayAttribution(item.repo)}</p>
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
-        <p className="attention-card-meta">Holder: {holder(item)} · {item.batchSignals?.[0]?.batchId || "unbatched"}</p>
+        <p className="attention-card-meta">Holder: {holder(item)} · {displayAttribution(item.batchSignals?.[0]?.batchId, "unbatched")}</p>
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
       <div className="attention-card-actions">

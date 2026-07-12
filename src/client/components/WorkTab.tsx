@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { CircleDot, GitPullRequest, Search } from "lucide-react";
 import type { WorkItem } from "../../shared/types";
 import { batchSignalIdentity } from "../../shared/batchSignal";
+import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import { StatusBadge } from "./StatusBadge";
 
 export function WorkTab({
@@ -86,14 +87,14 @@ export function WorkTab({
                     <Icon size={18} aria-hidden="true" />
                     <div className="work-main">
                       <h2>
-                        {itemKind} #{item.target}: {item.github?.title || "UNKNOWN title"}
+                        {itemKind} #{displayAttribution(item.target)}: {displayAttribution(item.github?.title)}
                       </h2>
-                      <p>{item.repo}</p>
+                      <p>{displayAttribution(item.repo)}</p>
                       {item.github?.labels.length ? <p className="labels">{item.github.labels.join(", ")}</p> : null}
                     </div>
                     <StatusBadge value={item.schedulingState} />
                     <div className="work-meta">
-                      <span>{item.claim?.agentId || item.heartbeat?.agentId || batchSignal?.laneName || "Unclaimed"}</span>
+                      <span>{firstDisplayAttribution([item.claim?.agentId, item.heartbeat?.agentId, batchSignal?.laneName], "Unclaimed")}</span>
                       <span>{item.heartbeat?.liveness || "no heartbeat"}</span>
                       {batchSignal ? <span>{batchSignalIdentity(batchSignal)}</span> : null}
                       {item.github?.url ? (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
+import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
@@ -466,7 +467,9 @@ export function App() {
   const visibleWarningGroups = warningGroups.slice(0, 3);
   const overflowWarningGroups = warningGroups.slice(3);
   const renderWarning = (warning: CoordinationWarning) => {
-    const context = warning.repo ? `${warning.repo}${warning.target ? `#${warning.target}` : ""}` : undefined;
+    const repo = displayAttribution(warning.repo);
+    const target = displayAttribution(warning.target);
+    const context = repo !== "unattributed" ? `${repo}${target !== "unattributed" ? `#${target}` : ""}` : undefined;
     return (
       <>
         <strong>{warning.severity}</strong>
@@ -652,7 +655,11 @@ export function App() {
               <>
                 <button className="secondary-action" onClick={() => setBatchDetailScope("all")} type="button">Show all batch operations</button>
                 <section aria-label="Event records" className="event-list">
-                  {dashboard.events.map((event) => <article className="event-row" key={event.eventId}><strong>{event.type}</strong><span>{event.repo || "unattributed"}{event.target ? `#${event.target}` : ""}</span><span>{event.batchId || "unbatched"}</span><span>{event.laneName || event.agentId || "unattributed"}</span><time>{event.timestamp || event.path}</time></article>)}
+                  {dashboard.events.map((event) => {
+                    const repo = displayAttribution(event.repo);
+                    const target = displayAttribution(event.target);
+                    return <article className="event-row" key={event.eventId}><strong>{event.type}</strong><span>{repo}{target === "unattributed" ? "" : `#${target}`}</span><span>{displayAttribution(event.batchId, "unbatched")}</span><span>{firstDisplayAttribution([event.laneName, event.agentId])}</span><time>{event.timestamp || event.path}</time></article>;
+                  })}
                 </section>
               </>
             ) : (
@@ -666,7 +673,7 @@ export function App() {
             )}
             {batchDetailScope === "repairs" && orphanRepairOperations.length > 0 ? (
               <section aria-label="Orphan repair operations" className="event-list">
-                {orphanRepairOperations.map((operation) => <article className="event-row" key={`${operation.batchPath || operation.repo || "unscoped"}:${operation.batchId}`}><strong>{operation.controlStatus}</strong><span>{operation.repo || operation.batchPath || "unattributed"}</span><span>{operation.batchId}</span><span>{operation.eventCount} events</span><time>{operation.latestEventAt || "time unavailable"}</time></article>)}
+                {orphanRepairOperations.map((operation) => <article className="event-row" key={`${operation.batchPath || operation.repo || "unscoped"}:${operation.batchId}`}><strong>{operation.controlStatus}</strong><span>{displayAttribution(operation.repo || operation.batchPath)}</span><span>{displayAttribution(operation.batchId)}</span><span>{operation.eventCount} events</span><time>{operation.latestEventAt || "time unavailable"}</time></article>)}
               </section>
             ) : null}
           </details>

@@ -54,6 +54,19 @@ describe("AttentionShell", () => {
     expect(onCopyResume).toHaveBeenCalledWith(ITEMS[0]);
   });
 
+  it("normalizes legacy UNKNOWN attribution sentinels on default-visible cards", () => {
+    const unknownItem = {
+      ...ITEMS[0],
+      repo: "UNKNOWN",
+      target: "UNKNOWN",
+      claim: { schemaVersion: 1, agentId: "UNKNOWN", repo: "UNKNOWN", target: "UNKNOWN", status: "active" as const, machineId: "UNKNOWN machine", threadHandle: "UNKNOWN thread", path: "claims/unknown.json" },
+      heartbeat: undefined
+    };
+    render(<AttentionShell items={[unknownItem]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.queryByText(/UNKNOWN/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/unattributed/i).length).toBeGreaterThan(0);
+  });
+
   it("offers eligible items for batch selection and keeps the prompt selection controlled by App", async () => {
     const onToggle = vi.fn();
     const readyItem: WorkItem = { ...ITEMS[0], id: "repo/dashboard#45", target: "45", schedulingState: "ready_for_batch", operatorState: "ready" };

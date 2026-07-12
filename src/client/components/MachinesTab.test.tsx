@@ -26,4 +26,11 @@ describe("MachinesTab", () => {
     expect(screen.getByText("Coordination agent data may be incomplete: events could not be read.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "worker-a" })).toBeInTheDocument();
   });
+
+  it("renders legacy unknown agent and machine attribution as unattributed", () => {
+    render(<MachinesTab agents={[{ agentId: "UNKNOWN", machineId: "UNKNOWN machine", claims: [], currentWork: [], liveness: "unknown", warnings: [] }]} />);
+    expect(screen.queryByText("UNKNOWN")).not.toBeInTheDocument();
+    expect(screen.queryByText("UNKNOWN machine")).not.toBeInTheDocument();
+    expect(screen.getAllByText("unattributed").length).toBeGreaterThan(0);
+  });
 });

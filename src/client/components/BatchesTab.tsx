@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Clipboard, FilePlus, OctagonPause } from "lucide-react";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import type { BatchEvent, BatchOperation, BatchRecord } from "../../shared/types";
+import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import { StatusBadge } from "./StatusBadge";
 
 function EventRows({ events }: { events: BatchEvent[] }) {
@@ -10,7 +11,7 @@ function EventRows({ events }: { events: BatchEvent[] }) {
       {events.map((event) => (
         <div className="event-row" key={event.eventId}>
           <strong>{event.type}</strong>
-          <span>{event.laneName || event.agentId || event.machineId || "batch"}</span>
+          <span>{firstDisplayAttribution([event.laneName, event.agentId, event.machineId], "batch")}</span>
           <span>{event.status || ""}</span>
           <span>{event.message || ""}</span>
           <time>{event.timestamp ? new Date(event.timestamp).toLocaleString() : event.path}</time>
@@ -63,6 +64,7 @@ function BatchOperationPanel({
   const [status, setStatus] = useState<string | null>(null);
   const controlStatus = operation?.controlStatus || "running";
   const stopScopes = stopRepos(batch);
+  const displayBatchId = displayAttribution(batch.batchId);
 
   async function requestStop(repo: string | undefined) {
     if (!onRequestStop) {
@@ -93,7 +95,7 @@ function BatchOperationPanel({
       <div className="batch-stop-actions">
         {(stopScopes.length > 0 ? stopScopes : [undefined]).map((repo) => (
           <button
-            aria-label={repo ? `Request stop for ${batch.batchId} in ${repo}` : `Request stop for ${batch.batchId}`}
+            aria-label={repo ? `Request stop for ${displayBatchId} in ${displayAttribution(repo)}` : `Request stop for ${displayBatchId}`}
             className="secondary-action"
             key={repo || "batch"}
             onClick={() => void requestStop(repo)}
@@ -120,7 +122,7 @@ function PromptStatus({ batch }: { batch: BatchRecord }) {
         <span className={prompt ? "prompt-status retained" : "prompt-status missing"}>{status}</span>
         {prompt && (
           <button
-            aria-label={`Copy coordination prompt for ${batch.batchId}`}
+            aria-label={`Copy coordination prompt for ${displayAttribution(batch.batchId)}`}
             className="icon-button"
             onClick={() => navigator.clipboard.writeText(prompt)}
             title="Copy coordination prompt"
@@ -307,17 +309,17 @@ export function BatchesTab({
             return (
               <article className="panel" key={`${batch.repo || batch.path}:${batch.batchId}`}>
                 <header className="batch-card-header">
-                  <h2>{batch.batchId}</h2>
+                  <h2>{displayAttribution(batch.batchId)}</h2>
                   {batch.source === "inferred" ? <span className="source-badge">Inferred</span> : null}
                 </header>
-                <p className="batch-scope">{batch.repo || batch.path}</p>
+                <p className="batch-scope">{displayAttribution(batch.repo || batch.path)}</p>
                 <BatchOperationPanel batch={batch} operation={operation} onRequestStop={onRequestStop} />
                 <PromptStatus batch={batch} />
                 {batch.lanes.map((lane) => (
                   <div className="lane-row" key={lane.name}>
                     <div>
-                      <strong>{lane.name}</strong>
-                      <p>{lane.targets.join(", ") || "No targets"}</p>
+                      <strong>{displayAttribution(lane.name)}</strong>
+                      <p>{lane.targets.map((target) => displayAttribution(target)).join(", ") || "No targets"}</p>
                     </div>
                     <StatusBadge value={lane.status} />
                     <StatusBadge value={lane.liveness} />

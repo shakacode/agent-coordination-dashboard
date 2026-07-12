@@ -1,14 +1,16 @@
 import type { WorkItem } from "./types";
 import { suggestBatchId } from "./batchManifest";
+import { displayAttribution } from "./attribution";
 
 function itemLabel(item: WorkItem): string {
+  const target = displayAttribution(item.target);
   if (item.type === "pull_request") {
-    return `PR #${item.target}`;
+    return target === "unattributed" ? "PR unattributed" : `PR #${target}`;
   }
   if (item.type === "issue") {
-    return `Issue #${item.target}`;
+    return target === "unattributed" ? "Issue unattributed" : `Issue #${target}`;
   }
-  return `Target #${item.target}`;
+  return target === "unattributed" ? "Target unattributed" : `Target #${target}`;
 }
 
 function duplicateTargetNumbersAcrossRepos(items: WorkItem[]): string[] {
@@ -51,8 +53,8 @@ export function generatePrBatchPrompt(items: WorkItem[]): string {
 
   const itemLines = selected
     .map((item) => {
-      const title = item.github?.title || "UNKNOWN title";
-      const url = item.github?.url || "UNKNOWN URL";
+      const title = displayAttribution(item.github?.title);
+      const url = displayAttribution(item.github?.url, "URL unavailable");
       const warnings = item.warnings.map((warning) => warning.message).join("; ") || "No current dashboard warnings.";
 
       return [

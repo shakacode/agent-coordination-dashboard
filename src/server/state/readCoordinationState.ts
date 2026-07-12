@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
 import { normalizeBatchReservations, normalizeBatchTargets } from "../../shared/batchManifest";
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
+import { displayAttribution } from "../../shared/attribution";
 import type {
   BatchEvent,
   BatchRecord,
@@ -407,7 +408,7 @@ function normalizeClaim(raw: Record<string, unknown>, path: string): ClaimRecord
     schemaVersion: Number(raw.schema_version || 1),
     repo: stringValue(raw.repo) || repoFromClaimPath(path),
     target: raw.target ? String(raw.target) : targetFromPath(path),
-    agentId: stringValue(raw.agent_id, "UNKNOWN"),
+    agentId: displayAttribution(stringValue(raw.agent_id)),
     machineId: machineIdFrom(raw),
     threadHandle: threadHandleFrom(raw),
     host: hostFrom(raw),
@@ -429,7 +430,7 @@ function normalizeHeartbeat(raw: Record<string, unknown>, path: string, now: Dat
 
   return {
     schemaVersion: Number(raw.schema_version || 1),
-    agentId: stringValue(raw.agent_id, targetFromPath(path)),
+    agentId: displayAttribution(stringValue(raw.agent_id) || targetFromPath(path)),
     machineId: machineIdFrom(raw),
     threadHandle: threadHandleFrom(raw),
     host: hostFrom(raw),
@@ -473,8 +474,8 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
           : [];
 
       return {
-        name: stringValue(lane.name) || stringValue(lane.id, "UNKNOWN"),
-        owner: stringValue(lane.owner) || stringValue(lane.agent_id, "UNKNOWN"),
+        name: displayAttribution(stringValue(lane.name) || stringValue(lane.id)),
+        owner: displayAttribution(stringValue(lane.owner) || stringValue(lane.agent_id)),
         targets,
         dependsOn,
         status: stringValue(lane.status, "unknown"),
