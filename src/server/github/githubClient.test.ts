@@ -52,7 +52,6 @@ describe("github list parsers", () => {
     "feature/star*name",
     "feature/[bracket",
     "feature/back\\slash",
-    "@",
     ".hidden",
     "feature/.hidden",
     "feature/branch.lock",
@@ -68,7 +67,8 @@ describe("github list parsers", () => {
     "feature/-nested-dash",
     "feature/dotted.name",
     "feature/hash#name",
-    "feature/foo.locked"
+    "feature/foo.locked",
+    "@"
   ])("accepts a common branch Git accepts: %j", (branch) => {
     expect(githubApiPath("repo/app", "branches", branch)).toBe(`repos/repo/app/branches/${encodeURIComponent(branch)}`);
   });

@@ -81,7 +81,6 @@ function isValidGitBranchName(branch: string): boolean {
   if (
     !branch
     || branch === "HEAD"
-    || branch === "@"
     || branch.startsWith("-")
     || branch.startsWith("/")
     || branch.endsWith("/")
