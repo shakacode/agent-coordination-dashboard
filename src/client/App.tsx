@@ -343,6 +343,11 @@ export function App() {
 
   function openSurface(surface: DashboardSurface) {
     setHistoryMergedTodayOnly(false);
+    if (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink)) {
+      const nextDeepLink = { query: operatorQuery || undefined };
+      setOperatorDeepLink(nextDeepLink);
+      writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
+    }
     setActiveSurface(surface);
   }
 

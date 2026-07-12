@@ -318,6 +318,20 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: /Finished dashboard work/ })).toBeInTheDocument();
   });
 
+  it("clears structured Find constraints before History updates the shared query", async () => {
+    window.history.pushState({}, "", "/?repo=repo/dashboard&target=44");
+    render(<App />);
+
+    expect(await screen.findByText(/Constrained by repo repo\/dashboard/)).toHaveTextContent("target #44");
+    await userEvent.click(screen.getByRole("button", { name: "History" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Filter history" }), "Finished");
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("Finished");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?q=Finished");
+  });
+
   it("keeps the full-width degraded banner when coordination reads fail", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
       ok: true,
