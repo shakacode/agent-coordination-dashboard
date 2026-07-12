@@ -7,16 +7,11 @@ import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
 import { HealthTab } from "./components/HealthTab";
 import { MachinesTab } from "./components/MachinesTab";
-import { OperatorView } from "./components/OperatorView";
-import { OverviewTab } from "./components/OverviewTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { SignalGroupList } from "./components/SignalGroups";
-import { WorkTab } from "./components/WorkTab";
 import {
   hasStructuredOperatorDeepLink,
   operatorDeepLinkFromSearchParams,
-  savedOlderTerminalWorkPreference,
-  SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY,
   type OperatorDeepLink,
   type OverviewOperatorFilter
 } from "./operatorRows";
@@ -39,9 +34,12 @@ export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
 function readOperatorDeepLink() {
   const params = new URLSearchParams(window.location.search);
   const deepLink = operatorDeepLinkFromSearchParams(params);
+  const structuredQuery = deepLink.repo && deepLink.target
+    ? `${deepLink.repo}#${deepLink.target}`
+    : deepLink.repo || deepLink.batchId || deepLink.target;
   return {
     ...deepLink,
-    query: deepLink.query || params.get("item") || params.get("batch") || params.get("target") || undefined
+    query: deepLink.query || params.get("item") || structuredQuery || undefined
   };
 }
 
@@ -106,7 +104,6 @@ export function App() {
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [revealOlderTerminalRows, setRevealOlderTerminalRows] = useState(savedOlderTerminalWorkPreference);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -189,14 +186,6 @@ export function App() {
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY, String(revealOlderTerminalRows));
-    } catch {
-      // The in-memory App preference still works when browser storage is unavailable.
-    }
-  }, [revealOlderTerminalRows]);
 
   useEffect(() => {
     function restoreLocation() {
@@ -286,31 +275,6 @@ export function App() {
         )
       };
     });
-  }
-
-  function openOverviewFilter(filter: OverviewOperatorFilter) {
-    const nextDeepLink = operatorDeepLinkForOverviewFilter(filter, operatorQuery);
-    setOperatorDeepLink(nextDeepLink);
-    setActiveSurface("find");
-    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
-  }
-
-  function resetOverviewFilter() {
-    const nextDeepLink = { ...operatorDeepLink, overviewFilter: undefined };
-    setOperatorDeepLink(nextDeepLink);
-    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
-  }
-
-  function clearExactOperatorLink() {
-    const nextDeepLink = {
-      ...operatorDeepLink,
-      batchId: undefined,
-      laneName: undefined,
-      repo: undefined,
-      target: undefined
-    };
-    setOperatorDeepLink(nextDeepLink);
-    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
   }
 
   function updateOperatorQuery(query: string) {
@@ -556,14 +520,32 @@ export function App() {
           </nav>
           <AttentionShell
             items={dashboard.workItems}
+            now={dashboard.generatedAt}
             onCopyResume={copyResumePrompt}
             onQueryChange={updateOperatorQuery}
+            onToggle={toggleWorkItem}
             query={operatorQuery}
+            selectionDisabled={requiredCoordinationUnavailable}
             surface={activeSurface}
           />
           <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
             <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
+          </details>
+          <details className="secondary-tools">
+            <summary>Batch operations</summary>
+            <BatchesTab
+              batches={dashboard.batches}
+              events={dashboard.events}
+              onImportBatch={importBatchManifest}
+              onRequestStop={stopBatch}
+              operations={dashboard.batchOperations}
+            />
+          </details>
+          <details className="secondary-tools">
+            <summary>Machines and health</summary>
+            <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
+            <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} />
           </details>
         </section>
       </div>

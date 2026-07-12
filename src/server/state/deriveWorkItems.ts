@@ -25,7 +25,7 @@ function terminalState(statuses: string[]): WorkItemTerminalState | undefined {
   if (/\b(superseded|replaced)\b/.test(status)) return "superseded";
   if (/\b(abandoned|cancelled|canceled)\b/.test(status)) return "abandoned";
   if (/\b(closed)\b/.test(status)) return "closed";
-  if (/\b(done|complete|completed|merged|released)\b/.test(status)) return "done";
+  if (/\b(done|complete|completed|merged)\b/.test(status)) return "done";
   return undefined;
 }
 
@@ -38,7 +38,7 @@ function attention(item: WorkItem, statuses: string[], activityAt: string | unde
   const age = input.now.getTime() - timestamp(activityAt);
 
   if (operation && operation.controlStatus !== "running") {
-    return { kind: "batch_stopped" as const, label: "Batch is stopped", action: "Open batch" as const };
+    return { kind: "batch_stopped" as const, label: "Batch is stopped", action: "Copy resume prompt" as const };
   }
   if (/\bblocked[ _-]?user[ _-]?input\b|\bneeds[ _-]?user[ _-]?input\b/.test(status)) {
     return { kind: "blocked_user_input" as const, label: "Waiting for operator input", action: "Copy resume prompt" as const };
@@ -64,6 +64,13 @@ function operatorState(item: WorkItem, terminal: WorkItemTerminalState | undefin
   return "ready";
 }
 
+function mayHaveOpenPullRequest(item: WorkItem): boolean {
+  if (item.github?.type === "pull_request") {
+    return item.github.loadState !== "loaded" || item.github.state.toLowerCase() === "open";
+  }
+  return Boolean(item.claim?.prUrl || item.heartbeat?.prUrl);
+}
+
 /** Build the single, read-only operator state used by every v2 dashboard surface. */
 export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
   return input.workItems.map((item) => {
@@ -82,10 +89,13 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
       ...matchingEvents.map((event) => event.status || event.type)
     ].filter((value): value is string => Boolean(value));
     const terminal = terminalState(statuses);
-    const reason = terminal ? undefined : attention(item, statuses, activityAt, input);
+    const deadPastPresentationTtl = item.heartbeat?.liveness === "dead"
+      && input.now.getTime() - timestamp(activityAt) > ARCHIVE_AFTER_MS
+      && !mayHaveOpenPullRequest(item);
+    const reason = terminal || deadPastPresentationTtl ? undefined : attention(item, statuses, activityAt, input);
     return {
       ...item,
-      operatorState: operatorState(item, terminal, reason, activityAt, input.now),
+      operatorState: deadPastPresentationTtl ? "archived_view" : operatorState(item, terminal, reason, activityAt, input.now),
       terminalState: terminal,
       attention: reason,
       lastActivityAt: activityAt

@@ -18,7 +18,9 @@ function holder(item: WorkItem): string {
 function matches(item: WorkItem, query: string): boolean {
   const value = query.trim().toLowerCase();
   if (!value) return true;
+  if (value.includes("#") && !value.includes("://")) return item.id.toLowerCase() === value;
   return [
+    item.id,
     item.repo,
     item.target,
     item.github?.url,
@@ -43,7 +45,23 @@ function elapsedSince(value: string | undefined): string {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
-function WorkCard({ item, onCopyResume }: { item: WorkItem; onCopyResume?: (item: WorkItem) => void }) {
+function canSelect(item: WorkItem): boolean {
+  return item.schedulingState !== "in_process"
+    && !item.batchSignals?.length
+    && !["terminal", "archived_view"].includes(item.operatorState || "");
+}
+
+function WorkCard({
+  item,
+  onCopyResume,
+  onToggle,
+  selectionDisabled = false
+}: {
+  item: WorkItem;
+  onCopyResume?: (item: WorkItem) => void;
+  onToggle?: (id: string) => void;
+  selectionDisabled?: boolean;
+}) {
   const reason = item.attention;
   const heartbeat = item.heartbeat;
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
@@ -60,6 +78,18 @@ function WorkCard({ item, onCopyResume }: { item: WorkItem; onCopyResume?: (item
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
       <div className="attention-card-actions">
+        {canSelect(item) ? (
+          <label className="attention-card-select">
+            <input
+              aria-label={`Include ${item.id} in PR-batch prompt`}
+              checked={item.selected}
+              disabled={selectionDisabled}
+              onChange={() => onToggle?.(item.id)}
+              type="checkbox"
+            />
+            <span>Batch</span>
+          </label>
+        ) : null}
         {reason?.action === "Copy resume prompt" ? (
           <button onClick={() => onCopyResume?.(item)} type="button">Copy resume prompt</button>
         ) : null}
@@ -74,19 +104,45 @@ export function AttentionShell({
   surface,
   query,
   onQueryChange,
-  onCopyResume
+  onCopyResume,
+  onToggle,
+  selectionDisabled = false,
+  now = new Date()
 }: {
   items: WorkItem[];
   surface: DashboardSurface;
   query: string;
   onQueryChange: (query: string) => void;
   onCopyResume?: (item: WorkItem) => void;
+  onToggle?: (id: string) => void;
+  selectionDisabled?: boolean;
+  now?: Date | string;
 }) {
   const attentionItems = items.filter((item) => item.operatorState === "needs_attention");
-  const runningItems = items.filter((item) => item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness));
+  const runningItems = items.filter((item) =>
+    item.heartbeat
+    && ["live", "stale"].includes(item.heartbeat.liveness)
+    && !item.terminalState
+    && !["terminal", "archived_view"].includes(item.operatorState || "")
+  );
   const historyItems = items.filter((item) => ["terminal", "archived_view"].includes(item.operatorState || ""));
   const runningToday = items.filter((item) => item.operatorState === "running").length;
-  const mergedToday = historyItems.filter((item) => item.terminalState === "done").length;
+  const currentDay = new Date(now).toDateString();
+  const mergedToday = historyItems.filter((item) =>
+    item.github?.type === "pull_request"
+    && item.github.state.toLowerCase() === "merged"
+    && item.lastActivityAt
+    && new Date(item.lastActivityAt).toDateString() === currentDay
+  ).length;
+  const card = (item: WorkItem, allowResume = true) => (
+    <WorkCard
+      item={item}
+      key={item.id}
+      onCopyResume={allowResume ? onCopyResume : undefined}
+      onToggle={onToggle}
+      selectionDisabled={selectionDisabled}
+    />
+  );
 
   if (surface === "attention") {
     return (
@@ -101,7 +157,7 @@ export function AttentionShell({
         {attentionItems.length === 0 ? (
           <p className="empty-state">All clear — {runningToday} lanes running, {mergedToday} merged today.</p>
         ) : (
-          <div className="attention-card-list">{attentionItems.map((item) => <WorkCard item={item} key={item.id} onCopyResume={onCopyResume} />)}</div>
+          <div className="attention-card-list">{attentionItems.map((item) => card(item))}</div>
         )}
       </section>
     );
@@ -117,7 +173,7 @@ export function AttentionShell({
       <section aria-label="Now" className="attention-surface">
         <header className="attention-surface-header"><div><p className="eyebrow">Live work only</p><h1>Now</h1></div><span className="status-strip">{runningItems.length} live or stale</span></header>
         {byBatch.size === 0 ? <p className="empty-state">No live lanes right now.</p> : Array.from(byBatch).map(([batch, batchItems]) => (
-          <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => <WorkCard item={item} key={item.id} />)}</section>
+          <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => card(item, false))}</section>
         ))}
       </section>
     );
@@ -127,7 +183,7 @@ export function AttentionShell({
     return (
       <section aria-label="History" className="attention-surface">
         <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><span className="status-strip">{historyItems.length} items</span></header>
-        {historyItems.length === 0 ? <p className="empty-state">No terminal work has been observed.</p> : <div className="attention-card-list">{historyItems.map((item) => <WorkCard item={item} key={item.id} />)}</div>}
+        {historyItems.length === 0 ? <p className="empty-state">No terminal or aged-out work has been observed.</p> : <div className="attention-card-list">{historyItems.map((item) => card(item, false))}</div>}
       </section>
     );
   }
@@ -137,7 +193,7 @@ export function AttentionShell({
     <section aria-label="Find" className="attention-surface">
       <header className="attention-surface-header"><div><p className="eyebrow">Target, branch, batch, thread, or machine</p><h1>Find</h1></div></header>
       <label className="search-field"><span>⌘K</span><input aria-label="Find work" autoFocus onChange={(event) => onQueryChange(event.target.value)} placeholder="Find work" value={query} /></label>
-      {results.length === 0 ? <p className="empty-state">No work items match this search.</p> : <div className="attention-card-list">{results.map((item) => <WorkCard item={item} key={item.id} onCopyResume={onCopyResume} />)}</div>}
+      {results.length === 0 ? <p className="empty-state">No work items match this search.</p> : <div className="attention-card-list">{results.map((item) => card(item))}</div>}
     </section>
   );
 }

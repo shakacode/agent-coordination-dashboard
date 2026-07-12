@@ -230,7 +230,7 @@ export interface WorkItem {
   attention?: {
     kind: AttentionReasonKind;
     label: string;
-    action: "Copy resume prompt" | "Open batch" | "Open PR";
+    action: "Copy resume prompt" | "Open PR";
   };
   lastActivityAt?: string;
   warnings: CoordinationWarning[];

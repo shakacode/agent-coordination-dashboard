@@ -674,6 +674,30 @@ textarea {
   gap: 0.45rem;
 }
 
+.attention-card-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #344054;
+  font-size: 12px;
+}
+
+.secondary-tools {
+  border-top: 1px solid #d8e0e8;
+  padding: 12px 0;
+}
+
+.secondary-tools > summary {
+  color: #344054;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.secondary-tools > :not(summary) {
+  margin-top: 12px;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -1331,6 +1355,25 @@ textarea {
 }
 
 @media (max-width: 980px) {
+  .topbar,
+  .attention-surface-header,
+  .attention-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .summary-strip,
+  .surface-nav,
+  .attention-card-actions {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .attention-card h2,
+  .attention-card-meta {
+    overflow-wrap: anywhere;
+  }
+
   .dashboard-layout {
     grid-template-columns: 1fr;
   }
