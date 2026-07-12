@@ -210,6 +210,33 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Import Batch Plan" })).not.toBeInTheDocument();
   });
 
+  it("keeps duplicate event IDs from different source files stable across refreshes", async () => {
+    const duplicateEvents = [
+      { eventId: "duplicate-event", type: "lane_started", repo: "repo/dashboard", target: "43", batchId: "batch-one", laneName: "lane-a", timestamp: model.generatedAt, path: "events/batch-one.jsonl:1" },
+      { eventId: "duplicate-event", type: "lane_finished", repo: "repo/dashboard", target: "45", batchId: "batch-two", laneName: "lane-b", timestamp: model.generatedAt, path: "history/batch-two.jsonl:1" }
+    ];
+    let dashboardCalls = 0;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      const events = dashboardCalls === 1 ? duplicateEvents : [...duplicateEvents].reverse();
+      return { ok: true, json: async () => ({ ...model, events }) } as Response;
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "2 events" }));
+    expect(screen.getByLabelText("Event records")).toHaveTextContent("lane_started");
+    expect(screen.getByLabelText("Event records")).toHaveTextContent("lane_finished");
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    expect(screen.getByLabelText("Event records")).toHaveTextContent("lane_started");
+    expect(screen.getByLabelText("Event records")).toHaveTextContent("lane_finished");
+    expect(consoleError).not.toHaveBeenCalledWith(expect.stringContaining("same key"), expect.anything());
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain("same key");
+  });
+
   it("opens only fully-qualified repair batches from the legacy batch_repair count", async () => {
     const repair = { schemaVersion: 1, batchId: "shared", repo: "repo/dashboard", source: "manifest" as const, launchPrompt: "saved", lanes: [], path: "batches/repair.json" };
     const healthy = { schemaVersion: 1, batchId: "shared", repo: "other/dashboard", source: "manifest" as const, launchPrompt: "saved", lanes: [], path: "batches/healthy.json" };

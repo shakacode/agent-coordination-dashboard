@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { BatchEvent, BatchOperation, BatchRecord } from "../../shared/types";
@@ -110,6 +110,54 @@ describe("BatchesTab", () => {
       repo: "shakacode/react_on_rails",
       reason: "Stop requested from dashboard so this batch can be restarted."
     });
+  });
+
+  it("keeps same-repo same-ID batch operations associated by manifest path", () => {
+    const firstBatch = {
+      ...batch,
+      path: "batches/first/batch-1.json",
+      lanes: [{ ...batch.lanes[0], name: "lane-first" }]
+    };
+    const secondBatch = {
+      ...batch,
+      path: "batches/second/batch-1.json",
+      lanes: [{ ...batch.lanes[0], name: "lane-second" }]
+    };
+    const firstOperation = {
+      ...operation,
+      batchPath: firstBatch.path,
+      eventCount: 2,
+      controlStatus: "stop_requested" as const
+    };
+    const secondOperation = {
+      ...operation,
+      batchPath: secondBatch.path,
+      eventCount: 7,
+      controlStatus: "stopped" as const,
+      qa: { ...operation.qa, passed: 0, failed: 1 }
+    };
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { rerender } = render(
+      <BatchesTab batches={[firstBatch, secondBatch]} events={[]} operations={[firstOperation, secondOperation]} />
+    );
+
+    const assertAssociations = () => {
+      const firstPanel = screen.getByText("lane-first").closest("article");
+      const secondPanel = screen.getByText("lane-second").closest("article");
+      expect(firstPanel).not.toBeNull();
+      expect(secondPanel).not.toBeNull();
+      expect(within(firstPanel!).getByText("Stop requested")).toBeInTheDocument();
+      expect(within(firstPanel!).getByText("2 events")).toBeInTheDocument();
+      expect(within(secondPanel!).getByText("Stopped")).toBeInTheDocument();
+      expect(within(secondPanel!).getByText("7 events")).toBeInTheDocument();
+      expect(within(secondPanel!).getByText("QA 0 passed / 1 failed / 0 missing")).toBeInTheDocument();
+    };
+
+    assertAssociations();
+    rerender(<BatchesTab batches={[secondBatch, firstBatch]} events={[]} operations={[secondOperation, firstOperation]} />);
+    assertAssociations();
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain("same key");
+    consoleError.mockRestore();
   });
 
   it("requests repo-scoped stops for repo-less multi-repo batches", async () => {

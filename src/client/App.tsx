@@ -658,7 +658,7 @@ export function App() {
                   {dashboard.events.map((event) => {
                     const repo = displayAttribution(event.repo);
                     const target = displayAttribution(event.target);
-                    return <article className="event-row" key={event.eventId}><strong>{event.type}</strong><span>{repo}{target === "unattributed" ? "" : `#${target}`}</span><span>{displayAttribution(event.batchId, "unbatched")}</span><span>{firstDisplayAttribution([event.laneName, event.agentId])}</span><time>{event.timestamp || event.path}</time></article>;
+                    return <article className="event-row" key={`${event.path}:${event.eventId}`}><strong>{event.type}</strong><span>{repo}{target === "unattributed" ? "" : `#${target}`}</span><span>{displayAttribution(event.batchId, "unbatched")}</span><span>{firstDisplayAttribution([event.laneName, event.agentId])}</span><time>{event.timestamp || event.path}</time></article>;
                   })}
                 </section>
               </>

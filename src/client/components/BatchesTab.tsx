@@ -9,7 +9,7 @@ function EventRows({ events }: { events: BatchEvent[] }) {
   return (
     <div className="event-list">
       {events.map((event) => (
-        <div className="event-row" key={event.eventId}>
+        <div className="event-row" key={`${event.path}:${event.eventId}`}>
           <strong>{event.type}</strong>
           <span>{firstDisplayAttribution([event.laneName, event.agentId, event.machineId], "batch")}</span>
           <span>{event.status || ""}</span>
@@ -29,7 +29,9 @@ function promptSummary(prompt: string): string {
 }
 
 function operationKey(input: { repo?: string; batchPath?: string; batchId: string }): string {
-  return `${input.repo || input.batchPath || "batch"}:${input.batchId}`;
+  if (input.batchPath) return `path:${input.batchPath}:${input.batchId}`;
+  if (input.repo) return `repo:${input.repo}:${input.batchId}`;
+  return `batch:${input.batchId}`;
 }
 
 function qaSummary(operation: BatchOperation): string {
@@ -307,7 +309,7 @@ export function BatchesTab({
               .slice(0, 20);
             const operation = operationByKey.get(operationKey({ repo: batch.repo, batchPath: batch.path, batchId: batch.batchId }));
             return (
-              <article className="panel" key={`${batch.repo || batch.path}:${batch.batchId}`}>
+              <article className="panel" key={operationKey({ repo: batch.repo, batchPath: batch.path, batchId: batch.batchId })}>
                 <header className="batch-card-header">
                   <h2>{displayAttribution(batch.batchId)}</h2>
                   {batch.source === "inferred" ? <span className="source-badge">Inferred</span> : null}
