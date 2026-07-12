@@ -179,6 +179,36 @@ describe("dashboard app import endpoint", () => {
     expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", terminalState: "done", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
   });
 
+  it.each([
+    ["claim", async (root: string) => {
+      const directory = join(root, "claims", "shakacode", "react_on_rails");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "45.json"), JSON.stringify({ schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "active", branch: "feature/work" }));
+    }],
+    ["batch lane", async (root: string) => {
+      await mkdir(join(root, "batches"), { recursive: true });
+      await writeFile(join(root, "batches", "batch.json"), JSON.stringify({ schema_version: 1, batch_id: "batch", repo: "shakacode/react_on_rails", targets: [{ type: "issue", target: "45" }], lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "running", branch: "feature/work" }] }));
+    }]
+  ])("enriches an already-loaded open target from %s branch metadata without replacing target truth", async (_source, setup) => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-branch-only-"));
+    await setup(stateRoot);
+    let receivedReference: { target: string; branch?: string; existingTarget?: { state: string; title: string; url: string } } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [{ repo: "shakacode/react_on_rails", target: "45", type: "issue", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" }], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        receivedReference = references[0];
+        return { items: references.map((reference) => ({ ...reference.existingTarget!, branchState: "deleted" as const })), warnings: [] };
+      }
+    });
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ operatorState?: string; terminalState?: string; github?: { state: string; title: string; url: string; branchState?: string } }>; trulyOpenCount: number; trulyOpenCountStatus: string };
+    expect(receivedReference).toMatchObject({ target: "45", branch: "feature/work", existingTarget: { state: "OPEN", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45" } });
+    expect(body.workItems[0]).toMatchObject({ operatorState: "ready", github: { state: "OPEN", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45", branchState: "deleted" } });
+    expect(body.workItems[0].terminalState).toBeUndefined();
+    expect(body.trulyOpenCount).toBe(1);
+    expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
   it("reports the truly-open headline as UNKNOWN when target reconciliation is unavailable", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-reconcile-unknown-"));
     const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");

@@ -74,6 +74,21 @@ describe("github list parsers", () => {
     expect(result.warnings[0].message).toContain("auth required");
   });
 
+  it("performs branch-only reconciliation without repeating an already-loaded target lookup", async () => {
+    const calls: string[][] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls.push(args);
+      return { stdout: "{}", stderr: "", exitCode: 0 };
+    } });
+    const existingTarget = { repo: "repo/app", target: "45", type: "issue" as const, title: "Open issue", url: "https://github.com/repo/app/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const };
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work", existingTarget };
+    const result = await reconciler.load([reference]);
+    const refreshedIdentity = await reconciler.load([{ ...reference, existingTarget: { ...existingTarget, title: "Fresh open title" } }]);
+    expect(calls).toEqual([["api", "repos/repo/app/branches/feature%2Fwork"]]);
+    expect(result.items).toEqual([{ ...existingTarget, branchState: "present" }]);
+    expect(refreshedIdentity.items).toEqual([{ ...existingTarget, title: "Fresh open title", branchState: "present" }]);
+  });
+
   it("bounds GitHub target fan-out", async () => {
     let active = 0;
     let maximum = 0;

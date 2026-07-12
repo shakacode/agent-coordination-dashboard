@@ -51,6 +51,8 @@ export interface GitHubTargetReference {
   target: string;
   type: GitHubPreview["type"];
   branch?: string;
+  /** A trusted open-list preview enables branch-only enrichment without a redundant target lookup. */
+  existingTarget?: GitHubPreview;
 }
 
 const GITHUB_LIST_LIMIT = 1000;
@@ -153,7 +155,9 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   }
 
   async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
-    const result = await runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
+    const result = reference.existingTarget
+      ? undefined
+      : await runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
     let branchState: GitHubPreview["branchState"];
     const branchWarnings: CoordinationWarning[] = [];
     if (reference.branch) {
@@ -167,7 +171,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
         branchWarnings.push({ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub branch lookup failed for ${reference.repo}:${reference.branch}: ${branchResult.stderr || `exit ${branchResult.exitCode}`}` });
       }
     }
-    if (result.exitCode !== 0) {
+    if (result && result.exitCode !== 0) {
       return {
         items: [{
           repo: reference.repo,
@@ -184,7 +188,8 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       };
     }
     try {
-      return { items: [{ ...parseGitHubTarget(reference.repo, result.stdout), ...(branchState ? { branchState } : {}) }], warnings: branchWarnings };
+      const target = reference.existingTarget || parseGitHubTarget(reference.repo, result?.stdout || "");
+      return { items: [{ ...target, ...(branchState ? { branchState } : {}) }], warnings: branchWarnings };
     } catch (error) {
       return {
         items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], ...(branchState ? { branchState } : {}), loadState: "unknown" }],
@@ -195,17 +200,22 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
 
   return {
     async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
-      const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target && candidate.branch === reference.branch) === index);
+      const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target && candidate.branch === reference.branch && Boolean(candidate.existingTarget) === Boolean(reference.existingTarget)) === index);
       const now = Date.now();
       const results = await Promise.all(unique.map((reference) => {
-        const key = `${reference.repo}#${reference.target}:${reference.branch || ""}`;
+        const key = `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
         const existing = cache.get(key);
         if (!options.bypassCache && existing && existing.expiresAt > now) return existing.promise;
         const promise = schedule(() => loadOne(reference));
         cache.set(key, { expiresAt: now + ttlMs, promise });
         return promise;
       }));
-      return { items: results.flatMap((result) => result.items), warnings: results.flatMap((result) => result.warnings) };
+      return {
+        items: results.flatMap((result, index) => unique[index].existingTarget
+          ? result.items.map((item) => ({ ...unique[index].existingTarget!, ...(item.branchState ? { branchState: item.branchState } : {}) }))
+          : result.items),
+        warnings: results.flatMap((result) => result.warnings)
+      };
     }
   };
 }

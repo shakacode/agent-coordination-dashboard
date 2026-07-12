@@ -124,7 +124,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       .map((value) => githubPullRequestReference(value, item.repo))
       .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
     if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };
-    if (item.github?.loadState === "loaded") return undefined;
+    if (item.github?.loadState === "loaded") {
+      return branch ? { repo: item.repo, target: item.target, type: item.type, branch, existingTarget: item.github } : undefined;
+    }
     return { repo: item.repo, target: item.target, type: item.type, ...(branch ? { branch } : {}) };
   }
 
