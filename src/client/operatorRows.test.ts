@@ -2946,6 +2946,20 @@ describe("operatorRows", () => {
     expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "qa_attention")).toEqual([]);
   });
 
+  it.each([
+    ["ready_for_batch", "ready_for_batch"],
+    ["needs_recovery", "started_not_processing"],
+    ["processing_now", "in_process"]
+  ] as const)("keeps archived work out of the %s operational overview", (filter, schedulingState) => {
+    const archived = workItem({
+      operatorState: "archived_view",
+      schedulingState,
+      ...(schedulingState === "in_process" ? { claim, heartbeat } : { claim: undefined, heartbeat: undefined })
+    });
+    const model = dashboard({ workItems: [archived] });
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, filter)).toEqual([]);
+  });
+
   it("scopes batch-repair filters when different repos reuse a batch id", () => {
     const appClaim = { ...claim, batchId: "shared-batch" };
     const appHeartbeat = { ...heartbeat, batchId: "shared-batch" };

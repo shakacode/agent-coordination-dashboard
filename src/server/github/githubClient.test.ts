@@ -29,21 +29,29 @@ describe("github list parsers", () => {
     expect(() => githubApiPath("../app", "issues", "45")).toThrow(/repository/i);
     expect(() => githubApiPath("repo/...", "issues", "45")).toThrow(/repository/i);
     expect(() => githubApiPath("repo/app", "issues", "45/../../secret")).toThrow(/issue target/i);
+    expect(() => githubApiPath("repo/app", "branches", "feature/../secret")).toThrow(/branch/i);
+    expect(() => githubApiPath("repo/app", "branches", "feature/foo..bar")).toThrow(/branch/i);
   });
 
   it("rejects hostile target references without invoking gh", async () => {
     const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     const result = await createGitHubTargetReconciler({ run }).load([
       { repo: "../app", target: "45", type: "issue" },
-      { repo: "repo/...", target: "46", type: "issue" }
+      { repo: "repo/...", target: "46", type: "issue" },
+      { repo: "repo/app", target: "47", type: "issue", branch: "feature/../secret" }
     ]);
     expect(run).not.toHaveBeenCalled();
     expect(result.items).toEqual([
       expect.objectContaining({ repo: "../app", target: "45", state: "UNKNOWN", loadState: "unknown" }),
-      expect.objectContaining({ repo: "repo/...", target: "46", state: "UNKNOWN", loadState: "unknown" })
+      expect.objectContaining({ repo: "repo/...", target: "46", state: "UNKNOWN", loadState: "unknown" }),
+      expect.objectContaining({ repo: "repo/app", target: "47", state: "UNKNOWN", loadState: "unknown" })
     ]);
-    expect(result.warnings).toHaveLength(2);
-    expect(result.warnings.every((warning) => /repository/i.test(warning.message))).toBe(true);
+    expect(result.warnings).toHaveLength(3);
+    expect(result.warnings.map((warning) => warning.message)).toEqual([
+      expect.stringMatching(/repository/i),
+      expect.stringMatching(/repository/i),
+      expect.stringMatching(/branch/i)
+    ]);
   });
 
   it("coalesces and caches target reconciliation while foreground refresh can bypass it", async () => {

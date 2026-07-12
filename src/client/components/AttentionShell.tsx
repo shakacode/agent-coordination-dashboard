@@ -1,5 +1,5 @@
 import type { WorkItem } from "../../shared/types";
-import { isSelectableWorkItem } from "../../shared/workItemSelection";
+import { isOperationalWorkItem, isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 
@@ -58,10 +58,6 @@ function matches(item: WorkItem, query: string): boolean {
   ]
     .filter(Boolean)
     .some((candidate) => String(candidate).toLowerCase().includes(value));
-}
-
-function isOperationalWorkItem(item: WorkItem): boolean {
-  return !item.terminalState && !["terminal", "archived_view"].includes(item.operatorState || "");
 }
 
 function isNowItem(item: WorkItem): boolean {

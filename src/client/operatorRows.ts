@@ -14,6 +14,7 @@ import type {
   WorkItemType
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
+import { isOperationalWorkItem } from "../shared/workItemSelection";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -1389,8 +1390,7 @@ export function filterOperatorRowsForOverview(
     const items = dashboard.workItems.filter(
       (item) =>
         item.schedulingState === schedulingState
-        && !item.terminalState
-        && item.operatorState !== "terminal"
+        && isOperationalWorkItem(item)
     );
     return rows.filter((row) => items.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
@@ -1398,8 +1398,7 @@ export function filterOperatorRowsForOverview(
     const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
     const operationalQaItems = qaItems.filter((qaItem) => dashboard.workItems.some(
       (item) => qaItem.repo === item.repo && qaItem.target === item.target
-        && !item.terminalState
-        && !["terminal", "archived_view"].includes(item.operatorState || "")
+        && isOperationalWorkItem(item)
     ));
     return rows.filter((row) => operationalQaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }

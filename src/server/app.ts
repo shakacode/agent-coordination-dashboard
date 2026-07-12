@@ -190,7 +190,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const resultByReference = new Map(reconciled.items.map((item, index) => [githubTargetReferenceKey(returnedReferences[index]), item]));
     const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
       const result = resultByReference.get(githubTargetReferenceKey(plan.reference));
-      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, coordinatedType: plan.item.type }] : [];
+      const coordinatedType = plan.item.type === "issue" || plan.item.type === "pull_request"
+        ? { coordinatedType: plan.item.type }
+        : {};
+      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, ...coordinatedType }] : [];
     });
     const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
     const consumedCanonicalIds = new Set(reconciliationPlans.flatMap((plan) => {
@@ -215,6 +218,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       warnings: [...state.warnings, ...openGithubWarnings, ...reconciled.warnings],
       now
     });
+    // The headline is scope-wide: any missing GitHub evidence makes the whole count untrusted.
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     return {

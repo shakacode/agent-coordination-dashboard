@@ -88,6 +88,18 @@ describe("dashboard app import endpoint", () => {
     });
   });
 
+  it.each(["./app", "repo/..", ".../repo"])("rejects a dot-only GitHub repository segment in settings: %s", async (targetRepo) => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-settings-invalid-repo-"));
+    const baseUrl = await listen(stateRoot);
+    const response = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: [targetRepo] })
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "At least one owner/repo target is required." });
+  });
+
   it("coalesces dashboard reads while API refresh caching is active", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-"));
     let githubLoads = 0;
@@ -412,8 +424,9 @@ describe("dashboard app import endpoint", () => {
       loadOpenGitHubItems: async () => ({ items: [openPr], warnings: [] }),
       loadGitHubTargets: async () => ({ items: [openPr], warnings: [] })
     });
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { url: string } }>; trulyOpenCount: number };
-    expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", type: "unknown", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { url: string } }>; qaValidations: Array<{ id: string; target: string; type: string }>; trulyOpenCount: number };
+    expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", type: "pull_request", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
+    expect(body.qaValidations).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", target: "45", type: "pull_request" })]);
     expect(body.trulyOpenCount).toBe(1);
   });
 

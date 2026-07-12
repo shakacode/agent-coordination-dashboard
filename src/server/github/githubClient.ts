@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { CoordinationWarning, GitHubPreview } from "../../shared/types";
 import type { GhRunner } from "./types";
+import { isValidGitHubRepository } from "./validation";
 
 interface GhAuthor {
   login?: string;
@@ -65,17 +66,14 @@ const GITHUB_LIST_LIMIT = 1000;
 
 export function githubApiPath(repo: string, kind: "issues" | "branches", target: string): string {
   const repoSegments = repo.split("/");
-  if (
-    repoSegments.length !== 2 ||
-    repoSegments.some((segment) => !/^[A-Za-z0-9_.-]+$/.test(segment) || /^\.+$/.test(segment))
-  ) {
+  if (!isValidGitHubRepository(repo)) {
     throw new Error(`Invalid GitHub repository: ${repo}`);
   }
   if (kind === "issues" && !/^\d+$/.test(target)) {
     throw new Error(`Invalid GitHub issue target: ${target}`);
   }
-  if (kind === "branches" && !target) {
-    throw new Error("Invalid GitHub branch: empty branch name");
+  if (kind === "branches" && (!target || target.includes("..") || target.split("/").some((segment) => segment === "." || segment === ".."))) {
+    throw new Error(`Invalid GitHub branch: ${target || "empty branch name"}`);
   }
   return `repos/${repoSegments.map(encodeURIComponent).join("/")}/${kind}/${encodeURIComponent(target)}`;
 }
