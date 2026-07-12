@@ -492,6 +492,8 @@ describe("dashboard app import endpoint", () => {
 
   it.each([
     { status: "merged", expectedMergeTimeStatus: "unavailable" },
+    { status: "pr.merged", expectedMergeTimeStatus: "unavailable" },
+    { status: "merged.", expectedMergeTimeStatus: "unavailable" },
     { status: "completed", expectedMergeTimeStatus: "available" }
   ])("keeps heartbeat-declared $status terminal work trusted while reporting merge-time coverage as $expectedMergeTimeStatus", async ({ status, expectedMergeTimeStatus }) => {
     const stateRoot = await mkdtemp(join(tmpdir(), `coord-dashboard-heartbeat-${status}-without-github-time-`));

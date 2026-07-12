@@ -186,7 +186,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   function explicitlyDeclaredMergedWithoutGitHubTime(model: DashboardModel): boolean {
-    const explicitlyMerged = (value: string | undefined) => /(^|[\s_-])merged($|[\s_-])/i.test(value || "");
+    const explicitlyMerged = (value: string | undefined) => /(^|[^a-z0-9])merged($|[^a-z0-9])/i.test(value || "");
     return model.workItems.some((item) => {
       if (item.terminalProvenance?.source !== "declared" || item.github?.mergedAt) return false;
       const eventDeclaresMerge = model.events.some((event) =>
