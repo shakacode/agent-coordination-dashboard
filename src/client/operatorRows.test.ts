@@ -2011,6 +2011,116 @@ describe("operatorRows", () => {
     });
   });
 
+  it("retains explicit non-default repo lane metadata for same-number targets in one batch", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          type: "issue",
+          claim: undefined,
+          heartbeat: undefined,
+          github: undefined,
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] },
+          batchSignals: [
+            { batchId: "multi-repo-metadata", laneName: "implementation", status: "blocked", blockedOn: ["decision-36"] }
+          ]
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "multi-repo-metadata",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/multi-repo-metadata.json",
+          targets: [
+            { type: "issue", target: "123", repo: "repo/app", title: "App target" },
+            {
+              type: "issue",
+              target: "123",
+              repo: "repo/api",
+              title: "API manifest target",
+              url: "https://github.com/repo/api/issues/123"
+            }
+          ],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "api-worker",
+              operator: "maintainer",
+              threadHandle: "api-thread",
+              branch: "codex/api-123",
+              targets: ["123"],
+              dependsOn: ["decision-36"],
+              status: "blocked",
+              liveness: "no-heartbeat",
+              blockedOn: ["decision-36"]
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "multi-repo-metadata",
+          repo: "repo/app",
+          batchPath: "batches/multi-repo-metadata.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    const row = buildOperatorRows(model).find((candidate) => candidate.repo === "repo/api" && candidate.target === "123");
+    expect(row).toMatchObject({
+      title: "API manifest target",
+      url: "https://github.com/repo/api/issues/123",
+      batchId: "multi-repo-metadata",
+      batchPath: "batches/multi-repo-metadata.json",
+      agentId: "api-worker",
+      operator: "maintainer",
+      threadHandle: "api-thread",
+      branch: "codex/api-123",
+      blockedOn: ["decision-36"],
+      activityStatus: "blocked"
+    });
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ repo: "repo/api", target: "123", activityStatus: "stopped" })])
+    );
+  });
+
+  it("does not offer a lane-less saved manifest target as ready for batching", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          claim: undefined,
+          heartbeat: undefined,
+          github: undefined,
+          batchSignals: [],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "lane-less-target",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/lane-less-target.json",
+          targets: [{ type: "pull_request", target: "123", repo: "repo/api" }],
+          lanes: []
+        }
+      ]
+    });
+
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "ready_for_batch")).toEqual([]);
+  });
+
   it("does not require PR URLs for active issue rows", () => {
     const issueHeartbeat = {
       ...heartbeat,

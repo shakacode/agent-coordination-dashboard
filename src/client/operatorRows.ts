@@ -238,12 +238,7 @@ function targetProvenance(item: WorkItem, matchingEvents: BatchEvent[], batch: B
 }
 
 function uniqueManifestRepoForTarget(batch: BatchRecord, target: string): string | undefined {
-  const repos = new Set(
-    (batch.targets || [])
-      .filter((batchTarget) => batchTarget.target === target)
-      .map((batchTarget) => batchTarget.repo)
-      .filter((repo): repo is string => Boolean(repo))
-  );
+  const repos = new Set(manifestReposForTarget(batch, target));
   return repos.size === 1 ? Array.from(repos)[0] : undefined;
 }
 
@@ -619,10 +614,13 @@ function matchingEventsForLane(
 
 function batchContainsWork(batch: BatchRecord, item: WorkItem, lane: BatchLane): boolean {
   if (!lane.targets.includes(item.target)) {
-    return batch.repo === item.repo;
+    return false;
   }
-  const targetRepo = uniqueManifestRepoForTarget(batch, item.target) || batch.repo;
-  return !targetRepo || targetRepo === item.repo;
+  const manifestRepos = manifestReposForTarget(batch, item.target);
+  if (manifestRepos.length > 0) {
+    return manifestRepos.includes(item.repo);
+  }
+  return !batch.repo || batch.repo === item.repo;
 }
 
 function findSignalLane(item: WorkItem, batches: BatchRecord[]): { batch?: BatchRecord; lane?: BatchLane } {
@@ -665,7 +663,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   const { batch, lane } = findSignalLane(item, dashboard.batches);
   const signal = preferredSignalForWork(item);
   const batchTarget = batchTargetForWork(batch, item);
-  const blockedOn = [...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean);
+  const blockedOn = Array.from(new Set([...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean)));
   const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventHistoryMetadata);
   const state = deriveOperatorState({
     workItem: item,
@@ -805,7 +803,10 @@ function buildLaneRow(
   } = {}
 ): OperatorRow {
   const firstTarget = options.target ?? lane.targets[0];
-  const repo = options.repo || (firstTarget && uniqueManifestRepoForTarget(batch, firstTarget)) || batch.repo || UNKNOWN;
+  const manifestRepos = firstTarget ? manifestReposForTarget(batch, firstTarget) : [];
+  const repo =
+    options.repo ||
+    (manifestRepos.length === 1 ? manifestRepos[0] : manifestRepos.length > 1 ? UNKNOWN : batch.repo || UNKNOWN);
   const matchingEvents = matchingEventsForLane(batch, lane, events, firstTarget, repo);
   const latest = latestEvent(matchingEvents);
   const eventHistoryMetadata = eventMetadataFromHistory(matchingEvents);
