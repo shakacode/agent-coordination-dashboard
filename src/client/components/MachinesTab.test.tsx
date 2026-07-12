@@ -14,4 +14,16 @@ describe("MachinesTab", () => {
     expect(screen.getByText("Coordination agent data unavailable: heartbeats, events could not be read.")).toBeInTheDocument();
     expect(screen.queryByText("No agents or heartbeats found.")).not.toBeInTheDocument();
   });
+
+  it("labels retained agent records as incomplete when a backing source is unavailable", () => {
+    render(
+      <MachinesTab
+        agents={[{ agentId: "worker-a", claims: [], currentWork: [], liveness: "live", warnings: [] }]}
+        unavailableSources={["events"]}
+      />
+    );
+
+    expect(screen.getByText("Coordination agent data may be incomplete: events could not be read.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "worker-a" })).toBeInTheDocument();
+  });
 });

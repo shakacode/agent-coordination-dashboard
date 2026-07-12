@@ -309,8 +309,7 @@ async function listStateFiles(
   directory: string,
   root: string,
   warnings: CoordinationWarning[],
-  extensions = [".json"],
-  warnMissing = true
+  extensions = [".json"]
 ): Promise<StateFileList> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
@@ -318,7 +317,7 @@ async function listStateFiles(
       entries.map(async (entry) => {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
-          return listStateFiles(path, root, warnings, extensions, warnMissing);
+          return listStateFiles(path, root, warnings, extensions);
         }
         return {
           files: entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [],
@@ -534,12 +533,12 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
   }
 
   const warnings: CoordinationWarning[] = [];
-  const hasInitializedRoot = await hasInitializedCoordinationRoot(root, warnings);
-  const claimsSource = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
-  const heartbeatsSource = await listStateFiles(join(root, "heartbeats"), root, warnings, [".json"], hasInitializedRoot);
-  const batchesSource = await listStateFiles(join(root, "batches"), root, warnings, [".json"], hasInitializedRoot);
-  const eventsSource = await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false);
-  const historySource = await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false);
+  await hasInitializedCoordinationRoot(root, warnings);
+  const claimsSource = await listStateFiles(join(root, "claims"), root, warnings);
+  const heartbeatsSource = await listStateFiles(join(root, "heartbeats"), root, warnings);
+  const batchesSource = await listStateFiles(join(root, "batches"), root, warnings);
+  const eventsSource = await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"]);
+  const historySource = await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"]);
   const eventFilesSource = {
     files: [...eventsSource.files, ...historySource.files],
     unavailable: eventsSource.unavailable || historySource.unavailable

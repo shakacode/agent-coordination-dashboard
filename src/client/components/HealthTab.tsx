@@ -37,12 +37,17 @@ export function HealthTab({
   }
 
   return (
-    <section className="health-list">
-      <SignalGroupList
-        ariaLabel="Coordination health grouped by type"
-        groups={groupHealthItems(items)}
-        renderItem={(item) => <HealthRow item={item} />}
-      />
-    </section>
+    <>
+      {unavailableSources.length > 0 && (
+        <p className="warning">Coordination health data may be incomplete: {unavailableSources.join(", ")} could not be read.</p>
+      )}
+      <section className="health-list">
+        <SignalGroupList
+          ariaLabel="Coordination health grouped by type"
+          groups={groupHealthItems(items)}
+          renderItem={(item) => <HealthRow item={item} />}
+        />
+      </section>
+    </>
   );
 }

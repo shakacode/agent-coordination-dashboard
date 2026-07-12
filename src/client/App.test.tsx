@@ -648,6 +648,30 @@ describe("App", () => {
     );
   });
 
+  it("labels non-empty Machines and Health tabs as incomplete during a partial source failure", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 3 ? { ...source, status: "unreachable", httpStatus: undefined } : { ...source, status: "ok", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Machines" }));
+    expect(screen.getByText("Coordination agent data may be incomplete: events could not be read.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "worker-a" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Health" }));
+    expect(screen.getByText("Coordination health data may be incomplete: events could not be read.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Heartbeat missing machine id" })).toBeInTheDocument();
+  });
+
   it("keeps a partial non-auth failure scoped to its dependent counts", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
       ok: true,

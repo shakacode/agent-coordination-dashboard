@@ -26,9 +26,13 @@ export function MachinesTab({
   }, new Map());
 
   return (
-    <section className="machine-groups">
-      {Array.from(agentsByMachine.entries()).map(([machineKey, group]) => (
-        <section className="machine-group" key={machineKey}>
+    <>
+      {unavailableSources.length > 0 && (
+        <p className="warning">Coordination agent data may be incomplete: {unavailableSources.join(", ")} could not be read.</p>
+      )}
+      <section className="machine-groups">
+        {Array.from(agentsByMachine.entries()).map(([machineKey, group]) => (
+          <section className="machine-group" key={machineKey}>
           <header className="machine-heading">
             <Monitor size={18} aria-hidden="true" />
             <h2>{group.label}</h2>
@@ -74,8 +78,9 @@ export function MachinesTab({
               </article>
             ))}
           </div>
-        </section>
-      ))}
-    </section>
+          </section>
+        ))}
+      </section>
+    </>
   );
 }
