@@ -5,10 +5,11 @@ import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
-import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
+import { fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
 import { HealthTab } from "./components/HealthTab";
+import { ItemPage } from "./components/ItemPage";
 import { MachinesTab } from "./components/MachinesTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { SignalGroupList } from "./components/SignalGroups";
@@ -29,6 +30,30 @@ const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
   "events"
 ];
 
+interface ItemRoute {
+  repo: string;
+  target: string;
+}
+
+function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefined {
+  const item = params.get("item");
+  const match = item?.match(/^([^/#]+\/[^/#]+)\/([^/#]+)$/);
+  return match ? { repo: match[1], target: match[2] } : undefined;
+}
+
+function canonicalGithubItemUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    const pathname = url.pathname.replace(/\/$/, "");
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)
+      ? `${url.origin.toLowerCase()}${pathname.toLowerCase()}`
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, batches: BatchRecord[]): boolean {
   if (operation.batchPath) return operation.batchPath === batch.path;
   if (operation.batchId !== batch.batchId) return false;
@@ -45,13 +70,14 @@ function readOperatorDeepLink() {
   const params = new URLSearchParams(window.location.search);
   const parsed = operatorDeepLinkFromSearchParams(params);
   const legacyItem = params.get("item");
+  const itemRoute = itemRouteFromSearchParams(params);
   const canonicalItem = legacyItem?.match(/^([^/#]+\/[^/#]+)#(\d+)$/);
   const deepLink = canonicalItem
     ? { ...parsed, repo: parsed.repo || canonicalItem[1], target: parsed.target || canonicalItem[2] }
     : legacyItem && /^#?\d+$/.test(legacyItem)
       ? { ...parsed, target: parsed.target || legacyItem.replace(/^#/, "") }
     : parsed;
-  const arbitraryLegacyQuery = legacyItem && !canonicalItem && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
+  const arbitraryLegacyQuery = legacyItem && !itemRoute && !canonicalItem && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
   return {
     ...deepLink,
     query: deepLink.query || arbitraryLegacyQuery
@@ -60,7 +86,7 @@ function readOperatorDeepLink() {
 
 function hasLegacyFindLink(): boolean {
   const params = new URLSearchParams(window.location.search);
-  return Boolean(params.get("item") || params.get("q") || params.get("batch") || params.get("lane") || params.get("repo") || params.get("target"));
+  return Boolean((params.get("item") && !itemRouteFromSearchParams(params)) || params.get("q") || params.get("batch") || params.get("lane") || params.get("repo") || params.get("target"));
 }
 
 export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter, query: string): OperatorDeepLink {
@@ -88,6 +114,13 @@ function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: 
   window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
+function writeItemLocation(route: ItemRoute, mode: "push" | "replace") {
+  const url = new URL(window.location.href);
+  for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q", "item"]) url.searchParams.delete(key);
+  url.searchParams.set("item", `${route.repo}/${route.target}`);
+  window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function preserveWorkItemSelections(current: DashboardModel | null, next: DashboardModel): DashboardModel {
   if (!current) {
     return next;
@@ -110,6 +143,9 @@ export function App() {
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
+  const [itemRoute, setItemRoute] = useState<ItemRoute | undefined>(() => itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
+  const [itemTimeline, setItemTimeline] = useState<ItemTimelineResponse | null>(null);
+  const [itemError, setItemError] = useState<string | null>(null);
   const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
   const [activeSurface, setActiveSurface] = useState<DashboardSurface>(() =>
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
@@ -233,7 +269,8 @@ export function App() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).has("item")) {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("item") && !itemRouteFromSearchParams(params)) {
       writeOperatorLocation(operatorDeepLink, operatorQuery, "replace");
     }
   }, []);
@@ -241,6 +278,7 @@ export function App() {
   useEffect(() => {
     function restoreLocation() {
       const nextDeepLink = readOperatorDeepLink();
+      setItemRoute(itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
       setOperatorDeepLink(nextDeepLink);
       setOperatorQuery(nextDeepLink.query || "");
       setActiveSurface(nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) || hasLegacyFindLink() ? "find" : "attention");
@@ -248,6 +286,28 @@ export function App() {
     window.addEventListener("popstate", restoreLocation);
     return () => window.removeEventListener("popstate", restoreLocation);
   }, []);
+
+  useEffect(() => {
+    if (!itemRoute) {
+      setItemTimeline(null);
+      setItemError(null);
+      return;
+    }
+    let cancelled = false;
+    setItemTimeline(null);
+    setItemError(null);
+    void fetchItemTimeline(itemRoute.repo, itemRoute.target).then(
+      (timeline) => {
+        if (!cancelled) setItemTimeline(timeline);
+      },
+      (caught: unknown) => {
+        if (!cancelled) setItemError(caught instanceof Error ? caught.message : "Work item failed to load");
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [itemRoute]);
 
   useEffect(() => {
     function openFind(event: KeyboardEvent) {
@@ -329,6 +389,15 @@ export function App() {
   }
 
   function updateOperatorQuery(query: string) {
+    const githubUrl = canonicalGithubItemUrl(query);
+    const item = githubUrl && dashboard?.workItems.find((candidate) =>
+      [candidate.github?.url, candidate.claim?.prUrl, candidate.heartbeat?.prUrl]
+        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl)
+    );
+    if (item) {
+      openItem(item);
+      return;
+    }
     setOperatorQuery(query);
     const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
     const nextDeepLink = startingUniversalSearch
@@ -339,6 +408,12 @@ export function App() {
   }
 
   function openSurface(surface: DashboardSurface) {
+    if (itemRoute) {
+      setItemRoute(undefined);
+      setItemTimeline(null);
+      setItemError(null);
+      writeOperatorLocation({ query: operatorQuery || undefined }, operatorQuery, "replace");
+    }
     setHistoryMergedTodayOnly(false);
     if (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink)) {
       const nextDeepLink = { query: operatorQuery || undefined };
@@ -346,6 +421,22 @@ export function App() {
       writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
     }
     setActiveSurface(surface);
+  }
+
+  function openItem(item: WorkItem) {
+    const route = { repo: item.repo, target: item.target };
+    setItemRoute(route);
+    setItemTimeline(null);
+    setItemError(null);
+    writeItemLocation(route, "push");
+  }
+
+  function closeItem() {
+    setItemRoute(undefined);
+    setItemTimeline(null);
+    setItemError(null);
+    setActiveSurface("find");
+    writeOperatorLocation({ query: operatorQuery || undefined }, operatorQuery, "push");
   }
 
   function clearOperatorConstraints() {
@@ -634,7 +725,11 @@ export function App() {
               </button>
             ))}
           </nav>
-          <AttentionShell
+          {itemRoute ? itemTimeline ? (
+            <ItemPage onBack={closeItem} timeline={itemTimeline} />
+          ) : itemError ? (
+            <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
+          ) : <p className="empty-state">Loading work item timeline…</p> : <AttentionShell
             items={dashboard.workItems}
             deepLink={operatorDeepLink}
             historyMergedTodayOnly={historyMergedTodayOnly}
@@ -643,6 +738,7 @@ export function App() {
             onCopyResume={copyResumePrompt}
             onQueryChange={updateOperatorQuery}
             onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
+            onOpenItem={openItem}
             onClearDeepLink={clearOperatorConstraints}
             onShowMergedToday={showMergedToday}
             onSurfaceChange={openSurface}
@@ -652,12 +748,12 @@ export function App() {
             repairWorkItemIds={repairWorkItemIds}
             selectionDisabled={requiredCoordinationUnavailable}
             surface={activeSurface}
-          />
-          <details className="prompt-drawer-shell">
+          />}
+          {!itemRoute && <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
             <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
-          </details>
-          <details className="secondary-tools" ref={batchOperationsRef}>
+          </details>}
+          {!itemRoute && <details className="secondary-tools" ref={batchOperationsRef}>
             <summary>{batchDetailScope === "events" ? "Event records" : batchDetailScope === "repairs" ? "Batch repairs" : "Batch operations"}</summary>
             {batchDetailScope === "events" ? (
               <>
@@ -684,12 +780,12 @@ export function App() {
                 {orphanRepairOperations.map((operation) => <article className="event-row" key={`${operation.batchPath || operation.repo || "unscoped"}:${operation.batchId}`}><strong>{operation.controlStatus}</strong><span>{displayAttribution(operation.repo || operation.batchPath)}</span><span>{displayAttribution(operation.batchId)}</span><span>{operation.eventCount} events</span><time>{operation.latestEventAt || "time unavailable"}</time></article>)}
               </section>
             ) : null}
-          </details>
-          <details className="secondary-tools" ref={diagnosticsRef}>
+          </details>}
+          {!itemRoute && <details className="secondary-tools" ref={diagnosticsRef}>
             <summary>{diagnosticScope === "agents" ? "Agents" : diagnosticScope === "health" ? "Health" : "Machines and health"}</summary>
             {diagnosticScope !== "health" ? <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} /> : null}
             {diagnosticScope !== "agents" ? <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} /> : null}
-          </details>
+          </details>}
         </section>
       </div>
     </main>

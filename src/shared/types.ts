@@ -50,6 +50,8 @@ export interface ClaimRecord {
   batchId?: string;
   branch?: string;
   prUrl?: string;
+  /** Compare-and-swap generation, when the coordination backend supplied one. */
+  generation?: number;
   status: ClaimStatus;
   claimedAt?: string;
   updatedAt?: string;

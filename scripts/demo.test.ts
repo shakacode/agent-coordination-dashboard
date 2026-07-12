@@ -81,6 +81,15 @@ describe("demo coordination state", () => {
       expect.arrayContaining(["running", "wedged", "paused", "blocked", "stale", "dead"])
     );
     expect(state.heartbeats.map((heartbeat) => heartbeat.liveness)).toEqual(expect.arrayContaining(["live", "stale", "dead"]));
+    expect(state.claims.filter((claim) => claim.target === "101")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agentId: "demo-api-initial", status: "released", generation: 1 }),
+        expect.objectContaining({ agentId: "demo-api", status: "active", generation: 2 })
+      ])
+    );
+    expect(state.events).toEqual(
+      expect.arrayContaining([expect.objectContaining({ target: "101", type: "phase", status: "implementing" })])
+    );
     expect(state.warnings).toEqual([]);
   });
 
@@ -99,7 +108,7 @@ describe("demo coordination state", () => {
     expect(after.heartbeats.find((heartbeat) => heartbeat.agentId === "demo-qa")?.updatedAt).toBe(
       before.heartbeats.find((heartbeat) => heartbeat.agentId === "demo-qa")?.updatedAt
     );
-    expect(after.events).toHaveLength(4);
+    expect(after.events).toHaveLength(5);
     expect(after.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

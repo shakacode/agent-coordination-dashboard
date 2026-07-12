@@ -39,6 +39,7 @@ describe("readCoordinationState", () => {
         branch: "feature/operator-view",
         pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
         status: "active",
+        generation: 7,
         updated_at: "2026-06-17T19:50:00Z",
         expires_at: "2026-06-17T23:50:00Z"
       })
@@ -120,7 +121,8 @@ describe("readCoordinationState", () => {
       host: "codex",
       operator: "justin",
       branch: "feature/operator-view",
-      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005",
+      generation: 7
     });
     expect(state.heartbeats[0].liveness).toBe("live");
     expect(state.heartbeats[0].machineId).toBe("m5");

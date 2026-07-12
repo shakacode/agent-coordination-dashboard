@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
+import { buildCustodyTimeline } from "../shared/custodyTimeline";
 import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
 import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
@@ -109,6 +110,30 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     cachedDashboard = undefined;
     dashboardBuildInFlight = undefined;
   }
+
+  app.get("/api/item/:repo/:target", async (req, res) => {
+    const repo = req.params.repo;
+    const target = req.params.target;
+    const settings = await currentSettings();
+    if (!repo || !target || !settings.targetRepos.includes(repo)) {
+      res.status(404).json({ error: "Work item is not in the saved target repositories." });
+      return;
+    }
+
+    const now = new Date();
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
+    const model = await readScopedDashboard(settings);
+    const item = model.workItems.find((candidate) => candidate.repo === repo && candidate.target === target);
+    res.json({
+      ...buildCustodyTimeline({ repo, target, claims: state.claims, heartbeats: state.heartbeats, events: state.events, now }),
+      item,
+      sourceStatus: state.sourceStatus,
+      warnings: state.warnings
+    });
+  });
 
   function nextCacheableDashboardBuild(): number {
     dashboardBuildSequence += 1;

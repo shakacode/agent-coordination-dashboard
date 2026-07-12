@@ -1,0 +1,67 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ItemTimelineResponse } from "../api";
+import { ItemPage } from "./ItemPage";
+
+const timeline = {
+  repo: "shakacode/dashboard",
+  target: "46",
+  claims: [
+    { action: "acquired", agentId: "worker-a", threadHandle: "first-chat", timestamp: "2026-07-12T10:00:00Z", generation: 3 },
+    { action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", threadHandle: "takeover-chat", timestamp: "2026-07-12T10:05:00Z", generation: 4 }
+  ],
+  liveness: [{ agentId: "worker-b", liveness: "live", status: "implementing", startedAt: "2026-07-12T10:05:00Z", endedAt: "2026-07-12T10:10:00Z" }],
+  phases: [{ eventId: "phase-1", phase: "implementing", startedAt: "2026-07-12T10:02:00Z", endedAt: "2026-07-12T10:10:00Z", durationMs: 480_000, threadHandle: "takeover-chat" }],
+  events: [],
+  branches: ["codex/takeover"],
+  prUrls: ["https://github.com/shakacode/dashboard/pull/47"],
+  item: {
+    id: "shakacode/dashboard#46",
+    repo: "shakacode/dashboard",
+    target: "46",
+    type: "issue",
+    schedulingState: "in_process",
+    operatorState: "running",
+    github: { repo: "shakacode/dashboard", target: "46", type: "pull_request", title: "Timeline PR", url: "https://github.com/shakacode/dashboard/pull/47", state: "OPEN", reviewDecision: "APPROVED", labels: [], loadState: "loaded" },
+    heartbeat: { schemaVersion: 1, agentId: "worker-b", threadHandle: "takeover-chat", status: "implementing", updatedAt: "2026-07-12T10:10:00Z", expiresAt: "2026-07-12T10:20:00Z", path: "heartbeats/worker-b.json", liveness: "live" },
+    warnings: [],
+    selected: false
+  },
+  sourceStatus: [],
+  warnings: []
+} satisfies ItemTimelineResponse;
+
+describe("ItemPage", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the complete custody chain and copies ownership handles locally", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
+    render(<ItemPage onBack={vi.fn()} timeline={timeline} />);
+
+    expect(screen.getByRole("heading", { name: "Work item #46" })).toBeInTheDocument();
+    expect(screen.getByText("Current state: running")).toBeInTheDocument();
+    expect(screen.getByText("GitHub: OPEN · APPROVED")).toBeInTheDocument();
+    expect(screen.getByText(/worker-a → worker-b/)).toBeInTheDocument();
+    expect(screen.getByText("implementing · 8m")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/47");
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("acquired by worker-a"),
+      expect.stringContaining("implementing · 8m"),
+      expect.stringContaining("worker-a → worker-b"),
+      expect.stringContaining("live · 5m")
+    ]);
+
+    await userEvent.click(screen.getAllByRole("button", { name: "Copy thread handle takeover-chat" })[0]);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("takeover-chat");
+  });
+
+  it("offers a copy-only takeover command when the current holder is dead", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" } }
+    }} />);
+
+    expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
+  });
+});

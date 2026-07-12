@@ -119,13 +119,15 @@ function WorkCard({
   onCopyResume,
   onToggle,
   selectionDisabled = false,
-  onOpenBatchOperations
+  onOpenBatchOperations,
+  onOpenItem
 }: {
   item: WorkItem;
   onCopyResume?: (item: WorkItem) => void;
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
   onOpenBatchOperations?: () => void;
+  onOpenItem?: (item: WorkItem) => void;
 }) {
   const reason = item.attention;
   const heartbeat = item.heartbeat;
@@ -149,6 +151,7 @@ function WorkCard({
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
       <div className="attention-card-actions">
+        <button onClick={() => onOpenItem?.(item)} type="button">Open timeline</button>
         {isSelectableWorkItem(item) ? (
           <label className="attention-card-select">
             <input
@@ -186,6 +189,7 @@ export function AttentionShell({
   deepLink,
   onSurfaceChange,
   onOpenBatchOperations,
+  onOpenItem,
   onClearDeepLink,
   mergeTimeStatus = "unavailable",
   historyMergedTodayOnly = false,
@@ -204,6 +208,7 @@ export function AttentionShell({
   deepLink?: OperatorDeepLink;
   onSurfaceChange?: (surface: DashboardSurface) => void;
   onOpenBatchOperations?: () => void;
+  onOpenItem?: (item: WorkItem) => void;
   onClearDeepLink?: () => void;
   mergeTimeStatus?: "available" | "unavailable";
   historyMergedTodayOnly?: boolean;
@@ -233,6 +238,7 @@ export function AttentionShell({
       onToggle={onToggle}
       selectionDisabled={selectionDisabled}
       onOpenBatchOperations={onOpenBatchOperations}
+      onOpenItem={onOpenItem}
     />
   );
 

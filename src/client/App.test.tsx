@@ -149,6 +149,35 @@ describe("App", () => {
     expect(window.location.search).toContain("target=43");
   });
 
+  it("opens the custody timeline when a PR URL is pasted into universal Find", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard",
+      target: "44",
+      claims: [],
+      liveness: [],
+      phases: [],
+      events: [],
+      branches: ["codex/finished"],
+      prUrls: ["https://github.com/repo/dashboard/pull/44"],
+      item: model.workItems[1],
+      sourceStatus: [],
+      warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "https://github.com/repo/dashboard/pull/44");
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    expect(window.location.search).toBe("?item=repo%2Fdashboard%2F44");
+  });
+
   it("migrates target-only legacy item links without dropping their exact filter", async () => {
     window.history.pushState({}, "", "/?item=%2345");
     render(<App />);

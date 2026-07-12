@@ -1,4 +1,11 @@
-import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
+import type { CustodyTimeline } from "../shared/custodyTimeline";
+import type { BatchRecord, CoordinationSourceStatus, CoordinationWarning, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
+
+export interface ItemTimelineResponse extends CustodyTimeline {
+  item?: WorkItem;
+  sourceStatus: CoordinationSourceStatus[];
+  warnings: CoordinationWarning[];
+}
 
 export async function fetchDashboard(options: { fresh?: boolean; signal?: AbortSignal } = {}): Promise<DashboardModel> {
   const response = await fetch(
@@ -22,6 +29,14 @@ export async function fetchSettings(options: { signal?: AbortSignal } = {}): Pro
     throw new Error(`Settings API failed with ${response.status}`);
   }
   return (await response.json()) as DashboardSettings;
+}
+
+export async function fetchItemTimeline(repo: string, target: string, options: { signal?: AbortSignal } = {}): Promise<ItemTimelineResponse> {
+  const response = await fetch(`/api/item/${encodeURIComponent(repo)}/${encodeURIComponent(target)}`, options.signal ? { signal: options.signal } : undefined);
+  if (!response.ok) {
+    throw new Error(`Work item API failed with ${response.status}`);
+  }
+  return (await response.json()) as ItemTimelineResponse;
 }
 
 export async function saveSettings(settings: DashboardSettings): Promise<DashboardSettings> {
