@@ -348,6 +348,7 @@ function deriveOperatorState(input: {
   event?: BatchEvent;
   transitionEvent?: BatchEvent;
   signalStatus?: string;
+  currentStatus?: string;
   currentLifecycleAt?: string;
   liveness?: Liveness | "none";
   blockedOn: string[];
@@ -374,16 +375,13 @@ function deriveOperatorState(input: {
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
   const hasActiveClaim = Boolean(input.claim && input.claim.status !== "released");
   const liveness = input.heartbeat?.liveness || input.liveness;
-  const currentStatuses = [input.heartbeat?.status, input.claim?.status, input.lane?.status, input.signalStatus].filter(
-    (status): status is string => Boolean(status?.trim())
-  );
   const transitionStatus = input.transitionEvent?.status || input.transitionEvent?.type;
   const transitionAt = timestampMs(input.transitionEvent?.timestamp);
   const currentLifecycleAt = timestampMs(input.currentLifecycleAt);
   const terminalTransitionIsCurrent =
     isCurrentTerminalStatus(transitionStatus) &&
     transitionAt > 0 &&
-    (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : currentStatuses.length === 0);
+    (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : !input.currentStatus);
 
   if (PAUSED_PATTERN.test(currentText)) {
     return "paused";
@@ -391,7 +389,7 @@ function deriveOperatorState(input: {
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {
     return "blocked";
   }
-  if (currentStatuses.some(isCurrentTerminalStatus) || terminalTransitionIsCurrent) {
+  if (isCurrentTerminalStatus(input.currentStatus) || terminalTransitionIsCurrent) {
     return "done";
   }
   if (liveness === "dead") {
@@ -740,6 +738,11 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     claimLifecycleAt,
     ...lifecycleSignalCandidates.map((candidate) => candidate.timestamp)
   );
+  const currentStatus = latestLifecycleStatus([
+    { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
+    { status: item.claim?.status, timestamp: claimLifecycleAt },
+    ...lifecycleSignalCandidates
+  ]);
   const state = deriveOperatorState({
     workItem: item,
     heartbeat: item.heartbeat,
@@ -748,6 +751,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     event: latest,
     transitionEvent,
     signalStatus: signal?.status,
+    currentStatus,
     currentLifecycleAt,
     blockedOn,
     nowMs
@@ -947,6 +951,7 @@ function buildLaneRow(
     lane,
     event: latest,
     transitionEvent,
+    currentStatus: lane.status,
     currentLifecycleAt: maxTimestamp(batch.updatedAt, batch.createdAt),
     liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,
