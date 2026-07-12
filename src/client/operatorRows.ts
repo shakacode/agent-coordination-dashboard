@@ -349,6 +349,8 @@ function deriveOperatorState(input: {
   transitionEvent?: BatchEvent;
   signalStatus?: string;
   currentStatus?: string;
+  hasCurrentStatus?: boolean;
+  transitionMatchesCurrentContext?: boolean;
   currentLifecycleAt?: string;
   liveness?: Liveness | "none";
   blockedOn: string[];
@@ -381,7 +383,9 @@ function deriveOperatorState(input: {
   const terminalTransitionIsCurrent =
     isCurrentTerminalStatus(transitionStatus) &&
     transitionAt > 0 &&
-    (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : !input.currentStatus);
+    (currentLifecycleAt > 0
+      ? transitionAt > currentLifecycleAt
+      : !input.hasCurrentStatus || input.transitionMatchesCurrentContext === true);
   const terminalTransitionIsSuperseded =
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
@@ -402,7 +406,7 @@ function deriveOperatorState(input: {
   }
   if (liveness === "live") {
     const activityAt = terminalTransitionIsSuperseded
-      ? input.heartbeat?.updatedAt
+      ? input.heartbeat?.updatedAt || input.currentLifecycleAt
       : input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
     if (timestampMs(activityAt) > 0 && input.nowMs - timestampMs(activityAt) >= WEDGED_THRESHOLD_MS) {
       return "wedged";
@@ -418,7 +422,7 @@ function deriveOperatorState(input: {
   if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(currentText)) {
     return "dead";
   }
-  if (DONE_PATTERN.test(text)) {
+  if (DONE_PATTERN.test(currentText)) {
     return "done";
   }
   if (PAUSED_PATTERN.test(text)) {
@@ -749,6 +753,16 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     claimLifecycleAt,
     currentSignalCandidate?.timestamp
   );
+  const hasCurrentStatus = Boolean(
+    item.heartbeat?.status?.trim() || item.claim?.status?.trim() || currentSignalCandidate?.status?.trim()
+  );
+  const currentBatchIds = new Set(activeBatchIdsForWork(item));
+  if (signal?.batchId) {
+    currentBatchIds.add(signal.batchId);
+  }
+  const transitionMatchesCurrentContext = Boolean(
+    transitionEvent?.batchId && currentBatchIds.has(transitionEvent.batchId)
+  );
   const currentStatus = currentLifecycleAt
     ? latestLifecycleStatus([
         { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
@@ -765,6 +779,8 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     transitionEvent,
     signalStatus: signal?.status,
     currentStatus,
+    hasCurrentStatus,
+    transitionMatchesCurrentContext,
     currentLifecycleAt,
     blockedOn,
     nowMs
@@ -965,6 +981,8 @@ function buildLaneRow(
     event: latest,
     transitionEvent,
     currentStatus: lane.status,
+    hasCurrentStatus: Boolean(lane.status?.trim()),
+    transitionMatchesCurrentContext: false,
     currentLifecycleAt: maxTimestamp(batch.updatedAt, batch.createdAt),
     liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,

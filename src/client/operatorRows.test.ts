@@ -537,6 +537,72 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "completed" });
   });
 
+  it("does not let old terminal history override an untimestamped active claim", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          heartbeat: undefined,
+          claim: { ...claim, status: "active", updatedAt: undefined, claimedAt: undefined },
+          batchSignals: [],
+          schedulingState: "started_not_processing"
+        })
+      ],
+      events: [
+        {
+          eventId: "old-done-before-untimestamped-claim",
+          type: "done",
+          status: "done",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-09T19:00:00Z",
+          path: "events/old-done-before-untimestamped-claim.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0].operatorState).toBe("dead");
+  });
+
+  it("uses current lane activity when an older terminal transition is superseded", () => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "superseded-lane-terminal",
+          repo: "repo/app",
+          updatedAt: "2026-07-10T19:40:00Z",
+          path: "batches/superseded-lane-terminal.json",
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: [],
+              dependsOn: [],
+              status: "coding",
+              liveness: "live",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "older-lane-completed",
+          type: "completed",
+          status: "completed",
+          batchId: "superseded-lane-terminal",
+          repo: "repo/app",
+          laneName: "implementation",
+          timestamp: "2026-07-10T19:30:00Z",
+          path: "events/older-lane-completed.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0].operatorState).toBe("wedged");
+  });
+
   it.each(["working", "in_progress", "coding"] as const)(
     "keeps a targetless %s lane without a heartbeat current over old terminal history",
     (status) => {
