@@ -94,13 +94,17 @@ describe("operatorRows", () => {
       { id: "before", retentionStatus: "done", operatorState: "done", lastActivityAt: "2026-07-09T20:00:01Z" },
       { id: "boundary", retentionStatus: "merged", operatorState: "done", lastActivityAt: "2026-07-09T20:00:00Z" },
       { id: "after", retentionStatus: "closed", operatorState: "done", lastActivityAt: "2026-07-09T19:59:59Z" },
-      { id: "cancelled", retentionStatus: "cancelled", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" }
+      { id: "cancelled", retentionStatus: "cancelled", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" },
+      { id: "recent-abandoned", retentionStatus: "abandoned", operatorState: "done", lastActivityAt: "2026-07-09T20:00:01Z" },
+      { id: "old-abandoned", retentionStatus: "abandoned", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" },
+      { id: "recent-superseded", retentionStatus: "superseded", operatorState: "done", lastActivityAt: "2026-07-09T20:00:01Z" },
+      { id: "old-superseded", retentionStatus: "superseded", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" }
     ] as any;
 
     const result = filterOperatorRowsByAge(rows, now);
 
-    expect(result.visibleRows.map((row) => row.id)).toEqual(["before", "boundary"]);
-    expect(result.hiddenRows.map((row) => row.id)).toEqual(["after", "cancelled"]);
+    expect(result.visibleRows.map((row) => row.id)).toEqual(["before", "boundary", "recent-abandoned", "recent-superseded"]);
+    expect(result.hiddenRows.map((row) => row.id)).toEqual(["after", "cancelled", "old-abandoned", "old-superseded"]);
   });
 
   it("keeps every ineligible, open-GitHub, and UNKNOWN lifecycle row visible", () => {

@@ -11,6 +11,7 @@ import type {
   MetadataSource,
   OperatorRowProvenance,
   WorkItem,
+  WorkItemTerminalState,
   WorkItemType
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
@@ -136,7 +137,17 @@ const PAUSED_PATTERN =
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
-const ACCEPTED_TERMINAL_STATUSES = new Set(["done", "merged", "closed", "cancelled"]);
+const WORK_ITEM_TERMINAL_STATES: Record<WorkItemTerminalState, true> = {
+  done: true,
+  closed: true,
+  abandoned: true,
+  superseded: true
+};
+const ACCEPTED_TERMINAL_STATUSES = new Set<string>([
+  ...Object.keys(WORK_ITEM_TERMINAL_STATES),
+  "merged",
+  "cancelled"
+]);
 const TERMINAL_PRESENTATION_ALIASES = new Set(["complete", "completed", "released"]);
 
 function isAcceptedTerminalStatus(value: string | undefined): boolean {

@@ -495,6 +495,28 @@ describe("dashboard app import endpoint", () => {
     expect(batchLanesFor(repoB, model)).toEqual([expect.objectContaining({ owner: "worker-b", branch: "repo-b/work" })]);
   });
 
+  it("prefers an explicit target repo over a conflicting top-level batch repo", () => {
+    const item: WorkItem = {
+      id: "repo-b/api#45", repo: "repo-b/api", target: "45", type: "issue", schedulingState: "started_not_processing", warnings: [], selected: false,
+      batchSignals: [{ batchId: "multi-repo", laneName: "implementation", status: "completed", blockedOn: [] }]
+    };
+    const model = {
+      workItems: [item],
+      batches: [{
+        schemaVersion: 1,
+        batchId: "multi-repo",
+        repo: "repo-a/app",
+        targets: [{ type: "issue", target: "45", repo: "repo-b/api" }],
+        lanes: [{ name: "implementation", owner: "worker-b", targets: ["45"], dependsOn: [], blockedOn: [], status: "completed", branch: "repo-b/work", prUrl: "https://github.com/repo-b/api/pull/202" }],
+        path: "multi-repo.json"
+      }]
+    } as unknown as DashboardModel;
+
+    expect(batchLanesFor(item, model)).toEqual([
+      expect.objectContaining({ owner: "worker-b", branch: "repo-b/work", prUrl: "https://github.com/repo-b/api/pull/202" })
+    ]);
+  });
+
   it("keeps a lane PR URL paired with the branch from that same lane", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-atomic-lane-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

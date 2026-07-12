@@ -31,10 +31,10 @@ export function batchLanesFor(item: WorkItem, model: DashboardModel) {
       const explicitlyScopedRepos = new Set((batch.targets || [])
         .filter((target) => target.target === item.target && target.repo)
         .map((target) => target.repo!));
-      const repoMatches = batch.repo
-        ? batch.repo === item.repo
-        : explicitlyScopedRepos.size > 0
-          ? explicitlyScopedRepos.has(item.repo)
+      const repoMatches = explicitlyScopedRepos.size > 0
+        ? explicitlyScopedRepos.has(item.repo)
+        : batch.repo
+          ? batch.repo === item.repo
           : repoLessBatchLaneMatchesWorkItem(batch, signal.batchId || "", item, model.workItems);
       if (!repoMatches) return [];
       return batch.lanes.filter((lane) => lane.name === signal.laneName && lane.targets.includes(item.target));
