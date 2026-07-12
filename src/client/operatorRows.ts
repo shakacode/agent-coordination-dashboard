@@ -761,7 +761,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     currentBatchIds.add(signal.batchId);
   }
   const transitionMatchesCurrentContext = Boolean(
-    transitionEvent?.batchId && currentBatchIds.has(transitionEvent.batchId)
+    !item.claim && !item.heartbeat && transitionEvent?.batchId && currentBatchIds.has(transitionEvent.batchId)
   );
   const currentStatus = currentLifecycleAt
     ? latestLifecycleStatus([

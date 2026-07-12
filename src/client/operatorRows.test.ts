@@ -552,6 +552,7 @@ describe("operatorRows", () => {
           eventId: "old-done-before-untimestamped-claim",
           type: "done",
           status: "done",
+          batchId: "batch-1",
           repo: "repo/app",
           target: "123",
           timestamp: "2026-07-09T19:00:00Z",
