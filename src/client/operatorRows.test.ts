@@ -484,7 +484,7 @@ describe("operatorRows", () => {
           batchId: "batch-1",
           repo: "repo/app",
           target: "123",
-          timestamp: "2026-07-10T19:58:00Z",
+          timestamp: "2026-07-10T19:30:00Z",
           path: "events/old-completed-active.json"
         }
       ]

@@ -382,6 +382,8 @@ function deriveOperatorState(input: {
     isCurrentTerminalStatus(transitionStatus) &&
     transitionAt > 0 &&
     (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : !input.currentStatus);
+  const terminalTransitionIsSuperseded =
+    isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
   if (PAUSED_PATTERN.test(currentText)) {
     return "paused";
@@ -399,7 +401,9 @@ function deriveOperatorState(input: {
     return "stale";
   }
   if (liveness === "live") {
-    const activityAt = input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
+    const activityAt = terminalTransitionIsSuperseded
+      ? input.heartbeat?.updatedAt
+      : input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
     if (timestampMs(activityAt) > 0 && input.nowMs - timestampMs(activityAt) >= WEDGED_THRESHOLD_MS) {
       return "wedged";
     }
