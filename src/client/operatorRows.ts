@@ -49,7 +49,7 @@ export function safeGithubUrl(value: string | undefined): string | undefined {
   }
 }
 
-export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
+export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "archived" | "unknown";
 export type OperatorRowSource = "target" | "lane" | "batch";
 export type OverviewOperatorFilter = "ready_for_batch" | "needs_recovery" | "processing_now" | "qa_attention" | "batch_repair";
 
@@ -401,6 +401,9 @@ function deriveOperatorState(input: {
   const terminalTransitionIsSuperseded =
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
+  if (input.workItem?.operatorState === "archived_view" && !input.workItem.terminalState) {
+    return "archived";
+  }
   if (input.workItem && !isOperationalWorkItem(input.workItem)) {
     return "done";
   }
@@ -526,7 +529,8 @@ function rowSortRank(row: OperatorRow): number {
     running: 5,
     ready: 6,
     unknown: 7,
-    done: 8
+    done: 8,
+    archived: 9
   };
   return ranks[row.operatorState];
 }
@@ -813,7 +817,8 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     item.heartbeat?.updatedAt,
     claimLifecycleAt
   );
-  const retentionStatus = item.terminalState || (!isOperationalWorkItem(item) ? "done" : latestLifecycleStatus(lifecycleCandidates));
+  const retentionStatus = item.terminalState
+    || (item.operatorState === "archived_view" ? "archived" : !isOperationalWorkItem(item) ? "done" : latestLifecycleStatus(lifecycleCandidates));
   const isArchivedView = item.operatorState === "archived_view";
   const ownerMetadata = firstObserved(
     notApplicable(),
@@ -1174,13 +1179,13 @@ export function filterOperatorRowsByAge(
 
 export function isTerminalRowEligibleForAgeOut(row: OperatorRow): boolean {
   const githubState = row.githubState?.trim().toUpperCase();
+  const isLegacyArchived = row.operatorState === "archived" && row.retentionStatus.trim().toLowerCase() === "archived";
   const hasCurrentPresentationState = ["running", "wedged", "paused", "blocked", "stale", "dead", "ready", "unknown"].includes(
     row.operatorState
   );
   return (
-    ACCEPTED_TERMINAL_STATUSES.has(row.retentionStatus.trim().toLowerCase()) &&
-    githubState !== "OPEN" &&
-    githubState !== UNKNOWN &&
+    (ACCEPTED_TERMINAL_STATUSES.has(row.retentionStatus.trim().toLowerCase()) || isLegacyArchived) &&
+    (isLegacyArchived || (githubState !== "OPEN" && githubState !== UNKNOWN)) &&
     row.liveness !== "live" &&
     row.liveness !== "stale" &&
     row.liveness !== "dead" &&

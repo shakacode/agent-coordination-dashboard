@@ -3467,7 +3467,7 @@ describe("operatorRows", () => {
       operatorState: "archived_view",
       terminalState: undefined,
       heartbeat: oldHeartbeat,
-      github: closedGithub
+      github: undefined
     });
     const actionable = workItem({
       id: "repo/app#124",
@@ -3477,24 +3477,38 @@ describe("operatorRows", () => {
       heartbeat: { ...oldHeartbeat, target: "124" },
       github: { ...closedGithub, target: "124", url: "https://github.com/repo/app/pull/124" }
     });
+    const declaredTerminal = workItem({
+      id: "repo/app#125",
+      target: "125",
+      operatorState: "archived_view",
+      terminalState: "closed",
+      heartbeat: { ...oldHeartbeat, target: "125" },
+      github: { ...closedGithub, target: "125", url: "https://github.com/repo/app/pull/125" }
+    });
     const model = dashboard({
       generatedAt: "2026-07-10T20:00:00Z",
-      workItems: [archived, actionable]
+      workItems: [archived, actionable, declaredTerminal]
     });
 
     const rows = buildOperatorRows(model);
     expect(rows.find((row) => row.target === "123")).toMatchObject({
-      operatorState: "done",
-      retentionStatus: "done"
+      operatorState: "archived",
+      retentionStatus: "archived"
     });
     expect(rows.find((row) => row.target === "124")).toMatchObject({
       operatorState: "dead",
       retentionStatus: "coding"
     });
-    expect(filterOperatorRowsByAge(rows, model.generatedAt)).toMatchObject({
-      hiddenRows: [expect.objectContaining({ target: "123" })],
-      visibleRows: [expect.objectContaining({ target: "124" })]
+    expect(rows.find((row) => row.target === "125")).toMatchObject({
+      operatorState: "done",
+      retentionStatus: "closed"
     });
+    const ageOut = filterOperatorRowsByAge(rows, model.generatedAt);
+    expect(ageOut.hiddenRows.map((row) => row.target).sort()).toEqual(["123", "125"]);
+    expect(ageOut.visibleRows).toEqual([expect.objectContaining({ target: "124" })]);
+    expect(filterOperatorRowsByAge(rows, model.generatedAt, true).visibleRows).toContainEqual(
+      expect.objectContaining({ target: "123", operatorState: "archived", retentionStatus: "archived" })
+    );
   });
 
   it("does not present terminal target work as a Batch Repair recovery row", () => {

@@ -47,7 +47,8 @@ const TERMINAL_STATUS_LABELS: Record<string, string> = {
   done: "Done",
   merged: "Merged",
   closed: "Closed",
-  cancelled: "Cancelled"
+  cancelled: "Cancelled",
+  archived: "Archived"
 };
 
 function TerminalStatusBadge({ status }: { status: string }) {
