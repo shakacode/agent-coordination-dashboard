@@ -37,6 +37,176 @@ const preview: GitHubPreview = {
 };
 
 describe("buildDashboardModel", () => {
+  it("does not report a merged GitHub terminal item as an active claim missing its heartbeat", () => {
+    const github = {
+      repo: claim.repo,
+      target: claim.target,
+      type: "pull_request" as const,
+      title: "Coordinated work",
+      url: `https://github.com/${claim.repo}/pull/${claim.target}`,
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [claim],
+      heartbeats: [],
+      batches: [],
+      events: [],
+      warnings: [{ severity: "warning" as const, message: "GitHub read degraded.", repo: claim.repo, target: claim.target }]
+    };
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const model = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems.map((item) => item.title)).toEqual(expect.arrayContaining([
+      "Active claim has no matching heartbeat",
+      "Work started but not currently processing"
+    ]));
+    expect(model.workItems[0]).toMatchObject({ terminalState: "done", operatorState: "terminal" });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Active claim has no matching heartbeat");
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
+    expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
+  });
+
+  it("suppresses recovery health only after a started item is reconciled closed", () => {
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [{
+        eventId: "started-45",
+        type: "phase",
+        repo: "repo/app",
+        target: "45",
+        status: "implementation",
+        timestamp: "2026-07-12T11:00:00Z",
+        path: "events/started-45.json"
+      }],
+      warnings: []
+    };
+    const github = {
+      repo: "repo/app",
+      target: "45",
+      type: "issue" as const,
+      title: "Coordinated issue",
+      url: "https://github.com/repo/app/issues/45",
+      labels: [],
+      loadState: "loaded" as const
+    };
+
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const closed = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "CLOSED", closedAt: "2026-07-12T11:30:00Z" }]
+    });
+
+    expect(open.workItems[0]).toMatchObject({ schedulingState: "started_not_processing", terminalState: undefined });
+    expect(open.healthItems.map((item) => item.title)).toContain("Work started but not currently processing");
+    expect(closed.workItems[0]).toMatchObject({ schedulingState: "started_not_processing", terminalState: "closed" });
+    expect(closed.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
+  });
+
+  it("suppresses operational health after coordination declares the work terminal", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"), stateRoot: "/state", targetRepos: [claim.repo],
+      claims: [claim], heartbeats: [], batches: [], githubItems: [], warnings: [],
+      events: [{
+        eventId: "declared-closed", type: "lane_closed", status: "closed", repo: claim.repo, target: claim.target,
+        timestamp: "2026-07-12T11:30:00Z", path: "events/declared-closed.json"
+      }]
+    });
+
+    expect(model.workItems[0]).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "declared" } });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Active claim has no matching heartbeat");
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
+  });
+
+  it("does not emit operational heartbeat health for an archived dead holder", () => {
+    const deadHeartbeat = {
+      ...heartbeat,
+      status: "in_progress",
+      liveness: "dead" as const,
+      updatedAt: "2026-07-10T11:00:00Z",
+      expiresAt: "2026-07-10T11:15:00Z",
+      machineId: undefined
+    };
+    const input = {
+      stateRoot: "/state",
+      targetRepos: [heartbeat.repo!],
+      claims: [],
+      heartbeats: [deadHeartbeat],
+      batches: [],
+      events: [],
+      githubItems: [],
+      warnings: []
+    };
+
+    const actionable = buildDashboardModel({ ...input, now: new Date("2026-07-10T11:30:00Z") });
+    const archived = buildDashboardModel({ ...input, now: new Date("2026-07-12T12:00:00Z") });
+
+    expect(actionable.workItems[0]).toMatchObject({ operatorState: "needs_attention", attention: { kind: "dead_holder" } });
+    expect(actionable.healthItems.map((item) => item.title)).toContain("Heartbeat missing machine id");
+    expect(archived.workItems[0]).toMatchObject({ operatorState: "archived_view", attention: undefined });
+    expect(archived.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("does not report a terminal batch lane as missing its heartbeat", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "batch-terminal",
+      repo: "repo/app",
+      targets: [{ type: "pull_request" as const, target: "55" }],
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/batch-terminal.json"
+    };
+    const github = {
+      repo: "repo/app",
+      target: "55",
+      type: "pull_request" as const,
+      title: "Batch work",
+      url: "https://github.com/repo/app/pull/55",
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      warnings: []
+    };
+
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const merged = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems.map((item) => item.title)).toContain("Batch lane has no heartbeat");
+    expect(merged.workItems[0]).toMatchObject({ terminalState: "done" });
+    expect(merged.healthItems.map((item) => item.title)).not.toContain("Batch lane has no heartbeat");
+    expect(merged.healthItems.map((item) => item.title)).toContain("Prompt missing");
+  });
+
   it("declares merge-time truth unavailable until a trusted GitHub producer supplies it", () => {
     const model = buildDashboardModel({
       now: new Date("2026-07-12T12:00:00Z"),

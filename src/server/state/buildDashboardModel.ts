@@ -22,6 +22,7 @@ import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { batchSignalIdentity } from "../../shared/batchSignal";
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
+import { isOperationalWorkItem } from "../../shared/workItemSelection";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
@@ -1245,6 +1246,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     batches,
     now: input.now
   });
+  const workItemsById = new Map(workItems.map((item) => [item.id, item]));
   const nonterminalWorkItems = workItems.filter((item) => !item.terminalState);
   const hasUnreconciledCoordinatedWork = nonterminalWorkItems.some((item) => {
     return hasCoordinationEvidence(item) && item.github?.loadState !== "loaded";
@@ -1307,7 +1309,14 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const healthItems: HealthItem[] = [];
   for (const agent of agents) {
-    if (agent.machineMetadata?.state === "missing" && agent.heartbeat) {
+    const heartbeatWorkItem = agent.heartbeat?.repo && agent.heartbeat.target
+      ? workItemsById.get(workId(agent.heartbeat.repo, agent.heartbeat.target))
+      : undefined;
+    if (
+      agent.machineMetadata?.state === "missing"
+      && agent.heartbeat
+      && (!heartbeatWorkItem || isOperationalWorkItem(heartbeatWorkItem))
+    ) {
       healthItems.push(
         healthItem({
           severity: "warning",
@@ -1324,7 +1333,13 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
 
   for (const claim of currentClaims) {
-    if (claim.status === "active" && !heartbeatsByWork.get(workId(claim.repo, claim.target))?.some((item) => item.agentId === claim.agentId)) {
+    const item = workItemsById.get(workId(claim.repo, claim.target));
+    if (
+      item
+      && isOperationalWorkItem(item)
+      && claim.status === "active"
+      && !heartbeatsByWork.get(workId(claim.repo, claim.target))?.some((heartbeat) => heartbeat.agentId === claim.agentId)
+    ) {
       healthItems.push(
         healthItem({
           severity: "warning",
@@ -1342,7 +1357,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
 
   for (const item of workItems) {
-    if (item.schedulingState === "started_not_processing") {
+    if (isOperationalWorkItem(item) && item.schedulingState === "started_not_processing") {
       healthItems.push(
         healthItem({
           severity: "warning",
@@ -1423,7 +1438,12 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
 
     for (const lane of batch.lanes) {
-      if (lane.liveness === "no-heartbeat" && !TERMINAL_STATUSES.has(lane.status)) {
+      const laneWorkItems = workItems.filter((item) =>
+        batchContainsRepo(batch, item.repo)
+        && item.batchSignals?.some((signal) => signal.batchId === batch.batchId && signal.laneName === lane.name)
+      );
+      const hasOperationalLaneWork = laneWorkItems.length === 0 || laneWorkItems.some(isOperationalWorkItem);
+      if (lane.liveness === "no-heartbeat" && !TERMINAL_STATUSES.has(lane.status) && hasOperationalLaneWork) {
         healthItems.push(
           healthItem({
             severity: "warning",
