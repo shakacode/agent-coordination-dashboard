@@ -44,6 +44,8 @@ interface GhTarget {
 export interface GitHubLoadResult {
   items: GitHubPreview[];
   warnings: CoordinationWarning[];
+  /** Parallel to items for target reconciliation; absent for open-list loads. */
+  references?: GitHubTargetReference[];
 }
 
 export interface GitHubTargetReference {
@@ -135,10 +137,21 @@ export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
   };
 }
 
-export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 8) {
-  const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult> }>();
+export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 8, maxCacheEntries = 2_000) {
+  const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult>; settled: boolean }>();
   const queue: Array<() => void> = [];
   let activeLoads = 0;
+
+  function pruneCache(now: number) {
+    for (const [key, entry] of cache) {
+      if (entry.settled && entry.expiresAt <= now) cache.delete(key);
+    }
+    while (cache.size > Math.max(1, maxCacheEntries)) {
+      const oldestSettled = Array.from(cache).find(([, entry]) => entry.settled)?.[0];
+      if (!oldestSettled) break;
+      cache.delete(oldestSettled);
+    }
+  }
 
   function schedule<T>(task: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -202,21 +215,31 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
       const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target && candidate.branch === reference.branch && Boolean(candidate.existingTarget) === Boolean(reference.existingTarget)) === index);
       const now = Date.now();
+      pruneCache(now);
       const results = await Promise.all(unique.map((reference) => {
         const key = `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
         const existing = cache.get(key);
         if (!options.bypassCache && existing && existing.expiresAt > now) return existing.promise;
         const promise = schedule(() => loadOne(reference));
-        cache.set(key, { expiresAt: now + ttlMs, promise });
+        const entry = { expiresAt: now + ttlMs, promise, settled: false };
+        cache.set(key, entry);
+        const settleEntry = () => {
+          entry.settled = true;
+          pruneCache(Date.now());
+        };
+        void promise.then(settleEntry, settleEntry);
+        pruneCache(now);
         return promise;
       }));
       return {
         items: results.flatMap((result, index) => unique[index].existingTarget
           ? result.items.map((item) => ({ ...unique[index].existingTarget!, ...(item.branchState ? { branchState: item.branchState } : {}) }))
           : result.items),
-        warnings: results.flatMap((result) => result.warnings)
+        warnings: results.flatMap((result) => result.warnings),
+        references: unique
       };
-    }
+    },
+    cacheSize: () => cache.size
   };
 }
 

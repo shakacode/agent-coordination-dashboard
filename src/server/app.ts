@@ -35,7 +35,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
   const defaultTargetReconciler = createGitHubTargetReconciler();
   const loadGitHubTargets = options.loadGitHubTargets
-    || (options.loadOpenGitHubItems ? async () => ({ items: [], warnings: [] }) : defaultTargetReconciler.load);
+    || (options.loadOpenGitHubItems ? async () => ({ items: [], warnings: [], references: [] }) : defaultTargetReconciler.load);
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
@@ -130,6 +130,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return { repo: item.repo, target: item.target, type: item.type, ...(branch ? { branch } : {}) };
   }
 
+  function reconciliationKey(reference: GitHubTargetReference): string {
+    return `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
+  }
+
   async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
     const now = new Date();
     const state = await readCoordinationState(config.stateRoot, now, {
@@ -156,10 +160,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return reference ? [{ workItemId: item.id, item, reference }] : [];
     });
     const reconciled = await loadGitHubTargets(reconciliationPlans.map((plan) => plan.reference), { bypassCache: options.bypassGitHubCache });
-    const resultByReference = new Map(reconciled.items.map((item) => [`${item.repo}#${item.target}`, item]));
+    const returnedReferences = reconciled.references || reconciliationPlans.map((plan) => plan.reference);
+    const resultByReference = new Map(reconciled.items.map((item, index) => [reconciliationKey(returnedReferences[index]), item]));
     const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
-      const result = resultByReference.get(`${plan.reference.repo}#${plan.reference.target}`);
-      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target }] : [];
+      const result = resultByReference.get(reconciliationKey(plan.reference));
+      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, coordinatedType: plan.item.type }] : [];
     });
     const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
     const githubItems = [...openGithubItems.filter((item) => !reconciledWorkItemIds.has(`${item.repo}#${item.target}`)), ...remappedGithubItems];

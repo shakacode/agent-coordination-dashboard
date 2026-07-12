@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGitHubTargetReconciler, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
 
 describe("github list parsers", () => {
+  afterEach(() => vi.useRealTimers());
   it("normalizes merged PR and closed issue target responses", () => {
     expect(parseGitHubTarget("repo/app", JSON.stringify({
       number: 43, title: "Merged", html_url: "https://github.com/repo/app/pull/43", state: "closed", closed_at: "2026-07-12T11:00:00Z",
@@ -103,6 +104,27 @@ describe("github list parsers", () => {
     } }, 60_000, 2);
     await reconciler.load([1, 2, 3, 4].map((target) => ({ repo: "repo/app", target: String(target), type: "issue" as const, branch: `feature/${target}` })));
     expect(maximum).toBe(2);
+  });
+
+  it("prunes expired cache entries and caps live entries deterministically", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
+    let calls = 0;
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls += 1;
+      const target = args[1].split("/").at(-1);
+      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } }, 10, 8, 2);
+    const reference = (target: string) => ({ repo: "repo/app", target, type: "issue" as const });
+    await reconciler.load([reference("1"), reference("2")]);
+    expect(reconciler.cacheSize()).toBe(2);
+    await reconciler.load([reference("3")]);
+    expect(reconciler.cacheSize()).toBe(2);
+    await reconciler.load([reference("1")]);
+    expect(calls).toBe(4);
+    vi.advanceTimersByTime(11);
+    await reconciler.load([reference("4")]);
+    expect(reconciler.cacheSize()).toBe(1);
   });
   it("normalizes open PRs", () => {
     const previews = parsePrList(

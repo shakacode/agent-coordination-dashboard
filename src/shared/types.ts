@@ -192,6 +192,8 @@ export interface GitHubPreview {
   repo: string;
   target: string;
   type: WorkItemType;
+  /** Original coordinated identity when linked GitHub evidence points at another target. */
+  coordinatedType?: WorkItemType;
   title: string;
   url: string;
   state: string;

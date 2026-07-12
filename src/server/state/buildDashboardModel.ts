@@ -1152,7 +1152,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         id,
         repo,
         target,
-        type: github?.type || batchTarget?.type || "unknown",
+        type: github?.coordinatedType || github?.type || batchTarget?.type || "unknown",
         claim,
         heartbeat,
         batchSignals,

@@ -247,6 +247,20 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/44");
   });
 
+  it("keeps the coordinated issue label while linked PR evidence supplies the merge", () => {
+    const issueWithMergedPr = {
+      ...ITEMS[1],
+      id: "repo/dashboard#45",
+      target: "45",
+      type: "issue" as const,
+      terminalProvenance: { source: "github" as const, url: "https://github.com/repo/dashboard/pull/54" },
+      github: { repo: "repo/dashboard", target: "45", type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/repo/dashboard/pull/54", state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[issueWithMergedPr]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("heading", { name: "Issue #45: Merged implementation" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/54");
+  });
+
   it("shows UNKNOWN instead of guessing when GitHub reconciliation failed", () => {
     const unknown = { ...ITEMS[0], github: { repo: "repo/dashboard", target: "43", type: "unknown" as const, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" as const } };
     render(<AttentionShell items={[unknown]} onQueryChange={vi.fn()} query="" surface="attention" />);

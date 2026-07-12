@@ -151,9 +151,29 @@ describe("dashboard app import endpoint", () => {
     const body = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>>; trulyOpenCount: number; trulyOpenCountStatus: string };
     expect(reconciledTarget).toBe("54");
     expect(body.workItems).toHaveLength(1);
-    expect(body.workItems[0]).toMatchObject({ id: "shakacode/react_on_rails#45", target: "45", operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/shakacode/react_on_rails/pull/54" }, github: { target: "45", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
+    expect(body.workItems[0]).toMatchObject({ id: "shakacode/react_on_rails#45", target: "45", type: "issue", operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/shakacode/react_on_rails/pull/54" }, github: { target: "45", type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
     expect(body.trulyOpenCount).toBe(0);
     expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
+  it("keeps distinct branch evidence when two issue WorkItems share one PR", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-shared-pr-"));
+    const directory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(directory, { recursive: true });
+    await Promise.all([
+      writeFile(join(directory, "45.json"), JSON.stringify({ schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker-a", status: "active", branch: "feature/a", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" })),
+      writeFile(join(directory, "46.json"), JSON.stringify({ schema_version: 1, repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "active", branch: "feature/b", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }))
+    ]);
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: ["45", "46"].map((target) => ({ repo: "shakacode/react_on_rails", target, type: "issue" as const, title: `Open issue ${target}`, url: `https://github.com/shakacode/react_on_rails/issues/${target}`, state: "OPEN", labels: [], loadState: "loaded" as const })), warnings: [] }),
+      loadGitHubTargets: async (references) => ({ items: references.map((reference) => ({ repo: reference.repo, target: reference.target, type: "pull_request" as const, title: "Merged shared PR", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", branchState: reference.branch === "feature/a" ? "deleted" as const : "present" as const, labels: [], loadState: "loaded" as const })), warnings: [] })
+    });
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ target: string; type: string; terminalState?: string; github?: { branchState?: string } }> };
+    expect(body.workItems.map((item) => ({ target: item.target, type: item.type, terminal: item.terminalState, branch: item.github?.branchState }))).toEqual([
+      { target: "45", type: "issue", terminal: "done", branch: "deleted" },
+      { target: "46", type: "issue", terminal: "done", branch: "present" }
+    ]);
   });
 
   it.each([
