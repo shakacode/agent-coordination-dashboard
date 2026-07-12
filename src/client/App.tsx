@@ -26,6 +26,10 @@ type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
 const REQUIRED_COORDINATION_RESOURCES: readonly CoordinationResource[] = ["claims", "heartbeats", "batches"];
+const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
+  ...REQUIRED_COORDINATION_RESOURCES,
+  "events"
+];
 
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
@@ -100,7 +104,8 @@ export function App() {
 
   const requiredCoordinationUnavailable = Boolean(
     dashboard?.sourceStatus?.some(
-      (source) => REQUIRED_COORDINATION_RESOURCES.includes(source.resource) && ["auth_error", "unreachable"].includes(source.status)
+      (source) =>
+        BATCH_ACTION_COORDINATION_RESOURCES.includes(source.resource) && ["auth_error", "unreachable"].includes(source.status)
     )
   );
   const prompt = useMemo(

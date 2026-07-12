@@ -2,7 +2,7 @@ import { Clipboard } from "lucide-react";
 
 export function PromptDrawer({ prompt, disabled = false }: { prompt: string; disabled?: boolean }) {
   const content = disabled
-    ? "PR-batch prompt generation is disabled until claims, heartbeats, and batches can be read."
+    ? "PR-batch prompt generation is disabled until claims, heartbeats, batches, and events can be read."
     : prompt;
   return (
     <aside className="prompt-drawer">

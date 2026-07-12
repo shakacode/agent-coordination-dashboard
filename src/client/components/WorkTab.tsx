@@ -47,7 +47,7 @@ export function WorkTab({
   return (
     <section className="work-queue">
       {selectionDisabled && (
-        <p className="warning">Batch selection is unavailable until claims, heartbeats, and batches can be read.</p>
+        <p className="warning">Batch selection is unavailable until claims, heartbeats, batches, and events can be read.</p>
       )}
       <label className="search-field">
         <Search size={16} aria-hidden="true" />

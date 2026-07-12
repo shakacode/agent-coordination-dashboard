@@ -48,7 +48,7 @@ interface StateReadResult<T> {
 }
 
 function filesystemSourceState(source: StateFileList, read: StateReadResult<unknown>): CoordinationSourceStatus["status"] {
-  if (source.unavailable || (read.unavailable && read.records.length === 0)) {
+  if (source.unavailable || read.unavailable) {
     return "unreachable";
   }
   return source.files.length === 0 ? "empty" : "ok";

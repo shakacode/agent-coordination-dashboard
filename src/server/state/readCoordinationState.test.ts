@@ -164,10 +164,10 @@ describe("readCoordinationState", () => {
       ])
     );
     expect(state.sourceStatus).toEqual([
-      expect.objectContaining({ resource: "claims", status: "ok" }),
-      expect.objectContaining({ resource: "heartbeats", status: "ok" }),
+      expect.objectContaining({ resource: "claims", status: "unreachable" }),
+      expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
       expect.objectContaining({ resource: "batches", status: "ok" }),
-      expect.objectContaining({ resource: "events", status: "ok" })
+      expect.objectContaining({ resource: "events", status: "unreachable" })
     ]);
   });
 

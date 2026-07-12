@@ -721,12 +721,12 @@ describe("App", () => {
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Work" }));
-    expect(screen.getByText("Batch selection is unavailable until claims, heartbeats, and batches can be read.")).toBeInTheDocument();
+    expect(screen.getByText("Batch selection is unavailable until claims, heartbeats, batches, and events can be read.")).toBeInTheDocument();
     expect(screen.getAllByRole("checkbox").every((checkbox) => checkbox.hasAttribute("disabled"))).toBe(true);
 
     await userEvent.click(screen.getByText("PR-batch prompt"));
     const disabledPrompt = screen.getByText(
-      "PR-batch prompt generation is disabled until claims, heartbeats, and batches can be read."
+      "PR-batch prompt generation is disabled until claims, heartbeats, batches, and events can be read."
     );
     expect(disabledPrompt).toBeInTheDocument();
     expect(disabledPrompt).not.toHaveTextContent("Issue #4010");
@@ -784,6 +784,45 @@ describe("App", () => {
     expect(screen.getByText("0 processing")).toBeInTheDocument();
     expect(screen.getByText("— QA needs attention")).toBeInTheDocument();
     expect(screen.getByText("— batch repairs")).toBeInTheDocument();
+  });
+
+  it("re-enables batch selection and prompt generation after every coordination source recovers", async () => {
+    let dashboardReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => settings } as Response;
+      }
+      dashboardReads += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          ...model,
+          sourceStatus: degradedSourceStatus.map((source, index) =>
+            dashboardReads === 1 && index === 3
+              ? { ...source, status: "unreachable", httpStatus: undefined }
+              : { ...source, status: "empty", httpStatus: 200 }
+          )
+        })
+      } as Response;
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Work" }));
+    expect(screen.getByText("Batch selection is unavailable until claims, heartbeats, batches, and events can be read.")).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox").every((checkbox) => checkbox.hasAttribute("disabled"))).toBe(true);
+    expect(screen.getByTitle("Copy prompt")).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Batch selection is unavailable until claims, heartbeats, batches, and events can be read.")
+      ).not.toBeInTheDocument()
+    );
+    expect(screen.getAllByRole("checkbox").some((checkbox) => !checkbox.hasAttribute("disabled"))).toBe(true);
+    expect(screen.getByTitle("Copy prompt")).toBeEnabled();
+    expect(screen.getByText(/Use \$pr-batch to complete this batch with subagents/)).toBeInTheDocument();
   });
 
   it("shows a full outage when every required source fails and optional events are empty", async () => {
