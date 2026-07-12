@@ -8,6 +8,17 @@ export type QaValidationStatus = "missing" | "requested" | "in_progress" | "pass
 export type MetadataProvenanceState = "observed" | "inferred" | "missing" | "not_applicable";
 export type MetadataSource = "claim" | "heartbeat" | "event" | "manifest" | "inferred_batch" | "github" | "dashboard";
 export type OperatorRowProvenanceClassification = "observed" | "inferred" | "synthetic" | "unknown";
+export type CoordinationResource = "claims" | "heartbeats" | "batches" | "events";
+export type CoordinationSourceMode = "api" | "fs";
+export type CoordinationSourceState = "ok" | "auth_error" | "unreachable" | "empty";
+
+export interface CoordinationSourceStatus {
+  resource: CoordinationResource;
+  mode: CoordinationSourceMode;
+  status: CoordinationSourceState;
+  httpStatus?: number;
+  checkedAt: string;
+}
 
 export interface OperatorRowProvenance {
   classification: OperatorRowProvenanceClassification;
@@ -249,4 +260,6 @@ export interface DashboardModel {
   qaValidations: QaValidationItem[];
   healthItems: HealthItem[];
   warnings: CoordinationWarning[];
+  sourceStatus?: CoordinationSourceStatus[];
+  coordinationTokenEnvVar?: "AGENT_COORD_API_TOKEN" | "AGENT_COORD_TOKEN";
 }

@@ -10,6 +10,7 @@ export interface ServerConfig {
   stateRoot: string;
   coordApiUrl?: string;
   coordApiToken?: string;
+  coordApiTokenEnvVar?: "AGENT_COORD_API_TOKEN" | "AGENT_COORD_TOKEN";
   refreshIntervalMs: number;
   targetRepos: string[];
   settingsPath: string;
@@ -49,6 +50,11 @@ function refreshIntervalFromEnv(value: string | undefined, fallback: number): nu
 export function readConfig(env = process.env): ServerConfig {
   const host = env.HOST || "127.0.0.1";
   const coordApiUrl = env.AGENT_COORD_API_URL?.trim() || "";
+  const coordApiTokenEnvVar = env.AGENT_COORD_API_TOKEN?.trim()
+    ? "AGENT_COORD_API_TOKEN"
+    : env.AGENT_COORD_TOKEN?.trim()
+      ? "AGENT_COORD_TOKEN"
+      : undefined;
   if (isWildcardHost(host) && !env.ALLOWED_HOSTS?.trim()) {
     throw new Error("ALLOWED_HOSTS is required when HOST binds all interfaces.");
   }
@@ -60,6 +66,7 @@ export function readConfig(env = process.env): ServerConfig {
     stateRoot: env.AGENT_COORD_STATE_ROOT || join(homedir(), ".local", "state", "agent-coordination"),
     coordApiUrl,
     coordApiToken: env.AGENT_COORD_API_TOKEN?.trim() || env.AGENT_COORD_TOKEN?.trim() || "",
+    coordApiTokenEnvVar,
     refreshIntervalMs: refreshIntervalFromEnv(env.DASHBOARD_REFRESH_MS, coordApiUrl ? 5000 : 0),
     targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",

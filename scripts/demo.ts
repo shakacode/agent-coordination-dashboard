@@ -3,6 +3,7 @@ import { appendFile, chmod, mkdir, mkdtemp, rename, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer, type Server } from "node:http";
 import { DEFAULT_PORT } from "../src/server/config";
 
 export const DEMO_REPO = "demo/coordination-showcase";
@@ -245,11 +246,31 @@ async function installOfflineGitHubStub(root: string): Promise<string> {
 export async function runDemo(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "agent-coordination-dashboard-demo-"));
   const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const degraded = process.argv.includes("--degraded");
+  let degradedApiServer: Server | undefined;
+  let degradedApiUrl = "";
   let offlineBin: string;
   try {
     offlineBin = await installOfflineGitHubStub(root);
     await initializeDemoState(root);
+    if (degraded) {
+      degradedApiServer = createServer((_req, res) => {
+        res.statusCode = 401;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ error: "unauthorized" }));
+      });
+      await new Promise<void>((resolveListen, rejectListen) => {
+        degradedApiServer?.once("error", rejectListen);
+        degradedApiServer?.listen(0, "127.0.0.1", () => resolveListen());
+      });
+      const address = degradedApiServer.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected a TCP address for the degraded demo API.");
+      }
+      degradedApiUrl = `http://127.0.0.1:${address.port}`;
+    }
   } catch (error) {
+    degradedApiServer?.close();
     await rm(root, { force: true, recursive: true });
     throw error;
   }
@@ -257,6 +278,7 @@ export async function runDemo(): Promise<void> {
   const serverEnv = { ...process.env };
   delete serverEnv.AGENT_COORD_API_URL;
   delete serverEnv.AGENT_COORD_API_TOKEN;
+  delete serverEnv.AGENT_COORD_TOKEN;
   Object.assign(serverEnv, {
     AGENT_COORD_STATE_ROOT: root,
     ALLOWED_HOSTS: "localhost,127.0.0.1,::1",
@@ -268,9 +290,18 @@ export async function runDemo(): Promise<void> {
     PORT: process.env.PORT || String(DEFAULT_PORT),
     TARGET_REPOS: DEMO_REPO
   });
+  if (degraded) {
+    Object.assign(serverEnv, {
+      AGENT_COORD_API_URL: degradedApiUrl,
+      AGENT_COORD_API_TOKEN: "demo-expired-token"
+    });
+  }
 
   console.log(`Demo coordination state: ${root}`);
   console.log(`Demo dashboard: http://127.0.0.1:${serverEnv.PORT}`);
+  if (degraded) {
+    console.log("Degraded demo mode: coordination API returns 401 for every resource.");
+  }
   console.log("Synthetic state ticks every 3 seconds; the dashboard refreshes every 2 seconds. Press Ctrl-C to stop.");
 
   const server = spawn(
@@ -304,6 +335,11 @@ export async function runDemo(): Promise<void> {
       }
       await serverClosed;
       await tickQueue;
+      if (degradedApiServer?.listening) {
+        await new Promise<void>((resolveClose, rejectClose) =>
+          degradedApiServer?.close((error) => (error ? rejectClose(error) : resolveClose()))
+        );
+      }
       await rm(root, { force: true, recursive: true });
       console.log("Demo coordination state removed.");
     })();

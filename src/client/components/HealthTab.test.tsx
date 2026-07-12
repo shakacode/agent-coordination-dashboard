@@ -47,4 +47,18 @@ describe("HealthTab", () => {
     render(<HealthTab items={[]} />);
     expect(screen.getByText("No coordination health issues found.")).toBeInTheDocument();
   });
+
+  it("does not report a healthy empty state when health sources are unavailable", () => {
+    render(<HealthTab items={[]} unavailableSources={["claims", "events"]} />);
+
+    expect(screen.getByText("Coordination health data unavailable: claims, events could not be read.")).toBeInTheDocument();
+    expect(screen.queryByText("No coordination health issues found.")).not.toBeInTheDocument();
+  });
+
+  it("labels retained health records as incomplete when a backing source is unavailable", () => {
+    render(<HealthTab items={[healthItem()]} unavailableSources={["events"]} />);
+
+    expect(screen.getByText("Coordination health data may be incomplete: events could not be read.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Heartbeat missing machine id" })).toBeInTheDocument();
+  });
 });

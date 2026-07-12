@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
-import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
+import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { HealthTab } from "./components/HealthTab";
@@ -25,6 +25,11 @@ type Tab = "overview" | "operator" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
+const REQUIRED_COORDINATION_RESOURCES: readonly CoordinationResource[] = ["claims", "heartbeats", "batches"];
+const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
+  ...REQUIRED_COORDINATION_RESOURCES,
+  "events"
+];
 
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
@@ -97,7 +102,16 @@ export function App() {
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
 
-  const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
+  const requiredCoordinationUnavailable = Boolean(
+    dashboard?.sourceStatus?.some(
+      (source) =>
+        BATCH_ACTION_COORDINATION_RESOURCES.includes(source.resource) && ["auth_error", "unreachable"].includes(source.status)
+    )
+  );
+  const prompt = useMemo(
+    () => (requiredCoordinationUnavailable ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
+    [dashboard, requiredCoordinationUnavailable]
+  );
   function beginUserAction() {
     userActionInFlightCount.current += 1;
     setIsRefreshing(true);
@@ -240,6 +254,9 @@ export function App() {
   }
 
   function toggleWorkItem(id: string) {
+    if (requiredCoordinationUnavailable) {
+      return;
+    }
     setDashboard((current) => {
       if (!current) {
         return current;
@@ -326,6 +343,33 @@ export function App() {
   }
 
   const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
+  const sourceFailures = (dashboard.sourceStatus || []).filter((source) =>
+    ["auth_error", "unreachable"].includes(source.status)
+  );
+  const coordinationSourceError = sourceFailures.length > 0;
+  const failedResources = new Set(sourceFailures.map((source) => source.resource));
+  const hasAuthenticationFailure = sourceFailures.some((source) => source.status === "auth_error");
+  const requiredResources = REQUIRED_COORDINATION_RESOURCES;
+  const allRequiredSourcesFailed = requiredResources.every((resource) => failedResources.has(resource));
+  const hasRequiredSourceFailure = requiredResources.some((resource) => failedResources.has(resource));
+  const coordinationDegraded = hasAuthenticationFailure || hasRequiredSourceFailure;
+  const filesystemOutage = coordinationDegraded && sourceFailures.every((source) => source.mode === "fs");
+  const failedHttpStatuses = Array.from(
+    new Set(sourceFailures.flatMap((source) => (source.httpStatus === undefined ? [] : [source.httpStatus])))
+  );
+  const degradedHttpStatus = failedHttpStatuses.length === 1 ? failedHttpStatuses[0] : undefined;
+  const failedSourceDetails = (resources: readonly CoordinationResource[]) =>
+    sourceFailures
+      .filter((source) => resources.includes(source.resource))
+      .map((source) => `${source.resource}: ${source.status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`)
+      .join("; ");
+  const coordinationCount = (count: number, resources: readonly CoordinationResource[]) =>
+    resources.some((resource) => failedResources.has(resource)) ? "—" : String(count);
+  const agentSources = ["claims", "heartbeats", "events"] as const;
+  const eventSources = ["events"] as const;
+  const healthSources = ["claims", "heartbeats", "batches", "events"] as const;
+  const unavailableSources = (resources: readonly CoordinationResource[]) =>
+    resources.filter((resource) => failedResources.has(resource));
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
@@ -346,13 +390,24 @@ export function App() {
         <div>
           <h1>Agent Coordination</h1>
           <p>
-            {dashboard.stateRoot} · {dashboard.workItems.length} open or coordinated items
+            {coordinationSourceError ? (
+              <span className="source-chip source-chip-error">{dashboard.stateRoot}</span>
+            ) : (
+              dashboard.stateRoot
+            )}{" "}
+            · {dashboard.workItems.length} open or coordinated items
           </p>
         </div>
         <div className="summary-strip">
-          <span>{dashboard.agents.length} agents</span>
-          <span>{dashboard.events.length} events</span>
-          <span>{dashboard.healthItems.length} health</span>
+          <span title={failedSourceDetails(agentSources) || undefined}>
+            {coordinationCount(dashboard.agents.length, agentSources)} agents
+          </span>
+          <span title={failedSourceDetails(eventSources) || undefined}>
+            {coordinationCount(dashboard.events.length, eventSources)} events
+          </span>
+          <span title={failedSourceDetails(healthSources) || undefined}>
+            {coordinationCount(dashboard.healthItems.length, healthSources)} health
+          </span>
           <span>
             {dashboard.warnings.length} {warningLabel}
           </span>
@@ -369,6 +424,44 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {coordinationDegraded && (
+        <section aria-label="Coordination backend degraded" className="coordination-degraded-banner" role="alert">
+          {filesystemOutage ? (
+            <>
+              <strong>Coordination state files unavailable — some dashboard data is unavailable</strong>
+              <span>
+                Check <code>AGENT_COORD_STATE_ROOT</code> permissions and state-file integrity, then refresh.
+              </span>
+            </>
+          ) : hasAuthenticationFailure ? (
+            <>
+              <strong>
+                {allRequiredSourcesFailed ? "Coordination backend unreachable" : "Coordination authentication failed"}
+                {degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — {allRequiredSourcesFailed
+                  ? "showing GitHub data only"
+                  : "some coordination data is unavailable"}
+              </strong>
+              <span>
+                Token source: {dashboard.coordinationTokenEnvVar || "no token environment variable found"}. Run{" "}
+                <code>agent-coord doctor --deep</code> to diagnose and re-provision access.
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>
+                Coordination backend unreachable{degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — some dashboard data is unavailable
+              </strong>
+              <span>
+                Run <code>agent-coord doctor --deep</code> to inspect backend connectivity, then refresh.
+              </span>
+            </>
+          )}
+          <a href="/api/doctor" rel="noreferrer" target="_blank">
+            Details
+          </a>
+        </section>
+      )}
 
       <details className="repo-filter" aria-label="Target repositories">
         <summary>
@@ -473,8 +566,12 @@ export function App() {
               revealOlderTerminalRows={revealOlderTerminalRows}
             />
           )}
-          {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
-          {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
+          {activeTab === "work" && (
+            <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} selectionDisabled={requiredCoordinationUnavailable} />
+          )}
+          {activeTab === "machines" && (
+            <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
+          )}
           {activeTab === "batches" && (
             <BatchesTab
               batches={dashboard.batches}
@@ -484,10 +581,12 @@ export function App() {
               operations={dashboard.batchOperations}
             />
           )}
-          {activeTab === "health" && <HealthTab items={dashboard.healthItems} />}
+          {activeTab === "health" && (
+            <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} />
+          )}
           <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
-            <PromptDrawer prompt={prompt} />
+            <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
           </details>
         </section>
       </div>

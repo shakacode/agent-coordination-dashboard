@@ -60,6 +60,42 @@ textarea {
   font-size: 12px;
 }
 
+.source-chip {
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.source-chip-error {
+  background: #fee4e2;
+  color: #b42318;
+  font-weight: 700;
+}
+
+.coordination-degraded-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #f04438;
+  background: #b42318;
+  padding: 11px 14px;
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.coordination-degraded-banner span {
+  flex: 1;
+}
+
+.coordination-degraded-banner code {
+  color: inherit;
+  font-weight: 700;
+}
+
+.coordination-degraded-banner a {
+  color: #ffffff;
+  font-weight: 700;
+}
+
 .summary-strip {
   display: flex;
   align-items: center;

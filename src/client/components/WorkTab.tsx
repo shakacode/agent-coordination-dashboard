@@ -3,7 +3,15 @@ import { CircleDot, GitPullRequest, Search } from "lucide-react";
 import type { WorkItem } from "../../shared/types";
 import { StatusBadge } from "./StatusBadge";
 
-export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id: string) => void }) {
+export function WorkTab({
+  items,
+  onToggle,
+  selectionDisabled = false
+}: {
+  items: WorkItem[];
+  onToggle: (id: string) => void;
+  selectionDisabled?: boolean;
+}) {
   const [query, setQuery] = useState("");
   const filteredItems = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -38,6 +46,9 @@ export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id:
 
   return (
     <section className="work-queue">
+      {selectionDisabled && (
+        <p className="warning">Batch selection is unavailable until claims, heartbeats, batches, and events can be read.</p>
+      )}
       <label className="search-field">
         <Search size={16} aria-hidden="true" />
         <input aria-label="Filter work items" onChange={(event) => setQuery(event.target.value)} placeholder="Filter work" value={query} />
@@ -56,11 +67,14 @@ export function WorkTab({ items, onToggle }: { items: WorkItem[]; onToggle: (id:
                 const Icon = item.type === "pull_request" ? GitPullRequest : CircleDot;
                 const itemKind = item.type === "pull_request" ? "PR" : item.type === "issue" ? "Issue" : "Target";
                 const batchSignal = item.batchSignals?.[0];
-                const canSelect = item.schedulingState !== "in_process" && !item.batchSignals?.length;
+                const canSelect = !selectionDisabled && item.schedulingState !== "in_process" && !item.batchSignals?.length;
 
                 return (
                   <article className="work-row" key={item.id}>
-                    <label className="check-cell" title={canSelect ? "Include in PR-batch prompt" : "Already coordinated"}>
+                    <label
+                      className="check-cell"
+                      title={selectionDisabled ? "Coordination data unavailable" : canSelect ? "Include in PR-batch prompt" : "Already coordinated"}
+                    >
                       <input
                         checked={canSelect ? item.selected : false}
                         disabled={!canSelect}

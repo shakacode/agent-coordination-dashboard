@@ -163,6 +163,27 @@ describe("readCoordinationState", () => {
         })
       ])
     );
+    expect(state.sourceStatus).toEqual([
+      expect.objectContaining({ resource: "claims", status: "unreachable" }),
+      expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+      expect.objectContaining({ resource: "batches", status: "ok" }),
+      expect.objectContaining({ resource: "events", status: "unreachable" })
+    ]);
+  });
+
+  it("marks a filesystem source unreachable when every discovered record is malformed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-all-malformed-"));
+    await mkdir(join(root, "claims"), { recursive: true });
+    await mkdir(join(root, "heartbeats"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+    await writeFile(join(root, "claims", "broken.json"), "{");
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.claims).toEqual([]);
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "fs", status: "unreachable" })
+    );
   });
 
   it("shows a setup notice instead of missing-directory warnings for empty roots", async () => {
@@ -199,7 +220,7 @@ describe("readCoordinationState", () => {
     expect(state.warnings[0].message).toContain("Set AGENT_COORD_STATE_ROOT to an existing coordination workspace");
   });
 
-  it("warns when partially initialized expected coordination directories cannot be read", async () => {
+  it("treats missing sibling directories in a partially initialized root as empty", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-state-partial-"));
     await mkdir(join(root, "claims"), { recursive: true });
 
@@ -209,14 +230,31 @@ describe("readCoordinationState", () => {
     expect(state.heartbeats).toEqual([]);
     expect(state.batches).toEqual([]);
     expect(state.events).toEqual([]);
-    expect(state.warnings.map((warning) => warning.message)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("heartbeats"),
-        expect.stringContaining("batches")
-      ])
-    );
+    expect(state.warnings).toEqual([]);
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("No coordination state found");
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("claims");
+    expect(state.sourceStatus).toEqual([
+      expect.objectContaining({ resource: "claims", mode: "fs", status: "empty" }),
+      expect.objectContaining({ resource: "heartbeats", mode: "fs", status: "empty" }),
+      expect.objectContaining({ resource: "batches", mode: "fs", status: "empty" }),
+      expect.objectContaining({ resource: "events", mode: "fs", status: "empty" })
+    ]);
+  });
+
+  it("marks a filesystem resource unreachable when its state path cannot be listed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-unreadable-"));
+    await mkdir(join(root, "claims"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+    await writeFile(join(root, "heartbeats"), "not a directory");
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([expect.objectContaining({ resource: "heartbeats", mode: "fs", status: "unreachable" })])
+    );
+    expect(state.warnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("coordination directory heartbeats") })])
+    );
   });
 
   it("reads claims, heartbeats, batches, and events from the coordination API when configured", async () => {
@@ -344,6 +382,31 @@ describe("readCoordinationState", () => {
     );
   });
 
+  it("classifies authentication failures per coordination API resource", async () => {
+    const checkedAt = new Date("2026-06-17T20:00:00Z");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    );
+
+    const state = await readCoordinationState("/unused", checkedAt, {
+      apiUrl: "https://coord.example.test",
+      token: "expired-token"
+    });
+
+    expect(state.sourceStatus).toEqual([
+      { resource: "claims", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() },
+      { resource: "heartbeats", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() },
+      { resource: "batches", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() },
+      { resource: "events", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() }
+    ]);
+  });
+
   it("keeps successful API prefixes when one prefix fails", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
@@ -396,6 +459,13 @@ describe("readCoordinationState", () => {
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("Could not read coordination API heartbeats: connection refused")])
     );
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resource: "claims", status: "ok", httpStatus: 200 }),
+        expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+        expect.objectContaining({ resource: "events", status: "empty", httpStatus: 200 })
+      ])
+    );
   });
 
   it("adds repo context to malformed coordination API record warnings", async () => {
@@ -438,6 +508,91 @@ describe("readCoordinationState", () => {
         })
       ])
     );
+    expect(state.sourceStatus.find((source) => source.resource === "batches")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "batches")).not.toHaveProperty("httpStatus");
+  });
+
+  it("omits a successful HTTP status when the coordination API response shape is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ records: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    );
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
+  });
+
+  it("marks an API source unreachable when every entry wrapper is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const prefix = new URL(String(input)).searchParams.get("prefix");
+        return new Response(JSON.stringify({ entries: prefix === "claims" ? [null, { path: 42, data: {} }] : [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      })
+    );
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.claims).toEqual([]);
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
+  });
+
+  it("marks an API source unreachable when a malformed entry wrapper accompanies a valid record", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const prefix = new URL(String(input)).searchParams.get("prefix");
+        const entries =
+          prefix === "claims"
+            ? [
+                {
+                  path: "claims/shakacode/react_on_rails/4005.json",
+                  data: { repo: "shakacode/react_on_rails", target: "4005", agent_id: "worker-a", status: "active" }
+                },
+                { path: "claims/broken.json" }
+              ]
+            : [];
+        return new Response(JSON.stringify({ entries }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      })
+    );
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.claims).toHaveLength(1);
+    expect(state.claims[0]).toMatchObject({ agentId: "worker-a", target: "4005" });
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
   });
 
   it("times out stalled coordination API requests", async () => {
@@ -474,6 +629,14 @@ describe("readCoordinationState", () => {
         expect.stringContaining("Could not read coordination API claims: timed out after 5000ms"),
         expect.stringContaining("Could not read coordination API heartbeats: timed out after 5000ms"),
         expect.stringContaining("Could not read coordination API batches: timed out after 5000ms")
+      ])
+    );
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resource: "claims", status: "unreachable" }),
+        expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+        expect.objectContaining({ resource: "batches", status: "unreachable" }),
+        expect.objectContaining({ resource: "events", status: "unreachable" })
       ])
     );
   });

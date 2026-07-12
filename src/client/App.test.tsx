@@ -107,6 +107,14 @@ const settings = {
   targetRepos: ["shakacode/react_on_rails"]
 };
 
+const degradedSourceStatus = ["claims", "heartbeats", "batches", "events"].map((resource) => ({
+  resource,
+  mode: "api",
+  status: "auth_error",
+  httpStatus: 401,
+  checkedAt: "2026-06-17T20:00:00Z"
+}));
+
 describe("App", () => {
   beforeEach(() => {
     window.history.pushState({}, "", "/");
@@ -583,6 +591,326 @@ describe("App", () => {
     expect(screen.getAllByText("1 notices").length).toBeGreaterThan(0);
     expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
     expect(screen.getAllByText(/No coordination state found/).length).toBeGreaterThan(0);
+  });
+
+  it("renders loud degraded state and honest coordination summary values", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "Coordination backend degraded" });
+    expect(banner).toHaveTextContent("Coordination backend unreachable (401) — showing GitHub data only");
+    expect(banner).toHaveTextContent("AGENT_COORD_API_TOKEN");
+    expect(banner).toHaveTextContent("agent-coord doctor --deep");
+    expect(within(banner).getByRole("link", { name: "Details" })).toHaveAttribute("href", "/api/doctor");
+    expect(screen.getByText("coordination-api", { selector: ".source-chip" })).toHaveClass("source-chip-error");
+    expect(screen.getByText("— claimed")).toHaveAttribute("title", expect.stringContaining("claims: authentication failed (401)"));
+    expect(screen.getByText("— processing")).toBeInTheDocument();
+    expect(screen.getByText("— agents")).toHaveAttribute("title", expect.stringContaining("claims: auth_error (401)"));
+    expect(screen.getByText("— events")).toBeInTheDocument();
+    expect(screen.getByText("— health")).toBeInTheDocument();
+    expect(screen.getAllByText("1 warnings").length).toBeGreaterThan(0);
+    expect(stylesheet).toContain(".coordination-degraded-banner");
+  });
+
+  it("passes failed source context into empty Machines and Health tabs", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              agents: [],
+              healthItems: [],
+              sourceStatus: degradedSourceStatus
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Machines" }));
+    expect(screen.getByText(/Coordination agent data unavailable:/)).toHaveTextContent("claims, heartbeats, events");
+    await userEvent.click(screen.getByRole("button", { name: "Health" }));
+    expect(screen.getByText(/Coordination health data unavailable:/)).toHaveTextContent(
+      "claims, heartbeats, batches, events"
+    );
+  });
+
+  it("labels non-empty Machines and Health tabs as incomplete during a partial source failure", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 3 ? { ...source, status: "unreachable", httpStatus: undefined } : { ...source, status: "ok", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Machines" }));
+    expect(screen.getByText("Coordination agent data may be incomplete: events could not be read.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "worker-a" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Health" }));
+    expect(screen.getByText("Coordination health data may be incomplete: events could not be read.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Heartbeat missing machine id" })).toBeInTheDocument();
+  });
+
+  it("keeps a partial non-auth failure scoped to its dependent counts", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 0 ? { ...source, status: "unreachable", httpStatus: 503 } : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await screen.findByText("coordination-api", { selector: ".source-chip-error" });
+    expect(screen.getByRole("alert", { name: "Coordination backend degraded" })).toHaveTextContent(
+      "Coordination backend unreachable (503) — some dashboard data is unavailable"
+    );
+    expect(screen.getByText("— agents")).toBeInTheDocument();
+    expect(screen.getByText("0 events")).toBeInTheDocument();
+    expect(screen.getByText("— health")).toBeInTheDocument();
+    expect(screen.getByText("— ready")).toBeInTheDocument();
+    expect(screen.getByText("— claimed")).toBeInTheDocument();
+    expect(screen.getByText("— processing")).toBeInTheDocument();
+    expect(screen.getByText("1 QA needs attention")).toBeInTheDocument();
+    expect(screen.getByText("0 batch repairs")).toBeInTheDocument();
+  });
+
+  it("disables batching selection and prompt generation while a required coordination source is unavailable", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 0 ? { ...source, status: "unreachable", httpStatus: 503 } : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Work" }));
+    expect(screen.getByText("Batch selection is unavailable until claims, heartbeats, batches, and events can be read.")).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox").every((checkbox) => checkbox.hasAttribute("disabled"))).toBe(true);
+
+    await userEvent.click(screen.getByText("PR-batch prompt"));
+    const disabledPrompt = screen.getByText(
+      "PR-batch prompt generation is disabled until claims, heartbeats, batches, and events can be read."
+    );
+    expect(disabledPrompt).toBeInTheDocument();
+    expect(disabledPrompt).not.toHaveTextContent("Issue #4010");
+    expect(screen.getByTitle("Copy prompt")).toBeDisabled();
+  });
+
+  it("keeps the loud banner but uses partial-outage copy for one authentication failure", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 0 ? source : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "Coordination backend degraded" });
+    expect(banner).toHaveTextContent("Coordination authentication failed (401) — some coordination data is unavailable");
+    expect(banner).not.toHaveTextContent("showing GitHub data only");
+  });
+
+  it("does not turn an optional events-only failure into a full outage", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 3 ? { ...source, status: "unreachable", httpStatus: 400 } : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await screen.findByText("coordination-api", { selector: ".source-chip-error" });
+    expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+    expect(screen.getByText("— agents")).toHaveAttribute("title", expect.stringContaining("events: unreachable (400)"));
+    expect(screen.getByText("— events")).toBeInTheDocument();
+    expect(screen.getByText("— health")).toBeInTheDocument();
+    expect(screen.getByText("1 ready")).toBeInTheDocument();
+    expect(screen.getByText("— claimed")).toBeInTheDocument();
+    expect(screen.getByText("0 processing")).toBeInTheDocument();
+    expect(screen.getByText("— QA needs attention")).toBeInTheDocument();
+    expect(screen.getByText("— batch repairs")).toBeInTheDocument();
+  });
+
+  it("re-enables batch selection and prompt generation after every coordination source recovers", async () => {
+    let dashboardReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => settings } as Response;
+      }
+      dashboardReads += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          ...model,
+          sourceStatus: degradedSourceStatus.map((source, index) =>
+            dashboardReads === 1 && index === 3
+              ? { ...source, status: "unreachable", httpStatus: undefined }
+              : { ...source, status: "empty", httpStatus: 200 }
+          )
+        })
+      } as Response;
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Work" }));
+    expect(screen.getByText("Batch selection is unavailable until claims, heartbeats, batches, and events can be read.")).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox").every((checkbox) => checkbox.hasAttribute("disabled"))).toBe(true);
+    expect(screen.getByTitle("Copy prompt")).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Batch selection is unavailable until claims, heartbeats, batches, and events can be read.")
+      ).not.toBeInTheDocument()
+    );
+    expect(screen.getAllByRole("checkbox").some((checkbox) => !checkbox.hasAttribute("disabled"))).toBe(true);
+    expect(screen.getByTitle("Copy prompt")).toBeEnabled();
+    expect(screen.getByText(/Use \$pr-batch to complete this batch with subagents/)).toBeInTheDocument();
+  });
+
+  it("shows a full outage when every required source fails and optional events are empty", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 3
+                  ? { ...source, status: "empty", httpStatus: 200 }
+                  : { ...source, status: "unreachable", httpStatus: 503 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Coordination backend degraded" })).toHaveTextContent(
+      "Coordination backend unreachable (503)"
+    );
+  });
+
+  it("uses filesystem remediation copy for an all-filesystem outage", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "/coordination-state",
+              sourceStatus: degradedSourceStatus.map((source) => ({
+                ...source,
+                mode: "fs",
+                status: "unreachable",
+                httpStatus: undefined
+              }))
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "Coordination backend degraded" });
+    expect(banner).toHaveTextContent("Coordination state files unavailable — some dashboard data is unavailable");
+    expect(banner).toHaveTextContent("AGENT_COORD_STATE_ROOT");
+    expect(banner).not.toHaveTextContent("Token source");
+    expect(banner).not.toHaveTextContent("re-provision access");
+    expect(banner).not.toHaveTextContent("showing GitHub data only");
+  });
+
+  it("clears degraded UI on the next successful refresh", async () => {
+    let dashboardReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => settings } as Response;
+      }
+      dashboardReads += 1;
+      return {
+        ok: true,
+        json: async () =>
+          dashboardReads === 1
+            ? {
+                ...model,
+                stateRoot: "coordination-api",
+                coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+                sourceStatus: degradedSourceStatus
+              }
+            : {
+                ...model,
+                stateRoot: "coordination-api",
+                coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+                sourceStatus: degradedSourceStatus.map((source) => ({ ...source, status: "empty", httpStatus: 200 }))
+              }
+      } as Response;
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Coordination backend degraded" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument());
+    expect(screen.getByText("1 claimed")).toBeInTheDocument();
+    expect(screen.queryByText("coordination-api", { selector: ".source-chip-error" })).not.toBeInTheDocument();
   });
 
   it("groups repeated warning types and keeps overflow details inspectable", async () => {

@@ -48,6 +48,26 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     res.json({ ok: true });
   });
 
+  app.get("/api/doctor", async (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.status(403).json({
+        error: "Coordination diagnostics can only be read from the machine running the dashboard."
+      });
+      return;
+    }
+
+    const state = await readCoordinationState(config.stateRoot, new Date(), {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
+    res.json({
+      apiUrl: coordApiUrl || null,
+      tokenEnvVar: config.coordApiTokenEnvVar || null,
+      stateRoot: config.stateRoot,
+      perResource: state.sourceStatus
+    });
+  });
+
   async function currentSettings() {
     const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
     return { ...settings, refreshIntervalMs: config.refreshIntervalMs };
@@ -79,7 +99,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const githubItems = githubResults.flatMap((result) => result.items);
     const githubWarnings = githubResults.flatMap((result) => result.warnings);
 
-    return buildDashboardModel({
+    const model = buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: state.claims,
@@ -90,6 +110,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       warnings: [...state.warnings, ...githubWarnings],
       now
     });
+    return {
+      ...model,
+      sourceStatus: state.sourceStatus,
+      ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
+    };
   }
 
   function cacheDashboardModel(key: string, model: DashboardModel, generation: number, sequence: number, expiresAt: number) {

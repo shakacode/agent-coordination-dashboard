@@ -59,6 +59,31 @@ const dashboard: DashboardModel = {
 };
 
 describe("OverviewTab", () => {
+  it("distinguishes healthy empty panels from unavailable coordination data", () => {
+    const emptyDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: [],
+      sourceStatus: [
+        { resource: "claims", mode: "api", status: "unreachable", checkedAt: dashboard.generatedAt },
+        { resource: "heartbeats", mode: "api", status: "unreachable", checkedAt: dashboard.generatedAt },
+        { resource: "batches", mode: "api", status: "unreachable", checkedAt: dashboard.generatedAt },
+        { resource: "events", mode: "api", status: "unreachable", checkedAt: dashboard.generatedAt }
+      ]
+    };
+
+    const { rerender } = render(<OverviewTab dashboard={{ ...emptyDashboard, sourceStatus: undefined }} onOpenOperatorFilter={vi.fn()} />);
+    expect(screen.getByText("No processing or claimed-but-idle work.")).toBeInTheDocument();
+    expect(screen.getByText("No batch repair items.")).toBeInTheDocument();
+    expect(screen.getByText("No separate QA gaps for PRs.")).toBeInTheDocument();
+    expect(screen.getByText("No ready work items.")).toBeInTheDocument();
+
+    rerender(<OverviewTab dashboard={emptyDashboard} onOpenOperatorFilter={vi.fn()} />);
+    expect(screen.getByText("Current Work coordination data is unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("Batch Repair coordination data is unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("QA Validation coordination data is unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("Ready To Batch coordination data is unavailable.")).toBeInTheDocument();
+  });
+
   it("sorts recent terminal rows newest first and invalid or missing timestamps last", () => {
     const rows = [
       { id: "missing" },

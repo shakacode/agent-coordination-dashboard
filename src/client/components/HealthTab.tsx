@@ -1,5 +1,5 @@
 import { Activity } from "lucide-react";
-import type { HealthItem } from "../../shared/types";
+import type { CoordinationResource, HealthItem } from "../../shared/types";
 import { groupHealthItems } from "../signalGroups";
 import { SignalGroupList } from "./SignalGroups";
 import { StatusBadge } from "./StatusBadge";
@@ -22,18 +22,32 @@ function HealthRow({ item }: { item: HealthItem }) {
   );
 }
 
-export function HealthTab({ items }: { items: HealthItem[] }) {
+export function HealthTab({
+  items,
+  unavailableSources = []
+}: {
+  items: HealthItem[];
+  unavailableSources?: CoordinationResource[];
+}) {
   if (items.length === 0) {
+    if (unavailableSources.length > 0) {
+      return <p className="empty-state">Coordination health data unavailable: {unavailableSources.join(", ")} could not be read.</p>;
+    }
     return <p className="empty-state">No coordination health issues found.</p>;
   }
 
   return (
-    <section className="health-list">
-      <SignalGroupList
-        ariaLabel="Coordination health grouped by type"
-        groups={groupHealthItems(items)}
-        renderItem={(item) => <HealthRow item={item} />}
-      />
-    </section>
+    <>
+      {unavailableSources.length > 0 && (
+        <p className="warning">Coordination health data may be incomplete: {unavailableSources.join(", ")} could not be read.</p>
+      )}
+      <section className="health-list">
+        <SignalGroupList
+          ariaLabel="Coordination health grouped by type"
+          groups={groupHealthItems(items)}
+          renderItem={(item) => <HealthRow item={item} />}
+        />
+      </section>
+    </>
   );
 }

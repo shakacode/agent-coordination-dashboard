@@ -33,8 +33,14 @@ describe("readConfig", () => {
   });
 
   it("falls back to the legacy coordination token and prefers the API token", () => {
-    expect(readConfig({ AGENT_COORD_TOKEN: " legacy-secret\n" }).coordApiToken).toBe("legacy-secret");
-    expect(readConfig({ AGENT_COORD_API_TOKEN: " current-secret ", AGENT_COORD_TOKEN: "legacy-secret" }).coordApiToken).toBe("current-secret");
+    expect(readConfig({ AGENT_COORD_TOKEN: " legacy-secret\n" })).toMatchObject({
+      coordApiToken: "legacy-secret",
+      coordApiTokenEnvVar: "AGENT_COORD_TOKEN"
+    });
+    expect(readConfig({ AGENT_COORD_API_TOKEN: " current-secret ", AGENT_COORD_TOKEN: "legacy-secret" })).toMatchObject({
+      coordApiToken: "current-secret",
+      coordApiTokenEnvVar: "AGENT_COORD_API_TOKEN"
+    });
   });
 
   it("treats blank coordination API settings as unset", () => {

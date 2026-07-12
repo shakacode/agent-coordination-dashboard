@@ -2,7 +2,14 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
 import { normalizeBatchReservations, normalizeBatchTargets } from "../../shared/batchManifest";
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
-import type { BatchEvent, BatchRecord, ClaimRecord, CoordinationWarning, HeartbeatRecord } from "../../shared/types";
+import type {
+  BatchEvent,
+  BatchRecord,
+  ClaimRecord,
+  CoordinationSourceStatus,
+  CoordinationWarning,
+  HeartbeatRecord
+} from "../../shared/types";
 
 interface RawState {
   claims: ClaimRecord[];
@@ -10,6 +17,7 @@ interface RawState {
   batches: BatchRecord[];
   events: BatchEvent[];
   warnings: CoordinationWarning[];
+  sourceStatus: CoordinationSourceStatus[];
 }
 
 interface CoordinationApiOptions {
@@ -22,6 +30,28 @@ type ApiPrefix = "claims" | "heartbeats" | "batches" | "events";
 interface ApiStateEntry {
   path: string;
   data: Record<string, unknown>;
+}
+
+interface ApiReadResult {
+  entries: ApiStateEntry[];
+  sourceStatus: CoordinationSourceStatus;
+}
+
+interface StateFileList {
+  files: string[];
+  unavailable: boolean;
+}
+
+interface StateReadResult<T> {
+  records: T[];
+  unavailable: boolean;
+}
+
+function filesystemSourceState(source: StateFileList, read: StateReadResult<unknown>): CoordinationSourceStatus["status"] {
+  if (source.unavailable || read.unavailable) {
+    return "unreachable";
+  }
+  return source.files.length === 0 ? "empty" : "ok";
 }
 
 const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
@@ -45,13 +75,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function emptyState(warnings: CoordinationWarning[]): RawState {
+function emptyState(warnings: CoordinationWarning[], sourceStatus: CoordinationSourceStatus[]): RawState {
   return {
     claims: [],
     heartbeats: [],
     batches: [],
     events: [],
-    warnings
+    warnings,
+    sourceStatus
   };
 }
 
@@ -91,7 +122,22 @@ async function responseErrorMessage(response: Response): Promise<string> {
   return response.statusText || `HTTP ${response.status}`;
 }
 
-async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
+function apiSourceStatus(
+  resource: ApiPrefix,
+  status: CoordinationSourceStatus["status"],
+  checkedAt: string,
+  httpStatus?: number
+): CoordinationSourceStatus {
+  return { resource, mode: "api", status, ...(httpStatus === undefined ? {} : { httpStatus }), checkedAt };
+}
+
+async function fetchApiEntries(
+  baseUrl: URL,
+  token: string,
+  prefix: ApiPrefix,
+  warnings: CoordinationWarning[],
+  checkedAt: string
+): Promise<ApiReadResult> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
   try {
@@ -104,18 +150,23 @@ async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, w
 
     if (!response.ok) {
       warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${response.status} ${await responseErrorMessage(response)}`));
-      return [];
+      return {
+        entries: [],
+        sourceStatus: apiSourceStatus(prefix, response.status === 401 || response.status === 403 ? "auth_error" : "unreachable", checkedAt, response.status)
+      };
     }
 
     const body = (await response.json()) as unknown;
     if (!isRecord(body) || !Array.isArray(body.entries)) {
       warnings.push(apiWarning(`Could not read coordination API ${prefix}: malformed response`));
-      return [];
+      return { entries: [], sourceStatus: apiSourceStatus(prefix, "unreachable", checkedAt) };
     }
 
     const entries: ApiStateEntry[] = [];
+    let rejectedEntry = false;
     body.entries.forEach((entry, index) => {
       if (!isRecord(entry) || typeof entry.path !== "string" || !isRecord(entry.data)) {
+        rejectedEntry = true;
         warnings.push(apiWarning(`Malformed coordination API ${prefix} entry at index ${index}`));
         return;
       }
@@ -124,19 +175,30 @@ async function fetchApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, w
         data: entry.data
       });
     });
-    return entries;
+    return {
+      entries,
+      sourceStatus: rejectedEntry
+        ? apiSourceStatus(prefix, "unreachable", checkedAt)
+        : apiSourceStatus(prefix, entries.length === 0 ? "empty" : "ok", checkedAt, response.status)
+    };
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-async function readApiEntries(baseUrl: URL, token: string, prefix: ApiPrefix, warnings: CoordinationWarning[]): Promise<ApiStateEntry[]> {
+async function readApiEntries(
+  baseUrl: URL,
+  token: string,
+  prefix: ApiPrefix,
+  warnings: CoordinationWarning[],
+  checkedAt: string
+): Promise<ApiReadResult> {
   try {
-    return await fetchApiEntries(baseUrl, token, prefix, warnings);
+    return await fetchApiEntries(baseUrl, token, prefix, warnings, checkedAt);
   } catch (error) {
     const reason = isAbortError(error) ? `timed out after ${API_FETCH_TIMEOUT_MS}ms` : errorMessage(error);
     warnings.push(apiWarning(`Could not read coordination API ${prefix}: ${reason}`));
-    return [];
+    return { entries: [], sourceStatus: apiSourceStatus(prefix, "unreachable", checkedAt) };
   }
 }
 
@@ -158,12 +220,14 @@ function normalizeApiEntries<T>(
   entries: ApiStateEntry[],
   warnings: CoordinationWarning[],
   normalize: (raw: Record<string, unknown>, path: string) => T
-): T[] {
+): StateReadResult<T> {
   const records: T[] = [];
+  let unavailable = false;
   for (const entry of entries) {
     try {
       records.push(normalize(entry.data, entry.path));
     } catch (error) {
+      unavailable = true;
       warnings.push({
         severity: "warning",
         ...apiEntryWarningContext(entry),
@@ -171,35 +235,50 @@ function normalizeApiEntries<T>(
       });
     }
   }
-  return records;
+  return { records, unavailable };
 }
 
 async function readApiCoordinationState(options: Required<CoordinationApiOptions>, now: Date): Promise<RawState> {
   const warnings: CoordinationWarning[] = [];
+  const checkedAt = now.toISOString();
   let baseUrl: URL;
   try {
     baseUrl = parseApiBaseUrl(options.apiUrl);
   } catch (error) {
     warnings.push(apiWarning(`Invalid AGENT_COORD_API_URL: ${errorMessage(error)}`));
-    return emptyState(warnings);
+    return emptyState(warnings, API_STATE_PREFIXES.map((prefix) => apiSourceStatus(prefix, "unreachable", checkedAt)));
   }
 
   const token = options.token.trim();
   if (!token) {
     warnings.push(apiWarning("AGENT_COORD_API_TOKEN is required when AGENT_COORD_API_URL is set."));
-    return emptyState(warnings);
+    return emptyState(warnings, API_STATE_PREFIXES.map((prefix) => apiSourceStatus(prefix, "auth_error", checkedAt)));
   }
 
-  const entries = Object.fromEntries(
-    await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, token, prefix, warnings)]))
-  ) as Record<ApiPrefix, ApiStateEntry[]>;
+  const results = Object.fromEntries(
+    await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, token, prefix, warnings, checkedAt)]))
+  ) as Record<ApiPrefix, ApiReadResult>;
+  const claims = normalizeApiEntries("claims", results.claims.entries, warnings, normalizeClaim);
+  const heartbeats = normalizeApiEntries("heartbeats", results.heartbeats.entries, warnings, (raw, path) =>
+    normalizeHeartbeat(raw, path, now)
+  );
+  const batches = normalizeApiEntries("batches", results.batches.entries, warnings, normalizeBatch);
+  const events = normalizeApiEntries("events", results.events.entries, warnings, normalizeBatchEvent);
+  const normalizedByPrefix = { claims, heartbeats, batches, events };
 
   return {
-    claims: normalizeApiEntries("claims", entries.claims, warnings, normalizeClaim),
-    heartbeats: normalizeApiEntries("heartbeats", entries.heartbeats, warnings, (raw, path) => normalizeHeartbeat(raw, path, now)),
-    batches: normalizeApiEntries("batches", entries.batches, warnings, normalizeBatch),
-    events: normalizeApiEntries("events", entries.events, warnings, normalizeBatchEvent),
-    warnings
+    claims: claims.records,
+    heartbeats: heartbeats.records,
+    batches: batches.records,
+    events: events.records,
+    warnings,
+    sourceStatus: API_STATE_PREFIXES.map((prefix) => {
+      if (!normalizedByPrefix[prefix].unavailable) {
+        return results[prefix].sourceStatus;
+      }
+      const { httpStatus: _successfulHttpStatus, ...sourceStatus } = results[prefix].sourceStatus;
+      return { ...sourceStatus, status: "unreachable" };
+    })
   };
 }
 
@@ -230,25 +309,30 @@ async function listStateFiles(
   directory: string,
   root: string,
   warnings: CoordinationWarning[],
-  extensions = [".json"],
-  warnMissing = true
-): Promise<string[]> {
+  extensions = [".json"]
+): Promise<StateFileList> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
     const nested = await Promise.all(
       entries.map(async (entry) => {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
-          return listStateFiles(path, root, warnings, extensions, warnMissing);
+          return listStateFiles(path, root, warnings, extensions);
         }
-        return entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [];
+        return {
+          files: entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [],
+          unavailable: false
+        };
       })
     );
-    return nested.flat().sort();
+    return {
+      files: nested.flatMap((result) => result.files).sort(),
+      unavailable: nested.some((result) => result.unavailable)
+    };
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-    if (code === "ENOENT" && !warnMissing) {
-      return [];
+    if (code === "ENOENT") {
+      return { files: [], unavailable: false };
     }
     const path = relative(root, directory);
     warnings.push({
@@ -256,7 +340,7 @@ async function listStateFiles(
       ...warningContextFromPath(path),
       message: `Could not read coordination directory ${path || "."}: ${errorMessage(error)}`
     });
-    return [];
+    return { files: [], unavailable: true };
   }
 }
 
@@ -449,25 +533,33 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
   }
 
   const warnings: CoordinationWarning[] = [];
-  const hasInitializedRoot = await hasInitializedCoordinationRoot(root, warnings);
-  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
-  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings, [".json"], hasInitializedRoot);
-  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings, [".json"], hasInitializedRoot);
-  const eventFiles = [
-    ...(await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false)),
-    ...(await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false))
-  ];
+  await hasInitializedCoordinationRoot(root, warnings);
+  const claimsSource = await listStateFiles(join(root, "claims"), root, warnings);
+  const heartbeatsSource = await listStateFiles(join(root, "heartbeats"), root, warnings);
+  const batchesSource = await listStateFiles(join(root, "batches"), root, warnings);
+  const eventsSource = await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"]);
+  const historySource = await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"]);
+  const eventFilesSource = {
+    files: [...eventsSource.files, ...historySource.files],
+    unavailable: eventsSource.unavailable || historySource.unavailable
+  };
+  const claimFiles = claimsSource.files;
+  const heartbeatFiles = heartbeatsSource.files;
+  const batchFiles = batchesSource.files;
+  const eventFiles = eventFilesSource.files;
 
   async function readMany<T>(
     files: string[],
     normalize: (raw: Record<string, unknown>, path: string) => T
-  ): Promise<T[]> {
+  ): Promise<StateReadResult<T>> {
     const records: T[] = [];
+    let unavailable = false;
     for (const file of files) {
       const path = relative(root, file);
       try {
         records.push(normalize(await readJson(file), path));
       } catch (error) {
+        unavailable = true;
         warnings.push({
           severity: "warning",
           ...warningContextFromPath(path),
@@ -475,11 +567,12 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
         });
       }
     }
-    return records;
+    return { records, unavailable };
   }
 
-  async function readEvents(files: string[]): Promise<BatchEvent[]> {
+  async function readEvents(files: string[]): Promise<StateReadResult<BatchEvent>> {
     const records: BatchEvent[] = [];
+    let unavailable = false;
     for (const file of files) {
       const path = relative(root, file);
       try {
@@ -497,6 +590,7 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
                 records.push(normalizeBatchEvent(event, `${path}:${index + 1}`));
               }
             } catch (error) {
+              unavailable = true;
               warnings.push({
                 severity: "warning",
                 ...warningContextFromPath(path),
@@ -516,6 +610,7 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
           }
         }
       } catch (error) {
+        unavailable = true;
         warnings.push({
           severity: "warning",
           ...warningContextFromPath(path),
@@ -523,14 +618,45 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
         });
       }
     }
-    return records;
+    return { records, unavailable };
   }
 
+  const claimsRead = await readMany(claimFiles, normalizeClaim);
+  const heartbeatsRead = await readMany(heartbeatFiles, (raw, path) => normalizeHeartbeat(raw, path, now));
+  const batchesRead = await readMany(batchFiles, normalizeBatch);
+  const eventsRead = await readEvents(eventFiles);
+
   return {
-    claims: await readMany(claimFiles, normalizeClaim),
-    heartbeats: await readMany(heartbeatFiles, (raw, path) => normalizeHeartbeat(raw, path, now)),
-    batches: await readMany(batchFiles, normalizeBatch),
-    events: await readEvents(eventFiles),
-    warnings
+    claims: claimsRead.records,
+    heartbeats: heartbeatsRead.records,
+    batches: batchesRead.records,
+    events: eventsRead.records,
+    warnings,
+    sourceStatus: [
+      {
+        resource: "claims",
+        mode: "fs",
+        status: filesystemSourceState(claimsSource, claimsRead),
+        checkedAt: now.toISOString()
+      },
+      {
+        resource: "heartbeats",
+        mode: "fs",
+        status: filesystemSourceState(heartbeatsSource, heartbeatsRead),
+        checkedAt: now.toISOString()
+      },
+      {
+        resource: "batches",
+        mode: "fs",
+        status: filesystemSourceState(batchesSource, batchesRead),
+        checkedAt: now.toISOString()
+      },
+      {
+        resource: "events",
+        mode: "fs",
+        status: filesystemSourceState(eventFilesSource, eventsRead),
+        checkedAt: now.toISOString()
+      }
+    ]
   };
 }

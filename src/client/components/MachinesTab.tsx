@@ -1,9 +1,18 @@
 import { Monitor } from "lucide-react";
-import type { AgentSummary } from "../../shared/types";
+import type { AgentSummary, CoordinationResource } from "../../shared/types";
 import { StatusBadge } from "./StatusBadge";
 
-export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
+export function MachinesTab({
+  agents,
+  unavailableSources = []
+}: {
+  agents: AgentSummary[];
+  unavailableSources?: CoordinationResource[];
+}) {
   if (agents.length === 0) {
+    if (unavailableSources.length > 0) {
+      return <p className="empty-state">Coordination agent data unavailable: {unavailableSources.join(", ")} could not be read.</p>;
+    }
     return <p className="empty-state">No agents or heartbeats found.</p>;
   }
 
@@ -17,9 +26,13 @@ export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
   }, new Map());
 
   return (
-    <section className="machine-groups">
-      {Array.from(agentsByMachine.entries()).map(([machineKey, group]) => (
-        <section className="machine-group" key={machineKey}>
+    <>
+      {unavailableSources.length > 0 && (
+        <p className="warning">Coordination agent data may be incomplete: {unavailableSources.join(", ")} could not be read.</p>
+      )}
+      <section className="machine-groups">
+        {Array.from(agentsByMachine.entries()).map(([machineKey, group]) => (
+          <section className="machine-group" key={machineKey}>
           <header className="machine-heading">
             <Monitor size={18} aria-hidden="true" />
             <h2>{group.label}</h2>
@@ -65,8 +78,9 @@ export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
               </article>
             ))}
           </div>
-        </section>
-      ))}
-    </section>
+          </section>
+        ))}
+      </section>
+    </>
   );
 }
