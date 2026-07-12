@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { batchLanesFor, canBypassDashboardCache, createDashboardApp } from "./app";
+import { createGitHubTargetReconciler } from "./github/githubClient";
 import type { ServerConfig } from "./config";
 import type { DashboardModel, WorkItem } from "../shared/types";
 
@@ -673,6 +674,34 @@ describe("dashboard app import endpoint", () => {
     expect(body.workItems[0].terminalState).toBeUndefined();
     expect(body.trulyOpenCount).toBe(1);
     expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
+  it("keeps the truly-open headline trusted when an invalid branch accompanies loaded target evidence", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-invalid-branch-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(join(stateRoot, "batches", "batch.json"), JSON.stringify({ schema_version: 1, batch_id: "batch", repo: "shakacode/react_on_rails", targets: [{ type: "issue", target: "45" }], lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "running", branch: "has space" }] }));
+    let ghCalls = 0;
+    let receivedBranch: string | undefined;
+    const reconciler = createGitHubTargetReconciler({ run: async () => {
+      ghCalls += 1;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    } });
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [{ repo: "shakacode/react_on_rails", target: "45", type: "issue", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" }], warnings: [] }),
+      loadGitHubTargets: (references, options) => {
+        receivedBranch = references[0]?.branch;
+        return reconciler.load(references, options);
+      }
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ github?: { state: string; title: string; url: string; branchState?: string; loadState: string } }>; trulyOpenCount?: number; trulyOpenCountStatus: string; warnings: Array<{ message: string }> };
+    expect(ghCalls).toBe(0);
+    expect(receivedBranch).toBe("has space");
+    expect(body.workItems[0]?.github).toMatchObject({ state: "OPEN", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45", loadState: "loaded", branchState: "unknown" });
+    expect(body.trulyOpenCount).toBe(1);
+    expect(body.trulyOpenCountStatus).toBe("available");
+    expect(body.warnings.some((warning) => /branch/i.test(warning.message))).toBe(true);
   });
 
   it("reports the truly-open headline as UNKNOWN when target reconciliation is unavailable", async () => {

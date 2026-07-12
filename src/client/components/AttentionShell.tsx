@@ -134,6 +134,7 @@ function WorkCard({
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
   const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
   const prUrl = pullRequestUrl(item);
+  const githubUrl = canonicalGithubItemUrl(item.github?.url);
   return (
     <article className="attention-card">
       <div>
@@ -167,7 +168,7 @@ function WorkCard({
         {reason?.action === "Open batch operations" ? (
           <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
         ) : null}
-        {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">{item.github.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
+        {githubUrl ? <a href={githubUrl} rel="noreferrer" target="_blank">{item.github?.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
       </div>
     </article>
   );

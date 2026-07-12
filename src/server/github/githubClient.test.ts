@@ -52,6 +52,7 @@ describe("github list parsers", () => {
     "feature/star*name",
     "feature/[bracket",
     "feature/back\\slash",
+    "@",
     ".hidden",
     "feature/.hidden",
     "feature/branch.lock",
@@ -67,8 +68,7 @@ describe("github list parsers", () => {
     "feature/-nested-dash",
     "feature/dotted.name",
     "feature/hash#name",
-    "feature/foo.locked",
-    "@"
+    "feature/foo.locked"
   ])("accepts a common branch Git accepts: %j", (branch) => {
     expect(githubApiPath("repo/app", "branches", branch)).toBe(`repos/repo/app/branches/${encodeURIComponent(branch)}`);
   });
@@ -88,6 +88,35 @@ describe("github list parsers", () => {
     expect(result.items.every((item) => item.state === "UNKNOWN" && item.loadState === "unknown" && item.branchState === undefined)).toBe(true);
     expect(result.warnings).toHaveLength(invalidBranches.length);
     expect(result.warnings.every((warning) => /branch/i.test(warning.message))).toBe(true);
+  });
+
+  it("preserves trusted target evidence when only its branch reference is invalid", async () => {
+    const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const existingTarget = {
+      repo: "repo/app",
+      target: "45",
+      type: "issue" as const,
+      title: "Open issue",
+      url: "https://github.com/repo/app/issues/45",
+      state: "OPEN",
+      author: "maintainer",
+      labels: ["feature"],
+      loadState: "loaded" as const
+    };
+
+    const result = await createGitHubTargetReconciler({ run }).load([{
+      repo: "repo/app",
+      target: "45",
+      type: "issue",
+      branch: "feature/has space",
+      existingTarget
+    }]);
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result.items).toEqual([{ ...existingTarget, branchState: "unknown" }]);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ repo: "repo/app", target: "45", message: expect.stringMatching(/branch/i) })
+    ]);
   });
 
   it("rejects hostile target references without invoking gh", async () => {

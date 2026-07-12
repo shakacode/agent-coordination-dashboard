@@ -81,6 +81,7 @@ function isValidGitBranchName(branch: string): boolean {
   if (
     !branch
     || branch === "HEAD"
+    || branch === "@"
     || branch.startsWith("-")
     || branch.startsWith("/")
     || branch.endsWith("/")
@@ -252,7 +253,9 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       if (reference.branch) githubApiPath(reference.repo, "branches", reference.branch);
     } catch (error) {
       return {
-        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
+        items: [reference.existingTarget
+          ? { ...reference.existingTarget, branchState: "unknown" }
+          : { repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
         warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: error instanceof Error ? error.message : "Invalid GitHub target reference" }]
       };
     }

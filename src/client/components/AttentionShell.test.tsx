@@ -294,6 +294,19 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/44");
   });
 
+  it.each([
+    "https://example.com/repo/dashboard/issues/44",
+    "javascript:alert(1)",
+    "https://github.com/repo/dashboard/issues/not-a-number"
+  ])("does not render an untrusted GitHub evidence link: %s", (url) => {
+    const item = {
+      ...ITEMS[1],
+      github: { repo: "repo/dashboard", target: "44", type: "issue" as const, title: "Unsafe evidence", url, state: "CLOSED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[item]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.queryByRole("link", { name: "Open" })).not.toBeInTheDocument();
+  });
+
   it("keeps the coordinated issue label while linked PR evidence supplies the merge", () => {
     const issueWithMergedPr = {
       ...ITEMS[1],
