@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DashboardSettings } from "../shared/types";
+import { isValidGitHubRepository } from "./github/validation";
 
 export function settingsPath(configuredPath = ""): string {
   return configuredPath || join(homedir(), ".local", "state", "agents-coordination-dashboard", "settings.json");
@@ -15,7 +16,7 @@ export function normalizeTargetRepos(value: unknown): string[] {
       : [];
   const repos = rawItems
     .map((item) => String(item).trim())
-    .filter((item) => /^[^\s/]+\/[^\s/]+$/.test(item));
+    .filter(isValidGitHubRepository);
   return Array.from(new Set(repos)).sort();
 }
 

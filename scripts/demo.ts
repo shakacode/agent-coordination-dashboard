@@ -247,7 +247,22 @@ async function installOfflineGitHubStub(root: string): Promise<string> {
   const binDirectory = join(root, "bin");
   const ghPath = join(binDirectory, "gh");
   await mkdir(binDirectory, { recursive: true });
-  await writeFile(ghPath, "#!/bin/sh\nprintf '[]\\n'\n", "utf8");
+  await writeFile(ghPath, `#!/bin/sh
+if [ "$1" != "api" ]; then
+  printf '[]\\n'
+  exit 0
+fi
+case "$2" in
+  */branches/demo%2Fpublish) printf 'HTTP 404: Branch not found\\n' >&2; exit 1 ;;
+  */branches/*) printf '{}\\n'; exit 0 ;;
+esac
+target="\${2##*/}"
+case "$target" in
+  202) printf '{"number":202,"title":"Merged QA demo lane","html_url":"https://github.com/${DEMO_REPO}/pull/202","state":"closed","closed_at":"2026-07-12T10:00:00Z","pull_request":{"merged_at":"2026-07-12T09:59:00Z"},"labels":[]}\\n' ;;
+  203) printf '{"number":203,"title":"Closed publish demo lane","html_url":"https://github.com/${DEMO_REPO}/issues/203","state":"closed","closed_at":"2026-07-12T09:30:00Z","labels":[]}\\n' ;;
+  *) printf '{"number":%s,"title":"Open demo lane","html_url":"https://github.com/${DEMO_REPO}/issues/%s","state":"open","labels":[]}\\n' "$target" "$target" ;;
+esac
+`, "utf8");
   await chmod(ghPath, 0o755);
   return binDirectory;
 }

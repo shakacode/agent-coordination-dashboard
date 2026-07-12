@@ -2,20 +2,44 @@ import express from "express";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
-import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
+import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
+import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
-import { loadOpenGitHubItems as defaultLoadOpenGitHubItems } from "./github/githubClient";
+import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
-import { buildDashboardModel } from "./state/buildDashboardModel";
+import { buildDashboardModel, hasCoordinationEvidence } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
+type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
+
+export function batchLanesFor(item: WorkItem, model: DashboardModel) {
+  return (item.batchSignals || [])
+    .map((signal, index) => ({ signal, index }))
+    .sort((left, right) => {
+      const newestFirst = (Date.parse(right.signal.updatedAt || "") || 0) - (Date.parse(left.signal.updatedAt || "") || 0);
+      return newestFirst || left.index - right.index;
+    })
+    .flatMap(({ signal }) => model.batches.flatMap((batch) => {
+      if (batch.batchId !== signal.batchId) return [];
+      const explicitlyScopedRepos = new Set((batch.targets || [])
+        .filter((target) => target.target === item.target && target.repo)
+        .map((target) => target.repo!));
+      const repoMatches = explicitlyScopedRepos.size > 0
+        ? explicitlyScopedRepos.has(item.repo)
+        : batch.repo
+          ? batch.repo === item.repo
+          : repoLessBatchLaneMatchesWorkItem(batch, signal.batchId || "", item, model.workItems);
+      if (!repoMatches) return [];
+      return batch.lanes.filter((lane) => lane.name === signal.laneName && lane.targets.includes(item.target));
+    }));
+}
 
 export function canBypassDashboardCache(refreshHeader: string | undefined, remoteAddress: string | undefined): boolean {
   // Same-host reverse proxies make remote callers appear loopback; keep exposed deployments direct and host-guarded.
@@ -25,12 +49,15 @@ export function canBypassDashboardCache(refreshHeader: string | undefined, remot
 interface CreateDashboardAppOptions {
   serveFrontend?: boolean;
   loadOpenGitHubItems?: LoadOpenGitHubItems;
+  loadGitHubTargets?: LoadGitHubTargets;
 }
 
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
+  const defaultTargetReconciler = createGitHubTargetReconciler();
+  const loadGitHubTargets = options.loadGitHubTargets || defaultTargetReconciler.load;
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
@@ -89,17 +116,140 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return dashboardBuildSequence;
   }
 
-  async function buildScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
+  function githubPullRequestReference(value: string | undefined, expectedRepo: string): Pick<GitHubTargetReference, "repo" | "target" | "type"> | undefined {
+    if (!value) return undefined;
+    try {
+      const url = new URL(value);
+      const match = url.pathname.match(/^\/([^/]+\/[^/]+)\/pull\/(\d+)(?:\/.*)?$/i);
+      if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com" || !match || match[1].toLowerCase() !== expectedRepo.toLowerCase()) return undefined;
+      return { repo: expectedRepo, target: match[2], type: "pull_request" };
+    } catch {
+      return undefined;
+    }
+  }
+
+  function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
+    if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
+    const lanes = batchLanesFor(item, model);
+    const branch = item.claim?.branch || item.heartbeat?.branch || lanes.find((lane) => lane.branch)?.branch;
+    const events = model.events
+      .filter((event) => event.repo === item.repo && event.target === item.target && event.prUrl)
+      .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0));
+    // Keep the selected PR URL and branch source-atomic. Active claim and live/stale
+    // heartbeat sources are ordered by their live-record timestamp; claims fall back
+    // from updatedAt to claimedAt. Equal or invalid timestamps retain
+    // the stable claim-before-heartbeat order. Matching lanes and history remain
+    // lower-priority fallbacks. Dead/unknown heartbeats and non-active claims
+    // remain usable only after lanes and history, ordered by recency within that
+    // fallback tier. A branch from another source is not sufficient evidence
+    // that it belongs to the selected pull request.
+    const liveSources = [
+      { source: item.claim?.status === "active" ? item.claim : undefined, timestamp: item.claim?.updatedAt || item.claim?.claimedAt },
+      { source: item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined, timestamp: item.heartbeat?.updatedAt }
+    ]
+      .map((candidate, index) => ({ ...candidate, index }))
+      .filter((candidate): candidate is typeof candidate & { source: NonNullable<typeof candidate.source> } => Boolean(candidate.source))
+      .sort((left, right) => {
+        const newestFirst = (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0);
+        return newestFirst || left.index - right.index;
+      })
+      .map(({ source }) => source);
+    const inactiveSources = [
+      { source: item.claim?.status !== "active" ? item.claim : undefined, timestamp: item.claim?.updatedAt || item.claim?.claimedAt },
+      { source: item.heartbeat && !["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined, timestamp: item.heartbeat?.updatedAt }
+    ]
+      .map((candidate, index) => ({ ...candidate, index }))
+      .filter((candidate): candidate is typeof candidate & { source: NonNullable<typeof candidate.source> } => Boolean(candidate.source))
+      .sort((left, right) => {
+        const newestFirst = (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0);
+        return newestFirst || left.index - right.index;
+      })
+      .map(({ source }) => source);
+    // A validated same-repository prUrl is an authoritative coordination
+    // association. Umbrella and manually linked PRs are valid; do not infer the
+    // relationship from GitHub closing keywords.
+    const pullRequest = [...liveSources, ...lanes, ...events, ...inactiveSources]
+      .flatMap((source) => {
+        const reference = githubPullRequestReference(source?.prUrl, item.repo);
+        return reference ? [{ ...reference, ...(source?.branch ? { branch: source.branch } : {}) }] : [];
+      })[0];
+    if (pullRequest) return pullRequest;
+    if (item.terminalState) {
+      return item.type === "pull_request"
+        ? { repo: item.repo, target: item.target, type: "pull_request", ...(branch ? { branch } : {}) }
+        : undefined;
+    }
+    if (item.github?.loadState === "loaded") {
+      return branch ? { repo: item.repo, target: item.target, type: item.type, branch, existingTarget: item.github } : undefined;
+    }
+    return { repo: item.repo, target: item.target, type: item.type, ...(branch ? { branch } : {}) };
+  }
+
+  function explicitlyDeclaredMergedWithoutGitHubTime(model: DashboardModel): boolean {
+    const explicitlyMerged = (value: string | undefined) => /(^|[^a-z0-9])merged($|[^a-z0-9])/i.test(value || "");
+    return model.workItems.some((item) => {
+      if (item.terminalProvenance?.source !== "declared" || item.github?.mergedAt) return false;
+      const eventDeclaresMerge = model.events.some((event) =>
+        event.repo === item.repo
+        && event.target === item.target
+        && (explicitlyMerged(event.type) || explicitlyMerged(event.status))
+      );
+      return explicitlyMerged(item.heartbeat?.status)
+        || eventDeclaresMerge
+        || item.batchSignals?.some((signal) => explicitlyMerged(signal.status));
+    });
+  }
+
+  async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
     const now = new Date();
     const state = await readCoordinationState(config.stateRoot, now, {
       apiUrl: coordApiUrl,
       token: coordApiToken
     });
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
-    const githubItems = githubResults.flatMap((result) => result.items);
-    const githubWarnings = githubResults.flatMap((result) => result.warnings);
+    const openGithubItems = githubResults.flatMap((result) => result.items);
+    const openGithubWarnings = githubResults.flatMap((result) => result.warnings);
 
-    const model = buildDashboardModel({
+    // Intentionally build twice: the preliminary pass derives canonical WorkItems
+    // and reconciliation plans; the final pass applies fetched GitHub evidence.
+    const preliminaryModel = buildDashboardModel({
+      stateRoot: displayedStateRoot,
+      targetRepos: settings.targetRepos,
+      claims: state.claims,
+      heartbeats: state.heartbeats,
+      batches: state.batches,
+      events: state.events,
+      githubItems: openGithubItems,
+      warnings: [...state.warnings, ...openGithubWarnings],
+      now
+    });
+    const reconciliationPlans = preliminaryModel.workItems.flatMap((item) => {
+      const reference = reconciliationReference(item, preliminaryModel);
+      return reference ? [{ workItemId: item.id, item, reference }] : [];
+    });
+    const reconciled = await loadGitHubTargets(reconciliationPlans.map((plan) => plan.reference), { bypassCache: options.bypassGitHubCache });
+    const returnedReferences = reconciled.references || reconciliationPlans.map((plan) => plan.reference);
+    const resultByReference = new Map(reconciled.items.map((item, index) => [githubTargetReferenceKey(returnedReferences[index]), item]));
+    const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
+      const result = resultByReference.get(githubTargetReferenceKey(plan.reference));
+      const coordinatedType = plan.item.type === "issue" || plan.item.type === "pull_request"
+        ? { coordinatedType: plan.item.type }
+        : {};
+      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, ...coordinatedType }] : [];
+    });
+    const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
+    const consumedCanonicalIds = new Set(reconciliationPlans.flatMap((plan) => {
+      if (plan.reference.type !== "pull_request") return [];
+      const canonicalId = `${plan.reference.repo}#${plan.reference.target}`;
+      if (canonicalId === plan.workItemId) return [];
+      const canonicalWorkItem = preliminaryModel.workItems.find((item) => item.id === canonicalId);
+      return canonicalWorkItem && hasCoordinationEvidence(canonicalWorkItem) ? [] : [canonicalId];
+    }));
+    const githubItems = [...openGithubItems.filter((item) => {
+      const id = `${item.repo}#${item.target}`;
+      return !reconciledWorkItemIds.has(id) && !consumedCanonicalIds.has(id);
+    }), ...remappedGithubItems];
+    const model = reconciliationPlans.length === 0 ? preliminaryModel : buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: state.claims,
@@ -107,11 +257,17 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       batches: state.batches,
       events: state.events,
       githubItems,
-      warnings: [...state.warnings, ...githubWarnings],
+      warnings: [...state.warnings, ...openGithubWarnings, ...reconciled.warnings],
       now
     });
+    // The headline is scope-wide: any missing GitHub evidence makes the whole count untrusted.
+    const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
+    const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
+    const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
     return {
       ...model,
+      ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
+      githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
       ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
     };
@@ -131,14 +287,14 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
     const key = dashboardCacheKey(settings);
     if (dashboardCacheTtlMs <= 0) {
-      return buildScopedDashboard(settings);
+      return buildScopedDashboard(settings, { bypassGitHubCache: options.bypassCache });
     }
 
     if (options.bypassCache) {
       invalidateDashboardCache();
       const generation = dashboardCacheGeneration;
       const sequence = nextCacheableDashboardBuild();
-      const model = await buildScopedDashboard(settings);
+      const model = await buildScopedDashboard(settings, { bypassGitHubCache: true });
       cacheDashboardModel(key, model, generation, sequence, Date.now() + dashboardCacheTtlMs);
       return model;
     }

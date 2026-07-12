@@ -11,9 +11,11 @@ import type {
   MetadataSource,
   OperatorRowProvenance,
   WorkItem,
+  WorkItemTerminalState,
   WorkItemType
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
+import { isOperationalWorkItem } from "../shared/workItemSelection";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -47,7 +49,7 @@ export function safeGithubUrl(value: string | undefined): string | undefined {
   }
 }
 
-export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "unknown";
+export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "archived" | "unknown";
 export type OperatorRowSource = "target" | "lane" | "batch";
 export type OverviewOperatorFilter = "ready_for_batch" | "needs_recovery" | "processing_now" | "qa_attention" | "batch_repair";
 
@@ -135,7 +137,17 @@ const PAUSED_PATTERN =
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
-const ACCEPTED_TERMINAL_STATUSES = new Set(["done", "merged", "closed", "cancelled"]);
+const WORK_ITEM_TERMINAL_STATES: Record<WorkItemTerminalState, true> = {
+  done: true,
+  closed: true,
+  abandoned: true,
+  superseded: true
+};
+const ACCEPTED_TERMINAL_STATUSES = new Set<string>([
+  ...Object.keys(WORK_ITEM_TERMINAL_STATES),
+  "merged",
+  "cancelled"
+]);
 const TERMINAL_PRESENTATION_ALIASES = new Set(["complete", "completed", "released"]);
 
 function isAcceptedTerminalStatus(value: string | undefined): boolean {
@@ -389,6 +401,12 @@ function deriveOperatorState(input: {
   const terminalTransitionIsSuperseded =
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
+  if (input.workItem?.operatorState === "archived_view" && !input.workItem.terminalState) {
+    return "archived";
+  }
+  if (input.workItem && !isOperationalWorkItem(input.workItem)) {
+    return "done";
+  }
   if (PAUSED_PATTERN.test(currentText)) {
     return "paused";
   }
@@ -511,7 +529,8 @@ function rowSortRank(row: OperatorRow): number {
     running: 5,
     ready: 6,
     unknown: 7,
-    done: 8
+    done: 8,
+    archived: 9
   };
   return ranks[row.operatorState];
 }
@@ -798,7 +817,9 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     item.heartbeat?.updatedAt,
     claimLifecycleAt
   );
-  const retentionStatus = latestLifecycleStatus(lifecycleCandidates);
+  const retentionStatus = item.terminalState
+    || (item.operatorState === "archived_view" ? "archived" : !isOperationalWorkItem(item) ? "done" : latestLifecycleStatus(lifecycleCandidates));
+  const isArchivedView = item.operatorState === "archived_view";
   const ownerMetadata = firstObserved(
     notApplicable(),
     ["claim", item.claim?.operator],
@@ -872,7 +893,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     title: item.github?.title || batchTarget?.title || workTitle(item),
     url: item.github?.url || batchTarget?.url,
     operatorState: state,
-    liveness: item.heartbeat?.liveness || "none",
+    liveness: isArchivedView ? "none" : item.heartbeat?.liveness || "none",
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
@@ -880,7 +901,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
     retentionStatus,
     githubState: item.github?.loadState === "loaded" ? item.github.state : UNKNOWN,
-    schedulingState: item.schedulingState,
+    schedulingState: isArchivedView ? undefined : item.schedulingState,
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
     batchId,
@@ -1158,13 +1179,14 @@ export function filterOperatorRowsByAge(
 
 export function isTerminalRowEligibleForAgeOut(row: OperatorRow): boolean {
   const githubState = row.githubState?.trim().toUpperCase();
+  const isLegacyArchived = row.operatorState === "archived" && row.retentionStatus.trim().toLowerCase() === "archived";
   const hasCurrentPresentationState = ["running", "wedged", "paused", "blocked", "stale", "dead", "ready", "unknown"].includes(
     row.operatorState
   );
   return (
-    ACCEPTED_TERMINAL_STATUSES.has(row.retentionStatus.trim().toLowerCase()) &&
+    (ACCEPTED_TERMINAL_STATUSES.has(row.retentionStatus.trim().toLowerCase()) || isLegacyArchived) &&
     githubState !== "OPEN" &&
-    githubState !== UNKNOWN &&
+    (isLegacyArchived || githubState !== UNKNOWN) &&
     row.liveness !== "live" &&
     row.liveness !== "stale" &&
     row.liveness !== "dead" &&
@@ -1212,6 +1234,14 @@ export function hasExactOperatorDeepLink(deepLink?: OperatorDeepLink): boolean {
 
 function rowMatchesRepoTarget(row: OperatorRow, repo: string, target: string): boolean {
   return row.repo === repo && row.target === target;
+}
+
+function rowRepresentsTerminalWorkItem(row: OperatorRow, dashboard: DashboardModel): boolean {
+  return dashboard.workItems.some(
+    (item) =>
+      rowMatchesRepoTarget(row, item.repo, item.target)
+      && !isOperationalWorkItem(item)
+  );
 }
 
 function batchMatchesOperation(batch: BatchRecord, operation: BatchOperation): boolean {
@@ -1375,12 +1405,20 @@ export function filterOperatorRowsForOverview(
   if (["ready_for_batch", "needs_recovery", "processing_now"].includes(filter)) {
     const schedulingState =
       filter === "ready_for_batch" ? "ready_for_batch" : filter === "needs_recovery" ? "started_not_processing" : "in_process";
-    const items = dashboard.workItems.filter((item) => item.schedulingState === schedulingState);
+    const items = dashboard.workItems.filter(
+      (item) =>
+        item.schedulingState === schedulingState
+        && isOperationalWorkItem(item)
+    );
     return rows.filter((row) => items.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
   if (filter === "qa_attention") {
     const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
-    return rows.filter((row) => qaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
+    const operationalQaItems = qaItems.filter((qaItem) => dashboard.workItems.some(
+      (item) => qaItem.repo === item.repo && qaItem.target === item.target
+        && isOperationalWorkItem(item)
+    ));
+    return rows.filter((row) => operationalQaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
   const stoppedOperations = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
   const repairBatches = dashboard.batches.filter(
@@ -1396,7 +1434,11 @@ export function filterOperatorRowsForOverview(
     const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
     const activityStatus = repairActivityStatus(batch, operation);
     const activityMetadata = repairActivityMetadata(batch, operation, activityStatus);
-    const matchingRows = rows.filter((row) => rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch));
+    const matchingRows = rows.filter(
+      (row) =>
+        !rowRepresentsTerminalWorkItem(row, dashboard)
+        && (rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch))
+    );
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
         const presentationRow = rowMatchesBatchScope(row, batch)
@@ -1414,7 +1456,9 @@ export function filterOperatorRowsForOverview(
     if (dashboard.batches.some((batch) => batchMatchesOperation(batch, operation))) {
       continue;
     }
-    const matchingRows = rows.filter((row) => rowMatchesOperationScope(row, operation));
+    const matchingRows = rows.filter(
+      (row) => !rowRepresentsTerminalWorkItem(row, dashboard) && rowMatchesOperationScope(row, operation)
+    );
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
         results.set(

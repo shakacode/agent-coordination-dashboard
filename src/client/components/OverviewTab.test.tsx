@@ -138,6 +138,26 @@ describe("OverviewTab", () => {
       expect(panel.getByText(label)).toHaveClass("status-badge", "status-terminal", `status-${status}`);
     }
   });
+
+  it("labels revealed legacy archived work without declaring it done", () => {
+    const archivedDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [{
+        ...dashboard.workItems[0],
+        operatorState: "archived_view",
+        lastActivityAt: "2026-07-08T19:00:00Z",
+        github: { ...dashboard.workItems[0].github!, state: "CLOSED" }
+      }]
+    };
+
+    render(<OverviewTab dashboard={archivedDashboard} onOpenOperatorFilter={vi.fn()} revealOlderTerminalRows />);
+
+    const panel = within(screen.getByRole("heading", { name: "Recent Terminal Work" }).closest("article") as HTMLElement);
+    expect(panel.getByText("Archived")).toHaveClass("status-badge", "status-terminal", "status-archived");
+    expect(panel.queryByText("Done")).not.toBeInTheDocument();
+  });
+
   it("excludes inferred and synthetic rows from default summaries while preserving unknown rows", () => {
     render(<OverviewTab dashboard={dashboard} onOpenOperatorFilter={vi.fn()} />);
 

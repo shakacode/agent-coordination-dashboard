@@ -6,7 +6,7 @@ import { normalizeTargetRepos, readDashboardSettings, writeDashboardSettings } f
 
 describe("dashboard settings", () => {
   it("normalizes repo filters", () => {
-    expect(normalizeTargetRepos([" shakacode/react_on_rails ", "bad", "shakacode/react_on_rails"])).toEqual([
+    expect(normalizeTargetRepos([" shakacode/react_on_rails ", "bad", "./app", "repo/..", ".../repo", "shakacode/react_on_rails"])).toEqual([
       "shakacode/react_on_rails"
     ]);
   });

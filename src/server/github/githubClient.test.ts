@@ -1,7 +1,336 @@
-import { describe, expect, it } from "vitest";
-import { loadOpenGitHubItems, parseIssueList, parsePrList } from "./githubClient";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createGitHubTargetReconciler, githubApiPath, githubTargetReferenceKey, isGitHubHttpNotFound, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
 
 describe("github list parsers", () => {
+  afterEach(() => vi.useRealTimers());
+  it("normalizes merged PR and closed issue target responses", () => {
+    expect(parseGitHubTarget("repo/app", JSON.stringify({
+      number: 43, title: "Merged", html_url: "https://github.com/repo/app/pull/43", state: "closed", closed_at: "2026-07-12T11:00:00Z",
+      user: { login: "maintainer" }, labels: [{ name: "feature" }], pull_request: { merged_at: "2026-07-12T10:59:00Z" }
+    }))).toMatchObject({ target: "43", type: "pull_request", state: "MERGED", mergedAt: "2026-07-12T10:59:00Z", closedAt: "2026-07-12T11:00:00Z", loadState: "loaded" });
+
+    expect(parseGitHubTarget("repo/app", JSON.stringify({
+      number: 44, title: "Closed", html_url: "https://github.com/repo/app/issues/44", state: "closed", closed_at: "2026-07-12T09:00:00Z",
+      user: { login: "maintainer" }, labels: []
+    }))).toMatchObject({ target: "44", type: "issue", state: "CLOSED", closedAt: "2026-07-12T09:00:00Z", loadState: "loaded" });
+
+    const closedPullRequest = parseGitHubTarget("repo/app", JSON.stringify({
+      number: 45, title: "Closed PR", html_url: "https://github.com/repo/app/pull/45", state: "closed", closed_at: "2026-07-12T08:00:00Z",
+      labels: [], pull_request: { merged_at: null }
+    }));
+    expect(closedPullRequest).toMatchObject({ target: "45", type: "pull_request", state: "CLOSED", loadState: "loaded" });
+    expect(closedPullRequest).not.toHaveProperty("mergedAt");
+  });
+
+  it("constructs GitHub API paths from validated owner and repository segments", () => {
+    expect(githubApiPath("shaka-code/agent_coordination.dashboard", "issues", "45")).toBe("repos/shaka-code/agent_coordination.dashboard/issues/45");
+    expect(githubApiPath("repo/app", "branches", "feature/work-#x")).toBe("repos/repo/app/branches/feature%2Fwork-%23x");
+    expect(() => githubApiPath("repo/app/../../secret", "issues", "45")).toThrow(/repository/i);
+    expect(() => githubApiPath("../app", "issues", "45")).toThrow(/repository/i);
+    expect(() => githubApiPath("repo/...", "issues", "45")).toThrow(/repository/i);
+    expect(() => githubApiPath("repo/app", "issues", "45/../../secret")).toThrow(/issue target/i);
+    expect(() => githubApiPath("repo/app", "branches", "feature/../secret")).toThrow(/branch/i);
+    expect(() => githubApiPath("repo/app", "branches", "feature/foo..bar")).toThrow(/branch/i);
+  });
+
+  it.each([
+    "",
+    "-leading-dash",
+    "/leading-slash",
+    "trailing-slash/",
+    "trailing-dot.",
+    "double//slash",
+    "double..dot",
+    "feature/@{upstream}",
+    "feature/control\u0001char",
+    "feature/delete\u007fchar",
+    "feature/has space",
+    "feature/tilde~name",
+    "feature/caret^name",
+    "feature/colon:name",
+    "feature/question?name",
+    "feature/star*name",
+    "feature/[bracket",
+    "feature/back\\slash",
+    ".hidden",
+    "feature/.hidden",
+    "feature/branch.lock",
+    "HEAD"
+  ])("rejects a branch Git would reject: %j", (branch) => {
+    expect(() => githubApiPath("repo/app", "branches", branch)).toThrow(/branch/i);
+  });
+
+  it.each([
+    "main",
+    "codex/issue-45",
+    "release/v1.2.3",
+    "feature/-nested-dash",
+    "feature/dotted.name",
+    "feature/hash#name",
+    "feature/foo.locked",
+    "@"
+  ])("accepts a common branch Git accepts: %j", (branch) => {
+    expect(githubApiPath("repo/app", "branches", branch)).toBe(`repos/repo/app/branches/${encodeURIComponent(branch)}`);
+  });
+
+  it("reconciles valid targets while keeping every invalid branch UNKNOWN without a branch lookup", async () => {
+    const run = vi.fn(async (args: string[]) => ({
+      stdout: JSON.stringify({ number: Number(args[1].split("/").at(-1)), title: "Merged", html_url: `https://github.com/repo/app/pull/${args[1].split("/").at(-1)}`, state: "closed", labels: [], pull_request: { merged_at: "2026-07-12T10:00:00Z" } }),
+      stderr: "",
+      exitCode: 0
+    }));
+    const invalidBranches = ["-leading", "feature/.hidden", "feature/branch.lock", "feature/has space", "feature/@{upstream}"];
+    const result = await createGitHubTargetReconciler({ run }).load(invalidBranches.map((branch, index) => ({
+      repo: "repo/app",
+      target: String(100 + index),
+      type: "issue" as const,
+      branch
+    })));
+
+    expect(run).toHaveBeenCalledTimes(invalidBranches.length);
+    expect(run.mock.calls.every(([args]) => args[1].includes("/issues/"))).toBe(true);
+    expect(result.items).toHaveLength(invalidBranches.length);
+    expect(result.items.every((item) => item.state === "MERGED" && item.loadState === "loaded" && item.branchState === "unknown")).toBe(true);
+    expect(result.warnings).toHaveLength(invalidBranches.length);
+    expect(result.warnings.every((warning) => /branch/i.test(warning.message))).toBe(true);
+  });
+
+  it("preserves trusted target evidence when only its branch reference is invalid", async () => {
+    const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const existingTarget = {
+      repo: "repo/app",
+      target: "45",
+      type: "issue" as const,
+      title: "Open issue",
+      url: "https://github.com/repo/app/issues/45",
+      state: "OPEN",
+      author: "maintainer",
+      labels: ["feature"],
+      loadState: "loaded" as const
+    };
+
+    const result = await createGitHubTargetReconciler({ run }).load([{
+      repo: "repo/app",
+      target: "45",
+      type: "issue",
+      branch: "feature/has space",
+      existingTarget
+    }]);
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result.items).toEqual([{ ...existingTarget, branchState: "unknown" }]);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ repo: "repo/app", target: "45", message: expect.stringMatching(/branch/i) })
+    ]);
+  });
+
+  it("rejects hostile target references without invoking gh", async () => {
+    const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const result = await createGitHubTargetReconciler({ run }).load([
+      { repo: "../app", target: "45", type: "issue" },
+      { repo: "repo/...", target: "46", type: "issue" },
+      { repo: "repo/app", target: "47/../../secret", type: "issue", branch: "feature/../secret" }
+    ]);
+    expect(run).not.toHaveBeenCalled();
+    expect(result.items).toEqual([
+      expect.objectContaining({ repo: "../app", target: "45", state: "UNKNOWN", loadState: "unknown" }),
+      expect.objectContaining({ repo: "repo/...", target: "46", state: "UNKNOWN", loadState: "unknown" }),
+      expect.objectContaining({ repo: "repo/app", target: "47/../../secret", state: "UNKNOWN", loadState: "unknown" })
+    ]);
+    expect(result.warnings).toHaveLength(3);
+    expect(result.warnings.map((warning) => warning.message)).toEqual([
+      expect.stringMatching(/repository/i),
+      expect.stringMatching(/repository/i),
+      expect.stringMatching(/issue target/i)
+    ]);
+  });
+
+  it("coalesces and caches target reconciliation while foreground refresh can bypass it", async () => {
+    let calls = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reconciler = createGitHubTargetReconciler({ run: async () => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return { stdout: JSON.stringify({ number: 43, title: "Open", html_url: "https://github.com/repo/app/issues/43", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } }, 60_000);
+    const refs = [{ repo: "repo/app", target: "43", type: "issue" as const }];
+    const first = reconciler.load(refs);
+    const second = reconciler.load(refs);
+    release();
+    await Promise.all([first, second]);
+    expect(calls).toBe(1);
+    await reconciler.load(refs);
+    expect(calls).toBe(1);
+    await reconciler.load(refs, { bypassCache: true });
+    expect(calls).toBe(2);
+  });
+
+  it("returns honest UNKNOWN target evidence when GitHub is unavailable", async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async () => ({ stdout: "", stderr: "auth required", exitCode: 1 }) });
+    const result = await reconciler.load([{ repo: "repo/app", target: "43", type: "unknown" }]);
+    expect(result.items).toEqual([expect.objectContaining({ repo: "repo/app", target: "43", state: "UNKNOWN", loadState: "unknown" })]);
+    expect(result.warnings[0].message).toContain("auth required");
+  });
+
+  it("records branch deletion only as supporting evidence", async () => {
+    let calls = 0;
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls += 1;
+      return args[1].includes("/branches/")
+      ? { stdout: "", stderr: "HTTP 404: Branch not found", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work" };
+    const result = await reconciler.load([reference]);
+    await reconciler.load([reference]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "deleted" });
+    expect(result.warnings).toEqual([]);
+    expect(calls).toBe(2);
+  });
+
+  it("keeps branch lookup failures UNKNOWN without discarding trustworthy target state", async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => args[1].includes("/branches/")
+      ? { stdout: "", stderr: "auth required", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 } });
+    const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "unknown" });
+    expect(result.warnings[0].message).toContain("auth required");
+  });
+
+  it.each([
+    "HTTP 404",
+    "HTTP 404: Branch not found",
+    "gh: HTTP 404: Not Found",
+    "gh: Branch not found (HTTP 404)",
+    "gh: Not Found (HTTP 404)\n"
+  ])("recognizes an actual gh HTTP 404 response: %j", (stderr) => {
+    expect(isGitHubHttpNotFound(stderr)).toBe(true);
+  });
+
+  it.each([
+    "dependency returned 404 while gh authentication failed",
+    "warning: cached status was HTTP 404 yesterday",
+    "request failed with status 404"
+  ])("does not infer branch deletion from unrelated 404 text: %j", (stderr) => {
+    expect(isGitHubHttpNotFound(stderr)).toBe(false);
+  });
+
+  it("keeps unrelated stderr containing 404 as UNKNOWN branch evidence", async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => args[1].includes("/branches/")
+      ? { stdout: "", stderr: "dependency returned 404 while gh authentication failed", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 } });
+    const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", branchState: "unknown" });
+    expect(result.warnings[0].message).toContain("dependency returned 404");
+  });
+
+  it("performs branch-only reconciliation without repeating an already-loaded target lookup", async () => {
+    const calls: string[][] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls.push(args);
+      return { stdout: "{}", stderr: "", exitCode: 0 };
+    } });
+    const existingTarget = { repo: "repo/app", target: "45", type: "issue" as const, title: "Open issue", url: "https://github.com/repo/app/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const };
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work", existingTarget };
+    const result = await reconciler.load([reference]);
+    const refreshedIdentity = await reconciler.load([{ ...reference, existingTarget: { ...existingTarget, title: "Fresh open title" } }]);
+    expect(calls).toEqual([["api", "repos/repo/app/branches/feature%2Fwork"]]);
+    expect(result.items).toEqual([{ ...existingTarget, branchState: "present" }]);
+    expect(refreshedIdentity.items).toEqual([{ ...existingTarget, title: "Fresh open title", branchState: "present" }]);
+  });
+
+  it("bounds GitHub target fan-out", async () => {
+    let active = 0;
+    let maximum = 0;
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      if (args[1].includes("/branches/")) return { stdout: "{}", stderr: "", exitCode: 0 };
+      const target = args[1].split("/").at(-1);
+      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } }, 60_000, 2);
+    await reconciler.load([1, 2, 3, 4].map((target) => ({ repo: "repo/app", target: String(target), type: "issue" as const, branch: `feature/${target}` })));
+    expect(maximum).toBe(2);
+  });
+
+  it("coalesces one target lookup while preserving distinct branch lookups", async () => {
+    const calls: string[] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls.push(args[1]);
+      if (args[1].includes("/branches/feature%2Fa")) return { stdout: "", stderr: "HTTP 404", exitCode: 1 };
+      if (args[1].includes("/branches/")) return { stdout: "{}", stderr: "", exitCode: 0 };
+      return { stdout: JSON.stringify({ number: 54, title: "Merged", html_url: "https://github.com/repo/app/pull/54", state: "closed", pull_request: { merged_at: "2026-07-12T10:00:00Z" }, labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const result = await reconciler.load([
+      { repo: "repo/app", target: "54", type: "pull_request", branch: "feature/a" },
+      { repo: "repo/app", target: "54", type: "pull_request", branch: "feature/b" }
+    ]);
+    expect(calls.filter((call) => call.includes("/issues/54"))).toHaveLength(1);
+    expect(calls.filter((call) => call.includes("/branches/"))).toHaveLength(2);
+    expect(result.items.map((item) => item.branchState)).toEqual(["deleted", "present"]);
+  });
+
+  it("includes target type in reconciliation identity, dedupe, and caches", async () => {
+    const calls: string[] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls.push(args[1]);
+      return { stdout: JSON.stringify({ number: 45, title: "Target", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const issue = { repo: "repo/app", target: "45", type: "issue" as const };
+    const pullRequest = { repo: "repo/app", target: "45", type: "pull_request" as const };
+
+    expect(githubTargetReferenceKey(issue)).not.toBe(githubTargetReferenceKey(pullRequest));
+    const result = await reconciler.load([issue, pullRequest]);
+
+    expect(result.references).toEqual([issue, pullRequest]);
+    expect(calls.filter((call) => call.endsWith("/issues/45"))).toHaveLength(2);
+  });
+
+  it("prunes expired cache entries and caps live entries deterministically", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
+    let calls = 0;
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls += 1;
+      const target = args[1].split("/").at(-1);
+      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } }, 10, 8, 2);
+    const reference = (target: string) => ({ repo: "repo/app", target, type: "issue" as const });
+    await reconciler.load([reference("1"), reference("2")]);
+    expect(reconciler.cacheSize()).toBe(2);
+    await reconciler.load([reference("3")]);
+    expect(reconciler.cacheSize()).toBe(2);
+    await reconciler.load([reference("1")]);
+    expect(calls).toBe(4);
+    vi.advanceTimersByTime(11);
+    await reconciler.load([reference("4")]);
+    expect(reconciler.cacheSize()).toBe(1);
+  });
+
+  it("coalesces an active target lookup after TTL expiry and refreshes only after settlement", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
+    let calls = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reconciler = createGitHubTargetReconciler({ run: async () => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return { stdout: JSON.stringify({ number: 45, title: "Open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } }, 0);
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const };
+    const first = reconciler.load([reference]);
+    vi.advanceTimersByTime(1);
+    const second = reconciler.load([reference]);
+    expect(calls).toBe(1);
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([expect.anything(), expect.anything()]);
+    await reconciler.load([reference]);
+    expect(calls).toBe(2);
+  });
   it("normalizes open PRs", () => {
     const previews = parsePrList(
       "shakacode/react_on_rails",

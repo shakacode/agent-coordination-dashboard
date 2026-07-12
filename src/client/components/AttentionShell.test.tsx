@@ -205,6 +205,53 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("button", { name: "Open 2 batch repair records" })).toBeInTheDocument();
   });
 
+  it.each([
+    ["ready_for_batch", { schedulingState: "ready_for_batch" }],
+    ["needs_recovery", { schedulingState: "started_not_processing" }],
+    ["processing_now", { schedulingState: "in_process" }],
+    ["batch_repair", { attention: { kind: "batch_stopped", label: "Batch stopped", action: "Open batch operations" } }]
+  ] as const)("keeps terminal work out of the %s operational Find filter", (overviewFilter, overrides) => {
+    const terminal = {
+      ...ITEMS[0],
+      ...overrides,
+      id: `repo/dashboard#terminal-${overviewFilter}`,
+      target: `terminal-${overviewFilter}`,
+      operatorState: "terminal" as const,
+      terminalState: "done" as const
+    };
+    render(<AttentionShell deepLink={{ overviewFilter }} items={[terminal]} onQueryChange={vi.fn()} query="" repairBatchCount={1} repairWorkItemIds={new Set([terminal.id])} surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
+    if (overviewFilter === "batch_repair") {
+      expect(screen.getByRole("button", { name: "Open 1 batch repair records" })).toBeInTheDocument();
+    }
+  });
+
+  it.each(["terminal", "archived_view"] as const)("keeps %s QA work out of the operational Find filter", (operatorState) => {
+    const terminalQa = {
+      ...ITEMS[0],
+      operatorState,
+      terminalState: operatorState === "terminal" ? "done" as const : undefined,
+      attention: { kind: "qa_missing" as const, label: "QA missing", action: "Open PR" as const }
+    };
+    render(<AttentionShell deepLink={{ overviewFilter: "qa_attention" }} items={[terminalQa]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
+  });
+
+  it("keeps archived terminal batch signals out of Find while retaining repair diagnostics", () => {
+    const archivedRepair = {
+      ...ITEMS[0],
+      id: "repo/dashboard#archived-repair",
+      target: "archived-repair",
+      operatorState: "archived_view" as const,
+      terminalState: undefined,
+      attention: undefined,
+      batchSignals: [{ batchId: "missing-plan", laneName: "lane", status: "missing_manifest", blockedOn: [] }]
+    };
+    render(<AttentionShell deepLink={{ overviewFilter: "batch_repair" }} items={[archivedRepair]} onQueryChange={vi.fn()} query="" repairBatchCount={1} repairWorkItemIds={new Set([archivedRepair.id])} surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open 1 batch repair records" })).toBeInTheDocument();
+  });
+
   it("qualifies batch repair membership by canonical work identity instead of shared batch id", () => {
     const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", attention: undefined, batchSignals: [{ batchId: "shared", laneName: "a", status: "running", blockedOn: [] }] };
     const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", attention: undefined, batchSignals: [{ batchId: "shared", laneName: "b", status: "running", blockedOn: [] }] };
@@ -233,6 +280,78 @@ describe("AttentionShell", () => {
     rerender(<AttentionShell items={[older, newer]} onQueryChange={onQueryChange} onSurfaceChange={onSurfaceChange} query="Older" surface="history" />);
     expect(screen.getByText("Older terminal", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("Newer terminal", { exact: false })).not.toBeInTheDocument();
+  });
+
+  it("labels GitHub-derived terminal history and retains its merge link", () => {
+    const derived = {
+      ...ITEMS[1],
+      type: "pull_request" as const,
+      terminalProvenance: { source: "github" as const, url: "https://github.com/repo/dashboard/pull/44" },
+      github: { repo: "repo/dashboard", target: "44", type: "pull_request" as const, title: "Merged work", url: "https://github.com/repo/dashboard/pull/44", state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[derived]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByText("Derived from GitHub")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/44");
+  });
+
+  it.each([
+    "https://example.com/repo/dashboard/issues/44",
+    "javascript:alert(1)",
+    "https://github.com/repo/dashboard/issues/not-a-number"
+  ])("does not render an untrusted GitHub evidence link: %s", (url) => {
+    const item = {
+      ...ITEMS[1],
+      github: { repo: "repo/dashboard", target: "44", type: "issue" as const, title: "Unsafe evidence", url, state: "CLOSED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[item]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.queryByRole("link", { name: "Open" })).not.toBeInTheDocument();
+  });
+
+  it("preserves the original case of a validated GitHub evidence link", () => {
+    const url = "https://github.com/RepoOwner/MixedCaseRepo/pull/44";
+    const item = {
+      ...ITEMS[1],
+      github: { repo: "RepoOwner/MixedCaseRepo", target: "44", type: "pull_request" as const, title: "Merged evidence", url, state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[item]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", url);
+  });
+
+  it("keeps the coordinated issue label while linked PR evidence supplies the merge", () => {
+    const issueWithMergedPr = {
+      ...ITEMS[1],
+      id: "repo/dashboard#45",
+      target: "45",
+      type: "issue" as const,
+      terminalProvenance: { source: "github" as const, url: "https://github.com/repo/dashboard/pull/54" },
+      github: { repo: "repo/dashboard", target: "45", type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/repo/dashboard/pull/54", state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[issueWithMergedPr]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("heading", { name: "Issue #45: Merged implementation" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/54");
+  });
+
+  it("labels a reconciled merged link as a merge with declared terminal provenance", () => {
+    const declaredMerged = {
+      ...ITEMS[1],
+      terminalProvenance: { source: "declared" as const },
+      github: { repo: "repo/dashboard", target: "54", type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/repo/dashboard/pull/54", state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[declaredMerged]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/54");
+  });
+
+  it("shows UNKNOWN instead of guessing when GitHub reconciliation failed", () => {
+    const unknown = { ...ITEMS[0], github: { repo: "repo/dashboard", target: "43", type: "unknown" as const, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" as const } };
+    render(<AttentionShell items={[unknown]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText("GitHub state: UNKNOWN")).toBeInTheDocument();
+  });
+
+  it("presents branch deletion as supporting evidence rather than completion", () => {
+    const openWithDeletedBranch = { ...ITEMS[0], operatorState: "needs_attention" as const, github: { repo: "repo/dashboard", target: "43", type: "issue" as const, title: "Open work", url: "https://github.com/repo/dashboard/issues/43", state: "OPEN", branchState: "deleted" as const, labels: [], loadState: "loaded" as const } };
+    render(<AttentionShell items={[openWithDeletedBranch]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText("Branch deleted (supporting signal)")).toBeInTheDocument();
+    expect(screen.queryByText("Derived from GitHub")).not.toBeInTheDocument();
   });
 
   it("renders every declared attention action, including resolvable PR and batch-operation actions", async () => {

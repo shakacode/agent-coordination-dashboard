@@ -19,9 +19,10 @@ import type {
   OperatorRowProvenance
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
-import { batchSignalIdentity } from "../../shared/batchSignal";
+import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../shared/batchSignal";
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
+import { isOperationalWorkItem } from "../../shared/workItemSelection";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
@@ -40,6 +41,10 @@ interface BuildInput {
   githubItems: GitHubPreview[];
   warnings: CoordinationWarning[];
   now: Date;
+}
+
+export function hasCoordinationEvidence(item: WorkItem): boolean {
+  return Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
 }
 
 function workId(repo: string, target: string): string {
@@ -454,6 +459,13 @@ function manifestReposForTarget(batch: BatchRecord, target: string): string[] {
 
 function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
   return batch.repo === repo || Boolean((batch.targets || []).some((target) => target.repo === repo));
+}
+
+function batchLaneContainsWorkItem(batch: BatchRecord, item: WorkItem, workItems: WorkItem[]): boolean {
+  const explicitMatch = explicitBatchTargetRepoMatch(batch, item.target, item.repo);
+  if (explicitMatch !== undefined) return explicitMatch;
+  if (batch.repo) return batch.repo === item.repo;
+  return repoLessBatchLaneMatchesWorkItem(batch, batch.batchId, item, workItems);
 }
 
 function explicitBatchTargetRepoMatch(batch: BatchRecord, target: string, repo: string): boolean | undefined {
@@ -1152,7 +1164,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         id,
         repo,
         target,
-        type: github?.type || batchTarget?.type || "unknown",
+        type: github?.coordinatedType || github?.type || batchTarget?.type || "unknown",
         claim,
         heartbeat,
         batchSignals,
@@ -1164,7 +1176,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       };
     });
 
-  const qaValidations: QaValidationItem[] = workItems
+  const preDerivationQaValidations: QaValidationItem[] = workItems
     .filter((item) => item.type === "pull_request")
     .flatMap((item) => {
       const signals = item.batchSignals && item.batchSignals.length > 0 ? item.batchSignals : [undefined];
@@ -1197,7 +1209,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       });
     });
 
-  const batchOperations: BatchOperation[] = batches.map((batch) => {
+  const preDerivationBatchOperations: BatchOperation[] = batches.map((batch) => {
     const batchEvents = scopedEvents.filter((event) =>
       event.batchPath ? event.batchPath === batch.path : event.batchId === batch.batchId && (!batch.repo || event.repo === batch.repo)
     );
@@ -1210,7 +1222,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         : "stop_requested"
       : "running";
     const qa = emptyQaCounts();
-    for (const validation of qaValidations.filter((item) => item.batchId === batch.batchId && batchContainsRepo(batch, item.repo))) {
+    for (const validation of preDerivationQaValidations.filter((item) => item.batchId === batch.batchId && batchContainsRepo(batch, item.repo))) {
       qa.total += 1;
       if (validation.status === "in_progress") {
         qa.inProgress += 1;
@@ -1236,10 +1248,37 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   workItems = deriveWorkItems({
     workItems,
     events: scopedEvents,
-    qaValidations,
-    batchOperations,
+    qaValidations: preDerivationQaValidations,
+    batchOperations: preDerivationBatchOperations,
     batches,
     now: input.now
+  });
+  workItems = workItems.map((item) => isOperationalWorkItem(item) ? item : { ...item, warnings: [] });
+  const workItemsById = new Map(workItems.map((item) => [item.id, item]));
+  const operationalWorkIds = new Set(workItems.filter(isOperationalWorkItem).map((item) => item.id));
+  const qaValidations = preDerivationQaValidations.filter((validation) =>
+    operationalWorkIds.has(workId(validation.repo, validation.target))
+  );
+  const batchOperations = preDerivationBatchOperations.map((operation) => {
+    const batch = batches.find((candidate) =>
+      operation.batchPath ? candidate.path === operation.batchPath : candidate.batchId === operation.batchId
+    );
+    const qa = emptyQaCounts();
+    for (const validation of qaValidations.filter((item) =>
+      item.batchId === operation.batchId && (!batch || batchContainsRepo(batch, item.repo))
+    )) {
+      qa.total += 1;
+      if (validation.status === "in_progress") {
+        qa.inProgress += 1;
+      } else {
+        qa[validation.status] += 1;
+      }
+    }
+    return { ...operation, qa };
+  });
+  const nonterminalWorkItems = workItems.filter((item) => !item.terminalState);
+  const hasUnreconciledCoordinatedWork = nonterminalWorkItems.some((item) => {
+    return hasCoordinationEvidence(item) && item.github?.loadState !== "loaded";
   });
 
   const workByAgent = new Map<string, WorkItem[]>();
@@ -1299,7 +1338,14 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const healthItems: HealthItem[] = [];
   for (const agent of agents) {
-    if (agent.machineMetadata?.state === "missing" && agent.heartbeat) {
+    const heartbeatWorkItem = agent.heartbeat?.repo && agent.heartbeat.target
+      ? workItemsById.get(workId(agent.heartbeat.repo, agent.heartbeat.target))
+      : undefined;
+    if (
+      agent.machineMetadata?.state === "missing"
+      && agent.heartbeat
+      && (!heartbeatWorkItem || isOperationalWorkItem(heartbeatWorkItem))
+    ) {
       healthItems.push(
         healthItem({
           severity: "warning",
@@ -1316,7 +1362,13 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
 
   for (const claim of currentClaims) {
-    if (claim.status === "active" && !heartbeatsByWork.get(workId(claim.repo, claim.target))?.some((item) => item.agentId === claim.agentId)) {
+    const item = workItemsById.get(workId(claim.repo, claim.target));
+    if (
+      item
+      && isOperationalWorkItem(item)
+      && claim.status === "active"
+      && !heartbeatsByWork.get(workId(claim.repo, claim.target))?.some((heartbeat) => heartbeat.agentId === claim.agentId)
+    ) {
       healthItems.push(
         healthItem({
           severity: "warning",
@@ -1334,7 +1386,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   }
 
   for (const item of workItems) {
-    if (item.schedulingState === "started_not_processing") {
+    if (isOperationalWorkItem(item) && item.schedulingState === "started_not_processing") {
       healthItems.push(
         healthItem({
           severity: "warning",
@@ -1415,7 +1467,12 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
 
     for (const lane of batch.lanes) {
-      if (lane.liveness === "no-heartbeat" && !TERMINAL_STATUSES.has(lane.status)) {
+      const laneWorkItems = workItems.filter((item) =>
+        batchLaneContainsWorkItem(batch, item, workItems)
+        && item.batchSignals?.some((signal) => signal.batchId === batch.batchId && signal.laneName === lane.name)
+      );
+      const hasOperationalLaneWork = laneWorkItems.length === 0 || laneWorkItems.some(isOperationalWorkItem);
+      if (lane.liveness === "no-heartbeat" && !TERMINAL_STATUSES.has(lane.status) && hasOperationalLaneWork) {
         healthItems.push(
           healthItem({
             severity: "warning",
@@ -1444,6 +1501,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     qaValidations,
     healthItems,
     warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings],
-    githubMergeTimeStatus: "unavailable"
+    githubMergeTimeStatus: "unavailable",
+    ...(hasUnreconciledCoordinatedWork ? {} : { trulyOpenCount: nonterminalWorkItems.length }),
+    trulyOpenCountStatus: hasUnreconciledCoordinatedWork ? "unknown" : "available"
   };
 }

@@ -94,13 +94,17 @@ describe("operatorRows", () => {
       { id: "before", retentionStatus: "done", operatorState: "done", lastActivityAt: "2026-07-09T20:00:01Z" },
       { id: "boundary", retentionStatus: "merged", operatorState: "done", lastActivityAt: "2026-07-09T20:00:00Z" },
       { id: "after", retentionStatus: "closed", operatorState: "done", lastActivityAt: "2026-07-09T19:59:59Z" },
-      { id: "cancelled", retentionStatus: "cancelled", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" }
+      { id: "cancelled", retentionStatus: "cancelled", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" },
+      { id: "recent-abandoned", retentionStatus: "abandoned", operatorState: "done", lastActivityAt: "2026-07-09T20:00:01Z" },
+      { id: "old-abandoned", retentionStatus: "abandoned", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" },
+      { id: "recent-superseded", retentionStatus: "superseded", operatorState: "done", lastActivityAt: "2026-07-09T20:00:01Z" },
+      { id: "old-superseded", retentionStatus: "superseded", operatorState: "done", lastActivityAt: "2026-07-08T20:00:00Z" }
     ] as any;
 
     const result = filterOperatorRowsByAge(rows, now);
 
-    expect(result.visibleRows.map((row) => row.id)).toEqual(["before", "boundary"]);
-    expect(result.hiddenRows.map((row) => row.id)).toEqual(["after", "cancelled"]);
+    expect(result.visibleRows.map((row) => row.id)).toEqual(["before", "boundary", "recent-abandoned", "recent-superseded"]);
+    expect(result.hiddenRows.map((row) => row.id)).toEqual(["after", "cancelled", "old-abandoned", "old-superseded"]);
   });
 
   it("keeps every ineligible, open-GitHub, and UNKNOWN lifecycle row visible", () => {
@@ -2933,6 +2937,33 @@ describe("operatorRows", () => {
     expect(filterOperatorRowsForOverview(rows, model, "batch_repair").map((row) => row.target)).toEqual(["123"]);
   });
 
+  it("keeps terminal and archived work out of QA attention overview rows", () => {
+    const terminal = workItem({ id: "repo/app#124", target: "124", operatorState: "terminal", terminalState: "done" });
+    const archived = workItem({ id: "repo/app#125", target: "125", operatorState: "archived_view" });
+    const model = dashboard({
+      workItems: [terminal, archived],
+      qaValidations: [
+        { id: terminal.id, repo: terminal.repo, target: terminal.target, type: terminal.type, status: "missing", detail: "Missing" },
+        { id: archived.id, repo: archived.repo, target: archived.target, type: archived.type, status: "failed", detail: "Failed" }
+      ]
+    });
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "qa_attention")).toEqual([]);
+  });
+
+  it.each([
+    ["ready_for_batch", "ready_for_batch"],
+    ["needs_recovery", "started_not_processing"],
+    ["processing_now", "in_process"]
+  ] as const)("keeps archived work out of the %s operational overview", (filter, schedulingState) => {
+    const archived = workItem({
+      operatorState: "archived_view",
+      schedulingState,
+      ...(schedulingState === "in_process" ? { claim, heartbeat } : { claim: undefined, heartbeat: undefined })
+    });
+    const model = dashboard({ workItems: [archived] });
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, filter)).toEqual([]);
+  });
+
   it("scopes batch-repair filters when different repos reuse a batch id", () => {
     const appClaim = { ...claim, batchId: "shared-batch" };
     const appHeartbeat = { ...heartbeat, batchId: "shared-batch" };
@@ -3392,5 +3423,196 @@ describe("operatorRows", () => {
     for (const hostile of ["__proto__", "constructor", "toString", "hasOwnProperty", "made_up"]) {
       expect(operatorDeepLinkFromSearchParams(new URLSearchParams(`operatorFilter=${hostile}`)).overviewFilter).toBeUndefined();
     }
+  });
+
+  it.each(["done", "closed"] as const)(
+    "treats GitHub-derived %s work as terminal even while coordination is still active",
+    (terminalState) => {
+      const terminal = workItem({
+        terminalState,
+        terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/123" },
+        operatorState: "terminal",
+        github: {
+          ...workItem().github!,
+          state: terminalState === "done" ? "MERGED" : "CLOSED"
+        },
+        claim,
+        heartbeat,
+        schedulingState: terminalState === "done" ? "in_process" : "started_not_processing"
+      });
+      const model = dashboard({ workItems: [terminal] });
+
+      expect(buildOperatorRows(model)[0]).toMatchObject({
+        operatorState: "done",
+        retentionStatus: terminalState
+      });
+      expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "processing_now")).toEqual([]);
+      expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "needs_recovery")).toEqual([]);
+    }
+  );
+
+  it("ages out archived dead-heartbeat work without treating actionable dead work as terminal", () => {
+    const oldHeartbeat = {
+      ...heartbeat,
+      status: "coding",
+      updatedAt: "2026-07-08T19:00:00Z",
+      expiresAt: "2026-07-08T19:10:00Z",
+      liveness: "dead" as const
+    };
+    const closedGithub = {
+      ...workItem().github!,
+      state: "CLOSED" as const
+    };
+    const archived = workItem({
+      operatorState: "archived_view",
+      terminalState: undefined,
+      heartbeat: oldHeartbeat,
+      github: undefined
+    });
+    const actionable = workItem({
+      id: "repo/app#124",
+      target: "124",
+      operatorState: "needs_attention",
+      terminalState: undefined,
+      heartbeat: { ...oldHeartbeat, target: "124" },
+      github: { ...closedGithub, target: "124", url: "https://github.com/repo/app/pull/124" }
+    });
+    const declaredTerminal = workItem({
+      id: "repo/app#125",
+      target: "125",
+      operatorState: "archived_view",
+      terminalState: "closed",
+      heartbeat: { ...oldHeartbeat, target: "125" },
+      github: { ...closedGithub, target: "125", url: "https://github.com/repo/app/pull/125" }
+    });
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [archived, actionable, declaredTerminal]
+    });
+
+    const rows = buildOperatorRows(model);
+    expect(rows.find((row) => row.target === "123")).toMatchObject({
+      operatorState: "archived",
+      retentionStatus: "archived"
+    });
+    expect(rows.find((row) => row.target === "124")).toMatchObject({
+      operatorState: "dead",
+      retentionStatus: "coding"
+    });
+    expect(rows.find((row) => row.target === "125")).toMatchObject({
+      operatorState: "done",
+      retentionStatus: "closed"
+    });
+    const ageOut = filterOperatorRowsByAge(rows, model.generatedAt);
+    expect(ageOut.hiddenRows.map((row) => row.target).sort()).toEqual(["123", "125"]);
+    expect(ageOut.visibleRows).toEqual([expect.objectContaining({ target: "124" })]);
+    expect(filterOperatorRowsByAge(rows, model.generatedAt, true).visibleRows).toContainEqual(
+      expect.objectContaining({ target: "123", operatorState: "archived", retentionStatus: "archived" })
+    );
+  });
+
+  it("keeps a loaded OPEN issue visible when legacy coordination has been archived", () => {
+    const openIssue = workItem({
+      type: "issue",
+      operatorState: "archived_view",
+      terminalState: undefined,
+      heartbeat: {
+        ...heartbeat,
+        status: "coding",
+        updatedAt: "2026-07-08T19:00:00Z",
+        expiresAt: "2026-07-08T19:10:00Z",
+        liveness: "dead"
+      },
+      github: {
+        ...workItem().github!,
+        type: "issue",
+        state: "OPEN",
+        url: "https://github.com/repo/app/issues/123"
+      }
+    });
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      trulyOpenCount: 1,
+      trulyOpenCountStatus: "available",
+      workItems: [openIssue]
+    });
+
+    const ageOut = filterOperatorRowsByAge(buildOperatorRows(model), model.generatedAt);
+
+    expect(ageOut.hiddenRows).toEqual([]);
+    expect(ageOut.visibleRows).toEqual([
+      expect.objectContaining({ target: "123", githubState: "OPEN", operatorState: "archived" })
+    ]);
+    expect(ageOut.visibleRows).toHaveLength(model.trulyOpenCount!);
+  });
+
+  it("does not present terminal target work as a Batch Repair recovery row", () => {
+    const terminal = workItem({
+      terminalState: "done",
+      terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/123" },
+      operatorState: "terminal",
+      claim,
+      heartbeat,
+      batchSignals: [{ batchId: "batch-1", laneName: "implementation", status: "coding", blockedOn: [] }]
+    });
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "batch-1",
+      repo: "repo/app",
+      objective: "Repair retained batch metadata",
+      path: "batches/batch-1.json",
+      lanes: [{
+        name: "implementation",
+        owner: "agent-a",
+        targets: ["123"],
+        dependsOn: [],
+        blockedOn: [],
+        status: "coding",
+        liveness: "live"
+      }]
+    };
+    const model = dashboard({ workItems: [terminal], batches: [batch] });
+
+    const repairRows = filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair");
+
+    expect(repairRows).toEqual([
+      expect.objectContaining({ source: "batch", batchId: "batch-1" })
+    ]);
+    expect(repairRows[0].target).toBeUndefined();
+  });
+
+  it("does not present archived-view target work as a Batch Repair recovery row", () => {
+    const archived = workItem({
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      operatorState: "archived_view",
+      claim: undefined,
+      heartbeat: { ...heartbeat, liveness: "dead" },
+      batchSignals: [{ batchId: "batch-1", laneName: "implementation", status: "coding", blockedOn: [] }]
+    });
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "batch-1",
+      repo: "repo/app",
+      objective: "Repair retained batch metadata",
+      path: "batches/batch-1.json",
+      lanes: [{
+        name: "implementation",
+        owner: "agent-a",
+        targets: ["123"],
+        dependsOn: [],
+        blockedOn: [],
+        status: "coding",
+        liveness: "dead"
+      }]
+    };
+    const model = dashboard({ workItems: [archived], batches: [batch] });
+
+    const repairRows = filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair");
+
+    expect(repairRows).toEqual([
+      expect.objectContaining({ source: "batch", batchId: "batch-1" })
+    ]);
+    expect(repairRows[0].target).toBeUndefined();
   });
 });

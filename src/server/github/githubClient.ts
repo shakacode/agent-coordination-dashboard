@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { CoordinationWarning, GitHubPreview } from "../../shared/types";
 import type { GhRunner } from "./types";
+import { isValidGitHubRepository } from "./validation";
 
 interface GhAuthor {
   login?: string;
@@ -30,12 +31,86 @@ interface GhIssue {
   labels?: GhLabel[];
 }
 
-interface GitHubLoadResult {
+interface GhTarget {
+  number: number;
+  title: string;
+  html_url: string;
+  state: string;
+  closed_at?: string;
+  user?: GhAuthor;
+  labels?: GhLabel[];
+  pull_request?: { merged_at?: string };
+}
+
+export interface GitHubLoadResult {
   items: GitHubPreview[];
   warnings: CoordinationWarning[];
+  /** Parallel to items for target reconciliation; absent for open-list loads. */
+  references?: GitHubTargetReference[];
+}
+
+export interface GitHubTargetReference {
+  repo: string;
+  target: string;
+  type: GitHubPreview["type"];
+  branch?: string;
+  /** A trusted open-list preview enables branch-only enrichment without a redundant target lookup. */
+  existingTarget?: GitHubPreview;
+}
+
+export function githubTargetReferenceKey(reference: GitHubTargetReference): string {
+  return `${reference.repo}#${reference.target}:${reference.type}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
+}
+
+export function isGitHubHttpNotFound(stderr: string): boolean {
+  return stderr.trim().split(/\r?\n/).some((line) =>
+    /^HTTP 404(?:\b|:)/i.test(line)
+    || /^gh: HTTP 404(?:\b|:)/i.test(line)
+    || /^gh: .+\(HTTP 404\)$/i.test(line)
+  );
 }
 
 const GITHUB_LIST_LIMIT = 1000;
+
+/**
+ * Mirrors `git check-ref-format --branch` without invoking Git. Branch names
+ * are untrusted coordination data, so reject them before constructing or
+ * executing any GitHub CLI request.
+ */
+function isValidGitBranchName(branch: string): boolean {
+  if (
+    !branch
+    || branch === "HEAD"
+    || branch.startsWith("-")
+    || branch.startsWith("/")
+    || branch.endsWith("/")
+    || branch.endsWith(".")
+    || branch.includes("//")
+    || branch.includes("..")
+    || branch.includes("@{")
+    || /[\x00-\x20\x7f~^:?*\[\\]/.test(branch)
+  ) {
+    return false;
+  }
+
+  return branch.split("/").every((component) =>
+    !component.startsWith(".") && !component.endsWith(".lock")
+  );
+}
+
+export function githubApiPath(repo: string, kind: "issues" | "branches", target: string): string {
+  const repoSegments = repo.split("/");
+  if (!isValidGitHubRepository(repo)) {
+    throw new Error(`Invalid GitHub repository: ${repo}`);
+  }
+  if (kind === "issues" && !/^\d+$/.test(target)) {
+    throw new Error(`Invalid GitHub issue target: ${target}`);
+  }
+  if (kind === "branches" && !isValidGitBranchName(target)) {
+    throw new Error(`Invalid GitHub branch: ${target || "empty branch name"}`);
+  }
+  return `repos/${repoSegments.map(encodeURIComponent).join("/")}/${kind}/${encodeURIComponent(target)}`;
+}
 
 export const childProcessGhRunner: GhRunner = {
   run(args) {
@@ -94,6 +169,182 @@ export function parseIssueList(repo: string, stdout: string): GitHubPreview[] {
     labels: labelNames(issue.labels),
     loadState: "loaded"
   }));
+}
+
+export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
+  const item = JSON.parse(stdout) as GhTarget;
+  const isPullRequest = Boolean(item.pull_request);
+  const mergedAt = item.pull_request?.merged_at || undefined;
+  return {
+    repo,
+    target: String(item.number),
+    type: isPullRequest ? "pull_request" : "issue",
+    title: item.title,
+    url: item.html_url,
+    state: mergedAt ? "MERGED" : item.state.toUpperCase(),
+    author: item.user?.login,
+    labels: labelNames(item.labels),
+    ...(mergedAt ? { mergedAt } : {}),
+    ...(item.closed_at ? { closedAt: item.closed_at } : {}),
+    loadState: "loaded"
+  };
+}
+
+export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 8, maxCacheEntries = 2_000) {
+  const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult>; settled: boolean }>();
+  const targetCache = new Map<string, { expiresAt: number; promise: ReturnType<GhRunner["run"]>; settled: boolean }>();
+  const queue: Array<() => void> = [];
+  let activeLoads = 0;
+
+  function pruneCache(now: number) {
+    for (const [key, entry] of cache) {
+      if (entry.settled && entry.expiresAt <= now) cache.delete(key);
+    }
+    while (cache.size > Math.max(1, maxCacheEntries)) {
+      const oldestSettled = Array.from(cache).find(([, entry]) => entry.settled)?.[0];
+      if (!oldestSettled) break;
+      cache.delete(oldestSettled);
+    }
+  }
+
+  function pruneTargetCache(now: number) {
+    for (const [key, entry] of targetCache) {
+      if (entry.settled && entry.expiresAt <= now) targetCache.delete(key);
+    }
+    while (targetCache.size > Math.max(1, maxCacheEntries)) {
+      const oldestSettled = Array.from(targetCache).find(([, entry]) => entry.settled)?.[0];
+      if (!oldestSettled) break;
+      targetCache.delete(oldestSettled);
+    }
+  }
+
+  function loadTarget(reference: GitHubTargetReference) {
+    const now = Date.now();
+    pruneTargetCache(now);
+    const key = `${reference.repo}#${reference.target}:${reference.type}`;
+    const existing = targetCache.get(key);
+    if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
+    const promise = runner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]);
+    const entry = { expiresAt: now + ttlMs, promise, settled: false };
+    targetCache.set(key, entry);
+    const settle = () => { entry.settled = true; pruneTargetCache(Date.now()); };
+    void promise.then(settle, settle);
+    return promise;
+  }
+
+  function schedule<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const start = () => {
+        activeLoads += 1;
+        void task().then(resolve, reject).finally(() => {
+          activeLoads -= 1;
+          queue.shift()?.();
+        });
+      };
+      if (activeLoads < Math.max(1, maxConcurrency)) start();
+      else queue.push(start);
+    });
+  }
+
+  async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
+    try {
+      githubApiPath(reference.repo, "issues", reference.target);
+    } catch (error) {
+      return {
+        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: error instanceof Error ? error.message : "Invalid GitHub target reference" }]
+      };
+    }
+
+    let branchPath: string | undefined;
+    let branchState: GitHubPreview["branchState"];
+    const branchWarnings: CoordinationWarning[] = [];
+    if (reference.branch) {
+      try {
+        branchPath = githubApiPath(reference.repo, "branches", reference.branch);
+      } catch (error) {
+        branchState = "unknown";
+        branchWarnings.push({ severity: "warning", repo: reference.repo, target: reference.target, message: error instanceof Error ? error.message : "Invalid GitHub branch reference" });
+      }
+    }
+
+    const result = reference.existingTarget
+      ? undefined
+      : await loadTarget(reference);
+    if (branchPath) {
+      const branchResult = await runner.run(["api", branchPath]);
+      if (branchResult.exitCode === 0) {
+        branchState = "present";
+      } else if (isGitHubHttpNotFound(branchResult.stderr)) {
+        branchState = "deleted";
+      } else {
+        branchState = "unknown";
+        branchWarnings.push({ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub branch lookup failed for ${reference.repo}:${reference.branch}: ${branchResult.stderr || `exit ${branchResult.exitCode}`}` });
+      }
+    }
+    if (result && result.exitCode !== 0) {
+      return {
+        items: [{
+          repo: reference.repo,
+          target: reference.target,
+          type: reference.type,
+          title: "GitHub state unavailable",
+          url: "",
+          state: "UNKNOWN",
+          labels: [],
+          ...(branchState ? { branchState } : {}),
+          loadState: "unknown"
+        }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation failed for ${reference.repo}#${reference.target}: ${result.stderr || `exit ${result.exitCode}`}` }, ...branchWarnings]
+      };
+    }
+    try {
+      const target = reference.existingTarget || parseGitHubTarget(reference.repo, result?.stdout || "");
+      return { items: [{ ...target, ...(branchState ? { branchState } : {}) }], warnings: branchWarnings };
+    } catch (error) {
+      return {
+        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], ...(branchState ? { branchState } : {}), loadState: "unknown" }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation returned unreadable JSON for ${reference.repo}#${reference.target}: ${error instanceof Error ? error.message : "unknown error"}` }, ...branchWarnings]
+      };
+    }
+  }
+
+  return {
+    async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
+      const unique = references.filter((reference, index) => references.findIndex((candidate) => githubTargetReferenceKey(candidate) === githubTargetReferenceKey(reference)) === index);
+      const now = Date.now();
+      pruneCache(now);
+      if (options.bypassCache) {
+        for (const reference of unique) targetCache.delete(`${reference.repo}#${reference.target}:${reference.type}`);
+      }
+      const results = await Promise.all(unique.map((reference) => {
+        const key = githubTargetReferenceKey(reference);
+        const existing = cache.get(key);
+        if (!options.bypassCache && existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
+        const promise = schedule(() => loadOne(reference));
+        const entry = { expiresAt: now + ttlMs, promise, settled: false };
+        cache.set(key, entry);
+        const settleEntry = () => {
+          entry.settled = true;
+          pruneCache(Date.now());
+        };
+        void promise.then(settleEntry, settleEntry);
+        pruneCache(now);
+        return promise;
+      }));
+      return {
+        // Branch-only results may come from a cache entry created for an older
+        // open-list snapshot. Reapply only the cached supporting branch signal
+        // to the caller's current canonical target so target truth never goes stale.
+        items: results.flatMap((result, index) => unique[index].existingTarget
+          ? result.items.map((item) => ({ ...unique[index].existingTarget!, ...(item.branchState ? { branchState: item.branchState } : {}) }))
+          : result.items),
+        warnings: results.flatMap((result) => result.warnings),
+        references: unique
+      };
+    },
+    cacheSize: () => cache.size
+  };
 }
 
 export async function loadOpenGitHubItems(

@@ -22,6 +22,7 @@ const labels: Record<string, string> = {
   blocked: "Blocked",
   ready: "Ready",
   done: "Done",
+  archived: "Archived",
   stop_requested: "Stop requested",
   stopped: "Stopped",
   missing: "Missing",

@@ -19,6 +19,8 @@ const model = {
   qaValidations: [],
   healthItems: [],
   warnings: [],
+  trulyOpenCount: 2,
+  trulyOpenCountStatus: "available",
   workItems: [
     {
       id: "repo/dashboard#43",
@@ -106,6 +108,18 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders an absent truly-open count as UNKNOWN even when status is not unknown", async () => {
+    const incompleteModel = { ...model, trulyOpenCount: undefined, trulyOpenCountStatus: "available" as const };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input).startsWith("/api/settings") ? settings : incompleteModel)
+    })));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "UNKNOWN lanes truly open" })).toBeInTheDocument();
+  });
+
   it("opens on the attention queue and keeps its safe copy action local", async () => {
     render(<App />);
 
@@ -113,7 +127,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("repo/dashboard#43"));
-    expect(screen.getByRole("button", { name: "3 open or coordinated items" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
@@ -176,7 +190,7 @@ describe("App", () => {
     window.history.pushState({}, "", "/?repo=repo/dashboard&target=45&q=Ready");
     render(<App />);
     await screen.findByText(/Constrained by repo repo\/dashboard/);
-    await userEvent.click(screen.getByRole("button", { name: "3 open or coordinated items" }));
+    await userEvent.click(screen.getByRole("button", { name: "2 lanes truly open" }));
     expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("");
     expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
     expect(window.location.search).toBe("");
@@ -417,6 +431,42 @@ describe("App", () => {
     await waitFor(() => expect(dashboardCalls).toBeGreaterThan(2));
     expect(checkbox).toBeChecked();
     expect(screen.queryByText("transient refresh failure")).not.toBeInTheDocument();
+  });
+
+  it("drops a selected item when background GitHub reconciliation makes it terminal", async () => {
+    let dashboardCalls = 0;
+    let resolveRefresh: ((response: Response) => void) | undefined;
+    const refreshResponse = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      return refreshResponse;
+    }));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" });
+    await userEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    resolveRefresh?.({
+      ok: true,
+      json: async () => ({
+        ...model,
+        workItems: model.workItems.map((item) => item.id === "repo/dashboard#45"
+          ? { ...item, operatorState: "terminal" as const, terminalState: "done" as const, selected: false }
+          : item)
+      })
+    } as Response);
+
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" })).not.toBeInTheDocument());
+    await userEvent.click(screen.getByText("PR-batch prompt"));
+    expect(screen.getByText(/No selected items/)).not.toHaveTextContent("Issue #45:");
   });
 
   it("keeps batch recovery controls and loopback-only import and stop routes reachable as drill-downs", async () => {

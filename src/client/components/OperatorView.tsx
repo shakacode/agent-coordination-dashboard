@@ -165,7 +165,7 @@ function StateCounts({ rows }: { rows: OperatorRow[] }) {
     memo[row.operatorState] = (memo[row.operatorState] || 0) + 1;
     return memo;
   }, {});
-  const orderedStates = ["wedged", "blocked", "dead", "stale", "paused", "running", "ready", "done", "unknown"];
+  const orderedStates = ["wedged", "blocked", "dead", "stale", "paused", "running", "ready", "done", "archived", "unknown"];
   return (
     <>
       {orderedStates

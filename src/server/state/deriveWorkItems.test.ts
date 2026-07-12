@@ -13,6 +13,61 @@ const BASE_ITEM: WorkItem = {
 };
 
 describe("deriveWorkItems", () => {
+  it("derives merged pull requests as done and closed issues as closed", () => {
+    const [merged, closed] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [
+        {
+          ...BASE_ITEM,
+          type: "pull_request",
+          github: { repo: BASE_ITEM.repo, target: BASE_ITEM.target, type: "pull_request", title: "Merged", url: "https://github.com/repo/app/pull/43", state: "MERGED", mergedAt: "2026-07-12T11:00:00Z", labels: [], loadState: "loaded" }
+        },
+        {
+          ...BASE_ITEM,
+          id: "repo/app#44",
+          target: "44",
+          type: "issue",
+          github: { repo: BASE_ITEM.repo, target: "44", type: "issue", title: "Closed", url: "https://github.com/repo/app/issues/44", state: "CLOSED", closedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" }
+        }
+      ]
+    });
+
+    expect(merged).toMatchObject({ operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/43" }, lastActivityAt: "2026-07-12T11:00:00Z" });
+    expect(closed).toMatchObject({ operatorState: "terminal", terminalState: "closed", terminalProvenance: { source: "github", url: "https://github.com/repo/app/issues/44" }, lastActivityAt: "2026-07-12T10:00:00Z" });
+  });
+
+  it("keeps declared terminal state ahead of conflicting GitHub fallback", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        claim: { schemaVersion: 1, agentId: "worker", repo: BASE_ITEM.repo, target: BASE_ITEM.target, status: "active", updatedAt: "2026-07-12T11:30:00Z", path: "claim.json" },
+        batchSignals: [{ batchId: "declared", status: "closed", blockedOn: [], updatedAt: "2026-07-12T11:30:00Z" }],
+        type: "pull_request",
+        github: { repo: BASE_ITEM.repo, target: BASE_ITEM.target, type: "pull_request", title: "Merged", url: "https://github.com/repo/app/pull/43", state: "MERGED", mergedAt: "2026-07-12T11:00:00Z", labels: [], loadState: "loaded" }
+      }]
+    });
+
+    expect(item).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "declared" }, lastActivityAt: "2026-07-12T11:30:00Z" });
+  });
+
+  it("does not guess terminal state when GitHub reconciliation is unknown", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{ ...BASE_ITEM, github: { repo: BASE_ITEM.repo, target: BASE_ITEM.target, type: "unknown", title: "UNKNOWN", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" } }]
+    });
+    expect(item.terminalState).toBeUndefined();
+    expect(item.terminalProvenance).toBeUndefined();
+  });
+
+  it("never infers terminal state from a deleted branch alone", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{ ...BASE_ITEM, github: { repo: BASE_ITEM.repo, target: BASE_ITEM.target, type: "issue", title: "Open", url: "https://github.com/repo/app/issues/43", state: "OPEN", branchState: "deleted", labels: [], loadState: "loaded" } }]
+    });
+    expect(item).toMatchObject({ operatorState: "ready", github: { branchState: "deleted" } });
+    expect(item.terminalState).toBeUndefined();
+  });
   it("makes a wedged live lane an actionable attention item", () => {
     const [item] = deriveWorkItems({
       workItems: [

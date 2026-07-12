@@ -37,6 +37,401 @@ const preview: GitHubPreview = {
 };
 
 describe("buildDashboardModel", () => {
+  it("does not report a merged GitHub terminal item as an active claim missing its heartbeat", () => {
+    const github = {
+      repo: claim.repo,
+      target: claim.target,
+      type: "pull_request" as const,
+      title: "Coordinated work",
+      url: `https://github.com/${claim.repo}/pull/${claim.target}`,
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [claim],
+      heartbeats: [],
+      batches: [],
+      events: [],
+      warnings: [{ severity: "warning" as const, message: "GitHub read degraded.", repo: claim.repo, target: claim.target }]
+    };
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const model = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems.map((item) => item.title)).toEqual(expect.arrayContaining([
+      "Active claim has no matching heartbeat",
+      "Work started but not currently processing"
+    ]));
+    expect(model.workItems[0]).toMatchObject({ terminalState: "done", operatorState: "terminal" });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Active claim has no matching heartbeat");
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
+    expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
+  });
+
+  it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "batch-mixed-terminal",
+      repo: claim.repo,
+      targets: [
+        { type: "pull_request" as const, target: claim.target },
+        { type: "pull_request" as const, target: "4006" }
+      ],
+      lanes: [{
+        name: "qa",
+        owner: "worker-qa",
+        targets: [claim.target, "4006"],
+        dependsOn: [],
+        status: "ready_for_qa",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/batch-mixed-terminal.json"
+    };
+    const activeClaims: ClaimRecord[] = [
+      { ...claim, batchId: batch.batchId, prUrl: `https://github.com/${claim.repo}/pull/${claim.target}` },
+      { ...claim, target: "4006", agentId: "worker-b", batchId: batch.batchId, prUrl: `https://github.com/${claim.repo}/pull/4006` }
+    ];
+    const github = (target: string, state: "OPEN" | "MERGED") => ({
+      repo: claim.repo,
+      target,
+      type: "pull_request" as const,
+      title: `PR ${target}`,
+      url: `https://github.com/${claim.repo}/pull/${target}`,
+      state,
+      ...(state === "MERGED" ? { mergedAt: "2026-07-12T11:00:00Z" } : {}),
+      labels: [],
+      loadState: "loaded" as const
+    });
+
+    const model = buildDashboardModel({
+      now: new Date("2026-07-14T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: activeClaims,
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      githubItems: [github(claim.target, "MERGED"), github("4006", "OPEN")],
+      warnings: [{ severity: "warning", message: "GitHub read degraded.", repo: claim.repo }]
+    });
+
+    const terminal = model.workItems.find((item) => item.target === claim.target);
+    const open = model.workItems.find((item) => item.target === "4006");
+    expect(terminal).toMatchObject({ terminalState: "done", operatorState: "archived_view", warnings: [] });
+    expect(open?.warnings.map((warning) => warning.message)).toEqual(expect.arrayContaining([
+      "Work is already scheduled in batch batch-mixed-terminal:qa (ready_for_qa).",
+      "Work was started but the holder is not currently live or stale."
+    ]));
+    expect(model.qaValidations.map((validation) => validation.target)).toEqual(["4006"]);
+    expect(model.batchOperations[0].qa).toEqual(expect.objectContaining({ total: 1, missing: 1 }));
+    expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
+    expect(model.warnings.some((warning) => warning.target === claim.target)).toBe(false);
+    expect(model.healthItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Active claim has no matching heartbeat", target: "4006" }),
+      expect.objectContaining({ title: "Work started but not currently processing", target: "4006" })
+    ]));
+  });
+
+  it("suppresses recovery health only after a started item is reconciled closed", () => {
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [],
+      events: [{
+        eventId: "started-45",
+        type: "phase",
+        repo: "repo/app",
+        target: "45",
+        status: "implementation",
+        timestamp: "2026-07-12T11:00:00Z",
+        path: "events/started-45.json"
+      }],
+      warnings: []
+    };
+    const github = {
+      repo: "repo/app",
+      target: "45",
+      type: "issue" as const,
+      title: "Coordinated issue",
+      url: "https://github.com/repo/app/issues/45",
+      labels: [],
+      loadState: "loaded" as const
+    };
+
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const closed = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "CLOSED", closedAt: "2026-07-12T11:30:00Z" }]
+    });
+
+    expect(open.workItems[0]).toMatchObject({ schedulingState: "started_not_processing", terminalState: undefined });
+    expect(open.healthItems.map((item) => item.title)).toContain("Work started but not currently processing");
+    expect(closed.workItems[0]).toMatchObject({ schedulingState: "started_not_processing", terminalState: "closed" });
+    expect(closed.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
+  });
+
+  it("suppresses operational health after coordination declares the work terminal", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"), stateRoot: "/state", targetRepos: [claim.repo],
+      claims: [claim], heartbeats: [], batches: [], warnings: [],
+      githubItems: [{
+        repo: claim.repo, target: claim.target, type: "pull_request", title: "Still open on GitHub",
+        url: `https://github.com/${claim.repo}/pull/${claim.target}`, state: "OPEN", labels: [], loadState: "loaded"
+      }],
+      events: [{
+        eventId: "declared-closed", type: "lane_closed", status: "closed", repo: claim.repo, target: claim.target,
+        timestamp: "2026-07-12T11:30:00Z", path: "events/declared-closed.json"
+      }]
+    });
+
+    expect(model.workItems[0]).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "declared" } });
+    expect(model.workItems[0].warnings).toEqual([]);
+    expect(model.qaValidations).toEqual([]);
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Active claim has no matching heartbeat");
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
+  });
+
+  it("does not emit operational heartbeat health for an archived dead holder", () => {
+    const deadHeartbeat = {
+      ...heartbeat,
+      status: "in_progress",
+      liveness: "dead" as const,
+      updatedAt: "2026-07-10T11:00:00Z",
+      expiresAt: "2026-07-10T11:15:00Z",
+      machineId: undefined
+    };
+    const input = {
+      stateRoot: "/state",
+      targetRepos: [heartbeat.repo!],
+      claims: [],
+      heartbeats: [deadHeartbeat],
+      batches: [],
+      events: [],
+      githubItems: [],
+      warnings: []
+    };
+
+    const actionable = buildDashboardModel({ ...input, now: new Date("2026-07-10T11:30:00Z") });
+    const archived = buildDashboardModel({ ...input, now: new Date("2026-07-12T12:00:00Z") });
+
+    expect(actionable.workItems[0]).toMatchObject({ operatorState: "needs_attention", attention: { kind: "dead_holder" } });
+    expect(actionable.healthItems.map((item) => item.title)).toContain("Heartbeat missing machine id");
+    expect(archived.workItems[0]).toMatchObject({ operatorState: "archived_view", attention: undefined });
+    expect(archived.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("does not report a terminal batch lane as missing its heartbeat", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "batch-terminal",
+      repo: "repo/app",
+      targets: [{ type: "pull_request" as const, target: "55" }],
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/batch-terminal.json"
+    };
+    const github = {
+      repo: "repo/app",
+      target: "55",
+      type: "pull_request" as const,
+      title: "Batch work",
+      url: "https://github.com/repo/app/pull/55",
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      warnings: []
+    };
+
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const merged = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems.map((item) => item.title)).toContain("Batch lane has no heartbeat");
+    expect(merged.workItems[0]).toMatchObject({ terminalState: "done" });
+    expect(merged.healthItems.map((item) => item.title)).not.toContain("Batch lane has no heartbeat");
+    expect(merged.healthItems.map((item) => item.title)).toContain("Prompt missing");
+  });
+
+  it("uses an explicit target repo override when evaluating terminal lane health", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "cross-repo-terminal",
+      repo: "repo/app",
+      targets: [{ type: "pull_request" as const, target: "55", repo: "repo/api" }],
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/cross-repo-terminal.json"
+    };
+    const github = {
+      repo: "repo/api",
+      target: "55",
+      type: "pull_request" as const,
+      title: "Cross-repo batch work",
+      url: "https://github.com/repo/api/pull/55",
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app", "repo/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      warnings: []
+    };
+
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const merged = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Batch lane has no heartbeat", batchId: batch.batchId, laneName: "implementation" })
+    ]));
+    expect(merged.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: "repo/api", target: "55", terminalState: "done" })
+    ]));
+    expect(merged.healthItems.map((item) => item.title)).not.toContain("Batch lane has no heartbeat");
+  });
+
+  it("does not report a uniquely corroborated terminal repo-less batch lane as missing its heartbeat", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "repo-less-terminal",
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/repo-less-terminal.json"
+    };
+    const input = {
+      now: new Date("2026-07-14T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [{ ...claim, repo: "repo/app", target: "55", batchId: batch.batchId }],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      warnings: []
+    };
+    const github = {
+      repo: "repo/app",
+      target: "55",
+      type: "pull_request" as const,
+      title: "Batch work",
+      url: "https://github.com/repo/app/pull/55",
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const merged = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems.map((item) => item.title)).toContain("Batch lane has no heartbeat");
+    expect(merged.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: "repo/app", target: "55", terminalState: "done", operatorState: "archived_view" })
+    ]));
+    expect(merged.healthItems.map((item) => item.title)).not.toContain("Batch lane has no heartbeat");
+  });
+
+  it("keeps the no-heartbeat diagnostic for an ambiguous cross-repo repo-less batch lane", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "repo-less-ambiguous",
+      source: "manifest" as const,
+      targets: [
+        { type: "pull_request" as const, target: "55", repo: "repo/app" },
+        { type: "pull_request" as const, target: "55", repo: "repo/api" }
+      ],
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/repo-less-ambiguous.json"
+    };
+    const github = (repo: string, state: "OPEN" | "MERGED") => ({
+      repo,
+      target: "55",
+      type: "pull_request" as const,
+      title: `${repo} batch work`,
+      url: `https://github.com/${repo}/pull/55`,
+      state,
+      ...(state === "MERGED" ? { mergedAt: "2026-07-12T11:00:00Z" } : {}),
+      labels: [],
+      loadState: "loaded" as const
+    });
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app", "repo/api"],
+      claims: [
+        { ...claim, repo: "repo/app", target: "55", batchId: batch.batchId },
+        { ...claim, repo: "repo/api", target: "55", batchId: batch.batchId, agentId: "worker-b" }
+      ],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      githubItems: [github("repo/app", "MERGED"), github("repo/api", "OPEN")],
+      warnings: []
+    });
+
+    expect(model.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: "repo/app", target: "55", terminalState: "done" }),
+      expect.objectContaining({ repo: "repo/api", target: "55", terminalState: undefined })
+    ]));
+    expect(model.healthItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Batch lane has no heartbeat", batchId: batch.batchId, laneName: "implementation" })
+    ]));
+  });
+
   it("declares merge-time truth unavailable until a trusted GitHub producer supplies it", () => {
     const model = buildDashboardModel({
       now: new Date("2026-07-12T12:00:00Z"),

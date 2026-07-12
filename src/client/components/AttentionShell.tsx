@@ -1,4 +1,5 @@
 import type { WorkItem } from "../../shared/types";
+import { isOperationalWorkItem, isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 
@@ -63,13 +64,13 @@ function isNowItem(item: WorkItem): boolean {
   return Boolean(
     item.heartbeat
     && ["live", "stale"].includes(item.heartbeat.liveness)
-    && !item.terminalState
-    && !["terminal", "archived_view"].includes(item.operatorState || "")
+    && isOperationalWorkItem(item)
   );
 }
 
 function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined, repairWorkItemIds: ReadonlySet<string>): boolean {
   if (!filter) return true;
+  if (!isOperationalWorkItem(item)) return false;
   if (filter === "ready_for_batch") return item.schedulingState === "ready_for_batch";
   if (filter === "needs_recovery") return item.schedulingState === "started_not_processing";
   if (filter === "processing_now") return isNowItem(item);
@@ -113,12 +114,6 @@ function activityTime(item: WorkItem): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-function canSelect(item: WorkItem): boolean {
-  return item.schedulingState !== "in_process"
-    && !item.batchSignals?.length
-    && !["terminal", "archived_view"].includes(item.operatorState || "");
-}
-
 function WorkCard({
   item,
   onCopyResume,
@@ -139,17 +134,22 @@ function WorkCard({
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
   const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
   const prUrl = pullRequestUrl(item);
+  const githubUrl = canonicalGithubItemUrl(item.github?.url) ? item.github?.url : undefined;
   return (
     <article className="attention-card">
       <div>
         <p className="attention-card-kicker">{displayAttribution(item.repo)}</p>
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
+        {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
+        {item.github?.loadState === "unknown" ? <p className="attention-card-meta">GitHub state: UNKNOWN</p> : null}
+        {item.github?.branchState === "deleted" ? <p className="attention-card-meta">Branch deleted (supporting signal)</p> : null}
+        {item.github?.branchState === "unknown" ? <p className="attention-card-meta">Branch state: UNKNOWN</p> : null}
         <p className="attention-card-meta">Holder: {holder(item)} · {displayAttribution(item.batchSignals?.[0]?.batchId, "unbatched")}</p>
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
       <div className="attention-card-actions">
-        {canSelect(item) ? (
+        {isSelectableWorkItem(item) ? (
           <label className="attention-card-select">
             <input
               aria-label={`Include ${item.id} in PR-batch prompt`}
@@ -168,7 +168,7 @@ function WorkCard({
         {reason?.action === "Open batch operations" ? (
           <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
         ) : null}
-        {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">Open</a> : null}
+        {githubUrl ? <a href={githubUrl} rel="noreferrer" target="_blank">{item.github?.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
       </div>
     </article>
   );

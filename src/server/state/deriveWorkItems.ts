@@ -45,6 +45,14 @@ function terminalState(statuses: string[]): WorkItemTerminalState | undefined {
   return undefined;
 }
 
+function githubTerminalState(item: WorkItem): WorkItemTerminalState | undefined {
+  if (item.github?.loadState !== "loaded") return undefined;
+  const state = item.github.state.trim().toLowerCase();
+  if (item.github.type === "pull_request" && state === "merged") return "done";
+  if (state === "closed") return "closed";
+  return undefined;
+}
+
 function attention(item: WorkItem, statuses: string[], activityAt: string | undefined, input: DeriveWorkItemsInput) {
   const status = statuses.join(" ").toLowerCase();
   const operation = input.batchOperations?.find((candidate) => operationMatchesItem(candidate, item, input));
@@ -100,7 +108,7 @@ function mayHaveOpenPullRequest(item: WorkItem): boolean {
 export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
   return input.workItems.map((item) => {
     const matchingEvents = (input.events || []).filter((event) => event.repo === item.repo && event.target === item.target);
-    const activityAt = latestTimestamp([
+    const coordinationActivityAt = latestTimestamp([
       item.heartbeat?.updatedAt,
       item.claim?.updatedAt,
       item.claim?.claimedAt,
@@ -113,7 +121,12 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
       ...item.batchSignals?.map((signal) => signal.status) || [],
       ...matchingEvents.map((event) => event.status || event.type)
     ].filter((value): value is string => Boolean(value));
-    const terminal = terminalState(statuses);
+    const declaredTerminal = terminalState(statuses);
+    const githubTerminal = declaredTerminal ? undefined : githubTerminalState(item);
+    const terminal = declaredTerminal || githubTerminal;
+    const activityAt = githubTerminal
+      ? latestTimestamp([coordinationActivityAt, item.github?.mergedAt, item.github?.closedAt])
+      : coordinationActivityAt;
     const deadPastPresentationTtl = item.heartbeat?.liveness === "dead"
       && input.now.getTime() - timestamp(activityAt) > ARCHIVE_AFTER_MS
       && !mayHaveOpenPullRequest(item);
@@ -122,6 +135,11 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
       ...item,
       operatorState: deadPastPresentationTtl ? "archived_view" : operatorState(item, terminal, reason, activityAt, input.now),
       terminalState: terminal,
+      terminalProvenance: terminal
+        ? declaredTerminal
+          ? { source: "declared" }
+          : { source: "github", url: item.github?.url }
+        : undefined,
       attention: reason,
       lastActivityAt: activityAt
     };
