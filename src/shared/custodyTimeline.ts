@@ -33,6 +33,8 @@ export interface ClaimCustodyEvent {
   prUrl?: string;
   /** The append-only telemetry event from which this custody transition was derived. */
   sourceEventId?: string;
+  /** The source event's path, which makes caller-supplied event IDs unambiguous. */
+  sourceEventPath?: string;
 }
 
 export interface PhaseSpan {
@@ -158,7 +160,8 @@ function optionalEventFields(event: BatchEvent): Omit<ClaimCustodyEvent, "action
     ...(event.operator ? { operator: event.operator } : {}),
     ...(event.branch ? { branch: event.branch } : {}),
     ...(event.prUrl ? { prUrl: event.prUrl } : {}),
-    ...(event.eventId ? { sourceEventId: event.eventId } : {})
+    ...(event.eventId ? { sourceEventId: event.eventId } : {}),
+    ...(event.path ? { sourceEventPath: event.path } : {})
   };
 }
 

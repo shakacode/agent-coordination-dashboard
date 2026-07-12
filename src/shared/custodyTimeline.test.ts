@@ -101,9 +101,9 @@ describe("buildCustodyTimeline", () => {
     });
 
     expect(timeline.claims).toEqual([
-      expect.objectContaining({ action: "acquired", agentId: "worker-a", machineId: "m1", sourceEventId: "start" }),
-      expect.objectContaining({ action: "renewed", agentId: "worker-a", sourceEventId: "renew" }),
-      expect.objectContaining({ action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", machineId: "m2", sourceEventId: "takeover" })
+      expect.objectContaining({ action: "acquired", agentId: "worker-a", machineId: "m1", sourceEventId: "start", sourceEventPath: "events/batch.jsonl:1" }),
+      expect.objectContaining({ action: "renewed", agentId: "worker-a", sourceEventId: "renew", sourceEventPath: "events/batch.jsonl:1" }),
+      expect.objectContaining({ action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", machineId: "m2", sourceEventId: "takeover", sourceEventPath: "events/batch.jsonl:1" })
     ]);
     expect(timeline.events.map((event) => event.eventId)).toEqual(["start", "renew", "takeover", "plan", "implement"]);
     expect(timeline.phases).toEqual([

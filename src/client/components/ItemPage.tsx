@@ -121,6 +121,10 @@ function Telemetry({ event }: { event: BatchEvent }) {
   return <li className="timeline-entry timeline-event"><strong>{event.type}</strong><span>{event.status || event.message || "Telemetry evidence"}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
 }
 
+function eventProvenanceKey(path: string | undefined, eventId: string | undefined): string | undefined {
+  return path && eventId ? `${path}\u0000${eventId}` : undefined;
+}
+
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
   const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
   const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
@@ -133,13 +137,19 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
     : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
   const branches = unique([...timeline.branches, loadedGitHub?.branch]);
   const prUrls = uniquePullRequestUrls([...timeline.prUrls.map(safePullRequestUrl), loadedGitHub?.url ? safePullRequestUrl(loadedGitHub.url) : undefined]);
-  const custodySourceEventIds = new Set(timeline.claims.flatMap((claim) => claim.sourceEventId ? [claim.sourceEventId] : []));
+  const custodySourceEvents = new Set(timeline.claims.flatMap((claim) => {
+    const provenance = eventProvenanceKey(claim.sourceEventPath, claim.sourceEventId);
+    return provenance ? [provenance] : [];
+  }));
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
     ...timeline.events
       .filter((event) => !timeline.phases.some((span) => span.eventId === event.eventId))
-      .filter((event) => !custodySourceEventIds.has(event.eventId))
+      .filter((event) => {
+        const provenance = eventProvenanceKey(event.path, event.eventId);
+        return !provenance || !custodySourceEvents.has(provenance);
+      })
       .map((event, index) => ({ kind: "event" as const, event, index, tie: 2, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.phases.map((span, index) => ({ kind: "phase" as const, span, index, tie: 3, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER }))
   ].sort((left, right) => left.at - right.at || left.tie - right.tie || left.index - right.index);

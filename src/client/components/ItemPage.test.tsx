@@ -247,9 +247,9 @@ describe("ItemPage", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
       claims: [
-        { action: "acquired", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", sourceEventId: "started" },
-        { action: "renewed", agentId: "worker-a", timestamp: "2026-07-12T10:02:00Z", sourceEventId: "heartbeat" },
-        { action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", timestamp: "2026-07-12T10:04:00Z", sourceEventId: "continued" }
+        { action: "acquired", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", sourceEventId: "started", sourceEventPath: "events/custody.jsonl:1" },
+        { action: "renewed", agentId: "worker-a", timestamp: "2026-07-12T10:02:00Z", sourceEventId: "heartbeat", sourceEventPath: "events/custody.jsonl:2" },
+        { action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", timestamp: "2026-07-12T10:04:00Z", sourceEventId: "continued", sourceEventPath: "events/custody.jsonl:3" }
       ],
       liveness: [],
       phases: [],
@@ -266,6 +266,30 @@ describe("ItemPage", () => {
       expect.stringContaining("renewed by worker-a"),
       expect.stringContaining("worker-a → worker-b"),
       expect.stringContaining("phase.progressStill working")
+    ]);
+  });
+
+  it("retains unrelated telemetry when it shares an event ID with ownership telemetry from another path", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [{
+        action: "acquired",
+        agentId: "worker-a",
+        timestamp: "2026-07-12T10:00:00Z",
+        sourceEventId: "caller-supplied-id",
+        sourceEventPath: "events/custody.jsonl:1"
+      }],
+      liveness: [],
+      phases: [],
+      events: [
+        { eventId: "caller-supplied-id", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "caller-supplied-id", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", message: "Unrelated telemetry", path: "history/other.jsonl:1" }
+      ]
+    }} />);
+
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("acquired by worker-a"),
+      expect.stringContaining("status.updateUnrelated telemetry")
     ]);
   });
 
