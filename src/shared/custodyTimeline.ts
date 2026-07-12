@@ -6,6 +6,8 @@ export interface LivenessSpan {
   threadHandle?: string;
   host?: string;
   operator?: string;
+  branch?: string;
+  prUrl?: string;
   status: string;
   liveness: Exclude<Liveness, "unknown" | "no-heartbeat">;
   startedAt: string;
@@ -118,6 +120,8 @@ export function buildLivenessSpans(heartbeats: HeartbeatRecord[], now = new Date
         ...(heartbeat.threadHandle ? { threadHandle: heartbeat.threadHandle } : {}),
         ...(heartbeat.host ? { host: heartbeat.host } : {}),
         ...(heartbeat.operator ? { operator: heartbeat.operator } : {}),
+        ...(heartbeat.branch ? { branch: heartbeat.branch } : {}),
+        ...(heartbeat.prUrl ? { prUrl: heartbeat.prUrl } : {}),
         status: heartbeat.status
       };
       const append = (liveness: LivenessSpan["liveness"], start: number, end: number) => {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { CoordinationWarning, GitHubPreview } from "../../shared/types";
+import type { CoordinationWarning, GitHubCiStatus, GitHubPreview } from "../../shared/types";
 import type { GhRunner } from "./types";
 import { isValidGitHubRepository } from "./validation";
 
@@ -20,6 +20,7 @@ interface GhPr {
   labels?: GhLabel[];
   headRefName?: string;
   reviewDecision?: string;
+  statusCheckRollup?: unknown;
 }
 
 interface GhIssue {
@@ -152,8 +153,32 @@ export function parsePrList(repo: string, stdout: string): GitHubPreview[] {
     labels: labelNames(pr.labels),
     branch: pr.headRefName,
     reviewDecision: pr.reviewDecision,
+    ciStatus: parseCiStatus(pr.statusCheckRollup),
     loadState: "loaded"
   }));
+}
+
+function ciValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value.trim().toUpperCase() : undefined;
+}
+
+function ciEntryStatus(entry: unknown): GitHubCiStatus {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "unknown";
+  const record = entry as Record<string, unknown>;
+  const values = [record.conclusion, record.status, record.state].map(ciValue).filter((value): value is string => Boolean(value));
+  if (values.some((value) => ["FAILURE", "FAILED", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(value))) return "failing";
+  if (values.some((value) => ["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "WAITING", "REQUESTED"].includes(value))) return "pending";
+  if (values.some((value) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(value))) return "passing";
+  return "unknown";
+}
+
+/** Classifies GitHub's mixed check-run/status-context rollup without inferring readiness. */
+export function parseCiStatus(rollup: unknown): GitHubCiStatus {
+  if (!Array.isArray(rollup) || rollup.length === 0) return "unknown";
+  const statuses = rollup.map(ciEntryStatus);
+  if (statuses.includes("failing")) return "failing";
+  if (statuses.includes("pending")) return "pending";
+  return statuses.every((status) => status === "passing") ? "passing" : "unknown";
 }
 
 export function parseIssueList(repo: string, stdout: string): GitHubPreview[] {
@@ -167,6 +192,7 @@ export function parseIssueList(repo: string, stdout: string): GitHubPreview[] {
     state: issue.state,
     author: issue.author?.login,
     labels: labelNames(issue.labels),
+    ciStatus: "unknown",
     loadState: "loaded"
   }));
 }
@@ -186,6 +212,7 @@ export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
     labels: labelNames(item.labels),
     ...(mergedAt ? { mergedAt } : {}),
     ...(item.closed_at ? { closedAt: item.closed_at } : {}),
+    ciStatus: "unknown",
     loadState: "loaded"
   };
 }
@@ -403,7 +430,7 @@ export async function loadOpenGitHubItems(
   }
 
   const [prs, issues] = await Promise.all([
-    loadKind("pr", "number,title,url,state,author,labels,headRefName,reviewDecision", parsePrList),
+    loadKind("pr", "number,title,url,state,author,labels,headRefName,reviewDecision,statusCheckRollup", parsePrList),
     loadKind("issue", "number,title,url,state,author,labels", parseIssueList)
   ]);
 

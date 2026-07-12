@@ -47,26 +47,32 @@ function Ownership({ machineId, host, operator }: { machineId?: string; host?: s
   return <span>{details.join(" · ")}</span>;
 }
 
+function RowAnchors({ branch, prUrl }: { branch?: string; prUrl?: string }) {
+  const href = prUrl ? safePullRequestUrl(prUrl) : undefined;
+  const number = href?.match(/\/pull\/(\d+)\/?$/)?.[1];
+  return <span className="timeline-anchors"><span>Branch: {branch || "UNKNOWN"}</span>{href ? <a href={href} rel="noreferrer" target="_blank">PR {number}</a> : <span>PR: UNKNOWN</span>}</span>;
+}
+
 function Claim({ event }: { event: ClaimCustodyEvent }) {
   const action = event.action === "taken_over"
     ? `${event.previousAgentId || "UNKNOWN"} → ${event.agentId}`
     : event.action === "unknown"
       ? `UNKNOWN ownership by ${event.agentId}`
       : `${event.action} by ${event.agentId}`;
-  return <li className="timeline-entry timeline-claim"><strong>{action}</strong><span>{event.generation === undefined ? "CAS generation UNKNOWN" : `CAS generation ${event.generation}`}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /></li>;
+  return <li className="timeline-entry timeline-claim"><strong>{action}</strong><span>{event.generation === undefined ? "CAS generation UNKNOWN" : `CAS generation ${event.generation}`}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
 }
 
 function Liveness({ span }: { span: LivenessSpan }) {
   const elapsed = Date.parse(span.endedAt) - Date.parse(span.startedAt);
-  return <li className={`timeline-entry timeline-liveness timeline-${span.liveness}`}><strong>{span.liveness} · {duration(elapsed)}</strong><span>{span.status} · {span.agentId}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /></li>;
+  return <li className={`timeline-entry timeline-liveness timeline-${span.liveness}`}><strong>{span.liveness} · {duration(elapsed)}</strong><span>{span.status} · {span.agentId}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
 }
 
 function Phase({ span }: { span: PhaseSpan }) {
-  return <li className="timeline-entry timeline-phase"><strong>{span.phase} · {duration(span.durationMs)}</strong><span>{span.message || "Phase event"}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /></li>;
+  return <li className="timeline-entry timeline-phase"><strong>{span.phase} · {duration(span.durationMs)}</strong><span>{span.message || "Phase event"}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
 }
 
 function Telemetry({ event }: { event: BatchEvent }) {
-  return <li className="timeline-entry timeline-event"><strong>{event.type}</strong><span>{event.status || event.message || "Telemetry evidence"}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /></li>;
+  return <li className="timeline-entry timeline-event"><strong>{event.type}</strong><span>{event.status || event.message || "Telemetry evidence"}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
 }
 
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
@@ -95,7 +101,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
           <h1>Work item #{timeline.target}</h1>
           <p>Current state: {state}</p>
           <p>Holder: {holder}</p>
-          <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: UNKNOWN` : "UNKNOWN"}</p>
+          <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: ${(timeline.item.github.ciStatus || "unknown").toUpperCase()}` : "UNKNOWN"}</p>
         </div>
         <button onClick={() => copy(primary.value)} type="button">{primary.label}</button>
       </header>

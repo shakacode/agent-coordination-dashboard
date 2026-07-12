@@ -236,6 +236,36 @@ describe("App", () => {
     expect(screen.queryByText("Loading work item timeline…")).not.toBeInTheDocument();
   });
 
+  it("keeps stale timeline data visible and warns when a background refresh fails", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let dashboardCalls = 0;
+    let itemCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        if (itemCalls > 1) throw new Error("refresh failed");
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: ["codex/stale"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: new Date(2026, 6, 12, 11, 30, dashboardCalls).toISOString() }) } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/stale")).toBeInTheDocument();
+    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
+    expect(screen.getByText("Branch: codex/stale")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Coordination data: UNKNOWN");
+    expect(screen.getByRole("alert")).toHaveTextContent("refresh failed");
+  });
+
   it("migrates target-only legacy item links without dropping their exact filter", async () => {
     window.history.pushState({}, "", "/?item=%2345");
     render(<App />);

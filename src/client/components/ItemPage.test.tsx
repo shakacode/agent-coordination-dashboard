@@ -39,7 +39,7 @@ const timeline = {
     type: "issue",
     schedulingState: "in_process",
     operatorState: "running",
-    github: { repo: "shakacode/dashboard", target: "46", type: "pull_request", title: "Timeline PR", url: "https://github.com/shakacode/dashboard/pull/47", state: "OPEN", reviewDecision: "APPROVED", labels: [], loadState: "loaded" },
+    github: { repo: "shakacode/dashboard", target: "46", type: "pull_request", title: "Timeline PR", url: "https://github.com/shakacode/dashboard/pull/47", state: "OPEN", reviewDecision: "APPROVED", ciStatus: "passing", labels: [], loadState: "loaded" },
     heartbeat: { schemaVersion: 1, agentId: "worker-b", threadHandle: "takeover-chat", status: "implementing", updatedAt: "2026-07-12T10:10:00Z", expiresAt: "2026-07-12T10:20:00Z", path: "heartbeats/worker-b.json", liveness: "live" },
     warnings: [],
     selected: false
@@ -57,7 +57,7 @@ describe("ItemPage", () => {
 
     expect(screen.getByRole("heading", { name: "Work item #46" })).toBeInTheDocument();
     expect(screen.getByText("Current state: running")).toBeInTheDocument();
-    expect(screen.getByText("GitHub: OPEN · APPROVED · CI: UNKNOWN")).toBeInTheDocument();
+    expect(screen.getByText("GitHub: OPEN · APPROVED · CI: PASSING")).toBeInTheDocument();
     expect(screen.getByText("Machine: m1 · Host: codex · Operator: justin")).toBeInTheDocument();
     expect(screen.getAllByText("Machine: m2 · Host: claude · Operator: riley")).toHaveLength(2);
     expect(screen.getByText("Machine: m3 · Host: codex · Operator: devon")).toBeInTheDocument();
@@ -183,5 +183,24 @@ describe("ItemPage", () => {
     expect(screen.getByText("CAS generation 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy thread handle old-thread" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy thread handle current-thread" })).toBeInTheDocument();
+  });
+
+  it("renders safe branch and PR anchors on every custody row and keeps unknown anchors inert", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [{ action: "acquired", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", branch: "codex/claim", prUrl: "https://github.com/shakacode/dashboard/pull/41" }],
+      liveness: [{ agentId: "worker-a", status: "implementing", liveness: "live", startedAt: "2026-07-12T10:01:00Z", endedAt: "2026-07-12T10:02:00Z", branch: "codex/live", prUrl: "https://github.com/shakacode/dashboard/pull/42" }],
+      phases: [{ eventId: "unsafe-phase", phase: "verifying", startedAt: "2026-07-12T10:02:00Z", endedAt: "2026-07-12T10:03:00Z", durationMs: 60_000, branch: "codex/phase", prUrl: "javascript:alert(1)" }],
+      events: [{ eventId: "telemetry", type: "heartbeat", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:03:00Z", path: "history/events.jsonl:1", branch: "codex/telemetry" }]
+    }} />);
+
+    expect(screen.getByText("Branch: codex/claim")).toBeInTheDocument();
+    expect(screen.getByText("Branch: codex/live")).toBeInTheDocument();
+    expect(screen.getByText("Branch: codex/phase")).toBeInTheDocument();
+    expect(screen.getByText("Branch: codex/telemetry")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PR 41" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/41");
+    expect(screen.getByRole("link", { name: "PR 42" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/42");
+    expect(screen.getAllByText("PR: UNKNOWN")).toHaveLength(2);
+    expect(screen.queryByRole("link", { name: "PR 1" })).not.toBeInTheDocument();
   });
 });

@@ -49,6 +49,15 @@ describe("buildLivenessSpans", () => {
       expect.objectContaining({ threadHandle: "resumed-chat", liveness: "live", startedAt: "2026-07-12T10:10:00.000Z" })
     ]));
   });
+
+  it("keeps heartbeat branch and PR anchors on liveness spans", () => {
+    const spans = buildLivenessSpans(
+      [heartbeat({ branch: "codex/live-span", prUrl: "https://github.com/shakacode/dashboard/pull/46" })],
+      new Date("2026-07-12T10:01:00Z")
+    );
+
+    expect(spans[0]).toMatchObject({ branch: "codex/live-span", prUrl: "https://github.com/shakacode/dashboard/pull/46" });
+  });
 });
 
 describe("buildCustodyTimeline", () => {

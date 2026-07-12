@@ -731,7 +731,10 @@ export function App() {
             ))}
           </nav>
           {itemRoute ? itemTimeline ? (
-            <ItemPage onBack={closeItem} timeline={itemTimeline} />
+            <>
+              {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
+              <ItemPage onBack={closeItem} timeline={itemTimeline} />
+            </>
           ) : itemError ? (
             <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
           ) : <p className="empty-state">Loading work item timeline…</p> : <AttentionShell
