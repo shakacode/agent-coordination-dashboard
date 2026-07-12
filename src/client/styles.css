@@ -73,6 +73,7 @@ textarea {
 
 .coordination-degraded-banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   border-bottom: 1px solid #f04438;
@@ -84,6 +85,7 @@ textarea {
 
 .coordination-degraded-banner span {
   flex: 1;
+  min-width: 0;
 }
 
 .coordination-degraded-banner code {

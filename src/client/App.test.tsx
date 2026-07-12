@@ -621,7 +621,8 @@ describe("App", () => {
     expect(screen.getByText("— events")).toBeInTheDocument();
     expect(screen.getByText("— health")).toBeInTheDocument();
     expect(screen.getAllByText("1 warnings").length).toBeGreaterThan(0);
-    expect(stylesheet).toContain(".coordination-degraded-banner");
+    expect(stylesheet).toMatch(/\.coordination-degraded-banner\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(stylesheet).toMatch(/\.coordination-degraded-banner span\s*\{[^}]*min-width:\s*0/);
   });
 
   it("passes failed source context into empty Machines and Health tabs", async () => {
