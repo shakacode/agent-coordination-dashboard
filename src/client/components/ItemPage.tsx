@@ -133,11 +133,13 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
     : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
   const branches = unique([...timeline.branches, loadedGitHub?.branch]);
   const prUrls = uniquePullRequestUrls([...timeline.prUrls.map(safePullRequestUrl), loadedGitHub?.url ? safePullRequestUrl(loadedGitHub.url) : undefined]);
+  const custodySourceEventIds = new Set(timeline.claims.flatMap((claim) => claim.sourceEventId ? [claim.sourceEventId] : []));
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
     ...timeline.events
       .filter((event) => !timeline.phases.some((span) => span.eventId === event.eventId))
+      .filter((event) => !custodySourceEventIds.has(event.eventId))
       .map((event, index) => ({ kind: "event" as const, event, index, tie: 2, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.phases.map((span, index) => ({ kind: "phase" as const, span, index, tie: 3, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER }))
   ].sort((left, right) => left.at - right.at || left.tie - right.tie || left.index - right.index);

@@ -243,6 +243,32 @@ describe("ItemPage", () => {
     expect(screen.getAllByText("Machine: m1 · Host: codex · Operator: justin")).toHaveLength(2);
   });
 
+  it("shows ownership telemetry once while retaining unrelated telemetry evidence", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [
+        { action: "acquired", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", sourceEventId: "started" },
+        { action: "renewed", agentId: "worker-a", timestamp: "2026-07-12T10:02:00Z", sourceEventId: "heartbeat" },
+        { action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", timestamp: "2026-07-12T10:04:00Z", sourceEventId: "continued" }
+      ],
+      liveness: [],
+      phases: [],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "heartbeat", type: "heartbeat", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:02:00Z", path: "events/custody.jsonl:2" },
+        { eventId: "continued", type: "continued", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:04:00Z", path: "events/custody.jsonl:3" },
+        { eventId: "progress", type: "phase.progress", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:05:00Z", message: "Still working", path: "events/custody.jsonl:4" }
+      ]
+    }} />);
+
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("acquired by worker-a"),
+      expect.stringContaining("renewed by worker-a"),
+      expect.stringContaining("worker-a → worker-b"),
+      expect.stringContaining("phase.progressStill working")
+    ]);
+  });
+
   it("renders both durable and newer current-snapshot custody evidence", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,

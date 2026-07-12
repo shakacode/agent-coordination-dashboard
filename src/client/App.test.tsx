@@ -241,6 +241,28 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
   });
 
+  it("clears structured Find state after returning from an item", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
+      item: model.workItems[1], sourceStatus: [], warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    window.history.pushState({}, "", "/?repo=repo%2Fdashboard&target=44&item=repo%2Fdashboard%2F44");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
+
+    expect(window.location.search).toBe("");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
+  });
+
   it("clears structured Find constraints when Find exits an item route", async () => {
     const itemTimeline = {
       repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],

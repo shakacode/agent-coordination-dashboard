@@ -452,11 +452,13 @@ export function App() {
   }
 
   function closeItem() {
+    const nextDeepLink = { query: operatorQuery || undefined };
     setItemRoute(undefined);
     setItemTimeline(null);
     setItemError(null);
     setActiveSurface("find");
-    writeOperatorLocation({ query: operatorQuery || undefined }, operatorQuery, "push");
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
   }
 
   function clearOperatorConstraints() {
