@@ -136,6 +136,7 @@ export interface BatchWorkSignal {
   laneName: string;
   status: string;
   blockedOn: string[];
+  updatedAt?: string;
 }
 
 export interface QaValidationItem {
@@ -184,6 +185,7 @@ export interface GitHubPreview {
   labels: string[];
   branch?: string;
   reviewDecision?: string;
+  updatedAt?: string;
   loadState: "loaded" | "unknown";
 }
 

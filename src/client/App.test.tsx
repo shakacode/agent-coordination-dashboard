@@ -165,6 +165,68 @@ describe("App", () => {
 
     expect(stylesheet).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
     expect(stylesheet).toMatch(/\.operator-table-wrap\s*\{[^}]*overflow-x:\s*auto/);
+    expect(stylesheet).toMatch(/\.operator-retention-filter\s*\{[^}]*flex-wrap:\s*wrap/);
+  });
+
+  it("shares and persists the older-terminal reveal preference across Overview and Operator", async () => {
+    localStorage.clear();
+    render(<App />);
+
+    const overviewControl = await screen.findByRole("checkbox", { name: "Show older terminal work" });
+    expect(overviewControl).not.toBeChecked();
+    await userEvent.click(overviewControl);
+    expect(localStorage.getItem("agent-coordination-dashboard:show-older-terminal-work")).toBe("true");
+
+    await userEvent.click(screen.getByRole("button", { name: "Operator" }));
+    expect(screen.getByRole("checkbox", { name: "Show older terminal work" })).toBeChecked();
+  });
+
+  it("keeps the older-terminal hidden count aligned through the Batch Repair deep link", async () => {
+    localStorage.clear();
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              generatedAt: "2026-07-10T20:00:00Z",
+              workItems: [],
+              qaValidations: [],
+              batches: [
+                {
+                  schemaVersion: 1,
+                  batchId: "old-derived",
+                  repo: "shakacode/react_on_rails",
+                  source: "inferred",
+                  createdAt: "2026-07-08T20:00:00Z",
+                  path: "inferred/old-derived.json",
+                  lanes: [
+                    {
+                      name: "closeout",
+                      owner: "agent-old",
+                      targets: [],
+                      dependsOn: [],
+                      status: "done",
+                      liveness: "no-heartbeat",
+                      blockedOn: []
+                    }
+                  ]
+                }
+              ],
+              events: [],
+              batchOperations: []
+            }
+    }) as Response);
+
+    render(<App />);
+
+    expect(await screen.findByText("1 older terminal row hidden")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Show older terminal work" }));
+    expect(screen.getByText("Showing 1 older terminal row")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 batch repairs in Operator view" }));
+    expect(screen.getByText("Showing 1 older terminal row")).toBeInTheDocument();
+    expect(screen.getByText("Batch lane")).toBeInTheDocument();
   });
 
   it("passes root search query params to the Operator View", async () => {

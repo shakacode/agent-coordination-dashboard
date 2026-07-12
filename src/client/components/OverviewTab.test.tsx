@@ -68,6 +68,152 @@ describe("OverviewTab", () => {
     expect(screen.queryByText("Issue #124: Issue #124")).not.toBeInTheDocument();
   });
 
+  it("applies the same age-out snapshot and reveal preference to overview results", async () => {
+    const terminalDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "terminal-batch",
+          repo: "repo/app",
+          launchPrompt: "Use $pr-batch",
+          updatedAt: "2026-07-08T20:00:00Z",
+          path: "batches/terminal.json",
+          lanes: [
+            {
+              name: "closeout",
+              owner: "agent-old",
+              targets: [],
+              dependsOn: [],
+              status: "done",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "closed-123",
+          type: "done",
+          status: "done",
+          batchId: "terminal-batch",
+          repo: "repo/app",
+          laneName: "closeout",
+          timestamp: "2026-07-08T20:00:00Z",
+          path: "events/closed.json"
+        }
+      ]
+    };
+
+    const { rerender } = render(
+      <OverviewTab dashboard={terminalDashboard} onOpenOperatorFilter={vi.fn()} revealOlderTerminalRows={false} />
+    );
+    expect(screen.queryByText("Target #UNKNOWN: Batch lane closeout")).not.toBeInTheDocument();
+    expect(screen.getByText("1 older terminal row hidden")).toBeInTheDocument();
+
+    rerender(<OverviewTab dashboard={terminalDashboard} onOpenOperatorFilter={vi.fn()} revealOlderTerminalRows />);
+    expect(screen.getByText("Target #UNKNOWN: Batch lane closeout")).toBeInTheDocument();
+  });
+
+  it("does not list current recovery work as recent terminal work when history says done", () => {
+    const recoveryDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [
+        {
+          ...dashboard.workItems[0],
+          github: undefined,
+          schedulingState: "started_not_processing"
+        }
+      ],
+      events: [
+        {
+          eventId: "old-done",
+          type: "done",
+          status: "done",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-08T20:00:00Z",
+          path: "events/old-done.json"
+        }
+      ]
+    };
+
+    render(<OverviewTab dashboard={recoveryDashboard} onOpenOperatorFilter={vi.fn()} revealOlderTerminalRows />);
+
+    expect(screen.queryByRole("heading", { name: "Recent Terminal Work" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Current Work" }).closest("article")).toHaveTextContent("Issue #123");
+  });
+
+  it("counts an old derived terminal row that the shared control can reveal through Batch Repair", () => {
+    const derivedDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "old-derived",
+          repo: "repo/app",
+          source: "inferred",
+          createdAt: "2026-07-08T20:00:00Z",
+          path: "inferred/old-derived.json",
+          lanes: [
+            {
+              name: "closeout",
+              owner: "agent-old",
+              targets: [],
+              dependsOn: [],
+              status: "done",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    };
+
+    render(<OverviewTab dashboard={derivedDashboard} onOpenOperatorFilter={vi.fn()} />);
+
+    expect(screen.getByText("1 older terminal row hidden")).toBeInTheDocument();
+  });
+
+  it("does not count an old healthy synthetic lane that no default surface can reveal", () => {
+    const healthyDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "healthy-terminal",
+          repo: "repo/app",
+          launchPrompt: "Use $pr-batch",
+          createdAt: "2026-07-08T20:00:00Z",
+          path: "batches/healthy-terminal.json",
+          lanes: [
+            {
+              name: "closeout",
+              owner: "agent-old",
+              targets: [],
+              dependsOn: [],
+              status: "done",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    };
+
+    render(<OverviewTab dashboard={healthyDashboard} onOpenOperatorFilter={vi.fn()} />);
+
+    expect(screen.getByText("0 older terminal rows hidden")).toBeInTheDocument();
+  });
+
   it("reuses derived target detail in the explicitly diagnostic Batch Repair summary", () => {
     const repairDashboard: DashboardModel = {
       ...dashboard,

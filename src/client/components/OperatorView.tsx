@@ -5,12 +5,15 @@ import {
   buildOperatorRows,
   filterOperatorRows,
   filterOperatorRowsByProvenance,
+  filterOperatorRowsByAge,
   filterOperatorRowsForOverview,
   hasExactOperatorDeepLink,
   OVERVIEW_OPERATOR_FILTER_LABELS,
   operatorActivityLabel,
   operatorRowMatchesDeepLink,
   safeGithubUrl,
+  savedOlderTerminalWorkPreference,
+  SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY,
   UNKNOWN,
   type OperatorDeepLink,
   type OperatorRow
@@ -24,6 +27,8 @@ interface OperatorViewProps {
   onQueryChange?: (query: string) => void;
   query?: string;
   onResetOverviewFilter?: () => void;
+  revealOlderTerminalRows?: boolean;
+  onRevealOlderTerminalRowsChange?: (reveal: boolean) => void;
 }
 
 const SHOW_DERIVED_ROWS_STORAGE_KEY = "agent-coordination-dashboard:show-derived-operator-rows";
@@ -181,18 +186,18 @@ export function OperatorView({
   onClearExactLink,
   onQueryChange,
   onResetOverviewFilter,
+  revealOlderTerminalRows: controlledRevealOlderTerminalRows,
+  onRevealOlderTerminalRowsChange,
   query: controlledQuery
 }: OperatorViewProps) {
   const allRows = useMemo(() => buildOperatorRows(dashboard), [dashboard]);
   const [showDerivedRows, setShowDerivedRows] = useState(savedDerivedRowsPreference);
+  const [localRevealOlderTerminalRows, setLocalRevealOlderTerminalRows] = useState(savedOlderTerminalWorkPreference);
+  const revealOlderTerminalRows = controlledRevealOlderTerminalRows ?? localRevealOlderTerminalRows;
   const summaryFilterUsesOrdinaryWork = Boolean(deepLink?.overviewFilter && deepLink.overviewFilter !== "batch_repair");
   const includeDerivedRows = deepLink?.overviewFilter === "batch_repair"
     ? true
     : showDerivedRows && !summaryFilterUsesOrdinaryWork;
-  const rows = useMemo(
-    () => filterOperatorRowsByProvenance(allRows, includeDerivedRows),
-    [allRows, includeDerivedRows]
-  );
   const scopedAllRows = useMemo(
     () => filterOperatorRowsForOverview(allRows, dashboard, deepLink?.overviewFilter),
     [allRows, dashboard, deepLink?.overviewFilter]
@@ -216,6 +221,22 @@ export function OperatorView({
     }
   }, [showDerivedRows]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY, String(revealOlderTerminalRows));
+    } catch {
+      // Storage can be unavailable; the App-owned in-memory preference still works.
+    }
+  }, [revealOlderTerminalRows]);
+
+  function updateRevealOlderTerminalRows(value: boolean) {
+    if (onRevealOlderTerminalRowsChange) {
+      onRevealOlderTerminalRowsChange(value);
+    } else {
+      setLocalRevealOlderTerminalRows(value);
+    }
+  }
+
   function updateQuery(value: string) {
     if (onQueryChange) {
       onQueryChange(value);
@@ -225,9 +246,17 @@ export function OperatorView({
   }
 
   const hasExactLink = hasExactOperatorDeepLink(deepLink);
-  const overviewRows = useMemo(
+  const scopedProvenanceRows = useMemo(
     () => filterOperatorRowsByProvenance(scopedAllRows, includeDerivedRows),
     [includeDerivedRows, scopedAllRows]
+  );
+  const ageOutScope = useMemo(
+    () => filterOperatorRowsByAge(scopedProvenanceRows, dashboard.generatedAt),
+    [dashboard.generatedAt, scopedProvenanceRows]
+  );
+  const overviewRows = useMemo(
+    () => filterOperatorRowsByAge(scopedProvenanceRows, dashboard.generatedAt, revealOlderTerminalRows).visibleRows,
+    [dashboard.generatedAt, revealOlderTerminalRows, scopedProvenanceRows]
   );
   const linkedRows = useMemo(
     () => (hasExactLink ? overviewRows.filter((row) => operatorRowMatchesDeepLink(row, deepLink)) : overviewRows),
@@ -243,8 +272,8 @@ export function OperatorView({
         <div>
           <h2>Operator View</h2>
           <div className="operator-counts">
-            <span>{rows.length} rows</span>
-            <StateCounts rows={rows} />
+            <span>{overviewRows.length} rows</span>
+            <StateCounts rows={overviewRows} />
           </div>
         </div>
         <label className="search-field operator-search">
@@ -276,6 +305,21 @@ export function OperatorView({
         {deepLink?.overviewFilter === "batch_repair" ? (
           <small>Batch repair includes diagnostic inferred and synthetic evidence.</small>
         ) : null}
+      </label>
+
+      <label className="operator-retention-filter">
+        <input
+          aria-label="Show older terminal work"
+          checked={revealOlderTerminalRows}
+          onChange={(event) => updateRevealOlderTerminalRows(event.target.checked)}
+          type="checkbox"
+        />
+        <span>Show older terminal work</span>
+        <small>
+          {revealOlderTerminalRows
+            ? `Showing ${ageOutScope.hiddenRows.length} older terminal ${ageOutScope.hiddenRows.length === 1 ? "row" : "rows"}`
+            : `${ageOutScope.hiddenRows.length} older terminal ${ageOutScope.hiddenRows.length === 1 ? "row" : "rows"} hidden`}
+        </small>
       </label>
 
       {deepLink?.overviewFilter && (
