@@ -2933,6 +2933,19 @@ describe("operatorRows", () => {
     expect(filterOperatorRowsForOverview(rows, model, "batch_repair").map((row) => row.target)).toEqual(["123"]);
   });
 
+  it("keeps terminal and archived work out of QA attention overview rows", () => {
+    const terminal = workItem({ id: "repo/app#124", target: "124", operatorState: "terminal", terminalState: "done" });
+    const archived = workItem({ id: "repo/app#125", target: "125", operatorState: "archived_view" });
+    const model = dashboard({
+      workItems: [terminal, archived],
+      qaValidations: [
+        { id: terminal.id, repo: terminal.repo, target: terminal.target, type: terminal.type, status: "missing", detail: "Missing" },
+        { id: archived.id, repo: archived.repo, target: archived.target, type: archived.type, status: "failed", detail: "Failed" }
+      ]
+    });
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "qa_attention")).toEqual([]);
+  });
+
   it("scopes batch-repair filters when different repos reuse a batch id", () => {
     const appClaim = { ...claim, batchId: "shared-batch" };
     const appHeartbeat = { ...heartbeat, batchId: "shared-batch" };

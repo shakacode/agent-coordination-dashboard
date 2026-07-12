@@ -74,7 +74,7 @@ function isNowItem(item: WorkItem): boolean {
 
 function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined, repairWorkItemIds: ReadonlySet<string>): boolean {
   if (!filter) return true;
-  if (filter !== "qa_attention" && !isOperationalWorkItem(item)) return false;
+  if (!isOperationalWorkItem(item)) return false;
   if (filter === "ready_for_batch") return item.schedulingState === "ready_for_batch";
   if (filter === "needs_recovery") return item.schedulingState === "started_not_processing";
   if (filter === "processing_now") return isNowItem(item);

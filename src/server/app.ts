@@ -126,10 +126,20 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const events = model.events
       .filter((event) => event.repo === item.repo && event.target === item.target && event.prUrl)
       .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0));
-    // Keep the selected PR URL and branch source-atomic: direct live coordination,
-    // then matching lanes newest-first, then history. A branch from another source
-    // is not sufficient evidence that it belongs to the selected pull request.
-    const pullRequest = [item.claim, item.heartbeat, ...lanes, ...events]
+    // Keep the selected PR URL and branch source-atomic. Active claim and live/stale
+    // heartbeat sources are ordered by updatedAt; equal or invalid timestamps retain
+    // the stable claim-before-heartbeat order. Matching lanes and history remain
+    // lower-priority fallbacks. A branch from another source is not sufficient
+    // evidence that it belongs to the selected pull request.
+    const liveSources = [item.claim?.status === "active" ? item.claim : undefined, item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined]
+      .map((source, index) => ({ source, index }))
+      .filter((candidate): candidate is { source: NonNullable<typeof candidate.source>; index: number } => Boolean(candidate.source))
+      .sort((left, right) => {
+        const newestFirst = (Date.parse(right.source.updatedAt || "") || 0) - (Date.parse(left.source.updatedAt || "") || 0);
+        return newestFirst || left.index - right.index;
+      })
+      .map(({ source }) => source);
+    const pullRequest = [...liveSources, ...lanes, ...events]
       .flatMap((source) => {
         const reference = githubPullRequestReference(source?.prUrl, item.repo);
         return reference ? [{ ...reference, ...(source?.branch ? { branch: source.branch } : {}) }] : [];

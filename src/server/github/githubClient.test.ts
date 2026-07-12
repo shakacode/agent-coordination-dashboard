@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGitHubTargetReconciler, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
+import { createGitHubTargetReconciler, githubApiPath, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
 
 describe("github list parsers", () => {
   afterEach(() => vi.useRealTimers());
@@ -20,6 +20,23 @@ describe("github list parsers", () => {
     }));
     expect(closedPullRequest).toMatchObject({ target: "45", type: "pull_request", state: "CLOSED", loadState: "loaded" });
     expect(closedPullRequest).not.toHaveProperty("mergedAt");
+  });
+
+  it("constructs GitHub API paths from validated owner and repository segments", () => {
+    expect(githubApiPath("shaka-code/agent_coordination.dashboard", "issues", "45")).toBe("repos/shaka-code/agent_coordination.dashboard/issues/45");
+    expect(githubApiPath("repo/app", "branches", "feature/work?#x")).toBe("repos/repo/app/branches/feature%2Fwork%3F%23x");
+    expect(() => githubApiPath("repo/app/../../secret", "issues", "45")).toThrow(/repository/i);
+    expect(() => githubApiPath("repo/app", "issues", "45/../../secret")).toThrow(/issue target/i);
+  });
+
+  it("rejects hostile target references without invoking gh", async () => {
+    const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const result = await createGitHubTargetReconciler({ run }).load([
+      { repo: "repo/app/../../secret", target: "45/../../token", type: "issue" }
+    ]);
+    expect(run).not.toHaveBeenCalled();
+    expect(result.items[0]).toMatchObject({ state: "UNKNOWN", loadState: "unknown" });
+    expect(result.warnings[0].message).toMatch(/repository|target/i);
   });
 
   it("coalesces and caches target reconciliation while foreground refresh can bypass it", async () => {

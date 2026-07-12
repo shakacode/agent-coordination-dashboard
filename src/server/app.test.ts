@@ -158,6 +158,59 @@ describe("dashboard app import endpoint", () => {
     expect(body.trulyOpenCountStatus).toBe("available");
   });
 
+  it("uses the newest live PR source atomically when claim and heartbeat disagree", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-newest-live-pr-"));
+    await mkdir(join(stateRoot, "claims", "shakacode", "react_on_rails"), { recursive: true });
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await writeFile(join(stateRoot, "claims", "shakacode", "react_on_rails", "45.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "active",
+      branch: "stale/claim", pr_url: "https://github.com/shakacode/react_on_rails/pull/54", updated_at: "2026-07-12T09:00:00Z"
+    }));
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "coding",
+      branch: "current/heartbeat", pr_url: "https://github.com/shakacode/react_on_rails/pull/55", updated_at: "2026-07-12T10:00:00Z",
+      expires_at: "2099-07-12T10:30:00Z"
+    }));
+    let received: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        received = references[0];
+        return { items: references.map((reference) => ({ ...reference, title: "Active PR", url: `https://github.com/shakacode/react_on_rails/pull/${reference.target}`, state: "OPEN", labels: [], loadState: "loaded" as const })), warnings: [] };
+      }
+    });
+    await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(received).toMatchObject({ target: "55", branch: "current/heartbeat" });
+  });
+
+  it("uses the claim first when live PR sources have equal timestamps", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-tied-live-pr-"));
+    await mkdir(join(stateRoot, "claims", "shakacode", "react_on_rails"), { recursive: true });
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    const updatedAt = "2026-07-12T10:00:00Z";
+    await writeFile(join(stateRoot, "claims", "shakacode", "react_on_rails", "45.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "active",
+      branch: "claim/tie", pr_url: "https://github.com/shakacode/react_on_rails/pull/54", updated_at: updatedAt
+    }));
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "coding",
+      branch: "heartbeat/tie", pr_url: "https://github.com/shakacode/react_on_rails/pull/55", updated_at: updatedAt,
+      expires_at: "2099-07-12T10:30:00Z"
+    }));
+    let received: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        received = references[0];
+        return { items: [], warnings: [] };
+      }
+    });
+    await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(received).toMatchObject({ target: "54", branch: "claim/tie" });
+  });
+
   it("enriches a declared terminal issue from its PR URL without overriding declared precedence", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-declared-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

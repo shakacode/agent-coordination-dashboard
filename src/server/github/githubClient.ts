@@ -63,6 +63,20 @@ export function githubTargetReferenceKey(reference: GitHubTargetReference): stri
 
 const GITHUB_LIST_LIMIT = 1000;
 
+export function githubApiPath(repo: string, kind: "issues" | "branches", target: string): string {
+  const repoSegments = repo.split("/");
+  if (repoSegments.length !== 2 || repoSegments.some((segment) => !/^[A-Za-z0-9_.-]+$/.test(segment))) {
+    throw new Error(`Invalid GitHub repository: ${repo}`);
+  }
+  if (kind === "issues" && !/^\d+$/.test(target)) {
+    throw new Error(`Invalid GitHub issue target: ${target}`);
+  }
+  if (kind === "branches" && !target) {
+    throw new Error("Invalid GitHub branch: empty branch name");
+  }
+  return `repos/${repoSegments.map(encodeURIComponent).join("/")}/${kind}/${encodeURIComponent(target)}`;
+}
+
 export const childProcessGhRunner: GhRunner = {
   run(args) {
     return new Promise((resolve) => {
@@ -175,7 +189,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     const key = `${reference.repo}#${reference.target}`;
     const existing = targetCache.get(key);
     if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
-    const promise = runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
+    const promise = runner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]);
     const entry = { expiresAt: now + ttlMs, promise, settled: false };
     targetCache.set(key, entry);
     const settle = () => { entry.settled = true; pruneTargetCache(Date.now()); };
@@ -198,13 +212,22 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   }
 
   async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
+    try {
+      githubApiPath(reference.repo, "issues", reference.target);
+      if (reference.branch) githubApiPath(reference.repo, "branches", reference.branch);
+    } catch (error) {
+      return {
+        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: error instanceof Error ? error.message : "Invalid GitHub target reference" }]
+      };
+    }
     const result = reference.existingTarget
       ? undefined
       : await loadTarget(reference);
     let branchState: GitHubPreview["branchState"];
     const branchWarnings: CoordinationWarning[] = [];
     if (reference.branch) {
-      const branchResult = await runner.run(["api", `repos/${reference.repo}/branches/${encodeURIComponent(reference.branch)}`]);
+      const branchResult = await runner.run(["api", githubApiPath(reference.repo, "branches", reference.branch)]);
       if (branchResult.exitCode === 0) {
         branchState = "present";
       } else if (/\b(?:HTTP\s+)?404\b/i.test(branchResult.stderr)) {
@@ -265,6 +288,9 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
         return promise;
       }));
       return {
+        // Branch-only results may come from a cache entry created for an older
+        // open-list snapshot. Reapply only the cached supporting branch signal
+        // to the caller's current canonical target so target truth never goes stale.
         items: results.flatMap((result, index) => unique[index].existingTarget
           ? result.items.map((item) => ({ ...unique[index].existingTarget!, ...(item.branchState ? { branchState: item.branchState } : {}) }))
           : result.items),

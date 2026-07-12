@@ -226,6 +226,17 @@ describe("AttentionShell", () => {
     }
   });
 
+  it.each(["terminal", "archived_view"] as const)("keeps %s QA work out of the operational Find filter", (operatorState) => {
+    const terminalQa = {
+      ...ITEMS[0],
+      operatorState,
+      terminalState: operatorState === "terminal" ? "done" as const : undefined,
+      attention: { kind: "qa_missing" as const, label: "QA missing", action: "Open PR" as const }
+    };
+    render(<AttentionShell deepLink={{ overviewFilter: "qa_attention" }} items={[terminalQa]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
+  });
+
   it("keeps archived terminal batch signals out of Find while retaining repair diagnostics", () => {
     const archivedRepair = {
       ...ITEMS[0],

@@ -1396,7 +1396,12 @@ export function filterOperatorRowsForOverview(
   }
   if (filter === "qa_attention") {
     const qaItems = dashboard.qaValidations.filter((item) => ["missing", "failed", "requested", "in_progress"].includes(item.status));
-    return rows.filter((row) => qaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
+    const operationalQaItems = qaItems.filter((qaItem) => dashboard.workItems.some(
+      (item) => qaItem.repo === item.repo && qaItem.target === item.target
+        && !item.terminalState
+        && !["terminal", "archived_view"].includes(item.operatorState || "")
+    ));
+    return rows.filter((row) => operationalQaItems.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
   const stoppedOperations = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
   const repairBatches = dashboard.batches.filter(
