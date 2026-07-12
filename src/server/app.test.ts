@@ -704,6 +704,43 @@ describe("dashboard app import endpoint", () => {
     expect(body.warnings.some((warning) => /branch/i.test(warning.message))).toBe(true);
   });
 
+  it("keeps merged target truth and trusted counts when its coordination branch is malformed", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-invalid-branch-merged-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(join(stateRoot, "batches", "batch.json"), JSON.stringify({
+      schema_version: 1,
+      batch_id: "batch",
+      repo: "shakacode/react_on_rails",
+      targets: [{ type: "issue", target: "45" }],
+      lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "running", branch: "has space", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
+    }));
+    const ghCalls: string[] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      ghCalls.push(args[1]);
+      return {
+        stdout: JSON.stringify({ number: 54, title: "Merged PR", html_url: "https://github.com/shakacode/react_on_rails/pull/54", state: "closed", labels: [], pull_request: { merged_at: "2026-07-12T10:00:00Z" } }),
+        stderr: "",
+        exitCode: 0
+      };
+    } });
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: (references, options) => reconciler.load(references, options)
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; terminalState?: string; github?: { state: string; branchState?: string; loadState: string } }>; trulyOpenCount: number; trulyOpenCountStatus: string; warnings: Array<{ message: string }> };
+    expect(ghCalls).toEqual(["repos/shakacode/react_on_rails/issues/54"]);
+    expect(body.workItems).toEqual([expect.objectContaining({
+      id: "shakacode/react_on_rails#45",
+      terminalState: "done",
+      github: expect.objectContaining({ state: "MERGED", loadState: "loaded", branchState: "unknown" })
+    })]);
+    expect(body.trulyOpenCount).toBe(0);
+    expect(body.trulyOpenCountStatus).toBe("available");
+    expect(body.warnings.some((warning) => /branch/i.test(warning.message))).toBe(true);
+  });
+
   it("reports the truly-open headline as UNKNOWN when target reconciliation is unavailable", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-reconcile-unknown-"));
     const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");

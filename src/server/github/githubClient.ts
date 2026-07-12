@@ -249,22 +249,30 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
     try {
       githubApiPath(reference.repo, "issues", reference.target);
-      if (reference.branch) githubApiPath(reference.repo, "branches", reference.branch);
     } catch (error) {
       return {
-        items: [reference.existingTarget
-          ? { ...reference.existingTarget, branchState: "unknown" }
-          : { repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
+        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
         warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: error instanceof Error ? error.message : "Invalid GitHub target reference" }]
       };
     }
-    const result = reference.existingTarget
-      ? undefined
-      : await loadTarget(reference);
+
+    let branchPath: string | undefined;
     let branchState: GitHubPreview["branchState"];
     const branchWarnings: CoordinationWarning[] = [];
     if (reference.branch) {
-      const branchResult = await runner.run(["api", githubApiPath(reference.repo, "branches", reference.branch)]);
+      try {
+        branchPath = githubApiPath(reference.repo, "branches", reference.branch);
+      } catch (error) {
+        branchState = "unknown";
+        branchWarnings.push({ severity: "warning", repo: reference.repo, target: reference.target, message: error instanceof Error ? error.message : "Invalid GitHub branch reference" });
+      }
+    }
+
+    const result = reference.existingTarget
+      ? undefined
+      : await loadTarget(reference);
+    if (branchPath) {
+      const branchResult = await runner.run(["api", branchPath]);
       if (branchResult.exitCode === 0) {
         branchState = "present";
       } else if (isGitHubHttpNotFound(branchResult.stderr)) {

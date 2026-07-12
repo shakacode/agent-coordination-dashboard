@@ -73,8 +73,12 @@ describe("github list parsers", () => {
     expect(githubApiPath("repo/app", "branches", branch)).toBe(`repos/repo/app/branches/${encodeURIComponent(branch)}`);
   });
 
-  it("returns UNKNOWN without GitHub calls for every invalid branch instead of inferring deletion", async () => {
-    const run = vi.fn(async () => ({ stdout: "", stderr: "HTTP 404", exitCode: 1 }));
+  it("reconciles valid targets while keeping every invalid branch UNKNOWN without a branch lookup", async () => {
+    const run = vi.fn(async (args: string[]) => ({
+      stdout: JSON.stringify({ number: Number(args[1].split("/").at(-1)), title: "Merged", html_url: `https://github.com/repo/app/pull/${args[1].split("/").at(-1)}`, state: "closed", labels: [], pull_request: { merged_at: "2026-07-12T10:00:00Z" } }),
+      stderr: "",
+      exitCode: 0
+    }));
     const invalidBranches = ["-leading", "feature/.hidden", "feature/branch.lock", "feature/has space", "feature/@{upstream}"];
     const result = await createGitHubTargetReconciler({ run }).load(invalidBranches.map((branch, index) => ({
       repo: "repo/app",
@@ -83,9 +87,10 @@ describe("github list parsers", () => {
       branch
     })));
 
-    expect(run).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(invalidBranches.length);
+    expect(run.mock.calls.every(([args]) => args[1].includes("/issues/"))).toBe(true);
     expect(result.items).toHaveLength(invalidBranches.length);
-    expect(result.items.every((item) => item.state === "UNKNOWN" && item.loadState === "unknown" && item.branchState === undefined)).toBe(true);
+    expect(result.items.every((item) => item.state === "MERGED" && item.loadState === "loaded" && item.branchState === "unknown")).toBe(true);
     expect(result.warnings).toHaveLength(invalidBranches.length);
     expect(result.warnings.every((warning) => /branch/i.test(warning.message))).toBe(true);
   });
@@ -124,19 +129,19 @@ describe("github list parsers", () => {
     const result = await createGitHubTargetReconciler({ run }).load([
       { repo: "../app", target: "45", type: "issue" },
       { repo: "repo/...", target: "46", type: "issue" },
-      { repo: "repo/app", target: "47", type: "issue", branch: "feature/../secret" }
+      { repo: "repo/app", target: "47/../../secret", type: "issue", branch: "feature/../secret" }
     ]);
     expect(run).not.toHaveBeenCalled();
     expect(result.items).toEqual([
       expect.objectContaining({ repo: "../app", target: "45", state: "UNKNOWN", loadState: "unknown" }),
       expect.objectContaining({ repo: "repo/...", target: "46", state: "UNKNOWN", loadState: "unknown" }),
-      expect.objectContaining({ repo: "repo/app", target: "47", state: "UNKNOWN", loadState: "unknown" })
+      expect.objectContaining({ repo: "repo/app", target: "47/../../secret", state: "UNKNOWN", loadState: "unknown" })
     ]);
     expect(result.warnings).toHaveLength(3);
     expect(result.warnings.map((warning) => warning.message)).toEqual([
       expect.stringMatching(/repository/i),
       expect.stringMatching(/repository/i),
-      expect.stringMatching(/branch/i)
+      expect.stringMatching(/issue target/i)
     ]);
   });
 
