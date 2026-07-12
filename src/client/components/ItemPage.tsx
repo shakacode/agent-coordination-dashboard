@@ -29,6 +29,10 @@ function copy(value: string) {
   void navigator.clipboard?.writeText(value);
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
 function Handle({ handle }: { handle: string | undefined }) {
   if (!handle) return <span>Thread UNKNOWN</span>;
   return <button className="timeline-handle" onClick={() => copy(handle)} type="button">Copy thread handle {handle}</button>;
@@ -72,7 +76,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
   const holderDead = timeline.item?.heartbeat?.liveness === "dead"
     && (!activeClaim || activeClaim.agentId === timeline.item?.heartbeat?.agentId);
   const primary = holderDead
-    ? { label: "Copy takeover command", value: `agent-coord claim --repo ${timeline.repo} --target ${timeline.target} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
+    ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
     : { label: "Copy resume prompt", value: `Resume work item ${timeline.repo}#${timeline.target} from its custody timeline.` };
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),

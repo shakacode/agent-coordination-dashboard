@@ -79,13 +79,13 @@ describe("buildCustodyTimeline", () => {
       now: new Date("2026-07-12T10:10:00Z"),
       claims: [
         claim({ agentId: "worker-a", status: "released", path: "claims/shakacode/dashboard/history/46-first.json", generation: 4, threadHandle: "first-chat", branch: "codex/first" }),
-        claim({ agentId: "worker-b", generation: 5, threadHandle: "takeover-chat", claimedAt: "2026-07-12T10:03:00Z", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47" })
+        claim({ agentId: "worker-b", generation: 5, machineId: "m2", threadHandle: "takeover-chat", claimedAt: "2026-07-12T10:03:00Z", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47" })
       ],
       heartbeats: [heartbeat({ threadHandle: "takeover-chat" })],
       events: [
         event({ eventId: "start", type: "lane.started", agentId: "worker-a", machineId: "m1", threadHandle: "first-chat", branch: "codex/first", timestamp: "2026-07-12T10:00:00Z" }),
         event({ eventId: "renew", type: "heartbeat", agentId: "worker-a", machineId: "m1", threadHandle: "first-chat", timestamp: "2026-07-12T10:01:00Z" }),
-        event({ eventId: "takeover", type: "continued", agentId: "worker-b", machineId: "m2", threadHandle: "takeover-chat", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47", timestamp: "2026-07-12T10:03:00Z" }),
+        event({ eventId: "takeover", type: "continued", agentId: "worker-b", generation: 5, machineId: "m2", threadHandle: "takeover-chat", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47", timestamp: "2026-07-12T10:03:00Z" }),
         event({ eventId: "plan", status: "planning", agentId: "worker-b", timestamp: "2026-07-12T10:04:00Z" }),
         event({ eventId: "implement", status: "implementing", timestamp: "2026-07-12T10:05:00Z" })
       ]
@@ -132,6 +132,76 @@ describe("buildCustodyTimeline", () => {
       expect.objectContaining({ action: "acquired", generation: 5 })
     ]);
     expect(timeline.claims[2]).not.toHaveProperty("previousAgentId");
+  });
+
+  it("uses a current released snapshot as custody and liveness-boundary evidence", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [{
+        schemaVersion: 1,
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        status: "released",
+        updatedAt: "2026-07-12T10:04:00Z",
+        path: "claims/shakacode/dashboard/46.json"
+      }],
+      heartbeats: [heartbeat({ expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [{
+        eventId: "started",
+        type: "lane.started",
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        timestamp: "2026-07-12T10:00:00Z",
+        path: "events/custody.jsonl:1"
+      }]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:04:00Z" })
+    ]);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:04:00.000Z")).toBe(true);
+  });
+
+  it("keeps a newer current snapshot as a distinct renewal instead of rewriting history", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      claims: [{
+        schemaVersion: 1,
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        status: "active",
+        generation: 2,
+        machineId: "m2",
+        threadHandle: "current-thread",
+        updatedAt: "2026-07-12T10:05:00Z",
+        path: "claims/shakacode/dashboard/46.json"
+      }],
+      heartbeats: [],
+      events: [{
+        eventId: "started",
+        type: "lane.started",
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        generation: 1,
+        machineId: "m1",
+        threadHandle: "old-thread",
+        timestamp: "2026-07-12T10:00:00Z",
+        path: "events/custody.jsonl:1"
+      }]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", generation: 1, machineId: "m1", threadHandle: "old-thread" }),
+      expect.objectContaining({ action: "renewed", generation: 2, machineId: "m2", threadHandle: "current-thread", timestamp: "2026-07-12T10:05:00Z" })
+    ]);
   });
 
   it("ignores non-ownership telemetry until explicit continuation transfers custody", () => {
@@ -195,6 +265,40 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.phases).toEqual([
       expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:05:00.000Z", durationMs: 300_000 })
     ]);
+  });
+
+  it("uses only explicit phase-bearing telemetry and collapses repeated phase names", () => {
+    const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
+      eventId: "event",
+      type: "heartbeat",
+      repo: "shakacode/dashboard",
+      target: "46",
+      timestamp: "2026-07-12T10:00:00Z",
+      path: "events/batch.jsonl:1",
+      ...overrides
+    });
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [],
+      events: [
+        event({ eventId: "heartbeat-a", status: "implementing" }),
+        event({ eventId: "phase-implement", type: "phase", status: "implementing", timestamp: "2026-07-12T10:01:00Z" }),
+        event({ eventId: "phase-implement-repeat", type: "phase.progress", status: "implementing", timestamp: "2026-07-12T10:02:00Z" }),
+        event({ eventId: "heartbeat-b", status: "implementing", timestamp: "2026-07-12T10:03:00Z" }),
+        event({ eventId: "verify", type: "verify", status: "verifying", timestamp: "2026-07-12T10:04:00Z" }),
+        event({ eventId: "review", type: "review", status: "reviewing", timestamp: "2026-07-12T10:05:00Z" })
+      ]
+    });
+
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ eventId: "phase-implement", phase: "implementing", endedAt: "2026-07-12T10:04:00.000Z", durationMs: 180_000 }),
+      expect.objectContaining({ eventId: "verify", phase: "verifying", endedAt: "2026-07-12T10:05:00.000Z", durationMs: 60_000 }),
+      expect.objectContaining({ eventId: "review", phase: "reviewing", endedAt: "2026-07-12T10:10:00.000Z", durationMs: 300_000 })
+    ]);
+    expect(timeline.events.filter((item) => item.type === "heartbeat")).toHaveLength(2);
   });
 
   it("clips old-holder liveness at telemetry transfer and release boundaries", () => {

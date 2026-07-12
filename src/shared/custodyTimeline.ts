@@ -159,6 +159,37 @@ function claimTimestamp(claim: ClaimRecord): string | undefined {
   return claim.updatedAt || claim.claimedAt;
 }
 
+function validClaimTimestamp(claim: ClaimRecord): string | undefined {
+  const timestamp = claimTimestamp(claim);
+  return timestamp && time(timestamp) !== undefined ? timestamp : undefined;
+}
+
+function snapshotCustodyEvent(claim: ClaimRecord, action: "renewed" | "released" | "unknown"): ClaimCustodyEvent {
+  const timestamp = validClaimTimestamp(claim);
+  return {
+    action,
+    agentId: claim.agentId,
+    ...(claim.generation === undefined ? {} : { generation: claim.generation }),
+    ...(timestamp ? { timestamp } : {}),
+    ...optionalFields(claim)
+  };
+}
+
+function matchesCurrentSnapshot(event: ClaimCustodyEvent | undefined, claim: ClaimRecord): boolean {
+  const timestamp = validClaimTimestamp(claim);
+  return Boolean(timestamp
+    && event
+    && event.agentId === claim.agentId
+    && event.timestamp === timestamp
+    && event.generation === claim.generation
+    && event.machineId === claim.machineId
+    && event.threadHandle === claim.threadHandle
+    && event.host === claim.host
+    && event.operator === claim.operator
+    && event.branch === claim.branch
+    && event.prUrl === claim.prUrl);
+}
+
 function livenessBoundaries(claims: ClaimCustodyEvent[]): LivenessBoundary[] {
   let activeAgent: string | undefined;
   const boundaries: LivenessBoundary[] = [];
@@ -179,7 +210,14 @@ function livenessBoundaries(claims: ClaimCustodyEvent[]): LivenessBoundary[] {
 }
 
 function isPhaseEvent(event: BatchEvent): boolean {
-  return event.type.toLowerCase() === "phase" || /\b(plan|implement|verify|push|review)/i.test(event.status || "");
+  const type = event.type.trim().toLowerCase();
+  return type === "phase"
+    || type.startsWith("phase.")
+    || /^(?:plan|implement|verify|push|review)(?:[._\s-]|$)/.test(type);
+}
+
+function phaseName(event: BatchEvent): string {
+  return event.status || event.type;
 }
 
 function isTerminalLifecycleEvent(event: BatchEvent): boolean {
@@ -244,25 +282,25 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
     }
   }
 
-  if (!currentClaim || currentClaim.status !== "active") return custody;
+  if (!currentClaim) return custody;
   const last = custody.at(-1);
+  if (currentClaim.status === "released") {
+    if (!matchesCurrentSnapshot(last, currentClaim) || last?.action !== "released") {
+      custody.push(snapshotCustodyEvent(currentClaim, "released"));
+    }
+    return custody;
+  }
+  if (currentClaim.status !== "active") return custody;
   if (last?.agentId === currentClaim.agentId && last.action !== "released") {
-    Object.assign(last, {
-      ...(last.generation === undefined && currentClaim.generation !== undefined ? { generation: currentClaim.generation } : {}),
-      ...Object.fromEntries(Object.entries(optionalFields(currentClaim)).filter(([key]) => last[key as keyof ClaimCustodyEvent] === undefined))
-    });
+    if (!matchesCurrentSnapshot(last, currentClaim)) {
+      custody.push(snapshotCustodyEvent(currentClaim, "renewed"));
+    }
     return custody;
   }
 
   // A current snapshot proves only its present holder. Without an attributed
   // append-only event, it cannot honestly establish when or how custody began.
-  custody.push({
-    action: "unknown",
-    agentId: currentClaim.agentId,
-    ...(currentClaim.generation === undefined ? {} : { generation: currentClaim.generation }),
-    ...(claimTimestamp(currentClaim) && time(claimTimestamp(currentClaim)!) !== undefined ? { timestamp: claimTimestamp(currentClaim) } : {}),
-    ...optionalFields(currentClaim)
-  });
+  custody.push(snapshotCustodyEvent(currentClaim, "unknown"));
   return custody;
 }
 
@@ -284,7 +322,10 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     .filter((event) => event.repo === input.repo && event.target === input.target)
     .sort((left, right) => (time(left.timestamp || "") || 0) - (time(right.timestamp || "") || 0));
   const claims = custodyEvents(events, currentClaim);
-  const phaseEvents = events.filter(isPhaseEvent).filter((event) => time(event.timestamp || "") !== undefined);
+  const phaseEvents = events
+    .filter(isPhaseEvent)
+    .filter((event) => time(event.timestamp || "") !== undefined)
+    .filter((event, index, candidates) => index === 0 || phaseName(candidates[index - 1]).toLowerCase() !== phaseName(event).toLowerCase());
   const phases = phaseEvents.map((event, index) => {
     const startedAt = event.timestamp!;
     const startedMs = time(startedAt)!;
@@ -296,7 +337,7 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     const endedMs = Math.max(startedMs, Math.min(nextPhaseMs, terminalMs || now.getTime(), now.getTime()));
     return {
       eventId: event.eventId,
-      phase: event.status || event.type,
+      phase: phaseName(event),
       startedAt,
       endedAt: iso(endedMs),
       durationMs: endedMs - startedMs,

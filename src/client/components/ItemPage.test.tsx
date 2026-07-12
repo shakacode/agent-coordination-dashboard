@@ -4,6 +4,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ItemTimelineResponse } from "../api";
 import { ItemPage } from "./ItemPage";
 
+interface NodeFs {
+  existsSync(path: string): boolean;
+  mkdtempSync(prefix: string): string;
+  rmSync(path: string, options: { force: boolean; recursive: boolean }): void;
+}
+
+interface NodeChildProcess {
+  execFileSync(file: string, args: string[]): void;
+}
+
+const getBuiltinModule = Function("return process.getBuiltinModule")() as (name: string) => unknown;
+const nodeFs = getBuiltinModule("node:fs") as NodeFs;
+const nodeChildProcess = getBuiltinModule("node:child_process") as NodeChildProcess;
+const nodeOs = getBuiltinModule("node:os") as { tmpdir(): string };
+const nodePath = getBuiltinModule("node:path") as { join(...paths: string[]): string };
+
 const timeline = {
   repo: "shakacode/dashboard",
   target: "46",
@@ -68,8 +84,37 @@ describe("ItemPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "agent-coord claim --repo shakacode/dashboard --target 46 --agent-id REPLACE_WITH_YOUR_AGENT_ID"
+      "agent-coord claim --repo 'shakacode/dashboard' --target '46' --agent-id REPLACE_WITH_YOUR_AGENT_ID"
     );
+  });
+
+  it("shell-quotes hostile repository and target text in copied takeover commands", async () => {
+    const directory = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "custody-command-"));
+    const marker = nodePath.join(directory, "must-not-exist");
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
+    const repo = "owner/o'brien; : #";
+    const target = `46; touch ${marker}; : #`;
+    try {
+      render(<ItemPage onBack={vi.fn()} timeline={{
+        ...timeline,
+        repo,
+        target,
+        item: {
+          ...timeline.item,
+          repo,
+          target,
+          heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+        }
+      }} />);
+
+      await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
+      const command = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
+      expect(command).toContain("--repo 'owner/o'\"'\"'brien; : #'");
+      nodeChildProcess.execFileSync("sh", ["-c", `set -- ${command.replace("agent-coord claim ", "")}`]);
+      expect(nodeFs.existsSync(marker)).toBe(false);
+    } finally {
+      nodeFs.rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("offers takeover when the active claim belongs to the dead holder", () => {
@@ -121,5 +166,22 @@ describe("ItemPage", () => {
 
     expect(screen.getByText("heartbeat")).toBeInTheDocument();
     expect(screen.getAllByText("Machine: m1 · Host: codex · Operator: justin")).toHaveLength(2);
+  });
+
+  it("renders both durable and newer current-snapshot custody evidence", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      liveness: [],
+      phases: [],
+      claims: [
+        { action: "acquired", agentId: "worker-a", generation: 1, machineId: "m1", threadHandle: "old-thread", timestamp: "2026-07-12T10:00:00Z" },
+        { action: "renewed", agentId: "worker-a", generation: 2, machineId: "m2", threadHandle: "current-thread", timestamp: "2026-07-12T10:05:00Z" }
+      ]
+    }} />);
+
+    expect(screen.getByText("CAS generation 1")).toBeInTheDocument();
+    expect(screen.getByText("CAS generation 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy thread handle old-thread" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy thread handle current-thread" })).toBeInTheDocument();
   });
 });
