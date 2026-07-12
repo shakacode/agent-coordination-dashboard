@@ -59,7 +59,15 @@ export interface GitHubTargetReference {
 }
 
 export function githubTargetReferenceKey(reference: GitHubTargetReference): string {
-  return `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
+  return `${reference.repo}#${reference.target}:${reference.type}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
+}
+
+export function isGitHubHttpNotFound(stderr: string): boolean {
+  return stderr.trim().split(/\r?\n/).some((line) =>
+    /^HTTP 404(?:\b|:)/i.test(line)
+    || /^gh: HTTP 404(?:\b|:)/i.test(line)
+    || /^gh: .+\(HTTP 404\)$/i.test(line)
+  );
 }
 
 const GITHUB_LIST_LIMIT = 1000;
@@ -213,7 +221,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   function loadTarget(reference: GitHubTargetReference) {
     const now = Date.now();
     pruneTargetCache(now);
-    const key = `${reference.repo}#${reference.target}`;
+    const key = `${reference.repo}#${reference.target}:${reference.type}`;
     const existing = targetCache.get(key);
     if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
     const promise = runner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]);
@@ -257,7 +265,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       const branchResult = await runner.run(["api", githubApiPath(reference.repo, "branches", reference.branch)]);
       if (branchResult.exitCode === 0) {
         branchState = "present";
-      } else if (/\b(?:HTTP\s+)?404\b/i.test(branchResult.stderr)) {
+      } else if (isGitHubHttpNotFound(branchResult.stderr)) {
         branchState = "deleted";
       } else {
         branchState = "unknown";
@@ -293,11 +301,11 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
 
   return {
     async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
-      const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target && candidate.branch === reference.branch && Boolean(candidate.existingTarget) === Boolean(reference.existingTarget)) === index);
+      const unique = references.filter((reference, index) => references.findIndex((candidate) => githubTargetReferenceKey(candidate) === githubTargetReferenceKey(reference)) === index);
       const now = Date.now();
       pruneCache(now);
       if (options.bypassCache) {
-        for (const reference of unique) targetCache.delete(`${reference.repo}#${reference.target}`);
+        for (const reference of unique) targetCache.delete(`${reference.repo}#${reference.target}:${reference.type}`);
       }
       const results = await Promise.all(unique.map((reference) => {
         const key = githubTargetReferenceKey(reference);

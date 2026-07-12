@@ -2,6 +2,7 @@ import express from "express";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
+import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
 import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
@@ -17,6 +18,28 @@ import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
 type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
+
+export function batchLanesFor(item: WorkItem, model: DashboardModel) {
+  return (item.batchSignals || [])
+    .map((signal, index) => ({ signal, index }))
+    .sort((left, right) => {
+      const newestFirst = (Date.parse(right.signal.updatedAt || "") || 0) - (Date.parse(left.signal.updatedAt || "") || 0);
+      return newestFirst || left.index - right.index;
+    })
+    .flatMap(({ signal }) => model.batches.flatMap((batch) => {
+      if (batch.batchId !== signal.batchId) return [];
+      const explicitlyScopedRepos = new Set((batch.targets || [])
+        .filter((target) => target.target === item.target && target.repo)
+        .map((target) => target.repo!));
+      const repoMatches = batch.repo
+        ? batch.repo === item.repo
+        : explicitlyScopedRepos.size > 0
+          ? explicitlyScopedRepos.has(item.repo)
+          : repoLessBatchLaneMatchesWorkItem(batch, signal.batchId || "", item, model.workItems);
+      if (!repoMatches) return [];
+      return batch.lanes.filter((lane) => lane.name === signal.laneName && lane.targets.includes(item.target));
+    }));
+}
 
 export function canBypassDashboardCache(refreshHeader: string | undefined, remoteAddress: string | undefined): boolean {
   // Same-host reverse proxies make remote callers appear loopback; keep exposed deployments direct and host-guarded.
@@ -105,20 +128,6 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
   }
 
-  function batchLanesFor(item: WorkItem, model: DashboardModel) {
-    return (item.batchSignals || [])
-      .map((signal, index) => ({ signal, index }))
-      .sort((left, right) => {
-        const newestFirst = (Date.parse(right.signal.updatedAt || "") || 0) - (Date.parse(left.signal.updatedAt || "") || 0);
-        return newestFirst || left.index - right.index;
-      })
-      .flatMap(({ signal }) => {
-      const batch = model.batches.find((candidate) => candidate.batchId === signal.batchId && (!candidate.repo || candidate.repo === item.repo));
-      const lane = batch?.lanes.find((candidate) => candidate.name === signal.laneName && candidate.targets.includes(item.target));
-        return lane ? [lane] : [];
-      });
-  }
-
   function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
     if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
     const lanes = batchLanesFor(item, model);
@@ -170,6 +179,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const openGithubItems = githubResults.flatMap((result) => result.items);
     const openGithubWarnings = githubResults.flatMap((result) => result.warnings);
 
+    // Intentionally build twice: the preliminary pass derives canonical WorkItems
+    // and reconciliation plans; the final pass applies fetched GitHub evidence.
     const preliminaryModel = buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,

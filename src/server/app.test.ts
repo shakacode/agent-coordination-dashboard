@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { canBypassDashboardCache, createDashboardApp } from "./app";
+import { batchLanesFor, canBypassDashboardCache, createDashboardApp } from "./app";
 import type { ServerConfig } from "./config";
+import type { DashboardModel, WorkItem } from "../shared/types";
 
 const servers: Server[] = [];
 
@@ -351,6 +352,26 @@ describe("dashboard app import endpoint", () => {
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>> };
     expect(reconciledTarget).toBe("54");
     expect(body.workItems[0]).toMatchObject({ target: "45", terminalState: "done", github: { state: "MERGED", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
+  });
+
+  it("scopes duplicate repo-less batch ids by explicit target repo without cross-attributing lanes", () => {
+    const item = (repo: string): WorkItem => ({
+      id: `${repo}#45`, repo, target: "45", type: "issue", schedulingState: "started_not_processing", warnings: [], selected: false,
+      batchSignals: [{ batchId: "shared-batch", laneName: "implementation", status: "completed", blockedOn: [] }]
+    });
+    const repoA = item("repo-a/app");
+    const repoB = item("repo-b/api");
+    const model = {
+      workItems: [repoA, repoB],
+      batches: [
+        { schemaVersion: 1, batchId: "shared-batch", lanes: [{ name: "implementation", owner: "ambiguous-worker", targets: ["45"], dependsOn: [], blockedOn: [], status: "completed", branch: "wrong/cross-repo", prUrl: "https://github.com/repo-b/api/pull/999" }], path: "ambiguous.json" },
+        { schemaVersion: 1, batchId: "shared-batch", targets: [{ type: "issue", target: "45", repo: "repo-b/api" }], lanes: [{ name: "implementation", owner: "worker-b", targets: ["45"], dependsOn: [], blockedOn: [], status: "completed", branch: "repo-b/work", prUrl: "https://github.com/repo-b/api/pull/202" }], path: "repo-b.json" },
+        { schemaVersion: 1, batchId: "shared-batch", targets: [{ type: "issue", target: "45", repo: "repo-a/app" }], lanes: [{ name: "implementation", owner: "worker-a", targets: ["45"], dependsOn: [], blockedOn: [], status: "completed", branch: "repo-a/work", prUrl: "https://github.com/repo-a/app/pull/101" }], path: "repo-a.json" }
+      ]
+    } as unknown as DashboardModel;
+
+    expect(batchLanesFor(repoA, model)).toEqual([expect.objectContaining({ owner: "worker-a", branch: "repo-a/work" })]);
+    expect(batchLanesFor(repoB, model)).toEqual([expect.objectContaining({ owner: "worker-b", branch: "repo-b/work" })]);
   });
 
   it("keeps a lane PR URL paired with the branch from that same lane", async () => {

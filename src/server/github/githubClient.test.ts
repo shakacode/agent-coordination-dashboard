@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGitHubTargetReconciler, githubApiPath, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
+import { createGitHubTargetReconciler, githubApiPath, githubTargetReferenceKey, isGitHubHttpNotFound, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
 
 describe("github list parsers", () => {
   afterEach(() => vi.useRealTimers());
@@ -164,6 +164,33 @@ describe("github list parsers", () => {
     expect(result.warnings[0].message).toContain("auth required");
   });
 
+  it.each([
+    "HTTP 404",
+    "HTTP 404: Branch not found",
+    "gh: HTTP 404: Not Found",
+    "gh: Branch not found (HTTP 404)",
+    "gh: Not Found (HTTP 404)\n"
+  ])("recognizes an actual gh HTTP 404 response: %j", (stderr) => {
+    expect(isGitHubHttpNotFound(stderr)).toBe(true);
+  });
+
+  it.each([
+    "dependency returned 404 while gh authentication failed",
+    "warning: cached status was HTTP 404 yesterday",
+    "request failed with status 404"
+  ])("does not infer branch deletion from unrelated 404 text: %j", (stderr) => {
+    expect(isGitHubHttpNotFound(stderr)).toBe(false);
+  });
+
+  it("keeps unrelated stderr containing 404 as UNKNOWN branch evidence", async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => args[1].includes("/branches/")
+      ? { stdout: "", stderr: "dependency returned 404 while gh authentication failed", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 } });
+    const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", branchState: "unknown" });
+    expect(result.warnings[0].message).toContain("dependency returned 404");
+  });
+
   it("performs branch-only reconciliation without repeating an already-loaded target lookup", async () => {
     const calls: string[][] = [];
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
@@ -210,6 +237,22 @@ describe("github list parsers", () => {
     expect(calls.filter((call) => call.includes("/issues/54"))).toHaveLength(1);
     expect(calls.filter((call) => call.includes("/branches/"))).toHaveLength(2);
     expect(result.items.map((item) => item.branchState)).toEqual(["deleted", "present"]);
+  });
+
+  it("includes target type in reconciliation identity, dedupe, and caches", async () => {
+    const calls: string[] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls.push(args[1]);
+      return { stdout: JSON.stringify({ number: 45, title: "Target", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const issue = { repo: "repo/app", target: "45", type: "issue" as const };
+    const pullRequest = { repo: "repo/app", target: "45", type: "pull_request" as const };
+
+    expect(githubTargetReferenceKey(issue)).not.toBe(githubTargetReferenceKey(pullRequest));
+    const result = await reconciler.load([issue, pullRequest]);
+
+    expect(result.references).toEqual([issue, pullRequest]);
+    expect(calls.filter((call) => call.endsWith("/issues/45"))).toHaveLength(2);
   });
 
   it("prunes expired cache entries and caps live entries deterministically", async () => {
