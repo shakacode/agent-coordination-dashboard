@@ -507,6 +507,27 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "running", retentionStatus: "coding" });
   });
 
+  it("uses an event-only completion alias when no current lifecycle evidence exists", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({ claim: undefined, heartbeat: undefined, batchSignals: [], schedulingState: "ready_for_batch" })
+      ],
+      events: [
+        {
+          eventId: "event-only-completed",
+          type: "completed",
+          status: "completed",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-10T19:59:00Z",
+          path: "events/event-only-completed.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "completed" });
+  });
+
   it.each(["working", "in_progress", "coding"] as const)(
     "keeps a targetless %s lane without a heartbeat current over old terminal history",
     (status) => {
@@ -1883,8 +1904,20 @@ describe("operatorRows", () => {
             claim: { ...claim, batchId: "batch-current" },
             heartbeat: { ...heartbeat, batchId: "batch-old" },
             batchSignals: [
-              { batchId: "batch-old", laneName: "docs", status: "done", blockedOn: [] },
-              { batchId: "batch-current", laneName: "docs", status: "coding", blockedOn: [] }
+              {
+                batchId: "batch-old",
+                laneName: "docs",
+                status: "done",
+                blockedOn: [],
+                updatedAt: "2026-07-09T20:01:00Z"
+              },
+              {
+                batchId: "batch-current",
+                laneName: "docs",
+                status: "coding",
+                blockedOn: [],
+                updatedAt: "2026-07-09T19:59:00Z"
+              }
             ]
           })
         ],

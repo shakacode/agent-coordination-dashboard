@@ -732,21 +732,30 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
       return Boolean(matchingLane && batchContainsWork(candidateBatch, item, matchingLane));
     });
     return {
+      batchId: candidate.batchId,
+      laneName: candidate.laneName,
       status: candidate.status,
       timestamp: maxTimestamp(candidate.updatedAt, matchingBatch?.updatedAt, matchingBatch?.createdAt)
     };
   });
   const claimLifecycleAt = maxTimestamp(item.claim?.updatedAt, item.claim?.claimedAt);
+  const currentSignalCandidate = signal
+    ? lifecycleSignalCandidates.find(
+        (candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName
+      )
+    : undefined;
   const currentLifecycleAt = maxTimestamp(
     item.heartbeat?.updatedAt,
     claimLifecycleAt,
-    ...lifecycleSignalCandidates.map((candidate) => candidate.timestamp)
+    currentSignalCandidate?.timestamp
   );
-  const currentStatus = latestLifecycleStatus([
-    { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
-    { status: item.claim?.status, timestamp: claimLifecycleAt },
-    ...lifecycleSignalCandidates
-  ]);
+  const currentStatus = currentLifecycleAt
+    ? latestLifecycleStatus([
+        { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
+        { status: item.claim?.status, timestamp: claimLifecycleAt },
+        ...(currentSignalCandidate ? [currentSignalCandidate] : [])
+      ])
+    : undefined;
   const state = deriveOperatorState({
     workItem: item,
     heartbeat: item.heartbeat,
