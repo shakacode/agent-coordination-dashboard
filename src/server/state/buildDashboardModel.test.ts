@@ -278,6 +278,58 @@ describe("buildDashboardModel", () => {
     expect(merged.healthItems.map((item) => item.title)).toContain("Prompt missing");
   });
 
+  it("uses an explicit target repo override when evaluating terminal lane health", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "cross-repo-terminal",
+      repo: "repo/app",
+      targets: [{ type: "pull_request" as const, target: "55", repo: "repo/api" }],
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/cross-repo-terminal.json"
+    };
+    const github = {
+      repo: "repo/api",
+      target: "55",
+      type: "pull_request" as const,
+      title: "Cross-repo batch work",
+      url: "https://github.com/repo/api/pull/55",
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const input = {
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app", "repo/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      warnings: []
+    };
+
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const merged = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Batch lane has no heartbeat", batchId: batch.batchId, laneName: "implementation" })
+    ]));
+    expect(merged.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: "repo/api", target: "55", terminalState: "done" })
+    ]));
+    expect(merged.healthItems.map((item) => item.title)).not.toContain("Batch lane has no heartbeat");
+  });
+
   it("does not report a uniquely corroborated terminal repo-less batch lane as missing its heartbeat", () => {
     const batch = {
       schemaVersion: 1 as const,

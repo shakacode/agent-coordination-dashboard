@@ -462,9 +462,9 @@ function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
 }
 
 function batchLaneContainsWorkItem(batch: BatchRecord, item: WorkItem, workItems: WorkItem[]): boolean {
-  if (batch.repo) return batch.repo === item.repo;
   const explicitMatch = explicitBatchTargetRepoMatch(batch, item.target, item.repo);
   if (explicitMatch !== undefined) return explicitMatch;
+  if (batch.repo) return batch.repo === item.repo;
   return repoLessBatchLaneMatchesWorkItem(batch, batch.batchId, item, workItems);
 }
 
