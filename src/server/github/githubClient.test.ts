@@ -126,6 +126,28 @@ describe("github list parsers", () => {
     await reconciler.load([reference("4")]);
     expect(reconciler.cacheSize()).toBe(1);
   });
+
+  it("coalesces an active target lookup after TTL expiry and refreshes only after settlement", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
+    let calls = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reconciler = createGitHubTargetReconciler({ run: async () => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return { stdout: JSON.stringify({ number: 45, title: "Open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } }, 0);
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const };
+    const first = reconciler.load([reference]);
+    vi.advanceTimersByTime(1);
+    const second = reconciler.load([reference]);
+    expect(calls).toBe(1);
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([expect.anything(), expect.anything()]);
+    await reconciler.load([reference]);
+    expect(calls).toBe(2);
+  });
   it("normalizes open PRs", () => {
     const previews = parsePrList(
       "shakacode/react_on_rails",

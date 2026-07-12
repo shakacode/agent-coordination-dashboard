@@ -219,7 +219,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       const results = await Promise.all(unique.map((reference) => {
         const key = `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
         const existing = cache.get(key);
-        if (!options.bypassCache && existing && existing.expiresAt > now) return existing.promise;
+        if (!options.bypassCache && existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
         const promise = schedule(() => loadOne(reference));
         const entry = { expiresAt: now + ttlMs, promise, settled: false };
         cache.set(key, entry);
