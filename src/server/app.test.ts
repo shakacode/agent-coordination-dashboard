@@ -422,6 +422,74 @@ describe("dashboard app import endpoint", () => {
     expect(body.githubMergeTimeStatus).toBe("available");
   });
 
+  it.each(["event", "lane"] as const)("keeps the trusted open count while merge timing is unavailable for an explicit merged %s declaration without GitHub merge evidence", async (mergeSource) => {
+    const stateRoot = await mkdtemp(join(tmpdir(), `coord-dashboard-merged-${mergeSource}-without-github-time-`));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(join(stateRoot, "batches", "merged.json"), JSON.stringify({
+      schema_version: 1,
+      batch_id: "merged",
+      repo: "shakacode/react_on_rails",
+      targets: [{ type: "issue", target: "45" }],
+      lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: mergeSource === "lane" ? "merged" : "implementation" }]
+    }));
+    if (mergeSource === "event") {
+      await mkdir(join(stateRoot, "history"), { recursive: true });
+      await writeFile(join(stateRoot, "history", "merged.json"), JSON.stringify({
+        event_id: "merged-45",
+        type: "merged",
+        status: "merged",
+        repo: "shakacode/react_on_rails",
+        target: "45",
+        timestamp: "2026-07-12T10:01:00Z"
+      }));
+    }
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async () => ({ items: [], warnings: [] })
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as {
+      workItems: Array<{ terminalState?: string; github?: { mergedAt?: string } }>;
+      githubMergeTimeStatus: string;
+      trulyOpenCount?: number;
+      trulyOpenCountStatus: string;
+    };
+    expect(body.workItems[0]).toMatchObject({ terminalState: "done" });
+    expect(body.workItems[0].github?.mergedAt).toBeUndefined();
+    expect(body.githubMergeTimeStatus).toBe("unavailable");
+    expect(body.trulyOpenCount).toBe(0);
+    expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
+  it("does not make merge timing unavailable for a generic completed issue declaration", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-completed-without-merge-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(join(stateRoot, "batches", "completed.json"), JSON.stringify({
+      schema_version: 1,
+      batch_id: "completed",
+      repo: "shakacode/react_on_rails",
+      targets: [{ type: "issue", target: "45" }],
+      lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "completed" }]
+    }));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async () => ({ items: [], warnings: [] })
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as {
+      workItems: Array<{ terminalState?: string }>;
+      githubMergeTimeStatus: string;
+      trulyOpenCount?: number;
+      trulyOpenCountStatus: string;
+    };
+    expect(body.workItems[0]).toMatchObject({ terminalState: "done" });
+    expect(body.githubMergeTimeStatus).toBe("available");
+    expect(body.trulyOpenCount).toBe(0);
+    expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
   it("enriches a declared terminal pull request from its own target without requiring prUrl", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-declared-own-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

@@ -165,6 +165,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         return newestFirst || left.index - right.index;
       })
       .map(({ source }) => source);
+    // A validated same-repository prUrl is an authoritative coordination
+    // association. Umbrella and manually linked PRs are valid; do not infer the
+    // relationship from GitHub closing keywords.
     const pullRequest = [...liveSources, ...lanes, ...events, ...inactiveSources]
       .flatMap((source) => {
         const reference = githubPullRequestReference(source?.prUrl, item.repo);
@@ -180,6 +183,19 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return branch ? { repo: item.repo, target: item.target, type: item.type, branch, existingTarget: item.github } : undefined;
     }
     return { repo: item.repo, target: item.target, type: item.type, ...(branch ? { branch } : {}) };
+  }
+
+  function explicitlyDeclaredMergedWithoutGitHubTime(model: DashboardModel): boolean {
+    const explicitlyMerged = (value: string | undefined) => /(^|[\s_-])merged($|[\s_-])/i.test(value || "");
+    return model.workItems.some((item) => {
+      if (item.terminalProvenance?.source !== "declared" || item.github?.mergedAt) return false;
+      const eventDeclaresMerge = model.events.some((event) =>
+        event.repo === item.repo
+        && event.target === item.target
+        && (explicitlyMerged(event.type) || explicitlyMerged(event.status))
+      );
+      return eventDeclaresMerge || item.batchSignals?.some((signal) => explicitlyMerged(signal.status));
+    });
   }
 
   async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
@@ -245,10 +261,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     // The headline is scope-wide: any missing GitHub evidence makes the whole count untrusted.
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
+    const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
     return {
       ...model,
       ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
-      githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown ? "unavailable" : "available",
+      githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
       ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
     };
