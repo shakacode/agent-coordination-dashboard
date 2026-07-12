@@ -205,6 +205,42 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("button", { name: "Open 2 batch repair records" })).toBeInTheDocument();
   });
 
+  it.each([
+    ["ready_for_batch", { schedulingState: "ready_for_batch" }],
+    ["needs_recovery", { schedulingState: "started_not_processing" }],
+    ["processing_now", { schedulingState: "in_process" }],
+    ["batch_repair", { attention: { kind: "batch_stopped", label: "Batch stopped", action: "Open batch operations" } }]
+  ] as const)("keeps terminal work out of the %s operational Find filter", (overviewFilter, overrides) => {
+    const terminal = {
+      ...ITEMS[0],
+      ...overrides,
+      id: `repo/dashboard#terminal-${overviewFilter}`,
+      target: `terminal-${overviewFilter}`,
+      operatorState: "terminal" as const,
+      terminalState: "done" as const
+    };
+    render(<AttentionShell deepLink={{ overviewFilter }} items={[terminal]} onQueryChange={vi.fn()} query="" repairBatchCount={1} repairWorkItemIds={new Set([terminal.id])} surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
+    if (overviewFilter === "batch_repair") {
+      expect(screen.getByRole("button", { name: "Open 1 batch repair records" })).toBeInTheDocument();
+    }
+  });
+
+  it("keeps archived terminal batch signals out of Find while retaining repair diagnostics", () => {
+    const archivedRepair = {
+      ...ITEMS[0],
+      id: "repo/dashboard#archived-repair",
+      target: "archived-repair",
+      operatorState: "archived_view" as const,
+      terminalState: undefined,
+      attention: undefined,
+      batchSignals: [{ batchId: "missing-plan", laneName: "lane", status: "missing_manifest", blockedOn: [] }]
+    };
+    render(<AttentionShell deepLink={{ overviewFilter: "batch_repair" }} items={[archivedRepair]} onQueryChange={vi.fn()} query="" repairBatchCount={1} repairWorkItemIds={new Set([archivedRepair.id])} surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open 1 batch repair records" })).toBeInTheDocument();
+  });
+
   it("qualifies batch repair membership by canonical work identity instead of shared batch id", () => {
     const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", attention: undefined, batchSignals: [{ batchId: "shared", laneName: "a", status: "running", blockedOn: [] }] };
     const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", attention: undefined, batchSignals: [{ batchId: "shared", laneName: "b", status: "running", blockedOn: [] }] };

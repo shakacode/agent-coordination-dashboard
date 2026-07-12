@@ -60,17 +60,21 @@ function matches(item: WorkItem, query: string): boolean {
     .some((candidate) => String(candidate).toLowerCase().includes(value));
 }
 
+function isOperationalWorkItem(item: WorkItem): boolean {
+  return !item.terminalState && !["terminal", "archived_view"].includes(item.operatorState || "");
+}
+
 function isNowItem(item: WorkItem): boolean {
   return Boolean(
     item.heartbeat
     && ["live", "stale"].includes(item.heartbeat.liveness)
-    && !item.terminalState
-    && !["terminal", "archived_view"].includes(item.operatorState || "")
+    && isOperationalWorkItem(item)
   );
 }
 
 function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined, repairWorkItemIds: ReadonlySet<string>): boolean {
   if (!filter) return true;
+  if (filter !== "qa_attention" && !isOperationalWorkItem(item)) return false;
   if (filter === "ready_for_batch") return item.schedulingState === "ready_for_batch";
   if (filter === "needs_recovery") return item.schedulingState === "started_not_processing";
   if (filter === "processing_now") return isNowItem(item);
