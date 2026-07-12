@@ -358,6 +358,48 @@ describe("App", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("refresh failed");
   });
 
+  it("closes an open timeline when refresh removes its repository from saved scope", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let settingsCalls = 0;
+    let itemCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") {
+        settingsCalls += 1;
+        return {
+          ok: true,
+          json: async () => settingsCalls === 1 ? settings : { targetRepos: ["other/repo"] }
+        } as Response;
+      }
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        if (itemCalls > 1) return { ok: false, status: 404 } as Response;
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: ["codex/out-of-scope"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => settingsCalls === 1 ? model : { ...model, generatedAt: "2026-07-12T11:21:00.000Z", targetRepos: ["other/repo"], workItems: [] }
+      } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/out-of-scope")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+
+    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Work item #44" })).not.toBeInTheDocument());
+    expect(screen.queryByText("repo/dashboard")).not.toBeInTheDocument();
+    expect(screen.queryByText("Branch: codex/out-of-scope")).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale timeline refresh failed/)).not.toBeInTheDocument();
+    expect(window.location.search).not.toContain("item=");
+  });
+
   it("aborts superseded item requests so stale route completions cannot win", async () => {
     window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
     let firstSignal: AbortSignal | undefined;

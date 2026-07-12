@@ -318,6 +318,19 @@ export function App() {
   }, [dashboard?.generatedAt, itemRoute]);
 
   useEffect(() => {
+    if (!itemRoute || !settings || settings.targetRepos.includes(itemRoute.repo)) {
+      return;
+    }
+    const nextDeepLink = { query: operatorQuery || undefined };
+    setItemRoute(undefined);
+    setItemTimeline(null);
+    setItemError(null);
+    setOperatorDeepLink(nextDeepLink);
+    setActiveSurface("find");
+    writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
+  }, [itemRoute, operatorQuery, settings]);
+
+  useEffect(() => {
     function openFind(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();

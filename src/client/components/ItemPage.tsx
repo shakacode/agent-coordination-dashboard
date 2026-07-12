@@ -62,6 +62,23 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
+function claimedHolderIsDead(timeline: ItemTimelineResponse, agentId: string): boolean {
+  const heartbeat = timeline.item?.heartbeat;
+  if (heartbeat?.agentId === agentId && !["unknown", "no-heartbeat"].includes(heartbeat.liveness)) {
+    return heartbeat.liveness === "dead";
+  }
+  const latestLiveness = timeline.liveness
+    .map((span, index) => ({ span, index }))
+    .filter(({ span }) => span.agentId === agentId)
+    .sort((left, right) =>
+      Date.parse(left.span.startedAt) - Date.parse(right.span.startedAt)
+      || Date.parse(left.span.endedAt) - Date.parse(right.span.endedAt)
+      || left.index - right.index
+    )
+    .at(-1)?.span;
+  return latestLiveness?.liveness === "dead";
+}
+
 function Handle({ handle }: { handle: string | undefined }) {
   if (!handle) return <span>Thread UNKNOWN</span>;
   return <button className="timeline-handle" onClick={() => copy(handle)} type="button">Copy thread handle {handle}</button>;
@@ -110,9 +127,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
   const loadedGitHub = timeline.item?.github?.loadState === "loaded" ? timeline.item.github : undefined;
   const holder = firstDisplayAttribution([activeClaim?.agentId], "UNKNOWN");
   const state = timeline.item?.operatorState || "UNKNOWN";
-  const holderDead = Boolean(activeClaim
-    && timeline.item?.heartbeat?.liveness === "dead"
-    && activeClaim.agentId === timeline.item.heartbeat.agentId);
+  const holderDead = Boolean(activeClaim && claimedHolderIsDead(timeline, activeClaim.agentId));
   const primary = holderDead
     ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
     : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };

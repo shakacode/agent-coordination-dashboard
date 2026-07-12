@@ -202,6 +202,25 @@ describe("ItemPage", () => {
     expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
   });
 
+  it("offers takeover when timeline liveness marks the claimed holder dead despite another live heartbeat", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      liveness: [
+        { agentId: "worker-a", machineId: "m1", liveness: "dead", status: "implementing", startedAt: "2026-07-12T10:00:00Z", endedAt: "2026-07-12T10:10:00Z" },
+        { agentId: "worker-b", machineId: "m2", liveness: "live", status: "reviewing", startedAt: "2026-07-12T10:05:00Z", endedAt: "2026-07-12T10:10:00Z" }
+      ],
+      item: {
+        ...timeline.item,
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-a", status: "active", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, agentId: "worker-b", liveness: "live" }
+      }
+    }} />);
+
+    expect(screen.getByText("Holder: worker-a")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
   it("keeps historical heartbeat telemetry visible without turning it into liveness", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
