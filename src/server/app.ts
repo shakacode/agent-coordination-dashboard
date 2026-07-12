@@ -10,7 +10,7 @@ import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
-import { buildDashboardModel } from "./state/buildDashboardModel";
+import { buildDashboardModel, hasCoordinationEvidence } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
@@ -116,14 +116,14 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
-    const hasCoordinationEvidence = Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
-    if (!hasCoordinationEvidence || item.terminalState || !/^\d+$/.test(item.target)) return undefined;
+    if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
     const lane = batchLaneFor(item, model);
     const branch = item.claim?.branch || item.heartbeat?.branch || lane?.branch;
     const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, lane?.prUrl]
       .map((value) => githubPullRequestReference(value, item.repo))
       .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
     if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };
+    if (item.terminalState) return undefined;
     if (item.github?.loadState === "loaded") {
       return branch ? { repo: item.repo, target: item.target, type: item.type, branch, existingTarget: item.github } : undefined;
     }
@@ -204,7 +204,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
     const key = dashboardCacheKey(settings);
     if (dashboardCacheTtlMs <= 0) {
-      return buildScopedDashboard(settings);
+      return buildScopedDashboard(settings, { bypassGitHubCache: options.bypassCache });
     }
 
     if (options.bypassCache) {

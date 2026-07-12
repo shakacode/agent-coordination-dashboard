@@ -42,6 +42,10 @@ interface BuildInput {
   now: Date;
 }
 
+export function hasCoordinationEvidence(item: WorkItem): boolean {
+  return Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
+}
+
 function workId(repo: string, target: string): string {
   return `${repo}#${target}`;
 }
@@ -1243,8 +1247,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   });
   const nonterminalWorkItems = workItems.filter((item) => !item.terminalState);
   const hasUnreconciledCoordinatedWork = nonterminalWorkItems.some((item) => {
-    const hasCoordinationEvidence = Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
-    return hasCoordinationEvidence && item.github?.loadState !== "loaded";
+    return hasCoordinationEvidence(item) && item.github?.loadState !== "loaded";
   });
 
   const workByAgent = new Map<string, WorkItem[]>();

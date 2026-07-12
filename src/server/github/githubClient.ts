@@ -139,6 +139,7 @@ export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
 
 export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 8, maxCacheEntries = 2_000) {
   const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult>; settled: boolean }>();
+  const targetCache = new Map<string, { expiresAt: number; promise: ReturnType<GhRunner["run"]>; settled: boolean }>();
   const queue: Array<() => void> = [];
   let activeLoads = 0;
 
@@ -151,6 +152,31 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       if (!oldestSettled) break;
       cache.delete(oldestSettled);
     }
+  }
+
+  function pruneTargetCache(now: number) {
+    for (const [key, entry] of targetCache) {
+      if (entry.settled && entry.expiresAt <= now) targetCache.delete(key);
+    }
+    while (targetCache.size > Math.max(1, maxCacheEntries)) {
+      const oldestSettled = Array.from(targetCache).find(([, entry]) => entry.settled)?.[0];
+      if (!oldestSettled) break;
+      targetCache.delete(oldestSettled);
+    }
+  }
+
+  function loadTarget(reference: GitHubTargetReference) {
+    const now = Date.now();
+    pruneTargetCache(now);
+    const key = `${reference.repo}#${reference.target}`;
+    const existing = targetCache.get(key);
+    if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
+    const promise = runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
+    const entry = { expiresAt: now + ttlMs, promise, settled: false };
+    targetCache.set(key, entry);
+    const settle = () => { entry.settled = true; pruneTargetCache(Date.now()); };
+    void promise.then(settle, settle);
+    return promise;
   }
 
   function schedule<T>(task: () => Promise<T>): Promise<T> {
@@ -170,7 +196,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
     const result = reference.existingTarget
       ? undefined
-      : await runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
+      : await loadTarget(reference);
     let branchState: GitHubPreview["branchState"];
     const branchWarnings: CoordinationWarning[] = [];
     if (reference.branch) {
@@ -216,6 +242,9 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target && candidate.branch === reference.branch && Boolean(candidate.existingTarget) === Boolean(reference.existingTarget)) === index);
       const now = Date.now();
       pruneCache(now);
+      if (options.bypassCache) {
+        for (const reference of unique) targetCache.delete(`${reference.repo}#${reference.target}`);
+      }
       const results = await Promise.all(unique.map((reference) => {
         const key = `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
         const existing = cache.get(key);

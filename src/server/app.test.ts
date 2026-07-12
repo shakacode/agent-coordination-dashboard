@@ -156,6 +156,36 @@ describe("dashboard app import endpoint", () => {
     expect(body.trulyOpenCountStatus).toBe("available");
   });
 
+  it("enriches a declared terminal issue from its PR URL without overriding declared precedence", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-declared-pr-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(join(stateRoot, "batches", "declared.json"), JSON.stringify({ schema_version: 1, batch_id: "declared", repo: "shakacode/react_on_rails", targets: [{ type: "issue", target: "45" }], lanes: [{ name: "done", owner: "worker", targets: ["45"], depends_on: [], status: "completed", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }] }));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => ({ items: references.map((reference) => ({ repo: reference.repo, target: reference.target, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const })), warnings: [] })
+    });
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>> };
+    expect(body.workItems[0]).toMatchObject({ type: "issue", terminalState: "done", terminalProvenance: { source: "declared" }, github: { type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" } });
+  });
+
+  it("propagates foreground GitHub bypass when dashboard caching is disabled", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-zero-cache-bypass-"));
+    const directory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "45.json"), JSON.stringify({ schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "active" }));
+    const bypasses: Array<boolean | undefined> = [];
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 0 }), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (_references, options) => { bypasses.push(options?.bypassCache); return { items: [], warnings: [] }; }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+    await fetch(`${baseUrl}/api/dashboard`);
+    await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+    expect(bypasses).toEqual([false, true]);
+  });
+
   it("keeps distinct branch evidence when two issue WorkItems share one PR", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-shared-pr-"));
     const directory = join(stateRoot, "claims", "shakacode", "react_on_rails");

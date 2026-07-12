@@ -106,6 +106,23 @@ describe("github list parsers", () => {
     expect(maximum).toBe(2);
   });
 
+  it("coalesces one target lookup while preserving distinct branch lookups", async () => {
+    const calls: string[] = [];
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls.push(args[1]);
+      if (args[1].includes("/branches/feature%2Fa")) return { stdout: "", stderr: "HTTP 404", exitCode: 1 };
+      if (args[1].includes("/branches/")) return { stdout: "{}", stderr: "", exitCode: 0 };
+      return { stdout: JSON.stringify({ number: 54, title: "Merged", html_url: "https://github.com/repo/app/pull/54", state: "closed", pull_request: { merged_at: "2026-07-12T10:00:00Z" }, labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const result = await reconciler.load([
+      { repo: "repo/app", target: "54", type: "pull_request", branch: "feature/a" },
+      { repo: "repo/app", target: "54", type: "pull_request", branch: "feature/b" }
+    ]);
+    expect(calls.filter((call) => call.includes("/issues/54"))).toHaveLength(1);
+    expect(calls.filter((call) => call.includes("/branches/"))).toHaveLength(2);
+    expect(result.items.map((item) => item.branchState)).toEqual(["deleted", "present"]);
+  });
+
   it("prunes expired cache entries and caps live entries deterministically", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
