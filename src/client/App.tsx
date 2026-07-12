@@ -326,6 +326,14 @@ export function App() {
   }
 
   const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
+  const sourceFailures = (dashboard.sourceStatus || []).filter((source) =>
+    ["auth_error", "unreachable"].includes(source.status)
+  );
+  const coordinationSourceError = sourceFailures.length > 0;
+  const coordinationDegraded =
+    sourceFailures.some((source) => source.status === "auth_error") ||
+    ((dashboard.sourceStatus?.length || 0) > 0 && sourceFailures.length === dashboard.sourceStatus?.length);
+  const degradedHttpStatus = sourceFailures.find((source) => source.httpStatus)?.httpStatus;
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
@@ -346,7 +354,12 @@ export function App() {
         <div>
           <h1>Agent Coordination</h1>
           <p>
-            {dashboard.stateRoot} · {dashboard.workItems.length} open or coordinated items
+            {coordinationSourceError ? (
+              <span className="source-chip source-chip-error">{dashboard.stateRoot}</span>
+            ) : (
+              dashboard.stateRoot
+            )}{" "}
+            · {dashboard.workItems.length} open or coordinated items
           </p>
         </div>
         <div className="summary-strip">
@@ -369,6 +382,21 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {coordinationDegraded && (
+        <section aria-label="Coordination backend degraded" className="coordination-degraded-banner" role="alert">
+          <strong>
+            Coordination backend unreachable{degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — showing GitHub data only
+          </strong>
+          <span>
+            Token source: {dashboard.coordinationTokenEnvVar || "no token environment variable found"}. Run{" "}
+            <code>agent-coord doctor --deep</code> to diagnose and re-provision access.
+          </span>
+          <a href="/api/doctor" rel="noreferrer" target="_blank">
+            Details
+          </a>
+        </section>
+      )}
 
       <details className="repo-filter" aria-label="Target repositories">
         <summary>

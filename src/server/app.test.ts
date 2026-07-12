@@ -50,6 +50,16 @@ async function listenEmptyCoordinationApi(): Promise<string> {
   );
 }
 
+async function listenUnauthorizedCoordinationApi(): Promise<string> {
+  return listenServer(
+    createServer((_req, res) => {
+      res.statusCode = 401;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "unauthorized" }));
+    }).listen(0, "127.0.0.1")
+  );
+}
+
 describe("dashboard app import endpoint", () => {
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -259,6 +269,66 @@ describe("dashboard app import endpoint", () => {
     expect(response.status).toBe(200);
     expect(body.stateRoot).toBe("coordination-api");
     expect(JSON.stringify(body)).not.toContain(apiUrl);
+  });
+
+  it("reports fresh per-resource coordination diagnostics without exposing the token", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-doctor-"));
+    const apiUrl = await listenUnauthorizedCoordinationApi();
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "secret-token-value",
+      coordApiTokenEnvVar: "AGENT_COORD_API_TOKEN"
+    });
+
+    const response = await fetch(`${baseUrl}/api/doctor`);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      apiUrl,
+      tokenEnvVar: "AGENT_COORD_API_TOKEN",
+      stateRoot,
+      perResource: [
+        expect.objectContaining({ resource: "claims", status: "auth_error", httpStatus: 401 }),
+        expect.objectContaining({ resource: "heartbeats", status: "auth_error", httpStatus: 401 }),
+        expect.objectContaining({ resource: "batches", status: "auth_error", httpStatus: 401 }),
+        expect.objectContaining({ resource: "events", status: "auth_error", httpStatus: 401 })
+      ]
+    });
+    expect(JSON.stringify(body)).not.toContain("secret-token-value");
+  });
+
+  it("clears degraded source status on a fresh read without restarting the dashboard", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-recovery-"));
+    let authorized = false;
+    const apiUrl = await listenServer(
+      createServer((_req, res) => {
+        res.setHeader("content-type", "application/json");
+        if (!authorized) {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        }
+        res.end(JSON.stringify({ entries: [] }));
+      }).listen(0, "127.0.0.1")
+    );
+    const baseUrl = await listen(stateRoot, {
+      coordApiUrl: apiUrl,
+      coordApiToken: "rotated-token",
+      coordApiTokenEnvVar: "AGENT_COORD_API_TOKEN",
+      refreshIntervalMs: 5000
+    });
+
+    const degraded = (await (await fetch(`${baseUrl}/api/dashboard`)).json()) as {
+      sourceStatus: Array<{ status: string }>;
+    };
+    expect(degraded.sourceStatus.every((source) => source.status === "auth_error")).toBe(true);
+
+    authorized = true;
+    const recovered = (await (
+      await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } })
+    ).json()) as { sourceStatus: Array<{ status: string }> };
+    expect(recovered.sourceStatus.every((source) => source.status === "empty")).toBe(true);
   });
 
   it("treats a blank coordination API URL as filesystem mode", async () => {

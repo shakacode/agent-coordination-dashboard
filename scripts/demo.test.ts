@@ -167,4 +167,42 @@ describe("demo coordination state", () => {
       }
     }
   });
+
+  it("serves an explicit degraded API scenario for failure demos", async () => {
+    const port = await unusedPort();
+    const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/demo.ts", "--degraded"], {
+      cwd: process.cwd(),
+      env: { ...process.env, NODE_ENV: "production", PORT: String(port) },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const output = captureOutput(child);
+    let root = "";
+
+    try {
+      const rootMatch = await waitForOutput(child, output, /Demo coordination state: (.+)\n/);
+      root = rootMatch[1].trim();
+      roots.push(root);
+      await waitForOutput(child, output, /Degraded demo mode: coordination API returns 401/);
+      await waitForOutput(child, output, /listening on http:\/\/127\.0\.0\.1:/);
+
+      const dashboard = (await (
+        await fetch(`http://127.0.0.1:${port}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } })
+      ).json()) as { coordinationTokenEnvVar?: string; sourceStatus?: Array<{ status: string; httpStatus?: number }> };
+      expect(dashboard.coordinationTokenEnvVar).toBe("AGENT_COORD_API_TOKEN");
+      expect(dashboard.sourceStatus).toHaveLength(4);
+      expect(dashboard.sourceStatus?.every((status) => status.status === "auth_error" && status.httpStatus === 401)).toBe(true);
+
+      const doctor = (await (await fetch(`http://127.0.0.1:${port}/api/doctor`)).json()) as {
+        tokenEnvVar?: string;
+        perResource?: Array<{ status: string }>;
+      };
+      expect(doctor.tokenEnvVar).toBe("AGENT_COORD_API_TOKEN");
+      expect(doctor.perResource?.every((status) => status.status === "auth_error")).toBe(true);
+    } finally {
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+        await once(child, "exit");
+      }
+    }
+  }, 15_000);
 });

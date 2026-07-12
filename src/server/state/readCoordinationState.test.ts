@@ -344,6 +344,31 @@ describe("readCoordinationState", () => {
     );
   });
 
+  it("classifies authentication failures per coordination API resource", async () => {
+    const checkedAt = new Date("2026-06-17T20:00:00Z");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    );
+
+    const state = await readCoordinationState("/unused", checkedAt, {
+      apiUrl: "https://coord.example.test",
+      token: "expired-token"
+    });
+
+    expect(state.sourceStatus).toEqual([
+      { resource: "claims", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() },
+      { resource: "heartbeats", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() },
+      { resource: "batches", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() },
+      { resource: "events", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: checkedAt.toISOString() }
+    ]);
+  });
+
   it("keeps successful API prefixes when one prefix fails", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
@@ -395,6 +420,13 @@ describe("readCoordinationState", () => {
     expect(state.batches).toHaveLength(1);
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("Could not read coordination API heartbeats: connection refused")])
+    );
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resource: "claims", status: "ok", httpStatus: 200 }),
+        expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+        expect.objectContaining({ resource: "events", status: "empty", httpStatus: 200 })
+      ])
     );
   });
 
@@ -474,6 +506,14 @@ describe("readCoordinationState", () => {
         expect.stringContaining("Could not read coordination API claims: timed out after 5000ms"),
         expect.stringContaining("Could not read coordination API heartbeats: timed out after 5000ms"),
         expect.stringContaining("Could not read coordination API batches: timed out after 5000ms")
+      ])
+    );
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resource: "claims", status: "unreachable" }),
+        expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+        expect.objectContaining({ resource: "batches", status: "unreachable" }),
+        expect.objectContaining({ resource: "events", status: "unreachable" })
       ])
     );
   });

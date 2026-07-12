@@ -107,6 +107,14 @@ const settings = {
   targetRepos: ["shakacode/react_on_rails"]
 };
 
+const degradedSourceStatus = ["claims", "heartbeats", "batches", "events"].map((resource) => ({
+  resource,
+  mode: "api",
+  status: "auth_error",
+  httpStatus: 401,
+  checkedAt: "2026-06-17T20:00:00Z"
+}));
+
 describe("App", () => {
   beforeEach(() => {
     window.history.pushState({}, "", "/");
@@ -583,6 +591,68 @@ describe("App", () => {
     expect(screen.getAllByText("1 notices").length).toBeGreaterThan(0);
     expect(screen.queryByText("Warnings")).not.toBeInTheDocument();
     expect(screen.getAllByText(/No coordination state found/).length).toBeGreaterThan(0);
+  });
+
+  it("renders loud degraded state and honest coordination summary values", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "Coordination backend degraded" });
+    expect(banner).toHaveTextContent("Coordination backend unreachable (401) — showing GitHub data only");
+    expect(banner).toHaveTextContent("AGENT_COORD_API_TOKEN");
+    expect(banner).toHaveTextContent("agent-coord doctor --deep");
+    expect(within(banner).getByRole("link", { name: "Details" })).toHaveAttribute("href", "/api/doctor");
+    expect(screen.getByText("coordination-api", { selector: ".source-chip" })).toHaveClass("source-chip-error");
+    expect(screen.getByText("— claimed")).toHaveAttribute("title", expect.stringContaining("claims: authentication failed (401)"));
+    expect(screen.getByText("— processing")).toBeInTheDocument();
+    expect(stylesheet).toContain(".coordination-degraded-banner");
+  });
+
+  it("clears degraded UI on the next successful refresh", async () => {
+    let dashboardReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => settings } as Response;
+      }
+      dashboardReads += 1;
+      return {
+        ok: true,
+        json: async () =>
+          dashboardReads === 1
+            ? {
+                ...model,
+                stateRoot: "coordination-api",
+                coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+                sourceStatus: degradedSourceStatus
+              }
+            : {
+                ...model,
+                stateRoot: "coordination-api",
+                coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+                sourceStatus: degradedSourceStatus.map((source) => ({ ...source, status: "empty", httpStatus: 200 }))
+              }
+      } as Response;
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Coordination backend degraded" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument());
+    expect(screen.getByText("1 claimed")).toBeInTheDocument();
+    expect(screen.queryByText("coordination-api", { selector: ".source-chip-error" })).not.toBeInTheDocument();
   });
 
   it("groups repeated warning types and keeps overflow details inspectable", async () => {
