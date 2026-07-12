@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
-import { createGitHubTargetReconciler, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
+import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
@@ -119,7 +119,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
     const lane = batchLaneFor(item, model);
     const branch = item.claim?.branch || item.heartbeat?.branch || lane?.branch;
-    const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, lane?.prUrl]
+    const eventPrUrl = model.events
+      .filter((event) => event.repo === item.repo && event.target === item.target && event.prUrl)
+      .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0))[0]?.prUrl;
+    const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, lane?.prUrl, eventPrUrl]
       .map((value) => githubPullRequestReference(value, item.repo))
       .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
     if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };
@@ -132,10 +135,6 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return branch ? { repo: item.repo, target: item.target, type: item.type, branch, existingTarget: item.github } : undefined;
     }
     return { repo: item.repo, target: item.target, type: item.type, ...(branch ? { branch } : {}) };
-  }
-
-  function reconciliationKey(reference: GitHubTargetReference): string {
-    return `${reference.repo}#${reference.target}:${reference.branch || ""}:${reference.existingTarget ? "branch_only" : "target"}`;
   }
 
   async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
@@ -165,9 +164,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
     const reconciled = await loadGitHubTargets(reconciliationPlans.map((plan) => plan.reference), { bypassCache: options.bypassGitHubCache });
     const returnedReferences = reconciled.references || reconciliationPlans.map((plan) => plan.reference);
-    const resultByReference = new Map(reconciled.items.map((item, index) => [reconciliationKey(returnedReferences[index]), item]));
+    const resultByReference = new Map(reconciled.items.map((item, index) => [githubTargetReferenceKey(returnedReferences[index]), item]));
     const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
-      const result = resultByReference.get(reconciliationKey(plan.reference));
+      const result = resultByReference.get(githubTargetReferenceKey(plan.reference));
       return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, coordinatedType: plan.item.type }] : [];
     });
     const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));

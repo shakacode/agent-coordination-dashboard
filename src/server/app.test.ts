@@ -169,6 +169,44 @@ describe("dashboard app import endpoint", () => {
     expect(body.workItems[0]).toMatchObject({ type: "issue", terminalState: "done", terminalProvenance: { source: "declared" }, github: { type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" } });
   });
 
+  it("enriches a declared terminal issue when only its history event records the PR URL", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-event-pr-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await mkdir(join(stateRoot, "history"), { recursive: true });
+    await writeFile(join(stateRoot, "batches", "event-pr.json"), JSON.stringify({
+      schema_version: 1,
+      batch_id: "event-pr",
+      repo: "shakacode/react_on_rails",
+      targets: [{ type: "issue", target: "45" }],
+      lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "completed" }]
+    }));
+    await writeFile(join(stateRoot, "history", "merged.json"), JSON.stringify({
+      event_id: "merged-45",
+      type: "merged",
+      status: "merged",
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54",
+      timestamp: "2026-07-12T10:01:00Z"
+    }));
+    let reconciledTarget = "";
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => ({
+        items: references.map((reference) => {
+          reconciledTarget = reference.target;
+          return { repo: reference.repo, target: reference.target, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const };
+        }),
+        warnings: []
+      })
+    });
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>>; githubMergeTimeStatus: string };
+    expect(reconciledTarget).toBe("54");
+    expect(body.workItems[0]).toMatchObject({ type: "issue", terminalState: "done", terminalProvenance: { source: "declared" }, github: { type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" } });
+    expect(body.githubMergeTimeStatus).toBe("available");
+  });
+
   it("enriches a declared terminal pull request from its own target without requiring prUrl", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-declared-own-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });
