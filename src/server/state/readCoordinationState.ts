@@ -37,6 +37,23 @@ interface ApiReadResult {
   sourceStatus: CoordinationSourceStatus;
 }
 
+interface StateFileList {
+  files: string[];
+  unavailable: boolean;
+}
+
+interface StateReadResult<T> {
+  records: T[];
+  unavailable: boolean;
+}
+
+function filesystemSourceState(source: StateFileList, read: StateReadResult<unknown>): CoordinationSourceStatus["status"] {
+  if (source.unavailable || read.unavailable) {
+    return "unreachable";
+  }
+  return source.files.length === 0 ? "empty" : "ok";
+}
+
 const REQUIRED_STATE_DIRECTORIES = ["claims", "heartbeats", "batches"];
 const API_STATE_PREFIXES: ApiPrefix[] = ["claims", "heartbeats", "batches", "events"];
 const API_FETCH_TIMEOUT_MS = 5000;
@@ -272,23 +289,29 @@ async function listStateFiles(
   warnings: CoordinationWarning[],
   extensions = [".json"],
   warnMissing = true
-): Promise<string[]> {
+): Promise<StateFileList> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
     const nested = await Promise.all(
       entries.map(async (entry) => {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
-          return listStateFiles(path, root, warnings, extensions, warnMissing);
+          return listStateFiles(path, root, warnings, extensions, true);
         }
-        return entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [];
+        return {
+          files: entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [],
+          unavailable: false
+        };
       })
     );
-    return nested.flat().sort();
+    return {
+      files: nested.flatMap((result) => result.files).sort(),
+      unavailable: nested.some((result) => result.unavailable)
+    };
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
     if (code === "ENOENT" && !warnMissing) {
-      return [];
+      return { files: [], unavailable: false };
     }
     const path = relative(root, directory);
     warnings.push({
@@ -296,7 +319,7 @@ async function listStateFiles(
       ...warningContextFromPath(path),
       message: `Could not read coordination directory ${path || "."}: ${errorMessage(error)}`
     });
-    return [];
+    return { files: [], unavailable: true };
   }
 }
 
@@ -490,24 +513,32 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
 
   const warnings: CoordinationWarning[] = [];
   const hasInitializedRoot = await hasInitializedCoordinationRoot(root, warnings);
-  const claimFiles = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
-  const heartbeatFiles = await listStateFiles(join(root, "heartbeats"), root, warnings, [".json"], hasInitializedRoot);
-  const batchFiles = await listStateFiles(join(root, "batches"), root, warnings, [".json"], hasInitializedRoot);
-  const eventFiles = [
-    ...(await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false)),
-    ...(await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false))
-  ];
+  const claimsSource = await listStateFiles(join(root, "claims"), root, warnings, [".json"], hasInitializedRoot);
+  const heartbeatsSource = await listStateFiles(join(root, "heartbeats"), root, warnings, [".json"], hasInitializedRoot);
+  const batchesSource = await listStateFiles(join(root, "batches"), root, warnings, [".json"], hasInitializedRoot);
+  const eventsSource = await listStateFiles(join(root, "events"), root, warnings, [".json", ".jsonl"], false);
+  const historySource = await listStateFiles(join(root, "history"), root, warnings, [".json", ".jsonl"], false);
+  const eventFilesSource = {
+    files: [...eventsSource.files, ...historySource.files],
+    unavailable: eventsSource.unavailable || historySource.unavailable
+  };
+  const claimFiles = claimsSource.files;
+  const heartbeatFiles = heartbeatsSource.files;
+  const batchFiles = batchesSource.files;
+  const eventFiles = eventFilesSource.files;
 
   async function readMany<T>(
     files: string[],
     normalize: (raw: Record<string, unknown>, path: string) => T
-  ): Promise<T[]> {
+  ): Promise<StateReadResult<T>> {
     const records: T[] = [];
+    let unavailable = false;
     for (const file of files) {
       const path = relative(root, file);
       try {
         records.push(normalize(await readJson(file), path));
       } catch (error) {
+        unavailable = true;
         warnings.push({
           severity: "warning",
           ...warningContextFromPath(path),
@@ -515,11 +546,12 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
         });
       }
     }
-    return records;
+    return { records, unavailable };
   }
 
-  async function readEvents(files: string[]): Promise<BatchEvent[]> {
+  async function readEvents(files: string[]): Promise<StateReadResult<BatchEvent>> {
     const records: BatchEvent[] = [];
+    let unavailable = false;
     for (const file of files) {
       const path = relative(root, file);
       try {
@@ -537,6 +569,7 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
                 records.push(normalizeBatchEvent(event, `${path}:${index + 1}`));
               }
             } catch (error) {
+              unavailable = true;
               warnings.push({
                 severity: "warning",
                 ...warningContextFromPath(path),
@@ -556,6 +589,7 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
           }
         }
       } catch (error) {
+        unavailable = true;
         warnings.push({
           severity: "warning",
           ...warningContextFromPath(path),
@@ -563,20 +597,45 @@ export async function readCoordinationState(root: string, now = new Date(), apiO
         });
       }
     }
-    return records;
+    return { records, unavailable };
   }
 
+  const claimsRead = await readMany(claimFiles, normalizeClaim);
+  const heartbeatsRead = await readMany(heartbeatFiles, (raw, path) => normalizeHeartbeat(raw, path, now));
+  const batchesRead = await readMany(batchFiles, normalizeBatch);
+  const eventsRead = await readEvents(eventFiles);
+
   return {
-    claims: await readMany(claimFiles, normalizeClaim),
-    heartbeats: await readMany(heartbeatFiles, (raw, path) => normalizeHeartbeat(raw, path, now)),
-    batches: await readMany(batchFiles, normalizeBatch),
-    events: await readEvents(eventFiles),
+    claims: claimsRead.records,
+    heartbeats: heartbeatsRead.records,
+    batches: batchesRead.records,
+    events: eventsRead.records,
     warnings,
     sourceStatus: [
-      { resource: "claims", mode: "fs", status: claimFiles.length === 0 ? "empty" : "ok", checkedAt: now.toISOString() },
-      { resource: "heartbeats", mode: "fs", status: heartbeatFiles.length === 0 ? "empty" : "ok", checkedAt: now.toISOString() },
-      { resource: "batches", mode: "fs", status: batchFiles.length === 0 ? "empty" : "ok", checkedAt: now.toISOString() },
-      { resource: "events", mode: "fs", status: eventFiles.length === 0 ? "empty" : "ok", checkedAt: now.toISOString() }
+      {
+        resource: "claims",
+        mode: "fs",
+        status: filesystemSourceState(claimsSource, claimsRead),
+        checkedAt: now.toISOString()
+      },
+      {
+        resource: "heartbeats",
+        mode: "fs",
+        status: filesystemSourceState(heartbeatsSource, heartbeatsRead),
+        checkedAt: now.toISOString()
+      },
+      {
+        resource: "batches",
+        mode: "fs",
+        status: filesystemSourceState(batchesSource, batchesRead),
+        checkedAt: now.toISOString()
+      },
+      {
+        resource: "events",
+        mode: "fs",
+        status: filesystemSourceState(eventFilesSource, eventsRead),
+        checkedAt: now.toISOString()
+      }
     ]
   };
 }

@@ -617,7 +617,34 @@ describe("App", () => {
     expect(screen.getByText("coordination-api", { selector: ".source-chip" })).toHaveClass("source-chip-error");
     expect(screen.getByText("— claimed")).toHaveAttribute("title", expect.stringContaining("claims: authentication failed (401)"));
     expect(screen.getByText("— processing")).toBeInTheDocument();
+    expect(screen.getByText("— agents")).toHaveAttribute("title", expect.stringContaining("claims: auth_error (401)"));
+    expect(screen.getByText("— events")).toBeInTheDocument();
+    expect(screen.getByText("— health")).toBeInTheDocument();
+    expect(screen.getAllByText("1 warnings").length).toBeGreaterThan(0);
     expect(stylesheet).toContain(".coordination-degraded-banner");
+  });
+
+  it("shows the loud banner when a single coordination resource is unreachable", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 0 ? { ...source, status: "unreachable", httpStatus: 503 } : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Coordination backend degraded" })).toHaveTextContent(
+      "Coordination backend unreachable (503) — showing GitHub data only"
+    );
   });
 
   it("clears degraded UI on the next successful refresh", async () => {

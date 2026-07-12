@@ -163,6 +163,12 @@ describe("readCoordinationState", () => {
         })
       ])
     );
+    expect(state.sourceStatus).toEqual([
+      expect.objectContaining({ resource: "claims", status: "unreachable" }),
+      expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+      expect.objectContaining({ resource: "batches", status: "ok" }),
+      expect.objectContaining({ resource: "events", status: "unreachable" })
+    ]);
   });
 
   it("shows a setup notice instead of missing-directory warnings for empty roots", async () => {
@@ -217,6 +223,28 @@ describe("readCoordinationState", () => {
     );
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("No coordination state found");
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("claims");
+    expect(state.sourceStatus).toEqual([
+      expect.objectContaining({ resource: "claims", mode: "fs", status: "empty" }),
+      expect.objectContaining({ resource: "heartbeats", mode: "fs", status: "unreachable" }),
+      expect.objectContaining({ resource: "batches", mode: "fs", status: "unreachable" }),
+      expect.objectContaining({ resource: "events", mode: "fs", status: "empty" })
+    ]);
+  });
+
+  it("marks a filesystem resource unreachable when its state path cannot be listed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-unreadable-"));
+    await mkdir(join(root, "claims"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+    await writeFile(join(root, "heartbeats"), "not a directory");
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([expect.objectContaining({ resource: "heartbeats", mode: "fs", status: "unreachable" })])
+    );
+    expect(state.warnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("coordination directory heartbeats") })])
+    );
   });
 
   it("reads claims, heartbeats, batches, and events from the coordination API when configured", async () => {

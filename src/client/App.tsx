@@ -330,10 +330,12 @@ export function App() {
     ["auth_error", "unreachable"].includes(source.status)
   );
   const coordinationSourceError = sourceFailures.length > 0;
-  const coordinationDegraded =
-    sourceFailures.some((source) => source.status === "auth_error") ||
-    ((dashboard.sourceStatus?.length || 0) > 0 && sourceFailures.length === dashboard.sourceStatus?.length);
+  const coordinationDegraded = coordinationSourceError;
   const degradedHttpStatus = sourceFailures.find((source) => source.httpStatus)?.httpStatus;
+  const sourceFailureTitle = sourceFailures
+    .map((source) => `${source.resource}: ${source.status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`)
+    .join("; ");
+  const coordinationCount = (count: number) => (coordinationSourceError ? "—" : String(count));
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
@@ -363,9 +365,9 @@ export function App() {
           </p>
         </div>
         <div className="summary-strip">
-          <span>{dashboard.agents.length} agents</span>
-          <span>{dashboard.events.length} events</span>
-          <span>{dashboard.healthItems.length} health</span>
+          <span title={sourceFailureTitle || undefined}>{coordinationCount(dashboard.agents.length)} agents</span>
+          <span title={sourceFailureTitle || undefined}>{coordinationCount(dashboard.events.length)} events</span>
+          <span title={sourceFailureTitle || undefined}>{coordinationCount(dashboard.healthItems.length)} health</span>
           <span>
             {dashboard.warnings.length} {warningLabel}
           </span>
