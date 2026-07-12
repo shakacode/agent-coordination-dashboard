@@ -541,6 +541,65 @@ describe("readCoordinationState", () => {
     expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
   });
 
+  it("marks an API source unreachable when every entry wrapper is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const prefix = new URL(String(input)).searchParams.get("prefix");
+        return new Response(JSON.stringify({ entries: prefix === "claims" ? [null, { path: 42, data: {} }] : [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      })
+    );
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.claims).toEqual([]);
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
+  });
+
+  it("marks an API source unreachable when a malformed entry wrapper accompanies a valid record", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const prefix = new URL(String(input)).searchParams.get("prefix");
+        const entries =
+          prefix === "claims"
+            ? [
+                {
+                  path: "claims/shakacode/react_on_rails/4005.json",
+                  data: { repo: "shakacode/react_on_rails", target: "4005", agent_id: "worker-a", status: "active" }
+                },
+                { path: "claims/broken.json" }
+              ]
+            : [];
+        return new Response(JSON.stringify({ entries }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      })
+    );
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.claims).toHaveLength(1);
+    expect(state.claims[0]).toMatchObject({ agentId: "worker-a", target: "4005" });
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
+  });
+
   it("times out stalled coordination API requests", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {

@@ -163,8 +163,10 @@ async function fetchApiEntries(
     }
 
     const entries: ApiStateEntry[] = [];
+    let rejectedEntry = false;
     body.entries.forEach((entry, index) => {
       if (!isRecord(entry) || typeof entry.path !== "string" || !isRecord(entry.data)) {
+        rejectedEntry = true;
         warnings.push(apiWarning(`Malformed coordination API ${prefix} entry at index ${index}`));
         return;
       }
@@ -173,7 +175,12 @@ async function fetchApiEntries(
         data: entry.data
       });
     });
-    return { entries, sourceStatus: apiSourceStatus(prefix, entries.length === 0 ? "empty" : "ok", checkedAt, response.status) };
+    return {
+      entries,
+      sourceStatus: rejectedEntry
+        ? apiSourceStatus(prefix, "unreachable", checkedAt)
+        : apiSourceStatus(prefix, entries.length === 0 ? "empty" : "ok", checkedAt, response.status)
+    };
   } finally {
     clearTimeout(timeoutId);
   }

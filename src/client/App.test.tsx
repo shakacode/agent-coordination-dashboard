@@ -697,7 +697,7 @@ describe("App", () => {
 
     await screen.findByText("coordination-api", { selector: ".source-chip-error" });
     expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
-    expect(screen.getByText("1 agents")).toBeInTheDocument();
+    expect(screen.getByText("— agents")).toHaveAttribute("title", expect.stringContaining("events: unreachable (400)"));
     expect(screen.getByText("— events")).toBeInTheDocument();
     expect(screen.getByText("— health")).toBeInTheDocument();
     expect(screen.getByText("1 ready")).toBeInTheDocument();

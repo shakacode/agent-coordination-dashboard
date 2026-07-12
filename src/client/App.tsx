@@ -347,7 +347,7 @@ export function App() {
       .join("; ");
   const coordinationCount = (count: number, resources: readonly CoordinationResource[]) =>
     resources.some((resource) => failedResources.has(resource)) ? "—" : String(count);
-  const agentSources = ["claims", "heartbeats"] as const;
+  const agentSources = ["claims", "heartbeats", "events"] as const;
   const eventSources = ["events"] as const;
   const healthSources = ["claims", "heartbeats", "batches", "events"] as const;
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
