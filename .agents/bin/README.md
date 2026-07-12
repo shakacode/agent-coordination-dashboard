@@ -7,11 +7,11 @@ is absent means that capability is n/a in this repository.
 
 | Script | Purpose | This repo runs |
 | --- | --- | --- |
-| `setup` | Install dependencies | n/a |
+| `setup` | Install dependencies | `npm ci` |
 | `validate` | Pre-push gate | `npm run typecheck` |
 | `test` | Run tests | `npm test` |
 | `lint` | Lint / format | n/a |
-| `build` | Build / type-check | n/a |
+| `build` | Build / type-check | `npm run build` |
 | `docs` | Docs checks | n/a |
 | `ci-detect` | CI change detector | n/a |
 
