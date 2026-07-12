@@ -69,6 +69,17 @@ describe("generatePrBatchPrompt", () => {
     expect(prompt).not.toContain("PR #4005");
   });
 
+  it.each(["terminal", "archived_view"] as const)("excludes selected %s work", (operatorState) => {
+    const prompt = generatePrBatchPrompt([{
+      ...baseItem,
+      operatorState,
+      terminalState: operatorState === "terminal" ? "done" : undefined
+    }]);
+
+    expect(prompt).toContain("No selected items");
+    expect(prompt).not.toContain("PR #4005");
+  });
+
   it("refuses ambiguous multi-repo prompts with duplicate PR or issue numbers", () => {
     const prompt = generatePrBatchPrompt([
       {

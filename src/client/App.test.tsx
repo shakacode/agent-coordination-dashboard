@@ -433,6 +433,42 @@ describe("App", () => {
     expect(screen.queryByText("transient refresh failure")).not.toBeInTheDocument();
   });
 
+  it("drops a selected item when background GitHub reconciliation makes it terminal", async () => {
+    let dashboardCalls = 0;
+    let resolveRefresh: ((response: Response) => void) | undefined;
+    const refreshResponse = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      return refreshResponse;
+    }));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" });
+    await userEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    resolveRefresh?.({
+      ok: true,
+      json: async () => ({
+        ...model,
+        workItems: model.workItems.map((item) => item.id === "repo/dashboard#45"
+          ? { ...item, operatorState: "terminal" as const, terminalState: "done" as const, selected: false }
+          : item)
+      })
+    } as Response);
+
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" })).not.toBeInTheDocument());
+    await userEvent.click(screen.getByText("PR-batch prompt"));
+    expect(screen.getByText(/No selected items/)).not.toHaveTextContent("Issue #45:");
+  });
+
   it("keeps batch recovery controls and loopback-only import and stop routes reachable as drill-downs", async () => {
     const batch = {
       schemaVersion: 1,

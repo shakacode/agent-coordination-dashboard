@@ -28,6 +28,7 @@ function duplicateTargetNumbersAcrossRepos(items: WorkItem[]): string[] {
 export function generatePrBatchPrompt(items: WorkItem[]): string {
   const selected = items.filter(
     (item) => item.selected && item.schedulingState !== "in_process" && !(item.batchSignals?.length)
+      && !item.terminalState && !["terminal", "archived_view"].includes(item.operatorState || "")
   );
 
   if (selected.length === 0) {

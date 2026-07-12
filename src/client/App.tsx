@@ -88,7 +88,10 @@ function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: 
 }
 
 function canSelectWorkItem(item: WorkItem): boolean {
-  return item.schedulingState !== "in_process" && !item.batchSignals?.length;
+  return item.schedulingState !== "in_process"
+    && !item.batchSignals?.length
+    && !item.terminalState
+    && !["terminal", "archived_view"].includes(item.operatorState || "");
 }
 
 function preserveWorkItemSelections(current: DashboardModel | null, next: DashboardModel): DashboardModel {
