@@ -293,6 +293,9 @@ export function App() {
       setItemError(null);
       return;
     }
+    if (!dashboard) {
+      return;
+    }
     let cancelled = false;
     setItemTimeline(null);
     setItemError(null);
@@ -307,7 +310,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [itemRoute]);
+  }, [dashboard?.generatedAt, itemRoute]);
 
   useEffect(() => {
     function openFind(event: KeyboardEvent) {

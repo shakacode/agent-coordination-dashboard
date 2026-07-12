@@ -52,7 +52,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
   const state = timeline.item?.operatorState || "UNKNOWN";
   const holderDead = timeline.item?.heartbeat?.liveness === "dead";
   const primary = holderDead
-    ? { label: "Copy takeover command", value: `agent-coord claim --repo ${timeline.repo} --target ${timeline.target}` }
+    ? { label: "Copy takeover command", value: `agent-coord claim --repo ${timeline.repo} --target ${timeline.target} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
     : { label: "Copy resume prompt", value: `Resume work item ${timeline.repo}#${timeline.target} from its custody timeline.` };
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),

@@ -131,7 +131,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       ...buildCustodyTimeline({ repo, target, claims: state.claims, heartbeats: state.heartbeats, events: state.events, now }),
       item,
       sourceStatus: state.sourceStatus,
-      warnings: state.warnings
+      // Reuse the dashboard model's target-repository sanitization, then keep
+      // only this item's attributed warnings plus safe, unattributed notices.
+      warnings: model.warnings.filter((warning) =>
+        (!warning.repo || warning.repo === repo) && (!warning.target || warning.target === target)
+      )
     });
   });
 

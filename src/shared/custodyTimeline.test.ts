@@ -101,4 +101,58 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.branches).toEqual(["codex/first", "codex/takeover"]);
     expect(timeline.prUrls).toEqual(["https://github.com/shakacode/dashboard/pull/47"]);
   });
+
+  it("treats an acquisition after release as a new custody chain", () => {
+    const claim = (overrides: Partial<ClaimRecord>): ClaimRecord => ({
+      schemaVersion: 1,
+      repo: "shakacode/dashboard",
+      target: "46",
+      agentId: "worker-a",
+      status: "active",
+      path: "claims/shakacode/dashboard/46.json",
+      claimedAt: "2026-07-12T10:00:00Z",
+      ...overrides
+    });
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      claims: [
+        claim({ agentId: "worker-a", claimedAt: "2026-07-12T10:00:00Z" }),
+        claim({ agentId: "worker-a", status: "released", updatedAt: "2026-07-12T10:05:00Z" }),
+        claim({ agentId: "worker-b", claimedAt: "2026-07-12T10:06:00Z" })
+      ],
+      heartbeats: [],
+      events: []
+    });
+
+    expect(timeline.claims.map((event) => event.action)).toEqual(["acquired", "released", "acquired"]);
+    expect(timeline.claims[2]).not.toHaveProperty("previousAgentId");
+  });
+
+  it("ends the final phase at the first terminal lifecycle event", () => {
+    const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
+      eventId: "event",
+      type: "phase",
+      repo: "shakacode/dashboard",
+      target: "46",
+      path: "events/batch.jsonl:1",
+      timestamp: "2026-07-12T10:00:00Z",
+      ...overrides
+    });
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:30:00Z"),
+      claims: [],
+      heartbeats: [],
+      events: [
+        event({ eventId: "implement", status: "implementing", timestamp: "2026-07-12T10:00:00Z" }),
+        event({ eventId: "merged", type: "lifecycle", status: "merged", timestamp: "2026-07-12T10:05:00Z" })
+      ]
+    });
+
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:05:00.000Z", durationMs: 300_000 })
+    ]);
+  });
 });

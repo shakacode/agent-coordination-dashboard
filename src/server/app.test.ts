@@ -72,6 +72,7 @@ describe("dashboard app import endpoint", () => {
     const root = await mkdtemp(join(tmpdir(), "coord-item-timeline-"));
     await Promise.all([
       mkdir(join(root, "claims", "shakacode", "react_on_rails", "history"), { recursive: true }),
+      mkdir(join(root, "claims", "other", "private_repo"), { recursive: true }),
       mkdir(join(root, "heartbeats", "history"), { recursive: true }),
       mkdir(join(root, "events"), { recursive: true })
     ]);
@@ -84,6 +85,7 @@ describe("dashboard app import endpoint", () => {
         repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "active", generation: 4,
         claimed_at: "2026-07-12T10:04:00Z", branch: "codex/takeover"
       })),
+      writeFile(join(root, "claims", "other", "private_repo", "broken.json"), "{"),
       writeFile(join(root, "heartbeats", "history", "worker-b.json"), JSON.stringify({
         repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "implementing",
         updated_at: "2026-07-12T10:04:00Z", expires_at: "2026-07-12T10:09:00Z"
@@ -97,7 +99,7 @@ describe("dashboard app import endpoint", () => {
     const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
 
     expect(response.ok).toBe(true);
-    const timeline = await response.json() as { repo: string; target: string; claims: unknown[]; liveness: unknown[]; phases: unknown[]; branches: string[] };
+    const timeline = await response.json() as { repo: string; target: string; claims: unknown[]; liveness: unknown[]; phases: unknown[]; branches: string[]; warnings: Array<{ message: string }> };
     expect(timeline.repo).toBe("shakacode/react_on_rails");
     expect(timeline.target).toBe("46");
     expect(timeline.claims).toEqual(expect.arrayContaining([
@@ -107,6 +109,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ liveness: "live" })]));
     expect(timeline.phases).toEqual(expect.arrayContaining([expect.objectContaining({ phase: "implementing" })]));
     expect(timeline.branches).toEqual(["codex/takeover"]);
+    expect(timeline.warnings.map((warning) => warning.message).join("\n")).not.toContain("other/private_repo");
   });
 
   it("returns runtime refresh settings with target repositories", async () => {

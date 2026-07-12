@@ -178,6 +178,34 @@ describe("App", () => {
     expect(window.location.search).toBe("?item=repo%2Fdashboard%2F44");
   });
 
+  it("refreshes an open custody timeline when the dashboard auto-refreshes", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let dashboardCalls = 0;
+    let itemCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: [`codex/refresh-${itemCalls}`], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: `2026-07-12T11:20:0${dashboardCalls}.000Z` }) } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/refresh-1")).toBeInTheDocument();
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
+    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
+    expect(screen.getByText(/Branch: codex\/refresh-[2-9]/)).toBeInTheDocument();
+  });
+
   it("migrates target-only legacy item links without dropping their exact filter", async () => {
     window.history.pushState({}, "", "/?item=%2345");
     render(<App />);

@@ -56,12 +56,16 @@ describe("ItemPage", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("takeover-chat");
   });
 
-  it("offers a copy-only takeover command when the current holder is dead", () => {
+  it("copies an executable takeover command with an explicit replacement agent identity", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
       item: { ...timeline.item, heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" } }
     }} />);
 
-    expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "agent-coord claim --repo shakacode/dashboard --target 46 --agent-id REPLACE_WITH_YOUR_AGENT_ID"
+    );
   });
 });

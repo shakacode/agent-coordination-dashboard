@@ -63,6 +63,7 @@ export interface BuildCustodyTimelineInput {
 }
 
 const DEAD_AFTER_TTL_MULTIPLIER = 4;
+const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(final|merged|complete(?:d)?|released|cancel(?:led|ed)?)(?:$|[._\s-])/i;
 
 function time(value: string): number | undefined {
   const result = Date.parse(value);
@@ -138,6 +139,10 @@ function isPhaseEvent(event: BatchEvent): boolean {
   return event.type.toLowerCase() === "phase" || /\b(plan|implement|verify|push|review)/i.test(event.status || "");
 }
 
+function isTerminalLifecycleEvent(event: BatchEvent): boolean {
+  return TERMINAL_LIFECYCLE_PATTERN.test(event.type) || TERMINAL_LIFECYCLE_PATTERN.test(event.status || "");
+}
+
 function unique(values: Array<string | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value?.trim()))));
 }
@@ -166,7 +171,11 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
       ...(timestamp ? { timestamp } : {}),
       ...optionalFields(claim)
     };
-    if (claim.status !== "released") previousActiveAgent = claim.agentId;
+    if (claim.status === "released") {
+      previousActiveAgent = undefined;
+    } else {
+      previousActiveAgent = claim.agentId;
+    }
     return event;
   });
   const matchingHeartbeats = input.heartbeats.filter((heartbeat) => heartbeat.repo === input.repo && heartbeat.target === input.target);
@@ -177,8 +186,12 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
   const phases = phaseEvents.map((event, index) => {
     const startedAt = event.timestamp!;
     const startedMs = time(startedAt)!;
-    const nextMs = time(phaseEvents[index + 1]?.timestamp || "") || now.getTime();
-    const endedMs = Math.max(startedMs, Math.min(nextMs, now.getTime()));
+    const nextPhaseMs = time(phaseEvents[index + 1]?.timestamp || "") || now.getTime();
+    const terminalMs = events
+      .filter((candidate) => isTerminalLifecycleEvent(candidate))
+      .map((candidate) => time(candidate.timestamp || ""))
+      .find((candidate): candidate is number => candidate !== undefined && candidate > startedMs);
+    const endedMs = Math.max(startedMs, Math.min(nextPhaseMs, terminalMs || now.getTime(), now.getTime()));
     return {
       eventId: event.eventId,
       phase: event.status || event.type,
