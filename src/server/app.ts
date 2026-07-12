@@ -18,6 +18,11 @@ import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from 
 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
 type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
+type CoordinationSnapshot = { state: Awaited<ReturnType<typeof readCoordinationState>>; now: Date };
+interface BuildScopedDashboardOptions {
+  bypassGitHubCache?: boolean;
+  captured?: CoordinationSnapshot;
+}
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
 
 export function batchLanesFor(item: WorkItem, model: DashboardModel) {
@@ -101,6 +106,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return { ...settings, refreshIntervalMs: config.refreshIntervalMs };
   }
 
+  async function captureCoordinationSnapshot(): Promise<CoordinationSnapshot> {
+    const now = new Date();
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
+    return { state, now };
+  }
+
   function dashboardCacheKey(settings: DashboardSettings): string {
     return settings.targetRepos.join("\n");
   }
@@ -120,17 +134,13 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return;
     }
 
-    const now = new Date();
-    const state = await readCoordinationState(config.stateRoot, now, {
-      apiUrl: coordApiUrl,
-      token: coordApiToken
-    });
-    const model = await readScopedDashboard(settings);
+    const captured = await captureCoordinationSnapshot();
+    const model = await buildScopedDashboard(settings, { captured });
     const item = model.workItems.find((candidate) => candidate.repo === repo && candidate.target === target);
     res.json({
-      ...buildCustodyTimeline({ repo, target, claims: state.claims, heartbeats: state.heartbeats, events: state.events, now }),
+      ...buildCustodyTimeline({ repo, target, claims: captured.state.claims, heartbeats: captured.state.heartbeats, events: captured.state.events, now: captured.now }),
       item,
-      sourceStatus: state.sourceStatus,
+      sourceStatus: captured.state.sourceStatus,
       // Reuse the dashboard model's target-repository sanitization, then keep
       // only this item's attributed warnings plus safe, unattributed notices.
       warnings: model.warnings.filter((warning) =>
@@ -229,12 +239,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
-  async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
-    const now = new Date();
-    const state = await readCoordinationState(config.stateRoot, now, {
-      apiUrl: coordApiUrl,
-      token: coordApiToken
-    });
+  async function buildScopedDashboard(settings: DashboardSettings, options: BuildScopedDashboardOptions = {}): Promise<DashboardModel> {
+    const captured = options.captured || await captureCoordinationSnapshot();
+    const now = captured.now;
+    const state = captured.state;
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
     const openGithubItems = githubResults.flatMap((result) => result.items);
     const openGithubWarnings = githubResults.flatMap((result) => result.warnings);

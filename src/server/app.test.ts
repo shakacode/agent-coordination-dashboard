@@ -111,6 +111,47 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.warnings.map((warning) => warning.message).join("\n")).not.toContain("other/private_repo");
   });
 
+  it("builds item timeline and header state from one fresh snapshot instead of dashboard cache", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-snapshot-"));
+    const claimPath = join(root, "claims", "shakacode", "react_on_rails", "46.json");
+    const heartbeatPath = join(root, "heartbeats", "worker.json");
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "batches"), { recursive: true })
+    ]);
+    const writeCurrentState = async (agentId: string, status: string) => {
+      const updatedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      await Promise.all([
+        writeFile(claimPath, JSON.stringify({
+          repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "active", updated_at: updatedAt
+        })),
+        writeFile(heartbeatPath, JSON.stringify({
+          repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status, updated_at: updatedAt, expires_at: expiresAt
+        }))
+      ]);
+    };
+    await writeCurrentState("worker-a", "planning");
+
+    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 });
+    await fetch(`${baseUrl}/api/dashboard`);
+    await writeCurrentState("worker-b", "implementing");
+
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    const item = await response.json() as {
+      claims: Array<{ agentId: string }>;
+      liveness: Array<{ agentId: string; status: string }>;
+      item?: { claim?: { agentId: string }; heartbeat?: { agentId: string; status: string } };
+    };
+
+    expect(response.ok).toBe(true);
+    expect(item.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(item.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ agentId: "worker-b", status: "implementing" })]));
+    expect(item.item?.claim).toMatchObject({ agentId: "worker-b" });
+    expect(item.item?.heartbeat).toMatchObject({ agentId: "worker-b", status: "implementing" });
+  });
+
   it("returns runtime refresh settings with target repositories", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-settings-"));
     const baseUrl = await listen(stateRoot, { refreshIntervalMs: 2500 });
