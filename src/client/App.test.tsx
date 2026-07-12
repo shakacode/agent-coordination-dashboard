@@ -212,6 +212,64 @@ describe("App", () => {
     expect(window.location.search).toBe("?item=repo%2Fdashboard%2F44");
   });
 
+  it("hides unmounted header drill-downs in item mode and restores them after Back", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
+      item: model.workItems[1], sourceStatus: [], warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "2 lanes truly open" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "0 agents" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "0 events" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "0 health" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
+  });
+
+  it("clears structured Find constraints when Find exits an item route", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
+      item: model.workItems[1], sourceStatus: [], warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    window.history.pushState({}, "", "/?repo=repo%2Fdashboard&target=44&item=repo%2Fdashboard%2F44");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "45");
+    expect(window.location.search).toBe("?q=45");
+    expect(screen.getByRole("heading", { name: /Ready dashboard work/ })).toBeInTheDocument();
+  });
+
   it("refreshes an open custody timeline when the dashboard auto-refreshes", async () => {
     window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
     let dashboardCalls = 0;

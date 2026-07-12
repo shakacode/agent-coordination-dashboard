@@ -241,6 +241,7 @@ function isRenewalEvidence(event: BatchEvent): boolean {
  */
 function isOwnershipBearingEvent(event: BatchEvent): boolean {
   const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
+  if (type === "done" || type === "lane.done") return true;
   if (OWNERSHIP_EVENT_TYPES.has(type)) return true;
   if (/^(?:claim|custody)\.(?:acquired|takeover|renewed|continued|resumed|released)$/.test(type)) return true;
   return /^(?:claim|custody|lifecycle)$/i.test(event.type)
@@ -249,7 +250,10 @@ function isOwnershipBearingEvent(event: BatchEvent): boolean {
 
 function isCustodyTerminalEvent(event: BatchEvent): boolean {
   if (!isOwnershipBearingEvent(event)) return false;
-  return /(?:^|[._\s-])(handoff|release(?:d)?)(?:$|[._\s-])/i.test(event.type)
+  const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
+  return type === "done"
+    || type === "lane.done"
+    || /(?:^|[._\s-])(handoff|release(?:d)?)(?:$|[._\s-])/i.test(event.type)
     || (/^(?:claim|custody|lifecycle)$/i.test(event.type) && TERMINAL_LIFECYCLE_PATTERN.test(event.status || ""));
 }
 

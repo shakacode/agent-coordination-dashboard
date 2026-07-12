@@ -416,18 +416,17 @@ export function App() {
   }
 
   function openSurface(surface: DashboardSurface) {
+    const nextDeepLink = { query: operatorQuery || undefined };
     if (itemRoute) {
       setItemRoute(undefined);
       setItemTimeline(null);
       setItemError(null);
-      writeOperatorLocation({ query: operatorQuery || undefined }, operatorQuery, "replace");
     }
-    setHistoryMergedTodayOnly(false);
-    if (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink)) {
-      const nextDeepLink = { query: operatorQuery || undefined };
+    if (itemRoute || (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink))) {
       setOperatorDeepLink(nextDeepLink);
       writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
     }
+    setHistoryMergedTodayOnly(false);
     setActiveSurface(surface);
   }
 
@@ -592,21 +591,23 @@ export function App() {
             ) : (
               dashboard.stateRoot
             )}{" "}
-            · <button className="inline-count" onClick={showAllWorkItems} type="button">
+            {!itemRoute && <>· <button className="inline-count" onClick={showAllWorkItems} type="button">
               {dashboard.trulyOpenCountStatus === "unknown" || dashboard.trulyOpenCount === undefined ? "UNKNOWN" : dashboard.trulyOpenCount} lanes truly open
-            </button>
+            </button></>}
           </p>
         </div>
         <div className="summary-strip">
-          <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("agents")} title={failedSourceDetails(agentSources) || undefined} type="button">
-            {coordinationCount(dashboard.agents.length, agentSources)} agents
-          </button>
-          <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openBatchDetails("events")} title={failedSourceDetails(eventSources) || undefined} type="button">
-            {coordinationCount(dashboard.events.length, eventSources)} events
-          </button>
-          <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("health")} title={failedSourceDetails(healthSources) || undefined} type="button">
-            {coordinationCount(dashboard.healthItems.length, healthSources)} health
-          </button>
+          {!itemRoute && <>
+            <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("agents")} title={failedSourceDetails(agentSources) || undefined} type="button">
+              {coordinationCount(dashboard.agents.length, agentSources)} agents
+            </button>
+            <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openBatchDetails("events")} title={failedSourceDetails(eventSources) || undefined} type="button">
+              {coordinationCount(dashboard.events.length, eventSources)} events
+            </button>
+            <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("health")} title={failedSourceDetails(healthSources) || undefined} type="button">
+              {coordinationCount(dashboard.healthItems.length, healthSources)} health
+            </button>
+          </>}
           <button className="summary-count" disabled={dashboard.warnings.length === 0} onClick={revealWarnings} type="button">
             {dashboard.warnings.length} {warningLabel}
           </button>

@@ -276,7 +276,7 @@ describe("buildCustodyTimeline", () => {
     ]);
   });
 
-  it("treats done as terminal while releasing custody only for the active holder", () => {
+  it.each(["done", "lane.done"])("treats canonical %s as terminal while releasing custody only for the active holder", (doneType) => {
     const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
       eventId: "event",
       type: "lifecycle",
@@ -295,8 +295,8 @@ describe("buildCustodyTimeline", () => {
       events: [
         event({ eventId: "started", type: "lane.started", agentId: "worker-a" }),
         event({ eventId: "phase", type: "phase", status: "implementing", agentId: "worker-a", timestamp: "2026-07-12T10:01:00Z" }),
-        event({ eventId: "coordinator-done", status: "done", agentId: "coordinator", timestamp: "2026-07-12T10:04:00Z" }),
-        event({ eventId: "holder-done", status: "done", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+        event({ eventId: "coordinator-done", type: doneType, agentId: "coordinator", timestamp: "2026-07-12T10:04:00Z" }),
+        event({ eventId: "holder-done", type: doneType, agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
       ]
     });
 
