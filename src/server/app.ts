@@ -123,7 +123,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       .map((value) => githubPullRequestReference(value, item.repo))
       .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
     if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };
-    if (item.terminalState) return undefined;
+    if (item.terminalState) {
+      return item.type === "pull_request"
+        ? { repo: item.repo, target: item.target, type: "pull_request", ...(branch ? { branch } : {}) }
+        : undefined;
+    }
     if (item.github?.loadState === "loaded") {
       return branch ? { repo: item.repo, target: item.target, type: item.type, branch, existingTarget: item.github } : undefined;
     }
@@ -167,7 +171,16 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, coordinatedType: plan.item.type }] : [];
     });
     const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
-    const githubItems = [...openGithubItems.filter((item) => !reconciledWorkItemIds.has(`${item.repo}#${item.target}`)), ...remappedGithubItems];
+    const consumedCanonicalIds = new Set(reconciliationPlans.flatMap((plan) => {
+      if (plan.item.type !== "issue" || plan.reference.type !== "pull_request") return [];
+      const canonicalId = `${plan.reference.repo}#${plan.reference.target}`;
+      const canonicalWorkItem = preliminaryModel.workItems.find((item) => item.id === canonicalId);
+      return canonicalWorkItem && hasCoordinationEvidence(canonicalWorkItem) ? [] : [canonicalId];
+    }));
+    const githubItems = [...openGithubItems.filter((item) => {
+      const id = `${item.repo}#${item.target}`;
+      return !reconciledWorkItemIds.has(id) && !consumedCanonicalIds.has(id);
+    }), ...remappedGithubItems];
     const model = reconciliationPlans.length === 0 ? preliminaryModel : buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
