@@ -14,7 +14,9 @@ import type {
   QaValidationItem,
   QaValidationStatus,
   SchedulingState,
-  WorkItem
+  WorkItem,
+  MetadataSource,
+  OperatorRowProvenance
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { isQaEventType } from "../../shared/qaEvents";
@@ -64,13 +66,14 @@ function isLiveOrStale(heartbeat: HeartbeatRecord | undefined): boolean {
 function classifyWork(
   claim: ClaimRecord | undefined,
   heartbeat: HeartbeatRecord | undefined,
-  batchSignals: BatchWorkSignal[]
+  batchSignals: BatchWorkSignal[],
+  hasSavedBatchMembership = false
 ): SchedulingState {
   if (isLiveOrStale(heartbeat)) {
     return "in_process";
   }
 
-  if (claim || heartbeat || batchSignals.length > 0) {
+  if (claim || heartbeat || batchSignals.length > 0 || hasSavedBatchMembership) {
     return "started_not_processing";
   }
 
@@ -84,8 +87,13 @@ function heartbeatMatchesLane(batch: BatchRecord, lane: BatchLane, heartbeat: He
 
   const sameBatch = heartbeat.batchId === batch.batchId;
   const sameTarget = Boolean(heartbeat.target && lane.targets.includes(heartbeat.target));
-  const expectedRepo = heartbeat.target ? uniqueManifestRepoForTarget(batch, heartbeat.target) || batch.repo : batch.repo;
-  const sameRepo = expectedRepo ? heartbeat.repo === expectedRepo : true;
+  const manifestRepos = heartbeat.target ? manifestReposForTarget(batch, heartbeat.target) : [];
+  const sameRepo =
+    manifestRepos.length > 0
+      ? Boolean(heartbeat.repo && manifestRepos.includes(heartbeat.repo))
+      : batch.repo
+        ? heartbeat.repo === batch.repo
+        : true;
 
   if (heartbeat.target) {
     return sameRepo && sameTarget && (!heartbeat.batchId || sameBatch);
@@ -401,38 +409,53 @@ function laneHasOutOfScopeMetadata(lane: BatchLane, targetRepoSet: Set<string>):
 }
 
 function safeScopedTargetNumbers(batch: BatchRecord, targetRepoSet: Set<string>): Set<string> {
-  const groups = new Map<string, { inScopeRepos: Set<string>; hasOutOfScope: boolean }>();
+  const groups = new Map<string, { hasOutOfScope: boolean }>();
   for (const target of batch.targets || []) {
-    const group = groups.get(target.target) || { inScopeRepos: new Set<string>(), hasOutOfScope: false };
+    const group = groups.get(target.target) || { hasOutOfScope: false };
     const metadataRepos = [...repoRefsFromText(target.url), ...repoRefsFromText(target.title)];
     const hasOutOfScopeMetadataRepo = metadataRepos.some((repo) => !targetRepoSet.has(repo));
     const effectiveRepo = target.repo || batch.repo;
     if ((effectiveRepo && !targetRepoSet.has(effectiveRepo)) || hasOutOfScopeMetadataRepo) {
       group.hasOutOfScope = true;
-    } else {
-      group.inScopeRepos.add(effectiveRepo || "");
     }
     groups.set(target.target, group);
   }
   return new Set(
     Array.from(groups.entries())
-      .filter(([, group]) => !group.hasOutOfScope && group.inScopeRepos.size <= 1)
+      .filter(([, group]) => !group.hasOutOfScope)
       .map(([target]) => target)
   );
 }
 
 function uniqueManifestRepoForTarget(batch: BatchRecord, target: string): string | undefined {
-  const repos = new Set(
-    (batch.targets || [])
-      .filter((batchTarget) => batchTarget.target === target)
-      .map((batchTarget) => batchTarget.repo)
-      .filter((repo): repo is string => Boolean(repo))
-  );
+  const repos = new Set(manifestReposForTarget(batch, target));
   return repos.size === 1 ? Array.from(repos)[0] : undefined;
+}
+
+function manifestReposForTarget(batch: BatchRecord, target: string): string[] {
+  return Array.from(
+    new Set(
+      (batch.targets || [])
+        .filter((batchTarget) => batchTarget.target === target)
+        .map((batchTarget) => batchTarget.repo || batch.repo)
+        .filter((repo): repo is string => Boolean(repo))
+    )
+  );
 }
 
 function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
   return batch.repo === repo || Boolean((batch.targets || []).some((target) => target.repo === repo));
+}
+
+function explicitBatchTargetRepoMatch(batch: BatchRecord, target: string, repo: string): boolean | undefined {
+  const explicitRepos = (batch.targets || [])
+    .filter((batchTarget) => batchTarget.target === target)
+    .map((batchTarget) => batchTarget.repo || batch.repo)
+    .filter((targetRepo): targetRepo is string => Boolean(targetRepo));
+  if (explicitRepos.length === 0) {
+    return undefined;
+  }
+  return explicitRepos.includes(repo);
 }
 
 function eventMatchesBatch(
@@ -456,6 +479,10 @@ function eventMatchesBatch(
       return event.repo === batch.repo || Boolean((batch.targets || []).some((target) => target.repo === event.repo));
     }
     if (event.target) {
+      const explicitMatch = explicitBatchTargetRepoMatch(batch, event.target, event.repo);
+      if (explicitMatch !== undefined) {
+        return explicitMatch;
+      }
       if (!batchTargets(batch).has(event.target)) {
         return false;
       }
@@ -474,7 +501,11 @@ function eventMatchesBatch(
         Boolean((batch.targets || []).some((target) => target.repo === event.repo))
       );
     }
-    if (!event.target || !batchTargets(batch).has(event.target)) {
+    const explicitMatch = explicitBatchTargetRepoMatch(batch, event.target, event.repo);
+    if (explicitMatch !== undefined) {
+      return explicitMatch;
+    }
+    if (!batchTargets(batch).has(event.target)) {
       return false;
     }
     return inferredRepoForBatchTarget(batch.batchId, event.target) === event.repo;
@@ -773,13 +804,16 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         (target) => safeTargets.has(target.target) && (!target.repo || targetRepoSet.has(target.repo))
       );
       const keptTargets = new Set(targets.map((target) => target.target));
+      const structuredTargetNumbers = new Set((batch.targets || []).map((target) => target.target));
       const lanes =
         batch.targets && batch.targets.length > 0
           ? batch.lanes
               .filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet))
               .map((lane) => ({
                 ...lane,
-                targets: lane.targets.filter((target) => keptTargets.has(target))
+                targets: lane.targets.filter(
+                  (target) => keptTargets.has(target) || (batchRepoInScope && !structuredTargetNumbers.has(target))
+                )
               }))
               .filter((lane) => lane.targets.length > 0)
           : batch.lanes.filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet));
@@ -805,27 +839,27 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       .map((lane) => ({
         ...lane,
         targets: lane.targets.filter(
-          (target) => (!safeTargets || safeTargets.has(target)) && Boolean(uniqueRepoForBatchTarget(batch.batchId, target))
+          (target) =>
+            (!safeTargets || safeTargets.has(target)) &&
+            (manifestReposForTarget(batch, target).some((repo) => targetRepoSet.has(repo)) ||
+              Boolean(uniqueRepoForBatchTarget(batch.batchId, target)))
         )
       }))
       .filter((lane) => lane.targets.length > 0);
     const keptTargets = new Set(lanes.flatMap((lane) => lane.targets));
     const targets = (batch.targets || []).filter((target) => {
-      if (!keptTargets.has(target.target)) {
-        return false;
-      }
       if (safeTargets && !safeTargets.has(target.target)) {
         return false;
       }
       if (target.repo) {
         return targetRepoSet.has(target.repo);
       }
-      return Boolean(uniqueRepoForBatchTarget(batch.batchId, target.target));
+      return keptTargets.has(target.target) && Boolean(uniqueRepoForBatchTarget(batch.batchId, target.target));
     });
     const reservations = (batch.reservations || []).filter((reservation) => Boolean(reservation.repo && targetRepoSet.has(reservation.repo)));
     const unsafeMetadata = hasOutOfScopeMetadata(batch, targetRepoSet);
 
-    return lanes.length > 0
+    return lanes.length > 0 || targets.length > 0
       ? [
           {
             ...batch,
@@ -983,35 +1017,60 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
   const batchSignalsByWork = new Map<string, BatchWorkSignal[]>();
   const batchTargetsByWork = new Map<string, NonNullable<BatchRecord["targets"]>[number]>();
+  const batchEvidenceByWork = new Map<string, MetadataSource[]>();
+  const savedBatchMembershipByWork = new Set<string>();
   for (const batch of batches) {
     for (const target of batch.targets || []) {
       const repo = target.repo || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target.target);
       if (repo) {
-        batchTargetsByWork.set(workId(repo, target.target), target);
+        const id = workId(repo, target.target);
+        batchTargetsByWork.set(id, target);
+        const source: MetadataSource = batch.source === "inferred" ? "inferred_batch" : "manifest";
+        if (source === "manifest") {
+          savedBatchMembershipByWork.add(id);
+        }
+        const existingEvidence = batchEvidenceByWork.get(id) || [];
+        if (!existingEvidence.includes(source)) {
+          batchEvidenceByWork.set(id, [...existingEvidence, source]);
+        }
       }
     }
     for (const lane of batch.lanes) {
       for (const target of lane.targets) {
-        const repo = uniqueManifestRepoForTarget(batch, target) || batch.repo || uniqueRepoForBatchTarget(batch.batchId, target);
-        if (!repo) {
+        const manifestRepos = new Set(manifestReposForTarget(batch, target));
+        const repos =
+          manifestRepos.size > 0
+            ? Array.from(manifestRepos)
+            : [batch.repo || uniqueRepoForBatchTarget(batch.batchId, target)].filter(
+                (repo): repo is string => Boolean(repo)
+              );
+        if (repos.length === 0) {
           continue;
         }
-        const id = workId(repo, target);
-        batchSignalsByWork.set(id, [
-          ...(batchSignalsByWork.get(id) || []),
-          {
-            batchId: batch.batchId,
-            laneName: lane.name,
-            status: lane.status,
-            blockedOn: lane.blockedOn
+        for (const repo of repos) {
+          const id = workId(repo, target);
+          const source: MetadataSource = batch.source === "inferred" ? "inferred_batch" : "manifest";
+          const existingEvidence = batchEvidenceByWork.get(id) || [];
+          if (!existingEvidence.includes(source)) {
+            batchEvidenceByWork.set(id, [...existingEvidence, source]);
           }
-        ]);
+          batchSignalsByWork.set(id, [
+            ...(batchSignalsByWork.get(id) || []),
+            {
+              batchId: batch.batchId,
+              laneName: lane.name,
+              status: lane.status,
+              blockedOn: lane.blockedOn
+            }
+          ]);
+        }
       }
     }
   }
   const workKeys = new Set<string>([
     ...claimsByWork.keys(),
     ...previewsByWork.keys(),
+    ...batchTargetsByWork.keys(),
     ...batchSignalsByWork.keys(),
     ...nonterminalEventWorkKeys
   ]);
@@ -1040,8 +1099,24 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const github = previewsByWork.get(id);
       const batchTarget = batchTargetsByWork.get(id);
       const eventRecovery = !claim && !heartbeat && batchSignals.length === 0 && nonterminalEventWorkKeys.has(id);
-      const schedulingState = eventRecovery ? "started_not_processing" : classifyWork(claim, heartbeat, batchSignals);
+      const schedulingState = eventRecovery
+        ? "started_not_processing"
+        : classifyWork(claim, heartbeat, batchSignals, savedBatchMembershipByWork.has(id));
       const warnings = warningsForWork(repo, target, claim, heartbeat, workHeartbeats, claimAgentHeartbeat, batchSignals, schedulingState);
+      const evidence: MetadataSource[] = [];
+      if (claim) evidence.push("claim");
+      if (heartbeat) evidence.push("heartbeat");
+      if ((eventsByWork.get(id) || []).length > 0) evidence.push("event");
+      if (github) evidence.push("github");
+      for (const source of batchEvidenceByWork.get(id) || []) {
+        if (!evidence.includes(source)) evidence.push(source);
+      }
+      const hasObservedEvidence = Boolean(claim || heartbeat || (eventsByWork.get(id) || []).length > 0 || github?.loadState === "loaded");
+      const hasInferredEvidence = (batchEvidenceByWork.get(id) || []).length > 0;
+      const provenance: OperatorRowProvenance = {
+        classification: hasObservedEvidence ? "observed" : hasInferredEvidence ? "inferred" : "unknown",
+        evidence
+      };
 
       return {
         id,
@@ -1052,6 +1127,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         heartbeat,
         batchSignals,
         github,
+        provenance,
         schedulingState,
         warnings,
         selected: false

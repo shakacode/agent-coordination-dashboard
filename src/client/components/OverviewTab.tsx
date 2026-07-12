@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, CheckCircle2, GitPullRequest, PackageOpen } fr
 import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem } from "../../shared/types";
 import {
   buildOperatorRows,
+  filterOperatorRowsByProvenance,
   filterOperatorRowsForOverview,
   operatorActivityLabel,
   safeGithubUrl,
@@ -52,13 +53,21 @@ export function OverviewTab({
     ["failed", "missing", "requested", "in_progress"].includes(item.status)
   );
   const overviewRows = useMemo<Record<OverviewOperatorFilter, OperatorRow[]>>(() => {
-    const operatorRows = buildOperatorRows(dashboard);
+    const allOperatorRows = buildOperatorRows(dashboard);
+    const operatorRows = filterOperatorRowsByProvenance(allOperatorRows, false);
+    const rowsFor = (filter: OverviewOperatorFilter) => {
+      return filterOperatorRowsForOverview(
+        filter === "batch_repair" ? allOperatorRows : operatorRows,
+        dashboard,
+        filter
+      );
+    };
     return {
-      ready_for_batch: filterOperatorRowsForOverview(operatorRows, dashboard, "ready_for_batch"),
-      needs_recovery: filterOperatorRowsForOverview(operatorRows, dashboard, "needs_recovery"),
-      processing_now: filterOperatorRowsForOverview(operatorRows, dashboard, "processing_now"),
-      qa_attention: filterOperatorRowsForOverview(operatorRows, dashboard, "qa_attention"),
-      batch_repair: filterOperatorRowsForOverview(operatorRows, dashboard, "batch_repair")
+      ready_for_batch: rowsFor("ready_for_batch"),
+      needs_recovery: rowsFor("needs_recovery"),
+      processing_now: rowsFor("processing_now"),
+      qa_attention: rowsFor("qa_attention"),
+      batch_repair: rowsFor("batch_repair")
     };
   }, [dashboard]);
   const healthGroups = groupHealthItems(attentionItems);

@@ -3,6 +3,7 @@ import type { BatchRecord, ClaimRecord, DashboardModel, HeartbeatRecord, WorkIte
 import {
   buildOperatorRows,
   filterOperatorRows,
+  filterOperatorRowsByProvenance,
   filterOperatorRowsForOverview,
   operatorDeepLinkFromSearchParams,
   safeGithubUrl
@@ -85,6 +86,567 @@ function dashboard(partial: Partial<DashboardModel> = {}): DashboardModel {
 }
 
 describe("operatorRows", () => {
+  it("classifies observed, inferred, synthetic, and unknown rows with source evidence", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({ provenance: { classification: "observed", evidence: ["github"] } } as Partial<WorkItem>),
+          workItem({
+            id: "repo/app#124",
+            target: "124",
+            github: undefined,
+            provenance: { classification: "inferred", evidence: ["manifest"] }
+          } as Partial<WorkItem>),
+          workItem({
+            id: "repo/app#125",
+            target: "125",
+            github: undefined,
+            provenance: { classification: "unknown", evidence: [] }
+          } as Partial<WorkItem>)
+        ],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "synthetic-batch",
+            repo: "repo/app",
+            source: "inferred",
+            path: "inferred-batches/repo__app/synthetic-batch.json",
+            lanes: [
+              {
+                name: "standalone",
+                owner: "agent-synthetic",
+                targets: [],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(Object.fromEntries(rows.map((row) => [row.target || "standalone", row.provenance]))).toEqual({
+      "123": { classification: "observed", evidence: ["github"] },
+      "124": { classification: "inferred", evidence: ["manifest"] },
+      "125": { classification: "unknown", evidence: [] },
+      standalone: { classification: "inferred", evidence: ["inferred_batch"] }
+    });
+  });
+
+  it("filters inferred and synthetic rows by default while preserving unknown rows", () => {
+    const rows = [
+      { provenance: { classification: "observed", evidence: ["claim"] } },
+      { provenance: { classification: "inferred", evidence: ["manifest"] } },
+      { provenance: { classification: "synthetic", evidence: ["inferred_batch"] } },
+      { provenance: { classification: "unknown", evidence: [] } }
+    ] as any;
+
+    expect(filterOperatorRowsByProvenance(rows, false).map((row) => row.provenance.classification)).toEqual([
+      "observed",
+      "unknown"
+    ]);
+    expect(filterOperatorRowsByProvenance(rows, true)).toEqual(rows);
+  });
+
+  it("does not select inferred saved-batch targets as independent ready work", () => {
+    const savedSignal = { batchId: "saved-batch", laneName: "implementation", status: "queued", blockedOn: [] };
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/app#123",
+          repo: "repo/app",
+          target: "123",
+          github: undefined,
+          batchSignals: [savedSignal],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        }),
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          target: "123",
+          github: undefined,
+          batchSignals: [savedSignal],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "saved-batch",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/saved-batch.json",
+          targets: [
+            { type: "issue", target: "123", repo: "repo/app" },
+            { type: "issue", target: "123", repo: "repo/api" }
+          ],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+
+    expect(rows.map((row) => row.provenance.classification)).toEqual(["inferred", "inferred"]);
+    expect(filterOperatorRowsByProvenance(rows, false)).toEqual([]);
+    expect(filterOperatorRowsForOverview(rows, model, "ready_for_batch")).toEqual([]);
+  });
+
+  it("merges lane-wide event evidence into server-supplied inferred provenance", () => {
+    const savedSignal = { batchId: "saved-batch", laneName: "implementation", status: "queued", blockedOn: [] };
+    const model = dashboard({
+      workItems: [
+        workItem({
+          github: undefined,
+          batchSignals: [savedSignal],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "saved-batch",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/saved-batch.json",
+          targets: [{ type: "issue", target: "123", repo: "repo/app" }],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "lane-wide-observed",
+          type: "phase",
+          batchId: "saved-batch",
+          laneName: "implementation",
+          repo: "repo/app",
+          status: "lane-observed",
+          timestamp: "2026-07-09T19:59:00Z",
+          path: "events/saved-batch.jsonl:1"
+        }
+      ]
+    });
+    const rows = buildOperatorRows(model);
+
+    expect(rows).toMatchObject([
+      {
+        target: "123",
+        activityStatus: "lane-observed",
+        provenance: { classification: "observed", evidence: ["manifest", "event"] }
+      }
+    ]);
+    const defaultOperatorRows = filterOperatorRowsByProvenance(rows, false);
+    expect(defaultOperatorRows).toHaveLength(1);
+    expect(filterOperatorRowsForOverview(defaultOperatorRows, model, "needs_recovery")).toHaveLength(1);
+  });
+
+  it("deduplicates a matching fallback by repo and target without hiding a same-number target in another repo", () => {
+    const observed = workItem({ provenance: { classification: "observed", evidence: ["github"] } } as Partial<WorkItem>);
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [observed],
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "app-collision",
+            repo: "repo/app",
+            source: "manifest",
+            path: "batches/app-collision.json",
+            targets: [{ type: "pull_request", target: "123", repo: "repo/app" }],
+            lanes: [
+              {
+                name: "app",
+                owner: "agent-app",
+                targets: ["123"],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          },
+          {
+            schemaVersion: 1,
+            batchId: "api-collision",
+            repo: "repo/api",
+            source: "manifest",
+            path: "batches/api-collision.json",
+            targets: [{ type: "issue", target: "123", repo: "repo/api" }],
+            lanes: [
+              {
+                name: "api",
+                owner: "agent-api",
+                targets: ["123"],
+                dependsOn: [],
+                status: "queued",
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    expect(rows.filter((row) => row.repo === "repo/app" && row.target === "123")).toHaveLength(1);
+    expect(rows.filter((row) => row.repo === "repo/api" && row.target === "123")).toMatchObject([
+      { source: "lane", provenance: { classification: "synthetic", evidence: ["manifest"] } }
+    ]);
+  });
+
+  it("classifies a lane-only row with event evidence as observed", () => {
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "event-backed",
+      repo: "repo/app",
+      source: "manifest",
+      path: "batches/event-backed.json",
+      lanes: [
+        {
+          name: "diagnostic",
+          owner: "agent-diagnostic",
+          targets: [],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: [batch],
+        events: [
+          {
+            eventId: "phase-1",
+            type: "phase",
+            batchId: "event-backed",
+            laneName: "diagnostic",
+            repo: "repo/app",
+            status: "working",
+            timestamp: "2026-07-09T19:59:00Z",
+            path: "events/event-backed.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows).toMatchObject([
+      { provenance: { classification: "observed", evidence: ["manifest", "event"] } }
+    ]);
+  });
+
+  it("does not reuse a target-scoped lane event across sibling target rows", () => {
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "multi-target-events",
+      repo: "repo/app",
+      source: "manifest",
+      path: "batches/multi-target-events.json",
+      targets: [
+        { type: "issue", target: "123", repo: "repo/app" },
+        { type: "issue", target: "456", repo: "repo/app" }
+      ],
+      lanes: [
+        {
+          name: "implementation",
+          owner: "agent-a",
+          targets: ["123", "456"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: [batch],
+        events: [
+          {
+            eventId: "target-123",
+            type: "phase",
+            batchId: "multi-target-events",
+            laneName: "implementation",
+            repo: "repo/app",
+            target: "123",
+            status: "working-123",
+            timestamp: "2026-07-09T19:59:00Z",
+            path: "events/multi-target-events.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows.find((row) => row.target === "123")).toMatchObject({
+      activityStatus: "working-123",
+      provenance: { classification: "observed", evidence: ["manifest", "event"] }
+    });
+    expect(rows.find((row) => row.target === "456")).toMatchObject({
+      activityStatus: "queued",
+      provenance: { classification: "synthetic", evidence: ["manifest"] }
+    });
+
+    const laneWideRows = buildOperatorRows(
+      dashboard({
+        batches: [batch],
+        events: [
+          {
+            eventId: "lane-wide",
+            type: "phase",
+            batchId: "multi-target-events",
+            laneName: "implementation",
+            repo: "repo/app",
+            status: "lane-started",
+            timestamp: "2026-07-09T19:58:00Z",
+            path: "events/multi-target-events.jsonl:2"
+          }
+        ]
+      })
+    );
+    expect(laneWideRows.map((row) => ({ target: row.target, activityStatus: row.activityStatus }))).toEqual([
+      { target: "123", activityStatus: "lane-started" },
+      { target: "456", activityStatus: "lane-started" }
+    ]);
+  });
+
+  it("suppresses an ambiguous multi-repo lane fallback when every candidate target is represented", () => {
+    const apiTarget = workItem({
+      id: "repo/api#123",
+      repo: "repo/api",
+      github: {
+        repo: "repo/api",
+        target: "123",
+        type: "pull_request",
+        title: "API target",
+        url: "https://github.com/repo/api/pull/123",
+        state: "OPEN",
+        labels: [],
+        loadState: "loaded"
+      }
+    });
+    const ambiguousBatch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "multi-repo",
+      source: "manifest",
+      path: "batches/multi-repo.json",
+      targets: [
+        { type: "pull_request", target: "123", repo: "repo/app" },
+        { type: "pull_request", target: "123", repo: "repo/api" }
+      ],
+      lanes: [
+        {
+          name: "ambiguous",
+          owner: "agent-ambiguous",
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    };
+
+    const representedRows = buildOperatorRows(
+      dashboard({ workItems: [workItem(), apiTarget], batches: [ambiguousBatch] })
+    );
+    expect(representedRows).toHaveLength(2);
+    expect(representedRows.every((row) => row.source === "target")).toBe(true);
+
+    const partiallyRepresentedRows = buildOperatorRows(
+      dashboard({ workItems: [workItem()], batches: [ambiguousBatch] })
+    );
+    expect(partiallyRepresentedRows.filter((row) => row.source === "lane")).toMatchObject([
+      {
+        repo: "UNKNOWN",
+        target: "123",
+        type: "unknown",
+        title: "Target #123 (repository UNKNOWN)",
+        url: undefined,
+        provenance: { classification: "unknown", evidence: ["manifest"] },
+        warnings: ["Target repository UNKNOWN: manifest target #123 matches multiple saved repositories."]
+      }
+    ]);
+
+    const secondAmbiguousBatch: BatchRecord = {
+      ...ambiguousBatch,
+      batchId: "multi-repo-two",
+      path: "batches/multi-repo-two.json"
+    };
+    const twoAmbiguousRows = buildOperatorRows(
+      dashboard({ workItems: [workItem()], batches: [ambiguousBatch, secondAmbiguousBatch] })
+    ).filter((row) => row.source === "lane");
+    expect(twoAmbiguousRows).toHaveLength(2);
+    expect(new Set(twoAmbiguousRows.map((row) => row.id)).size).toBe(2);
+  });
+
+  it("keeps repo-less no-target lane rows distinct across batches", () => {
+    const repoLessBatch = (batchId: string): BatchRecord => ({
+      schemaVersion: 1,
+      batchId,
+      source: "manifest",
+      path: `batches/${batchId}.json`,
+      lanes: [
+        {
+          name: "implementation",
+          owner: `agent-${batchId}`,
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    });
+
+    const rows = buildOperatorRows(
+      dashboard({ batches: [repoLessBatch("repo-less-a"), repoLessBatch("repo-less-b")] })
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+    expect(rows).toMatchObject([
+      {
+        repo: "UNKNOWN",
+        target: "123",
+        provenance: { classification: "unknown", evidence: ["manifest"] },
+        warnings: ["Target repository UNKNOWN: lane target #123 has no explicit repository evidence."]
+      },
+      {
+        repo: "UNKNOWN",
+        target: "123",
+        provenance: { classification: "unknown", evidence: ["manifest"] },
+        warnings: ["Target repository UNKNOWN: lane target #123 has no explicit repository evidence."]
+      }
+    ]);
+  });
+
+  it("does not upgrade an ambiguous target event to observed without a direct lane or batch-path match", () => {
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "ambiguous-event",
+      source: "manifest",
+      path: "batches/ambiguous-event.json",
+      targets: [
+        { type: "issue", target: "123", repo: "repo/app" },
+        { type: "issue", target: "123", repo: "repo/api" }
+      ],
+      lanes: [
+        {
+          name: "implementation",
+          owner: "agent-a",
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        batches: [batch],
+        events: [
+          {
+            eventId: "unscoped-target-event",
+            type: "phase",
+            batchId: "ambiguous-event",
+            repo: "repo/api",
+            target: "123",
+            status: "working",
+            timestamp: "2026-07-09T19:59:00Z",
+            path: "events/ambiguous-event.jsonl:1"
+          }
+        ]
+      })
+    );
+
+    expect(rows).toMatchObject([
+      {
+        repo: "UNKNOWN",
+        provenance: { classification: "unknown", evidence: ["manifest"] },
+        activityStatus: "queued"
+      }
+    ]);
+  });
+
+  it("does not let a concrete repo event contaminate an ambiguous repository-UNKNOWN lane row", () => {
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "ambiguous-direct-event",
+      source: "manifest",
+      path: "batches/ambiguous-direct-event.json",
+      targets: [
+        { type: "issue", target: "123", repo: "repo/app" },
+        { type: "issue", target: "123", repo: "repo/api" }
+      ],
+      lanes: [
+        {
+          name: "implementation",
+          owner: "agent-a",
+          targets: ["123"],
+          dependsOn: [],
+          status: "queued",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    };
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [workItem({ provenance: { classification: "observed", evidence: ["github"] } })],
+        batches: [batch],
+        events: [
+          {
+            eventId: "api-target-event",
+            type: "phase",
+            batchId: "ambiguous-direct-event",
+            laneName: "implementation",
+            repo: "repo/api",
+            target: "123",
+            status: "working-api",
+            message: "API-only activity",
+            timestamp: "2026-07-09T19:59:00Z",
+            path: "events/ambiguous-direct-event.jsonl:1"
+          }
+        ]
+      })
+    );
+    const unknownRow = rows.find((row) => row.repo === "UNKNOWN");
+
+    expect(unknownRow).toMatchObject({
+      target: "123",
+      activityStatus: "queued",
+      activityMessage: undefined,
+      provenance: { classification: "unknown", evidence: ["manifest"] },
+      warnings: ["Target repository UNKNOWN: manifest target #123 matches multiple saved repositories."]
+    });
+  });
+
   it("allows only exact HTTPS GitHub issue and pull-request URLs", () => {
     expect(safeGithubUrl("https://github.com/repo/app/pull/123")).toBe("https://github.com/repo/app/pull/123");
     expect(safeGithubUrl("https://github.com/repo/app/issues/456?tab=activity#comment")).toBe(
@@ -1449,6 +2011,116 @@ describe("operatorRows", () => {
     });
   });
 
+  it("retains explicit non-default repo lane metadata for same-number targets in one batch", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          type: "issue",
+          claim: undefined,
+          heartbeat: undefined,
+          github: undefined,
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] },
+          batchSignals: [
+            { batchId: "multi-repo-metadata", laneName: "implementation", status: "blocked", blockedOn: ["decision-36"] }
+          ]
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "multi-repo-metadata",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/multi-repo-metadata.json",
+          targets: [
+            { type: "issue", target: "123", repo: "repo/app", title: "App target" },
+            {
+              type: "issue",
+              target: "123",
+              repo: "repo/api",
+              title: "API manifest target",
+              url: "https://github.com/repo/api/issues/123"
+            }
+          ],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "api-worker",
+              operator: "maintainer",
+              threadHandle: "api-thread",
+              branch: "codex/api-123",
+              targets: ["123"],
+              dependsOn: ["decision-36"],
+              status: "blocked",
+              liveness: "no-heartbeat",
+              blockedOn: ["decision-36"]
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "multi-repo-metadata",
+          repo: "repo/app",
+          batchPath: "batches/multi-repo-metadata.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    const row = buildOperatorRows(model).find((candidate) => candidate.repo === "repo/api" && candidate.target === "123");
+    expect(row).toMatchObject({
+      title: "API manifest target",
+      url: "https://github.com/repo/api/issues/123",
+      batchId: "multi-repo-metadata",
+      batchPath: "batches/multi-repo-metadata.json",
+      agentId: "api-worker",
+      operator: "maintainer",
+      threadHandle: "api-thread",
+      branch: "codex/api-123",
+      blockedOn: ["decision-36"],
+      activityStatus: "blocked"
+    });
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ repo: "repo/api", target: "123", activityStatus: "stopped" })])
+    );
+  });
+
+  it("does not offer a lane-less saved manifest target as ready for batching", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          claim: undefined,
+          heartbeat: undefined,
+          github: undefined,
+          batchSignals: [],
+          schedulingState: "started_not_processing",
+          provenance: { classification: "inferred", evidence: ["manifest"] }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "lane-less-target",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/lane-less-target.json",
+          targets: [{ type: "pull_request", target: "123", repo: "repo/api" }],
+          lanes: []
+        }
+      ]
+    });
+
+    expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "ready_for_batch")).toEqual([]);
+  });
+
   it("does not require PR URLs for active issue rows", () => {
     const issueHeartbeat = {
       ...heartbeat,
@@ -1677,6 +2349,138 @@ describe("operatorRows", () => {
       activityStatus: "stopped"
     });
     expect(rows[0].activityStatus).toBe("coding");
+  });
+
+  it("keeps both explicit repo identities in a same-number multi-repo batch repair", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/app#123",
+          repo: "repo/app",
+          target: "123",
+          type: "issue",
+          schedulingState: "ready_for_batch",
+          provenance: { classification: "observed", evidence: ["github"] }
+        }),
+        workItem({
+          id: "repo/api#123",
+          repo: "repo/api",
+          target: "123",
+          type: "issue",
+          schedulingState: "ready_for_batch",
+          provenance: { classification: "observed", evidence: ["github"] },
+          github: {
+            repo: "repo/api",
+            target: "123",
+            type: "issue",
+            title: "API repair target",
+            url: "https://github.com/repo/api/issues/123",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "multi-repo-repair",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/multi-repo-repair.json",
+          targets: [
+            { type: "issue", target: "123", repo: "repo/app" },
+            { type: "issue", target: "123", repo: "repo/api" }
+          ],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      batchOperations: [
+        {
+          batchId: "multi-repo-repair",
+          repo: "repo/app",
+          batchPath: "batches/multi-repo-repair.json",
+          controlStatus: "stopped",
+          eventCount: 1,
+          qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
+        }
+      ]
+    });
+
+    expect(
+      filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair").map((row) => ({
+        repo: row.repo,
+        target: row.target,
+        activityStatus: row.activityStatus
+      }))
+    ).toEqual([
+      { repo: "repo/app", target: "123", activityStatus: "stopped" },
+      { repo: "repo/api", target: "123", activityStatus: "stopped" }
+    ]);
+  });
+
+  it("keeps the batch repo fallback for lane targets absent from a partial structured target list", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          id: "repo/app#456",
+          repo: "repo/app",
+          target: "456",
+          type: "issue",
+          schedulingState: "ready_for_batch",
+          provenance: { classification: "observed", evidence: ["github"] },
+          github: {
+            repo: "repo/app",
+            target: "456",
+            type: "issue",
+            title: "Unlisted lane target",
+            url: "https://github.com/repo/app/issues/456",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "partial-targets",
+          repo: "repo/app",
+          source: "manifest",
+          path: "batches/partial-targets.json",
+          targets: [{ type: "issue", target: "123", repo: "repo/app" }],
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: ["456"],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(
+      filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair").map((row) => ({
+        repo: row.repo,
+        target: row.target,
+        activityStatus: row.activityStatus
+      }))
+    ).toEqual([{ repo: "repo/app", target: "456", activityStatus: "prompt_missing" }]);
   });
 
   it("presents every repair cause on matched batch targets before coordination signals attach batch identity", () => {

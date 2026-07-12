@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../../shared/types";
 import { OperatorView } from "./OperatorView";
 
@@ -92,6 +92,102 @@ const dashboard: DashboardModel = {
 };
 
 describe("OperatorView", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("hides inferred and synthetic rows by default and persists the reveal control per browser", async () => {
+    const derivedDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) => ({
+        ...item,
+        provenance:
+          index === 0
+            ? { classification: "observed" as const, evidence: ["claim" as const] }
+            : { classification: "inferred" as const, evidence: ["manifest" as const] }
+      })),
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "synthetic-batch",
+          repo: "repo/app",
+          source: "inferred",
+          path: "inferred-batches/repo__app/synthetic-batch.json",
+          lanes: [
+            {
+              name: "standalone",
+              owner: "agent-synthetic",
+              targets: [],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    };
+
+    localStorage.clear();
+    const firstRender = render(<OperatorView dashboard={derivedDashboard} />);
+
+    expect(screen.getByText("PR #123")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #124")).not.toBeInTheDocument();
+    expect(screen.queryByText("Batch lane")).not.toBeInTheDocument();
+    expect(screen.getByText("2 inferred or synthetic rows hidden")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" }));
+    expect(screen.getByText("Issue #124")).toBeInTheDocument();
+    expect(screen.getByText("Batch lane")).toBeInTheDocument();
+    expect(localStorage.getItem("agent-coordination-dashboard:show-derived-operator-rows")).toBe("true");
+
+    firstRender.unmount();
+    const persistedRender = render(<OperatorView dashboard={derivedDashboard} />);
+    expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).toBeChecked();
+    expect(screen.getByText("Issue #124")).toBeInTheDocument();
+
+    persistedRender.unmount();
+    render(<OperatorView dashboard={derivedDashboard} deepLink={{ overviewFilter: "ready_for_batch" }} />);
+    expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).toBeDisabled();
+    expect(screen.queryByText("Issue #124")).not.toBeInTheDocument();
+    expect(screen.getByText("1 inferred or synthetic row hidden")).toBeInTheDocument();
+    expect(screen.queryByText("2 inferred or synthetic rows hidden")).not.toBeInTheDocument();
+    expect(screen.getByText("Overview summary filters use observed and UNKNOWN rows only.")).toBeInTheDocument();
+  });
+
+  it("shows row provenance classification and evidence in the accessible disclosure", () => {
+    render(<OperatorView dashboard={dashboard} />);
+
+    const row = screen.getByText("PR #123").closest("tr");
+    const disclosure = within(row as HTMLElement).getByText("Metadata provenance").closest("details");
+    expect(within(disclosure as HTMLElement).getByText("Row provenance: observed")).toBeInTheDocument();
+    expect(within(disclosure as HTMLElement).getByText("Row evidence: claim, heartbeat, github")).toBeInTheDocument();
+  });
+
+  it("labels Batch Repair as a diagnostic exception when it includes derived evidence", () => {
+    const repairDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: [],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "inferred-rowless",
+          repo: "repo/app",
+          source: "inferred",
+          path: "inferred-batches/repo__app/inferred-rowless.json",
+          lanes: []
+        }
+      ]
+    };
+
+    render(<OperatorView dashboard={repairDashboard} deepLink={{ overviewFilter: "batch_repair" }} />);
+
+    expect(screen.getByText("inferred-rowless")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Show inferred and synthetic rows" })).toBeDisabled();
+    expect(screen.getByText("Batch repair includes diagnostic inferred and synthetic evidence.")).toBeInTheDocument();
+  });
+
+
   it("renders operator metadata and filters loaded rows with client search", async () => {
     render(<OperatorView dashboard={dashboard} />);
 
