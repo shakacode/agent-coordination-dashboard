@@ -213,12 +213,14 @@ function normalizeApiEntries<T>(
   entries: ApiStateEntry[],
   warnings: CoordinationWarning[],
   normalize: (raw: Record<string, unknown>, path: string) => T
-): T[] {
+): StateReadResult<T> {
   const records: T[] = [];
+  let unavailable = false;
   for (const entry of entries) {
     try {
       records.push(normalize(entry.data, entry.path));
     } catch (error) {
+      unavailable = true;
       warnings.push({
         severity: "warning",
         ...apiEntryWarningContext(entry),
@@ -226,7 +228,7 @@ function normalizeApiEntries<T>(
       });
     }
   }
-  return records;
+  return { records, unavailable };
 }
 
 async function readApiCoordinationState(options: Required<CoordinationApiOptions>, now: Date): Promise<RawState> {
@@ -249,14 +251,23 @@ async function readApiCoordinationState(options: Required<CoordinationApiOptions
   const results = Object.fromEntries(
     await Promise.all(API_STATE_PREFIXES.map(async (prefix) => [prefix, await readApiEntries(baseUrl, token, prefix, warnings, checkedAt)]))
   ) as Record<ApiPrefix, ApiReadResult>;
+  const claims = normalizeApiEntries("claims", results.claims.entries, warnings, normalizeClaim);
+  const heartbeats = normalizeApiEntries("heartbeats", results.heartbeats.entries, warnings, (raw, path) =>
+    normalizeHeartbeat(raw, path, now)
+  );
+  const batches = normalizeApiEntries("batches", results.batches.entries, warnings, normalizeBatch);
+  const events = normalizeApiEntries("events", results.events.entries, warnings, normalizeBatchEvent);
+  const normalizedByPrefix = { claims, heartbeats, batches, events };
 
   return {
-    claims: normalizeApiEntries("claims", results.claims.entries, warnings, normalizeClaim),
-    heartbeats: normalizeApiEntries("heartbeats", results.heartbeats.entries, warnings, (raw, path) => normalizeHeartbeat(raw, path, now)),
-    batches: normalizeApiEntries("batches", results.batches.entries, warnings, normalizeBatch),
-    events: normalizeApiEntries("events", results.events.entries, warnings, normalizeBatchEvent),
+    claims: claims.records,
+    heartbeats: heartbeats.records,
+    batches: batches.records,
+    events: events.records,
     warnings,
-    sourceStatus: API_STATE_PREFIXES.map((prefix) => results[prefix].sourceStatus)
+    sourceStatus: API_STATE_PREFIXES.map((prefix) =>
+      normalizedByPrefix[prefix].unavailable ? { ...results[prefix].sourceStatus, status: "unreachable" } : results[prefix].sourceStatus
+    )
   };
 }
 
@@ -296,7 +307,7 @@ async function listStateFiles(
       entries.map(async (entry) => {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
-          return listStateFiles(path, root, warnings, extensions, true);
+          return listStateFiles(path, root, warnings, extensions, warnMissing);
         }
         return {
           files: entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)) ? [path] : [],

@@ -498,6 +498,9 @@ describe("readCoordinationState", () => {
         })
       ])
     );
+    expect(state.sourceStatus).toEqual(
+      expect.arrayContaining([expect.objectContaining({ resource: "batches", mode: "api", status: "unreachable" })])
+    );
   });
 
   it("times out stalled coordination API requests", async () => {

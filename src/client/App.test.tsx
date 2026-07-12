@@ -624,7 +624,7 @@ describe("App", () => {
     expect(stylesheet).toContain(".coordination-degraded-banner");
   });
 
-  it("shows the loud banner when a single coordination resource is unreachable", async () => {
+  it("keeps a partial non-auth failure scoped to its dependent counts", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
       ok: true,
       json: async () =>
@@ -642,9 +642,74 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("alert", { name: "Coordination backend degraded" })).toHaveTextContent(
-      "Coordination backend unreachable (503) — showing GitHub data only"
-    );
+    await screen.findByText("coordination-api", { selector: ".source-chip-error" });
+    expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+    expect(screen.getByText("— agents")).toBeInTheDocument();
+    expect(screen.getByText("0 events")).toBeInTheDocument();
+    expect(screen.getByText("— health")).toBeInTheDocument();
+    expect(screen.getByText("— ready")).toBeInTheDocument();
+    expect(screen.getByText("— claimed")).toBeInTheDocument();
+    expect(screen.getByText("— processing")).toBeInTheDocument();
+    expect(screen.getByText("1 QA needs attention")).toBeInTheDocument();
+    expect(screen.getByText("0 batch repairs")).toBeInTheDocument();
+  });
+
+  it("does not turn an optional events-only failure into a full outage", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 3 ? { ...source, status: "unreachable", httpStatus: 400 } : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await screen.findByText("coordination-api", { selector: ".source-chip-error" });
+    expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+    expect(screen.getByText("1 agents")).toBeInTheDocument();
+    expect(screen.getByText("— events")).toBeInTheDocument();
+    expect(screen.getByText("— health")).toBeInTheDocument();
+    expect(screen.getByText("1 ready")).toBeInTheDocument();
+    expect(screen.getByText("1 claimed")).toBeInTheDocument();
+    expect(screen.getByText("0 processing")).toBeInTheDocument();
+    expect(screen.getByText("— QA needs attention")).toBeInTheDocument();
+    expect(screen.getByText("— batch repairs")).toBeInTheDocument();
+  });
+
+  it("uses filesystem remediation copy for an all-filesystem outage", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "/coordination-state",
+              sourceStatus: degradedSourceStatus.map((source) => ({
+                ...source,
+                mode: "fs",
+                status: "unreachable",
+                httpStatus: undefined
+              }))
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "Coordination backend degraded" });
+    expect(banner).toHaveTextContent("Coordination state files unavailable — some dashboard data is unavailable");
+    expect(banner).toHaveTextContent("AGENT_COORD_STATE_ROOT");
+    expect(banner).not.toHaveTextContent("Token source");
+    expect(banner).not.toHaveTextContent("re-provision access");
+    expect(banner).not.toHaveTextContent("showing GitHub data only");
   });
 
   it("clears degraded UI on the next successful refresh", async () => {

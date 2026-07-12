@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Activity, AlertTriangle, CheckCircle2, GitPullRequest, PackageOpen } from "lucide-react";
-import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem } from "../../shared/types";
+import type { CoordinationResource, CoordinationWarning, DashboardModel, HealthItem, QaValidationItem } from "../../shared/types";
 import {
   buildOperatorRows,
   filterOperatorRowsByProvenance,
@@ -82,14 +82,22 @@ export function OverviewTab({
   const failedSources = (dashboard.sourceStatus || []).filter((source) =>
     ["auth_error", "unreachable"].includes(source.status)
   );
-  const coordinationCountUnavailable = failedSources.length > 0;
-  const coordinationFailureTitle = failedSources
-    .map((source) => {
-      const status = source.status === "auth_error" ? "authentication failed" : "unreachable";
-      return `${source.resource}: ${status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`;
-    })
-    .join("; ");
-  const summaryCount = (count: number) => (coordinationCountUnavailable ? "—" : String(count));
+  const failedResources = new Set(failedSources.map((source) => source.resource));
+  const summaryCount = (count: number, resources: readonly CoordinationResource[]) =>
+    resources.some((resource) => failedResources.has(resource)) ? "—" : String(count);
+  const coordinationFailureTitle = (resources: readonly CoordinationResource[]) =>
+    failedSources
+      .filter((source) => resources.includes(source.resource))
+      .map((source) => {
+        const status = source.status === "auth_error" ? "authentication failed" : "unreachable";
+        return `${source.resource}: ${status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`;
+      })
+      .join("; ");
+  const readySources = ["claims", "heartbeats", "batches"] as const;
+  const claimedSources = ["claims", "heartbeats"] as const;
+  const processingSources = ["claims", "heartbeats"] as const;
+  const qaSources = ["batches", "events"] as const;
+  const batchRepairSources = ["batches", "events"] as const;
   const qaAttentionValidations = dashboard.qaValidations.filter((item) =>
     ["failed", "missing", "requested", "in_progress"].includes(item.status)
   );
@@ -174,48 +182,58 @@ export function OverviewTab({
       </label>
       <section className="summary-cards" aria-label="Coordination summary">
         <button
-          aria-label={`Show ${summaryCount(overviewRows.ready_for_batch.length)} ready for batch rows in Operator view`}
+          aria-label={`Show ${summaryCount(overviewRows.ready_for_batch.length, readySources)} ready for batch rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("ready_for_batch")}
           type="button"
         >
-          <strong title={coordinationFailureTitle || undefined}>{summaryCount(overviewRows.ready_for_batch.length)} ready</strong>
+          <strong title={coordinationFailureTitle(readySources) || undefined}>
+            {summaryCount(overviewRows.ready_for_batch.length, readySources)} ready
+          </strong>
           <span>Ready to batch</span>
         </button>
         <button
-          aria-label={`Show ${summaryCount(overviewRows.needs_recovery.length)} claimed, not processing rows in Operator view`}
+          aria-label={`Show ${summaryCount(overviewRows.needs_recovery.length, claimedSources)} claimed, not processing rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("needs_recovery")}
           type="button"
         >
-          <strong title={coordinationFailureTitle || undefined}>{summaryCount(overviewRows.needs_recovery.length)} claimed</strong>
+          <strong title={coordinationFailureTitle(claimedSources) || undefined}>
+            {summaryCount(overviewRows.needs_recovery.length, claimedSources)} claimed
+          </strong>
           <span>Not processing · recover</span>
         </button>
         <button
-          aria-label={`Show ${summaryCount(overviewRows.processing_now.length)} processing now rows in Operator view`}
+          aria-label={`Show ${summaryCount(overviewRows.processing_now.length, processingSources)} processing now rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("processing_now")}
           type="button"
         >
-          <strong title={coordinationFailureTitle || undefined}>{summaryCount(overviewRows.processing_now.length)} processing</strong>
+          <strong title={coordinationFailureTitle(processingSources) || undefined}>
+            {summaryCount(overviewRows.processing_now.length, processingSources)} processing
+          </strong>
           <span>Processing now</span>
         </button>
         <button
-          aria-label={`Show ${summaryCount(overviewRows.qa_attention.length)} QA needs attention rows in Operator view`}
+          aria-label={`Show ${summaryCount(overviewRows.qa_attention.length, qaSources)} QA needs attention rows in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("qa_attention")}
           type="button"
         >
-          <strong title={coordinationFailureTitle || undefined}>{summaryCount(overviewRows.qa_attention.length)} QA needs attention</strong>
+          <strong title={coordinationFailureTitle(qaSources) || undefined}>
+            {summaryCount(overviewRows.qa_attention.length, qaSources)} QA needs attention
+          </strong>
           <span>Missing, failed, or active</span>
         </button>
         <button
-          aria-label={`Show ${summaryCount(overviewRows.batch_repair.length)} batch repairs in Operator view`}
+          aria-label={`Show ${summaryCount(overviewRows.batch_repair.length, batchRepairSources)} batch repairs in Operator view`}
           className="summary-card"
           onClick={() => onOpenOperatorFilter("batch_repair")}
           type="button"
         >
-          <strong title={coordinationFailureTitle || undefined}>{summaryCount(overviewRows.batch_repair.length)} batch repairs</strong>
+          <strong title={coordinationFailureTitle(batchRepairSources) || undefined}>
+            {summaryCount(overviewRows.batch_repair.length, batchRepairSources)} batch repairs
+          </strong>
           <span>Manifest, prompt, or stopped batch</span>
         </button>
       </section>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
-import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
+import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { HealthTab } from "./components/HealthTab";
@@ -330,12 +330,26 @@ export function App() {
     ["auth_error", "unreachable"].includes(source.status)
   );
   const coordinationSourceError = sourceFailures.length > 0;
-  const coordinationDegraded = coordinationSourceError;
-  const degradedHttpStatus = sourceFailures.find((source) => source.httpStatus)?.httpStatus;
-  const sourceFailureTitle = sourceFailures
-    .map((source) => `${source.resource}: ${source.status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`)
-    .join("; ");
-  const coordinationCount = (count: number) => (coordinationSourceError ? "—" : String(count));
+  const failedResources = new Set(sourceFailures.map((source) => source.resource));
+  const hasAuthenticationFailure = sourceFailures.some((source) => source.status === "auth_error");
+  const allSourcesFailed =
+    (dashboard.sourceStatus?.length || 0) > 0 && sourceFailures.length === dashboard.sourceStatus?.length;
+  const coordinationDegraded = hasAuthenticationFailure || allSourcesFailed;
+  const filesystemOutage = coordinationDegraded && sourceFailures.every((source) => source.mode === "fs");
+  const failedHttpStatuses = Array.from(
+    new Set(sourceFailures.flatMap((source) => (source.httpStatus === undefined ? [] : [source.httpStatus])))
+  );
+  const degradedHttpStatus = failedHttpStatuses.length === 1 ? failedHttpStatuses[0] : undefined;
+  const failedSourceDetails = (resources: readonly CoordinationResource[]) =>
+    sourceFailures
+      .filter((source) => resources.includes(source.resource))
+      .map((source) => `${source.resource}: ${source.status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`)
+      .join("; ");
+  const coordinationCount = (count: number, resources: readonly CoordinationResource[]) =>
+    resources.some((resource) => failedResources.has(resource)) ? "—" : String(count);
+  const agentSources = ["claims", "heartbeats"] as const;
+  const eventSources = ["events"] as const;
+  const healthSources = ["claims", "heartbeats", "batches", "events"] as const;
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
@@ -365,9 +379,15 @@ export function App() {
           </p>
         </div>
         <div className="summary-strip">
-          <span title={sourceFailureTitle || undefined}>{coordinationCount(dashboard.agents.length)} agents</span>
-          <span title={sourceFailureTitle || undefined}>{coordinationCount(dashboard.events.length)} events</span>
-          <span title={sourceFailureTitle || undefined}>{coordinationCount(dashboard.healthItems.length)} health</span>
+          <span title={failedSourceDetails(agentSources) || undefined}>
+            {coordinationCount(dashboard.agents.length, agentSources)} agents
+          </span>
+          <span title={failedSourceDetails(eventSources) || undefined}>
+            {coordinationCount(dashboard.events.length, eventSources)} events
+          </span>
+          <span title={failedSourceDetails(healthSources) || undefined}>
+            {coordinationCount(dashboard.healthItems.length, healthSources)} health
+          </span>
           <span>
             {dashboard.warnings.length} {warningLabel}
           </span>
@@ -387,13 +407,33 @@ export function App() {
 
       {coordinationDegraded && (
         <section aria-label="Coordination backend degraded" className="coordination-degraded-banner" role="alert">
-          <strong>
-            Coordination backend unreachable{degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — showing GitHub data only
-          </strong>
-          <span>
-            Token source: {dashboard.coordinationTokenEnvVar || "no token environment variable found"}. Run{" "}
-            <code>agent-coord doctor --deep</code> to diagnose and re-provision access.
-          </span>
+          {filesystemOutage ? (
+            <>
+              <strong>Coordination state files unavailable — some dashboard data is unavailable</strong>
+              <span>
+                Check <code>AGENT_COORD_STATE_ROOT</code> permissions and state-file integrity, then refresh.
+              </span>
+            </>
+          ) : hasAuthenticationFailure ? (
+            <>
+              <strong>
+                Coordination backend unreachable{degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — showing GitHub data only
+              </strong>
+              <span>
+                Token source: {dashboard.coordinationTokenEnvVar || "no token environment variable found"}. Run{" "}
+                <code>agent-coord doctor --deep</code> to diagnose and re-provision access.
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>
+                Coordination backend unreachable{degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — some dashboard data is unavailable
+              </strong>
+              <span>
+                Run <code>agent-coord doctor --deep</code> to inspect backend connectivity, then refresh.
+              </span>
+            </>
+          )}
           <a href="/api/doctor" rel="noreferrer" target="_blank">
             Details
           </a>
