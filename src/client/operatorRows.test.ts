@@ -7,7 +7,8 @@ import {
   filterOperatorRowsByProvenance,
   filterOperatorRowsForOverview,
   operatorDeepLinkFromSearchParams,
-  safeGithubUrl
+  safeGithubUrl,
+  UNKNOWN
 } from "./operatorRows";
 
 const claim: ClaimRecord = {
@@ -107,11 +108,15 @@ describe("operatorRows", () => {
     const rows = [
       { id: "complete", retentionStatus: "complete", lastActivityAt: old },
       { id: "released", retentionStatus: "released", lastActivityAt: old },
+      { id: "canceled", retentionStatus: "canceled", operatorState: "done", lastActivityAt: old },
       { id: "dead", retentionStatus: "done", operatorState: "dead", lastActivityAt: old },
+      { id: "terminal-dead", retentionStatus: "done", operatorState: "done", liveness: "dead", lastActivityAt: old },
       { id: "blocked", retentionStatus: "done", operatorState: "blocked", lastActivityAt: old },
       { id: "paused", retentionStatus: "done", operatorState: "paused", lastActivityAt: old },
       { id: "ready", retentionStatus: "done", operatorState: "ready", lastActivityAt: old },
       { id: "started", retentionStatus: "done", operatorState: "done", schedulingState: "started_not_processing", lastActivityAt: old },
+      { id: "ready-scheduling", retentionStatus: "done", operatorState: "done", schedulingState: "ready_for_batch", lastActivityAt: old },
+      { id: "processing-scheduling", retentionStatus: "done", operatorState: "done", schedulingState: "in_process", lastActivityAt: old },
       { id: "live", retentionStatus: "done", operatorState: "done", liveness: "live", lastActivityAt: old },
       { id: "stale", retentionStatus: "done", operatorState: "done", liveness: "stale", lastActivityAt: old },
       { id: "open", retentionStatus: "closed", operatorState: "done", githubState: "OPEN", lastActivityAt: old },
@@ -292,6 +297,155 @@ describe("operatorRows", () => {
     expect(rows.find((row) => row.repo === "repo/api")?.lastActivityAt).toBe("2026-07-09T19:00:00Z");
   });
 
+  it("keeps an old terminal target lane visible when GitHub state is unavailable", () => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "target-lane",
+          repo: "repo/app",
+          updatedAt: "2026-07-08T20:00:00Z",
+          path: "batches/target-lane.json",
+          lanes: [
+            {
+              name: "closeout",
+              owner: "agent-old",
+              targets: ["777"],
+              dependsOn: [],
+              status: "done",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    });
+    const row = buildOperatorRows(model)[0];
+
+    expect(row).toMatchObject({ target: "777", operatorState: "done", githubState: UNKNOWN });
+    expect(filterOperatorRowsByAge([row], model.generatedAt).visibleRows).toEqual([row]);
+  });
+
+  it.each(["done", "merged", "closed", "cancelled"] as const)(
+    "renders a current %s heartbeat as terminal before live liveness",
+    (status) => {
+      const model = dashboard({
+        generatedAt: "2026-07-10T20:00:00Z",
+        workItems: [
+          workItem({
+            claim,
+            heartbeat: { ...heartbeat, status, updatedAt: "2026-07-10T19:59:30Z", liveness: "live" }
+          })
+        ]
+      });
+
+      expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: status });
+    }
+  );
+
+  it("renders a current terminal batch signal before dead lane liveness", () => {
+    const signal = { batchId: "terminal-signal", laneName: "closeout", status: "merged", blockedOn: [] };
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [
+        workItem({
+          github: undefined,
+          claim: undefined,
+          heartbeat: undefined,
+          schedulingState: "started_not_processing",
+          batchSignals: [signal]
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "terminal-signal",
+          repo: "repo/app",
+          updatedAt: "2026-07-10T19:59:00Z",
+          path: "batches/terminal-signal.json",
+          lanes: [
+            {
+              name: "closeout",
+              owner: "agent-a",
+              targets: ["123"],
+              dependsOn: [],
+              status: "merged",
+              liveness: "dead",
+              blockedOn: []
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "merged" });
+  });
+
+  it.each([
+    { eventAt: "2026-07-10T20:01:00Z", expected: "done" },
+    { eventAt: "2026-07-10T19:59:00Z", expected: "ready" }
+  ])("uses transition recency against queued manifest metadata at $eventAt", ({ eventAt, expected }) => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:02:00Z",
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "recency",
+          repo: "repo/app",
+          updatedAt: "2026-07-10T20:00:00Z",
+          path: "batches/recency.json",
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: [],
+              dependsOn: [],
+              status: "queued",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: `done-${eventAt}`,
+          type: "done",
+          status: "done",
+          batchId: "recency",
+          repo: "repo/app",
+          laneName: "implementation",
+          timestamp: eventAt,
+          path: "events/recency.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0].operatorState).toBe(expected);
+  });
+
+  it("keeps active work running when an older terminal event is retained", () => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [workItem({ claim, heartbeat: { ...heartbeat, updatedAt: "2026-07-10T19:59:30Z" } })],
+      events: [
+        {
+          eventId: "old-done-active",
+          type: "done",
+          status: "done",
+          batchId: "batch-1",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-10T19:58:00Z",
+          path: "events/old-done-active.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0].operatorState).toBe("running");
+  });
+
   it("disables age-out for an invalid dashboard snapshot and keeps future timestamps visible", () => {
     const rows = [
       { id: "old", retentionStatus: "done", operatorState: "done", lastActivityAt: "2020-01-01T00:00:00Z" },
@@ -338,7 +492,7 @@ describe("operatorRows", () => {
     { name: "blocked", status: "working", blockedOn: ["dependency"], liveness: "no-heartbeat", state: "blocked" },
     { name: "paused", status: "paused", blockedOn: [], liveness: "no-heartbeat", state: "paused" },
     { name: "queued", status: "queued", blockedOn: [], liveness: "no-heartbeat", state: "ready" },
-    { name: "dead", status: "done", blockedOn: [], liveness: "dead", state: "dead" }
+    { name: "dead", status: "working", blockedOn: [], liveness: "dead", state: "dead" }
   ] as const)("keeps a targetless lane with current $name facts visible over old done history", (fixture) => {
     const model = dashboard({
       generatedAt: "2026-07-10T20:00:00Z",

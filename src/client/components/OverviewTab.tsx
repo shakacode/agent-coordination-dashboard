@@ -43,6 +43,14 @@ function firstItems<T>(items: T[], count = 6): T[] {
   return items.slice(0, count);
 }
 
+export function sortRecentTerminalRows(rows: OperatorRow[]): OperatorRow[] {
+  const activityTime = (row: OperatorRow) => {
+    const parsed = row.lastActivityAt ? Date.parse(row.lastActivityAt) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  };
+  return [...rows].sort((left, right) => activityTime(right) - activityTime(left));
+}
+
 export function OverviewTab({
   dashboard,
   onOpenOperatorFilter,
@@ -83,7 +91,7 @@ export function OverviewTab({
         qa_attention: rowsFor("qa_attention"),
         batch_repair: rowsFor("batch_repair")
       } as Record<OverviewOperatorFilter, OperatorRow[]>,
-      terminalRows: visibleOperatorRows.filter(isTerminalRowEligibleForAgeOut),
+      terminalRows: sortRecentTerminalRows(visibleOperatorRows.filter(isTerminalRowEligibleForAgeOut)),
       hiddenTerminalCount: new Set([...ageOut.hiddenRows, ...batchRepairAgeOut.hiddenRows].map((row) => row.id)).size
     };
   }, [dashboard, revealOlderTerminalRows]);

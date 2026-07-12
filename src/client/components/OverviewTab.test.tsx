@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../../shared/types";
-import { OverviewTab } from "./OverviewTab";
+import { OverviewTab, sortRecentTerminalRows } from "./OverviewTab";
 
 const dashboard: DashboardModel = {
   generatedAt: "2026-07-09T20:00:00Z",
@@ -59,6 +59,16 @@ const dashboard: DashboardModel = {
 };
 
 describe("OverviewTab", () => {
+  it("sorts recent terminal rows newest first and invalid or missing timestamps last", () => {
+    const rows = [
+      { id: "missing" },
+      { id: "older", lastActivityAt: "2026-07-10T18:00:00Z" },
+      { id: "invalid", lastActivityAt: "not-a-date" },
+      { id: "newest", lastActivityAt: "2026-07-10T19:00:00Z" }
+    ] as any;
+
+    expect(sortRecentTerminalRows(rows).map((row) => row.id)).toEqual(["newest", "older", "missing", "invalid"]);
+  });
   it("excludes inferred and synthetic rows from default summaries while preserving unknown rows", () => {
     render(<OverviewTab dashboard={dashboard} onOpenOperatorFilter={vi.fn()} />);
 
