@@ -108,6 +108,18 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders an absent truly-open count as UNKNOWN even when status is not unknown", async () => {
+    const incompleteModel = { ...model, trulyOpenCount: undefined, trulyOpenCountStatus: "available" as const };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input).startsWith("/api/settings") ? settings : incompleteModel)
+    })));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "UNKNOWN lanes truly open" })).toBeInTheDocument();
+  });
+
   it("opens on the attention queue and keeps its safe copy action local", async () => {
     render(<App />);
 

@@ -172,7 +172,7 @@ function WorkCard({
         {reason?.action === "Open batch operations" ? (
           <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
         ) : null}
-        {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">{item.terminalProvenance?.source === "github" && item.terminalState === "done" ? "Open merge" : "Open"}</a> : null}
+        {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">{item.github.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
       </div>
     </article>
   );

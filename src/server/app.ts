@@ -34,8 +34,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
   const defaultTargetReconciler = createGitHubTargetReconciler();
-  const loadGitHubTargets = options.loadGitHubTargets
-    || (options.loadOpenGitHubItems ? async () => ({ items: [], warnings: [], references: [] }) : defaultTargetReconciler.load);
+  const loadGitHubTargets = options.loadGitHubTargets || defaultTargetReconciler.load;
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
@@ -106,23 +105,29 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
   }
 
-  function batchLaneFor(item: WorkItem, model: DashboardModel) {
-    for (const signal of item.batchSignals || []) {
+  function batchLanesFor(item: WorkItem, model: DashboardModel) {
+    return (item.batchSignals || [])
+      .map((signal, index) => ({ signal, index }))
+      .sort((left, right) => {
+        const newestFirst = (Date.parse(right.signal.updatedAt || "") || 0) - (Date.parse(left.signal.updatedAt || "") || 0);
+        return newestFirst || left.index - right.index;
+      })
+      .flatMap(({ signal }) => {
       const batch = model.batches.find((candidate) => candidate.batchId === signal.batchId && (!candidate.repo || candidate.repo === item.repo));
       const lane = batch?.lanes.find((candidate) => candidate.name === signal.laneName && candidate.targets.includes(item.target));
-      if (lane) return lane;
-    }
-    return undefined;
+        return lane ? [lane] : [];
+      });
   }
 
   function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
     if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
-    const lane = batchLaneFor(item, model);
-    const branch = item.claim?.branch || item.heartbeat?.branch || lane?.branch;
+    const lanes = batchLanesFor(item, model);
+    const branch = item.claim?.branch || item.heartbeat?.branch || lanes.find((lane) => lane.branch)?.branch;
     const eventPrUrl = model.events
       .filter((event) => event.repo === item.repo && event.target === item.target && event.prUrl)
       .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0))[0]?.prUrl;
-    const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, lane?.prUrl, eventPrUrl]
+    // Prefer direct live coordination, then all matching lanes newest-first, then history.
+    const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, ...lanes.map((lane) => lane.prUrl), eventPrUrl]
       .map((value) => githubPullRequestReference(value, item.repo))
       .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
     if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };

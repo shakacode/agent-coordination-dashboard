@@ -499,7 +499,7 @@ export function App() {
               dashboard.stateRoot
             )}{" "}
             · <button className="inline-count" onClick={showAllWorkItems} type="button">
-              {dashboard.trulyOpenCountStatus === "unknown" ? "UNKNOWN" : dashboard.trulyOpenCount ?? dashboard.workItems.filter((item) => !item.terminalState).length} lanes truly open
+              {dashboard.trulyOpenCountStatus === "unknown" || dashboard.trulyOpenCount === undefined ? "UNKNOWN" : dashboard.trulyOpenCount} lanes truly open
             </button>
           </p>
         </div>

@@ -35,7 +35,8 @@ async function listenServer(server: Server): Promise<string> {
 async function listen(stateRoot: string, overrides: Partial<ServerConfig> = {}): Promise<string> {
   const app = await createDashboardApp(testConfig(stateRoot, overrides), {
     serveFrontend: false,
-    loadOpenGitHubItems: async () => ({ items: [], warnings: [] })
+    loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+    loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
   });
   const server = app.listen(0, "127.0.0.1");
   return listenServer(server);
@@ -96,7 +97,8 @@ describe("dashboard app import endpoint", () => {
         githubLoads += 1;
         await new Promise((resolve) => setTimeout(resolve, 25));
         return { items: [], warnings: [] };
-      }
+      },
+      loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
     });
     const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
 
@@ -219,6 +221,45 @@ describe("dashboard app import endpoint", () => {
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>>; githubMergeTimeStatus: string };
     expect(body.workItems[0]).toMatchObject({ type: "pull_request", terminalState: "done", terminalProvenance: { source: "declared" }, github: { state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
     expect(body.githubMergeTimeStatus).toBe("available");
+  });
+
+  it("reconciles a completed issue from a linked PR in a later matching batch signal", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-multi-batch-pr-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await Promise.all([
+      writeFile(join(stateRoot, "batches", "00-older.json"), JSON.stringify({
+        schema_version: 1,
+        batch_id: "older",
+        repo: "shakacode/react_on_rails",
+        updated_at: "2026-07-12T09:00:00Z",
+        targets: [{ type: "issue", target: "45" }],
+        lanes: [{ name: "discovery", owner: "worker-a", targets: ["45"], depends_on: [], status: "completed" }]
+      })),
+      writeFile(join(stateRoot, "batches", "99-newer.json"), JSON.stringify({
+        schema_version: 1,
+        batch_id: "newer",
+        repo: "shakacode/react_on_rails",
+        updated_at: "2026-07-12T10:00:00Z",
+        targets: [{ type: "issue", target: "45" }],
+        lanes: [{ name: "implementation", owner: "worker-b", targets: ["45"], depends_on: [], status: "completed", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
+      }))
+    ]);
+    let reconciledTarget = "";
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => ({
+        items: references.map((reference) => {
+          reconciledTarget = reference.target;
+          return { ...reference, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const };
+        }),
+        warnings: []
+      })
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>> };
+    expect(reconciledTarget).toBe("54");
+    expect(body.workItems[0]).toMatchObject({ target: "45", terminalState: "done", github: { state: "MERGED", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
   });
 
   it("consumes a canonical open PR row when it becomes evidence for a coordinated issue", async () => {
@@ -417,7 +458,8 @@ describe("dashboard app import endpoint", () => {
           await firstLoadReleased;
         }
         return { items: [], warnings: [] };
-      }
+      },
+      loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
     });
     const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
 
@@ -570,7 +612,8 @@ describe("dashboard app import endpoint", () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-doctor-remote-"));
     const app = await createDashboardApp(testConfig(stateRoot), {
       serveFrontend: false,
-      loadOpenGitHubItems: async () => ({ items: [], warnings: [] })
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
     });
     const baseUrl = await listenServer(
       createServer((req, res) => {

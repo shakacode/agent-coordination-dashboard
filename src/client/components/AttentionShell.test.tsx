@@ -261,6 +261,16 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/54");
   });
 
+  it("labels a reconciled merged link as a merge with declared terminal provenance", () => {
+    const declaredMerged = {
+      ...ITEMS[1],
+      terminalProvenance: { source: "declared" as const },
+      github: { repo: "repo/dashboard", target: "54", type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/repo/dashboard/pull/54", state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[declaredMerged]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/54");
+  });
+
   it("shows UNKNOWN instead of guessing when GitHub reconciliation failed", () => {
     const unknown = { ...ITEMS[0], github: { repo: "repo/dashboard", target: "43", type: "unknown" as const, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" as const } };
     render(<AttentionShell items={[unknown]} onQueryChange={vi.fn()} query="" surface="attention" />);
