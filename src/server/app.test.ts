@@ -71,28 +71,26 @@ describe("dashboard app import endpoint", () => {
   it("serves a saved-repository target custody timeline with history and liveness spans", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-item-timeline-"));
     await Promise.all([
-      mkdir(join(root, "claims", "shakacode", "react_on_rails", "history"), { recursive: true }),
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
       mkdir(join(root, "claims", "other", "private_repo"), { recursive: true }),
-      mkdir(join(root, "heartbeats", "history"), { recursive: true }),
-      mkdir(join(root, "events"), { recursive: true })
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "history"), { recursive: true })
     ]);
     await Promise.all([
-      writeFile(join(root, "claims", "shakacode", "react_on_rails", "history", "first.json"), JSON.stringify({
-        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "active", generation: 3,
-        claimed_at: "2026-07-12T10:00:00Z", thread_handle: "first-chat"
-      })),
       writeFile(join(root, "claims", "shakacode", "react_on_rails", "46.json"), JSON.stringify({
         repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "active", generation: 4,
         claimed_at: "2026-07-12T10:04:00Z", branch: "codex/takeover"
       })),
       writeFile(join(root, "claims", "other", "private_repo", "broken.json"), "{"),
-      writeFile(join(root, "heartbeats", "history", "worker-b.json"), JSON.stringify({
+      writeFile(join(root, "heartbeats", "worker-b.json"), JSON.stringify({
         repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "implementing",
         updated_at: "2026-07-12T10:04:00Z", expires_at: "2026-07-12T10:09:00Z"
       })),
-      writeFile(join(root, "events", "timeline.jsonl"), `${JSON.stringify({
-        event_id: "phase-1", type: "phase", repo: "shakacode/react_on_rails", target: "46", phase: "implementing", at: "2026-07-12T10:04:00Z"
-      })}\n`)
+      writeFile(join(root, "history", "timeline.jsonl"), [
+        { event_id: "started", type: "lane.started", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", generation: 3, at: "2026-07-12T10:00:00Z", thread_handle: "first-chat" },
+        { event_id: "takeover", type: "continued", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", at: "2026-07-12T10:04:00Z", branch: "codex/takeover" },
+        { event_id: "phase-1", type: "phase", repo: "shakacode/react_on_rails", target: "46", phase: "implementing", at: "2026-07-12T10:04:00Z" }
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
 
     const baseUrl = await listen(root);
@@ -103,7 +101,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.repo).toBe("shakacode/react_on_rails");
     expect(timeline.target).toBe("46");
     expect(timeline.claims).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: "acquired", generation: 3 }),
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
       expect.objectContaining({ action: "taken_over", generation: 4 })
     ]));
     expect(timeline.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ liveness: "live" })]));

@@ -18,7 +18,7 @@ export interface LivenessBoundary {
 }
 
 export interface ClaimCustodyEvent {
-  action: "acquired" | "renewed" | "released" | "taken_over";
+  action: "acquired" | "renewed" | "released" | "taken_over" | "unknown";
   agentId: string;
   previousAgentId?: string;
   machineId?: string;
@@ -140,17 +140,28 @@ function optionalFields(record: Pick<ClaimRecord, "machineId" | "threadHandle" |
   };
 }
 
+function optionalEventFields(event: BatchEvent): Omit<ClaimCustodyEvent, "action" | "agentId" | "previousAgentId" | "generation" | "timestamp"> {
+  return {
+    ...(event.machineId ? { machineId: event.machineId } : {}),
+    ...(event.threadHandle ? { threadHandle: event.threadHandle } : {}),
+    ...(event.host ? { host: event.host } : {}),
+    ...(event.operator ? { operator: event.operator } : {}),
+    ...(event.branch ? { branch: event.branch } : {}),
+    ...(event.prUrl ? { prUrl: event.prUrl } : {})
+  };
+}
+
 function claimTimestamp(claim: ClaimRecord): string | undefined {
   return claim.updatedAt || claim.claimedAt;
 }
 
-function livenessBoundaries(claims: ClaimRecord[]): LivenessBoundary[] {
+function livenessBoundaries(claims: ClaimCustodyEvent[]): LivenessBoundary[] {
   let activeAgent: string | undefined;
   const boundaries: LivenessBoundary[] = [];
   for (const claim of claims) {
-    const endedAt = claimTimestamp(claim);
+    const endedAt = claim.timestamp;
     if (!endedAt) continue;
-    if (claim.status === "released") {
+    if (claim.action === "released") {
       boundaries.push({ agentId: claim.agentId, endedAt });
       if (activeAgent === claim.agentId) activeAgent = undefined;
       continue;
@@ -168,7 +179,67 @@ function isPhaseEvent(event: BatchEvent): boolean {
 }
 
 function isTerminalLifecycleEvent(event: BatchEvent): boolean {
-  return TERMINAL_LIFECYCLE_PATTERN.test(event.type) || TERMINAL_LIFECYCLE_PATTERN.test(event.status || "");
+  return TERMINAL_LIFECYCLE_PATTERN.test(event.type)
+    || TERMINAL_LIFECYCLE_PATTERN.test(event.status || "")
+    || /(?:^|[._\s-])handoff(?:$|[._\s-])/i.test(event.type);
+}
+
+function isRenewalEvidence(event: BatchEvent): boolean {
+  return /(?:^|[._\s-])(heartbeat|renew(?:ed|al)?|continued|claim(?:ed)?|started)(?:$|[._\s-])/i.test(event.type);
+}
+
+function isHistoricalSnapshot(claim: ClaimRecord): boolean {
+  return /(?:^|\/)(?:history|events)(?:\/|$)/i.test(claim.path);
+}
+
+function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimCustodyEvent[] {
+  const custody: ClaimCustodyEvent[] = [];
+  let activeAgent: string | undefined;
+
+  for (const event of events) {
+    if (!event.agentId || !event.timestamp || time(event.timestamp) === undefined) continue;
+    if (isTerminalLifecycleEvent(event)) {
+      if (activeAgent === event.agentId) {
+        custody.push({ action: "released", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
+        activeAgent = undefined;
+      }
+      continue;
+    }
+    if (!activeAgent) {
+      custody.push({ action: "acquired", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
+      activeAgent = event.agentId;
+      continue;
+    }
+    if (activeAgent !== event.agentId) {
+      custody.push({ action: "taken_over", agentId: event.agentId, previousAgentId: activeAgent, timestamp: event.timestamp, ...optionalEventFields(event) });
+      activeAgent = event.agentId;
+      continue;
+    }
+    if (isRenewalEvidence(event)) {
+      custody.push({ action: "renewed", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
+    }
+  }
+
+  if (!currentClaim || currentClaim.status !== "active") return custody;
+  const last = custody.at(-1);
+  if (last?.agentId === currentClaim.agentId && last.action !== "released") {
+    Object.assign(last, {
+      ...(last.generation === undefined && currentClaim.generation !== undefined ? { generation: currentClaim.generation } : {}),
+      ...Object.fromEntries(Object.entries(optionalFields(currentClaim)).filter(([key]) => last[key as keyof ClaimCustodyEvent] === undefined))
+    });
+    return custody;
+  }
+
+  // A current snapshot proves only its present holder. Without an attributed
+  // append-only event, it cannot honestly establish when or how custody began.
+  custody.push({
+    action: "unknown",
+    agentId: currentClaim.agentId,
+    ...(currentClaim.generation === undefined ? {} : { generation: currentClaim.generation }),
+    ...(claimTimestamp(currentClaim) && time(claimTimestamp(currentClaim)!) !== undefined ? { timestamp: claimTimestamp(currentClaim) } : {}),
+    ...optionalFields(currentClaim)
+  });
+  return custody;
 }
 
 function unique(values: Array<string | undefined>): string[] {
@@ -179,37 +250,16 @@ function unique(values: Array<string | undefined>): string[] {
 export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyTimeline {
   const now = input.now || new Date();
   const matchingClaims = input.claims
-    .filter((claim) => claim.repo === input.repo && claim.target === input.target)
+    .filter((claim) => claim.repo === input.repo && claim.target === input.target && !isHistoricalSnapshot(claim))
     .sort((left, right) => (time(claimTimestamp(left) || "") || 0) - (time(claimTimestamp(right) || "") || 0));
-  let previousActiveAgent: string | undefined;
-  const claims = matchingClaims.map((claim) => {
-    const timestamp = claimTimestamp(claim);
-    const action = claim.status === "released"
-      ? "released"
-      : previousActiveAgent && previousActiveAgent !== claim.agentId
-        ? "taken_over"
-        : previousActiveAgent === claim.agentId
-          ? "renewed"
-          : "acquired";
-    const event: ClaimCustodyEvent = {
-      action,
-      agentId: claim.agentId,
-      ...(action === "taken_over" ? { previousAgentId: previousActiveAgent } : {}),
-      ...(claim.generation === undefined ? {} : { generation: claim.generation }),
-      ...(timestamp ? { timestamp } : {}),
-      ...optionalFields(claim)
-    };
-    if (claim.status === "released") {
-      previousActiveAgent = undefined;
-    } else {
-      previousActiveAgent = claim.agentId;
-    }
-    return event;
-  });
+  // Claim files are overwriteable current snapshots. Keep only the latest one;
+  // append-only event telemetry is the durable ownership history.
+  const currentClaim = matchingClaims.at(-1);
   const matchingHeartbeats = input.heartbeats.filter((heartbeat) => heartbeat.repo === input.repo && heartbeat.target === input.target);
   const events = input.events
     .filter((event) => event.repo === input.repo && event.target === input.target)
     .sort((left, right) => (time(left.timestamp || "") || 0) - (time(right.timestamp || "") || 0));
+  const claims = custodyEvents(events, currentClaim);
   const phaseEvents = events.filter(isPhaseEvent).filter((event) => time(event.timestamp || "") !== undefined);
   const phases = phaseEvents.map((event, index) => {
     const startedAt = event.timestamp!;
@@ -241,10 +291,10 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     repo: input.repo,
     target: input.target,
     claims,
-    liveness: buildLivenessSpans(matchingHeartbeats, now, livenessBoundaries(matchingClaims)),
+    liveness: buildLivenessSpans(matchingHeartbeats, now, livenessBoundaries(claims)),
     phases,
     events,
-    branches: unique([...matchingClaims.map((claim) => claim.branch), ...matchingHeartbeats.map((heartbeat) => heartbeat.branch), ...events.map((event) => event.branch)]),
-    prUrls: unique([...matchingClaims.map((claim) => claim.prUrl), ...matchingHeartbeats.map((heartbeat) => heartbeat.prUrl), ...events.map((event) => event.prUrl)])
+    branches: unique([...events.map((event) => event.branch), currentClaim?.branch, ...matchingHeartbeats.map((heartbeat) => heartbeat.branch)]),
+    prUrls: unique([...events.map((event) => event.prUrl), currentClaim?.prUrl, ...matchingHeartbeats.map((heartbeat) => heartbeat.prUrl)])
   };
 }

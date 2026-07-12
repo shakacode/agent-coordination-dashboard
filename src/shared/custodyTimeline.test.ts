@@ -78,51 +78,52 @@ describe("buildCustodyTimeline", () => {
       target: "46",
       now: new Date("2026-07-12T10:10:00Z"),
       claims: [
-        claim({ agentId: "worker-a", generation: 4, threadHandle: "first-chat", branch: "codex/first" }),
-        claim({ agentId: "worker-b", generation: 5, threadHandle: "takeover-chat", claimedAt: "2026-07-12T10:03:00Z", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47" }),
-        claim({ agentId: "worker-b", status: "released", updatedAt: "2026-07-12T10:08:00Z" })
+        claim({ agentId: "worker-a", status: "released", path: "claims/shakacode/dashboard/history/46-first.json", generation: 4, threadHandle: "first-chat", branch: "codex/first" }),
+        claim({ agentId: "worker-b", generation: 5, threadHandle: "takeover-chat", claimedAt: "2026-07-12T10:03:00Z", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47" })
       ],
       heartbeats: [heartbeat({ threadHandle: "takeover-chat" })],
       events: [
-        event({ eventId: "plan", status: "planning", timestamp: "2026-07-12T10:00:00Z" }),
+        event({ eventId: "start", type: "lane.started", agentId: "worker-a", machineId: "m1", threadHandle: "first-chat", branch: "codex/first", timestamp: "2026-07-12T10:00:00Z" }),
+        event({ eventId: "renew", type: "heartbeat", agentId: "worker-a", machineId: "m1", threadHandle: "first-chat", timestamp: "2026-07-12T10:01:00Z" }),
+        event({ eventId: "takeover", type: "continued", agentId: "worker-b", machineId: "m2", threadHandle: "takeover-chat", branch: "codex/takeover", prUrl: "https://github.com/shakacode/dashboard/pull/47", timestamp: "2026-07-12T10:03:00Z" }),
+        event({ eventId: "plan", status: "planning", agentId: "worker-b", timestamp: "2026-07-12T10:04:00Z" }),
         event({ eventId: "implement", status: "implementing", timestamp: "2026-07-12T10:05:00Z" })
       ]
     });
 
     expect(timeline.claims).toEqual([
-      expect.objectContaining({ action: "acquired", agentId: "worker-a", generation: 4 }),
-      expect.objectContaining({ action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", generation: 5 }),
-      expect.objectContaining({ action: "released", agentId: "worker-b" })
+      expect.objectContaining({ action: "acquired", agentId: "worker-a", machineId: "m1" }),
+      expect.objectContaining({ action: "renewed", agentId: "worker-a" }),
+      expect.objectContaining({ action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", machineId: "m2" })
     ]);
     expect(timeline.phases).toEqual([
-      expect.objectContaining({ phase: "planning", durationMs: 300_000 }),
+      expect.objectContaining({ phase: "planning", durationMs: 60_000 }),
       expect.objectContaining({ phase: "implementing", durationMs: 300_000 })
     ]);
     expect(timeline.branches).toEqual(["codex/first", "codex/takeover"]);
     expect(timeline.prUrls).toEqual(["https://github.com/shakacode/dashboard/pull/47"]);
   });
 
-  it("treats an acquisition after release as a new custody chain", () => {
-    const claim = (overrides: Partial<ClaimRecord>): ClaimRecord => ({
-      schemaVersion: 1,
+  it("treats an acquisition after an append-only release event as a new custody chain", () => {
+    const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
+      eventId: "event",
+      type: "lane.started",
       repo: "shakacode/dashboard",
       target: "46",
-      agentId: "worker-a",
-      status: "active",
-      path: "claims/shakacode/dashboard/46.json",
-      claimedAt: "2026-07-12T10:00:00Z",
+      path: "history/batch.jsonl:1",
+      timestamp: "2026-07-12T10:00:00Z",
       ...overrides
     });
     const timeline = buildCustodyTimeline({
       repo: "shakacode/dashboard",
       target: "46",
-      claims: [
-        claim({ agentId: "worker-a", claimedAt: "2026-07-12T10:00:00Z" }),
-        claim({ agentId: "worker-a", status: "released", updatedAt: "2026-07-12T10:05:00Z" }),
-        claim({ agentId: "worker-b", claimedAt: "2026-07-12T10:06:00Z" })
-      ],
+      claims: [],
       heartbeats: [],
-      events: []
+      events: [
+        event({ eventId: "a", agentId: "worker-a" }),
+        event({ eventId: "release", type: "lane.handoff", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" }),
+        event({ eventId: "b", agentId: "worker-b", timestamp: "2026-07-12T10:06:00Z" })
+      ]
     });
 
     expect(timeline.claims.map((event) => event.action)).toEqual(["acquired", "released", "acquired"]);
@@ -156,17 +157,7 @@ describe("buildCustodyTimeline", () => {
     ]);
   });
 
-  it("clips old-holder liveness at claim transfer and release boundaries", () => {
-    const claim = (overrides: Partial<ClaimRecord>): ClaimRecord => ({
-      schemaVersion: 1,
-      repo: "shakacode/dashboard",
-      target: "46",
-      agentId: "worker-a",
-      status: "active",
-      path: "claims/shakacode/dashboard/46.json",
-      claimedAt: "2026-07-12T10:00:00Z",
-      ...overrides
-    });
+  it("clips old-holder liveness at telemetry transfer and release boundaries", () => {
     const heartbeat = (overrides: Partial<HeartbeatRecord>): HeartbeatRecord => ({
       schemaVersion: 1,
       repo: "shakacode/dashboard",
@@ -183,16 +174,16 @@ describe("buildCustodyTimeline", () => {
       repo: "shakacode/dashboard",
       target: "46",
       now: new Date("2026-07-12T10:30:00Z"),
-      claims: [
-        claim({ agentId: "worker-a", claimedAt: "2026-07-12T10:00:00Z" }),
-        claim({ agentId: "worker-b", claimedAt: "2026-07-12T10:10:00Z" }),
-        claim({ agentId: "worker-b", status: "released", updatedAt: "2026-07-12T10:20:00Z" })
-      ],
+      claims: [],
       heartbeats: [
         heartbeat({ agentId: "worker-a" }),
         heartbeat({ agentId: "worker-b", updatedAt: "2026-07-12T10:10:00Z", expiresAt: "2026-07-12T10:15:00Z" })
       ],
-      events: []
+      events: [
+        { eventId: "a", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "b", type: "continued", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:10:00Z", path: "events/custody.jsonl:2" },
+        { eventId: "released", type: "lane.handoff", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:20:00Z", path: "events/custody.jsonl:3" }
+      ]
     });
 
     expect(timeline.liveness.filter((span) => span.agentId === "worker-a").every((span) => span.endedAt <= "2026-07-12T10:10:00.000Z")).toBe(true);

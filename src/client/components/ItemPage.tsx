@@ -1,4 +1,5 @@
 import type { ClaimCustodyEvent, LivenessSpan, PhaseSpan } from "../../shared/custodyTimeline";
+import type { BatchEvent } from "../../shared/types";
 import { firstDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
 
@@ -43,7 +44,11 @@ function Ownership({ machineId, host, operator }: { machineId?: string; host?: s
 }
 
 function Claim({ event }: { event: ClaimCustodyEvent }) {
-  const action = event.action === "taken_over" ? `${event.previousAgentId || "UNKNOWN"} → ${event.agentId}` : `${event.action} by ${event.agentId}`;
+  const action = event.action === "taken_over"
+    ? `${event.previousAgentId || "UNKNOWN"} → ${event.agentId}`
+    : event.action === "unknown"
+      ? `UNKNOWN ownership by ${event.agentId}`
+      : `${event.action} by ${event.agentId}`;
   return <li className="timeline-entry timeline-claim"><strong>{action}</strong><span>{event.generation === undefined ? "CAS generation UNKNOWN" : `CAS generation ${event.generation}`}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /></li>;
 }
 
@@ -56,18 +61,26 @@ function Phase({ span }: { span: PhaseSpan }) {
   return <li className="timeline-entry timeline-phase"><strong>{span.phase} · {duration(span.durationMs)}</strong><span>{span.message || "Phase event"}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /></li>;
 }
 
+function Telemetry({ event }: { event: BatchEvent }) {
+  return <li className="timeline-entry timeline-event"><strong>{event.type}</strong><span>{event.status || event.message || "Telemetry evidence"}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /></li>;
+}
+
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
   const activeClaim = timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
   const holder = firstDisplayAttribution([activeClaim?.agentId, timeline.item?.heartbeat?.agentId]);
   const state = timeline.item?.operatorState || "UNKNOWN";
-  const holderDead = !activeClaim && timeline.item?.heartbeat?.liveness === "dead";
+  const holderDead = timeline.item?.heartbeat?.liveness === "dead"
+    && (!activeClaim || activeClaim.agentId === timeline.item?.heartbeat?.agentId);
   const primary = holderDead
     ? { label: "Copy takeover command", value: `agent-coord claim --repo ${timeline.repo} --target ${timeline.target} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
     : { label: "Copy resume prompt", value: `Resume work item ${timeline.repo}#${timeline.target} from its custody timeline.` };
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
-    ...timeline.phases.map((span, index) => ({ kind: "phase" as const, span, index, tie: 2, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER }))
+    ...timeline.events
+      .filter((event) => !timeline.phases.some((span) => span.eventId === event.eventId))
+      .map((event, index) => ({ kind: "event" as const, event, index, tie: 2, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
+    ...timeline.phases.map((span, index) => ({ kind: "phase" as const, span, index, tie: 3, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER }))
   ].sort((left, right) => left.at - right.at || left.tie - right.tie || left.index - right.index);
   return (
     <section aria-label="Work item timeline" className="item-page">
@@ -97,6 +110,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
           {custodyEntries.map((entry) => {
             if (entry.kind === "claim") return <Claim event={entry.event} key={`claim-${entry.event.timestamp || entry.index}-${entry.event.agentId}`} />;
             if (entry.kind === "liveness") return <Liveness span={entry.span} key={`liveness-${entry.span.startedAt}-${entry.span.agentId}-${entry.index}`} />;
+            if (entry.kind === "event") return <Telemetry event={entry.event} key={`event-${entry.event.eventId}`} />;
             return <Phase span={entry.span} key={`phase-${entry.span.eventId}`} />;
           })}
         </ol>

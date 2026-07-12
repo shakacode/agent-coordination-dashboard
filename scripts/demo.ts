@@ -113,8 +113,9 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
   const heartbeatsDirectory = join(root, "heartbeats");
   const batchesDirectory = join(root, "batches");
   const eventsDirectory = join(root, "events");
+  const historyDirectory = join(root, "history");
   await Promise.all(
-    [claimsDirectory, join(claimsDirectory, "history"), heartbeatsDirectory, batchesDirectory, eventsDirectory].map((directory) =>
+    [claimsDirectory, heartbeatsDirectory, batchesDirectory, eventsDirectory, historyDirectory].map((directory) =>
       mkdir(directory, { recursive: true })
     )
   );
@@ -156,40 +157,77 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
   );
 
   await Promise.all([
-    writeJson(join(claimsDirectory, "history", "101-first.json"), {
-      schema_version: 1,
-      repo: DEMO_REPO,
-      target: "101",
-      agent_id: "demo-api-initial",
-      machine_id: "demo-m1",
-      thread_handle: "demo-api-first-chat",
-      host: "codex",
-      operator: "demo-operator",
-      batch_id: "demo-platform",
-      branch: "demo/api-initial",
-      status: "released",
-      generation: 1,
-      claimed_at: isoAt(now, -720_000),
-      updated_at: isoAt(now, -310_000)
-    }),
-    writeFile(join(eventsDirectory, "demo-custody.jsonl"), `${JSON.stringify({
-      schema_version: 1,
-      event_id: "demo-api-takeover-phase",
-      type: "phase",
-      batch_id: "demo-platform",
-      lane: "api",
-      agent_id: "demo-api",
-      machine_id: "demo-m1",
-      thread_handle: "demo-api",
-      host: "codex",
-      operator: "demo-operator",
-      repo: DEMO_REPO,
-      target: "101",
-      branch: "demo/api",
-      phase: "implementing",
-      at: isoAt(now, -300_000),
-      message: "Demo custody takeover is implementing."
-    })}\n`, "utf8")
+    writeFile(join(historyDirectory, "demo-custody.jsonl"), [
+      {
+        schema_version: 1,
+        event_id: "demo-api-initial-start",
+        type: "lane.started",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api-initial",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api-first-chat",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api-initial",
+        at: isoAt(now, -720_000),
+        message: "Initial API custody started."
+      },
+      {
+        schema_version: 1,
+        event_id: "demo-api-initial-heartbeat",
+        type: "heartbeat",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api-initial",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api-first-chat",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api-initial",
+        at: isoAt(now, -600_000),
+        message: "Initial API holder reported progress."
+      },
+      {
+        schema_version: 1,
+        event_id: "demo-api-takeover",
+        type: "continued",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api",
+        at: isoAt(now, -300_000),
+        message: "API custody continued with a new holder."
+      },
+      {
+        schema_version: 1,
+        event_id: "demo-api-takeover-phase",
+        type: "phase",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api",
+        phase: "implementing",
+        at: isoAt(now, -290_000),
+        message: "Demo custody takeover is implementing."
+      }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8")
   ]);
 
   const batches = [

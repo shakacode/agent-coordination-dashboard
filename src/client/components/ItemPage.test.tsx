@@ -72,6 +72,20 @@ describe("ItemPage", () => {
     );
   });
 
+  it("offers takeover when the active claim belongs to the dead holder", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "active", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+      }
+    }} />);
+
+    expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
   it("keeps an active claim as holder when an older heartbeat is dead", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
@@ -85,5 +99,27 @@ describe("ItemPage", () => {
     expect(screen.getByText("Holder: worker-b")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
+  });
+
+  it("keeps historical heartbeat telemetry visible without turning it into liveness", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      events: [{
+        eventId: "old-heartbeat",
+        type: "heartbeat",
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        machineId: "m1",
+        threadHandle: "first-chat",
+        host: "codex",
+        operator: "justin",
+        timestamp: "2026-07-12T10:01:00Z",
+        path: "history/demo-custody.jsonl:2"
+      }]
+    }} />);
+
+    expect(screen.getByText("heartbeat")).toBeInTheDocument();
+    expect(screen.getAllByText("Machine: m1 · Host: codex · Operator: justin")).toHaveLength(2);
   });
 });
