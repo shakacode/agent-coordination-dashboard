@@ -107,6 +107,7 @@ describe("operatorRows", () => {
     const old = "2026-07-08T20:00:00Z";
     const rows = [
       { id: "complete", retentionStatus: "complete", lastActivityAt: old },
+      { id: "completed", retentionStatus: "completed", lastActivityAt: old },
       { id: "released", retentionStatus: "released", lastActivityAt: old },
       { id: "canceled", retentionStatus: "canceled", operatorState: "done", lastActivityAt: old },
       { id: "dead", retentionStatus: "done", operatorState: "dead", lastActivityAt: old },
@@ -343,6 +344,53 @@ describe("operatorRows", () => {
     }
   );
 
+  it.each(
+    (["complete", "completed", "released"] as const).flatMap((status) =>
+      (["live", "stale", "dead"] as const).map((liveness) => ({ status, liveness }))
+    )
+  )("renders current $status heartbeat evidence as done before $liveness liveness", ({ status, liveness }) => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [
+        workItem({
+          claim,
+          heartbeat: { ...heartbeat, status, updatedAt: "2026-07-10T19:59:30Z", liveness }
+        })
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: status });
+  });
+
+  it.each(["complete", "completed", "released"] as const)(
+    "renders a newer %s transition as done before older live evidence",
+    (status) => {
+      const model = dashboard({
+        generatedAt: "2026-07-10T20:01:00Z",
+        workItems: [
+          workItem({
+            claim,
+            heartbeat: { ...heartbeat, updatedAt: "2026-07-10T19:59:30Z", liveness: "live" }
+          })
+        ],
+        events: [
+          {
+            eventId: `${status}-newer-than-live`,
+            type: status,
+            status,
+            batchId: "batch-1",
+            repo: "repo/app",
+            target: "123",
+            timestamp: "2026-07-10T20:00:00Z",
+            path: `events/${status}-newer-than-live.json`
+          }
+        ]
+      });
+
+      expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: status });
+    }
+  );
+
   it("renders a current terminal batch signal before dead lane liveness", () => {
     const signal = { batchId: "terminal-signal", laneName: "closeout", status: "merged", blockedOn: [] };
     const model = dashboard({
@@ -424,25 +472,136 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0].operatorState).toBe(expected);
   });
 
-  it("keeps active work running when an older terminal event is retained", () => {
+  it("keeps newer active work running when an older completion-alias event is retained", () => {
     const model = dashboard({
       generatedAt: "2026-07-10T20:00:00Z",
       workItems: [workItem({ claim, heartbeat: { ...heartbeat, updatedAt: "2026-07-10T19:59:30Z" } })],
       events: [
         {
-          eventId: "old-done-active",
-          type: "done",
-          status: "done",
+          eventId: "old-completed-active",
+          type: "completed",
+          status: "completed",
           batchId: "batch-1",
           repo: "repo/app",
           target: "123",
-          timestamp: "2026-07-10T19:58:00Z",
-          path: "events/old-done-active.json"
+          timestamp: "2026-07-10T19:30:00Z",
+          path: "events/old-completed-active.json"
         }
       ]
     });
 
     expect(buildOperatorRows(model)[0].operatorState).toBe("running");
+  });
+
+  it("keeps a newer active heartbeat running over an older released claim", () => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [
+        workItem({
+          claim: { ...claim, status: "released", updatedAt: "2026-07-10T19:58:00Z" },
+          heartbeat: { ...heartbeat, status: "coding", updatedAt: "2026-07-10T19:59:30Z", liveness: "live" }
+        })
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "running", retentionStatus: "coding" });
+  });
+
+  it("uses an event-only completion alias when no current lifecycle evidence exists", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({ claim: undefined, heartbeat: undefined, batchSignals: [], schedulingState: "ready_for_batch" })
+      ],
+      events: [
+        {
+          eventId: "event-only-completed",
+          type: "completed",
+          status: "completed",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-10T19:59:00Z",
+          path: "events/event-only-completed.json"
+        },
+        {
+          eventId: "event-only-qa-newer",
+          type: "qa.validation_completed",
+          status: "passed",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-10T19:59:30Z",
+          path: "events/event-only-qa-newer.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "completed" });
+  });
+
+  it("does not let old terminal history override an untimestamped active claim", () => {
+    const model = dashboard({
+      workItems: [
+        workItem({
+          heartbeat: undefined,
+          claim: { ...claim, status: "active", updatedAt: undefined, claimedAt: undefined },
+          batchSignals: [],
+          schedulingState: "started_not_processing"
+        })
+      ],
+      events: [
+        {
+          eventId: "old-done-before-untimestamped-claim",
+          type: "done",
+          status: "done",
+          batchId: "batch-1",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-09T19:00:00Z",
+          path: "events/old-done-before-untimestamped-claim.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0].operatorState).toBe("dead");
+  });
+
+  it("uses current lane activity when an older terminal transition is superseded", () => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "superseded-lane-terminal",
+          repo: "repo/app",
+          updatedAt: "2026-07-10T19:40:00Z",
+          path: "batches/superseded-lane-terminal.json",
+          lanes: [
+            {
+              name: "implementation",
+              owner: "agent-a",
+              targets: [],
+              dependsOn: [],
+              status: "coding",
+              liveness: "live",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "older-lane-completed",
+          type: "completed",
+          status: "completed",
+          batchId: "superseded-lane-terminal",
+          repo: "repo/app",
+          laneName: "implementation",
+          timestamp: "2026-07-10T19:30:00Z",
+          path: "events/older-lane-completed.json"
+        }
+      ]
+    });
+
+    expect(buildOperatorRows(model)[0].operatorState).toBe("wedged");
   });
 
   it.each(["working", "in_progress", "coding"] as const)(
@@ -1821,8 +1980,20 @@ describe("operatorRows", () => {
             claim: { ...claim, batchId: "batch-current" },
             heartbeat: { ...heartbeat, batchId: "batch-old" },
             batchSignals: [
-              { batchId: "batch-old", laneName: "docs", status: "done", blockedOn: [] },
-              { batchId: "batch-current", laneName: "docs", status: "coding", blockedOn: [] }
+              {
+                batchId: "batch-old",
+                laneName: "docs",
+                status: "done",
+                blockedOn: [],
+                updatedAt: "2026-07-09T20:01:00Z"
+              },
+              {
+                batchId: "batch-current",
+                laneName: "docs",
+                status: "coding",
+                blockedOn: [],
+                updatedAt: "2026-07-09T19:59:00Z"
+              }
             ]
           })
         ],

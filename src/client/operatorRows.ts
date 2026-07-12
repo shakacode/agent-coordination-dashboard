@@ -136,9 +136,15 @@ const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|change
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
 const ACCEPTED_TERMINAL_STATUSES = new Set(["done", "merged", "closed", "cancelled"]);
+const TERMINAL_PRESENTATION_ALIASES = new Set(["complete", "completed", "released"]);
 
 function isAcceptedTerminalStatus(value: string | undefined): boolean {
   return ACCEPTED_TERMINAL_STATUSES.has(value?.trim().toLowerCase() || "");
+}
+
+function isCurrentTerminalStatus(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() || "";
+  return ACCEPTED_TERMINAL_STATUSES.has(normalized) || TERMINAL_PRESENTATION_ALIASES.has(normalized);
 }
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
@@ -342,6 +348,9 @@ function deriveOperatorState(input: {
   event?: BatchEvent;
   transitionEvent?: BatchEvent;
   signalStatus?: string;
+  currentStatus?: string;
+  hasCurrentStatus?: boolean;
+  transitionMatchesCurrentContext?: boolean;
   currentLifecycleAt?: string;
   liveness?: Liveness | "none";
   blockedOn: string[];
@@ -368,16 +377,17 @@ function deriveOperatorState(input: {
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
   const hasActiveClaim = Boolean(input.claim && input.claim.status !== "released");
   const liveness = input.heartbeat?.liveness || input.liveness;
-  const currentStatuses = [input.heartbeat?.status, input.claim?.status, input.lane?.status, input.signalStatus].filter(
-    (status): status is string => Boolean(status?.trim())
-  );
   const transitionStatus = input.transitionEvent?.status || input.transitionEvent?.type;
   const transitionAt = timestampMs(input.transitionEvent?.timestamp);
   const currentLifecycleAt = timestampMs(input.currentLifecycleAt);
   const terminalTransitionIsCurrent =
-    isAcceptedTerminalStatus(transitionStatus) &&
+    isCurrentTerminalStatus(transitionStatus) &&
     transitionAt > 0 &&
-    (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : currentStatuses.length === 0);
+    (currentLifecycleAt > 0
+      ? transitionAt > currentLifecycleAt
+      : !input.hasCurrentStatus || input.transitionMatchesCurrentContext === true);
+  const terminalTransitionIsSuperseded =
+    isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
   if (PAUSED_PATTERN.test(currentText)) {
     return "paused";
@@ -385,7 +395,7 @@ function deriveOperatorState(input: {
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {
     return "blocked";
   }
-  if (currentStatuses.some(isAcceptedTerminalStatus) || terminalTransitionIsCurrent) {
+  if (isCurrentTerminalStatus(input.currentStatus) || terminalTransitionIsCurrent) {
     return "done";
   }
   if (liveness === "dead") {
@@ -395,7 +405,9 @@ function deriveOperatorState(input: {
     return "stale";
   }
   if (liveness === "live") {
-    const activityAt = input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
+    const activityAt = terminalTransitionIsSuperseded
+      ? input.heartbeat?.updatedAt || input.currentLifecycleAt
+      : input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
     if (timestampMs(activityAt) > 0 && input.nowMs - timestampMs(activityAt) >= WEDGED_THRESHOLD_MS) {
       return "wedged";
     }
@@ -410,7 +422,7 @@ function deriveOperatorState(input: {
   if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(currentText)) {
     return "dead";
   }
-  if (DONE_PATTERN.test(text)) {
+  if (DONE_PATTERN.test(currentText)) {
     return "done";
   }
   if (PAUSED_PATTERN.test(text)) {
@@ -724,16 +736,40 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
       return Boolean(matchingLane && batchContainsWork(candidateBatch, item, matchingLane));
     });
     return {
+      batchId: candidate.batchId,
+      laneName: candidate.laneName,
       status: candidate.status,
       timestamp: maxTimestamp(candidate.updatedAt, matchingBatch?.updatedAt, matchingBatch?.createdAt)
     };
   });
   const claimLifecycleAt = maxTimestamp(item.claim?.updatedAt, item.claim?.claimedAt);
+  const currentSignalCandidate = signal
+    ? lifecycleSignalCandidates.find(
+        (candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName
+      )
+    : undefined;
   const currentLifecycleAt = maxTimestamp(
     item.heartbeat?.updatedAt,
     claimLifecycleAt,
-    ...lifecycleSignalCandidates.map((candidate) => candidate.timestamp)
+    currentSignalCandidate?.timestamp
   );
+  const hasCurrentStatus = Boolean(
+    item.heartbeat?.status?.trim() || item.claim?.status?.trim() || currentSignalCandidate?.status?.trim()
+  );
+  const currentBatchIds = new Set(activeBatchIdsForWork(item));
+  if (signal?.batchId) {
+    currentBatchIds.add(signal.batchId);
+  }
+  const transitionMatchesCurrentContext = Boolean(
+    !item.claim && !item.heartbeat && transitionEvent?.batchId && currentBatchIds.has(transitionEvent.batchId)
+  );
+  const currentStatus = currentLifecycleAt
+    ? latestLifecycleStatus([
+        { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
+        { status: item.claim?.status, timestamp: claimLifecycleAt },
+        ...(currentSignalCandidate ? [currentSignalCandidate] : [])
+      ])
+    : undefined;
   const state = deriveOperatorState({
     workItem: item,
     heartbeat: item.heartbeat,
@@ -742,6 +778,9 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     event: latest,
     transitionEvent,
     signalStatus: signal?.status,
+    currentStatus,
+    hasCurrentStatus,
+    transitionMatchesCurrentContext,
     currentLifecycleAt,
     blockedOn,
     nowMs
@@ -941,6 +980,9 @@ function buildLaneRow(
     lane,
     event: latest,
     transitionEvent,
+    currentStatus: lane.status,
+    hasCurrentStatus: Boolean(lane.status?.trim()),
+    transitionMatchesCurrentContext: false,
     currentLifecycleAt: maxTimestamp(batch.updatedAt, batch.createdAt),
     liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,
