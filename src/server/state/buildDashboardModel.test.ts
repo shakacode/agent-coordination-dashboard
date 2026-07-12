@@ -73,6 +73,71 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
   });
 
+  it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "batch-mixed-terminal",
+      repo: claim.repo,
+      targets: [
+        { type: "pull_request" as const, target: claim.target },
+        { type: "pull_request" as const, target: "4006" }
+      ],
+      lanes: [{
+        name: "qa",
+        owner: "worker-qa",
+        targets: [claim.target, "4006"],
+        dependsOn: [],
+        status: "ready_for_qa",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/batch-mixed-terminal.json"
+    };
+    const activeClaims: ClaimRecord[] = [
+      { ...claim, batchId: batch.batchId, prUrl: `https://github.com/${claim.repo}/pull/${claim.target}` },
+      { ...claim, target: "4006", agentId: "worker-b", batchId: batch.batchId, prUrl: `https://github.com/${claim.repo}/pull/4006` }
+    ];
+    const github = (target: string, state: "OPEN" | "MERGED") => ({
+      repo: claim.repo,
+      target,
+      type: "pull_request" as const,
+      title: `PR ${target}`,
+      url: `https://github.com/${claim.repo}/pull/${target}`,
+      state,
+      ...(state === "MERGED" ? { mergedAt: "2026-07-12T11:00:00Z" } : {}),
+      labels: [],
+      loadState: "loaded" as const
+    });
+
+    const model = buildDashboardModel({
+      now: new Date("2026-07-14T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: activeClaims,
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      githubItems: [github(claim.target, "MERGED"), github("4006", "OPEN")],
+      warnings: [{ severity: "warning", message: "GitHub read degraded.", repo: claim.repo }]
+    });
+
+    const terminal = model.workItems.find((item) => item.target === claim.target);
+    const open = model.workItems.find((item) => item.target === "4006");
+    expect(terminal).toMatchObject({ terminalState: "done", operatorState: "archived_view", warnings: [] });
+    expect(open?.warnings.map((warning) => warning.message)).toEqual(expect.arrayContaining([
+      "Work is already scheduled in batch batch-mixed-terminal:qa (ready_for_qa).",
+      "Work was started but the holder is not currently live or stale."
+    ]));
+    expect(model.qaValidations.map((validation) => validation.target)).toEqual(["4006"]);
+    expect(model.batchOperations[0].qa).toEqual(expect.objectContaining({ total: 1, missing: 1 }));
+    expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
+    expect(model.warnings.some((warning) => warning.target === claim.target)).toBe(false);
+    expect(model.healthItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Active claim has no matching heartbeat", target: "4006" }),
+      expect.objectContaining({ title: "Work started but not currently processing", target: "4006" })
+    ]));
+  });
+
   it("suppresses recovery health only after a started item is reconciled closed", () => {
     const input = {
       now: new Date("2026-07-12T12:00:00Z"),
@@ -117,7 +182,11 @@ describe("buildDashboardModel", () => {
   it("suppresses operational health after coordination declares the work terminal", () => {
     const model = buildDashboardModel({
       now: new Date("2026-07-12T12:00:00Z"), stateRoot: "/state", targetRepos: [claim.repo],
-      claims: [claim], heartbeats: [], batches: [], githubItems: [], warnings: [],
+      claims: [claim], heartbeats: [], batches: [], warnings: [],
+      githubItems: [{
+        repo: claim.repo, target: claim.target, type: "pull_request", title: "Still open on GitHub",
+        url: `https://github.com/${claim.repo}/pull/${claim.target}`, state: "OPEN", labels: [], loadState: "loaded"
+      }],
       events: [{
         eventId: "declared-closed", type: "lane_closed", status: "closed", repo: claim.repo, target: claim.target,
         timestamp: "2026-07-12T11:30:00Z", path: "events/declared-closed.json"
@@ -125,6 +194,8 @@ describe("buildDashboardModel", () => {
     });
 
     expect(model.workItems[0]).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "declared" } });
+    expect(model.workItems[0].warnings).toEqual([]);
+    expect(model.qaValidations).toEqual([]);
     expect(model.healthItems.map((item) => item.title)).not.toContain("Active claim has no matching heartbeat");
     expect(model.healthItems.map((item) => item.title)).not.toContain("Work started but not currently processing");
   });

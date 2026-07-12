@@ -1169,7 +1169,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       };
     });
 
-  const qaValidations: QaValidationItem[] = workItems
+  const preDerivationQaValidations: QaValidationItem[] = workItems
     .filter((item) => item.type === "pull_request")
     .flatMap((item) => {
       const signals = item.batchSignals && item.batchSignals.length > 0 ? item.batchSignals : [undefined];
@@ -1202,7 +1202,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       });
     });
 
-  const batchOperations: BatchOperation[] = batches.map((batch) => {
+  const preDerivationBatchOperations: BatchOperation[] = batches.map((batch) => {
     const batchEvents = scopedEvents.filter((event) =>
       event.batchPath ? event.batchPath === batch.path : event.batchId === batch.batchId && (!batch.repo || event.repo === batch.repo)
     );
@@ -1215,7 +1215,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         : "stop_requested"
       : "running";
     const qa = emptyQaCounts();
-    for (const validation of qaValidations.filter((item) => item.batchId === batch.batchId && batchContainsRepo(batch, item.repo))) {
+    for (const validation of preDerivationQaValidations.filter((item) => item.batchId === batch.batchId && batchContainsRepo(batch, item.repo))) {
       qa.total += 1;
       if (validation.status === "in_progress") {
         qa.inProgress += 1;
@@ -1241,12 +1241,34 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   workItems = deriveWorkItems({
     workItems,
     events: scopedEvents,
-    qaValidations,
-    batchOperations,
+    qaValidations: preDerivationQaValidations,
+    batchOperations: preDerivationBatchOperations,
     batches,
     now: input.now
   });
+  workItems = workItems.map((item) => isOperationalWorkItem(item) ? item : { ...item, warnings: [] });
   const workItemsById = new Map(workItems.map((item) => [item.id, item]));
+  const operationalWorkIds = new Set(workItems.filter(isOperationalWorkItem).map((item) => item.id));
+  const qaValidations = preDerivationQaValidations.filter((validation) =>
+    operationalWorkIds.has(workId(validation.repo, validation.target))
+  );
+  const batchOperations = preDerivationBatchOperations.map((operation) => {
+    const batch = batches.find((candidate) =>
+      operation.batchPath ? candidate.path === operation.batchPath : candidate.batchId === operation.batchId
+    );
+    const qa = emptyQaCounts();
+    for (const validation of qaValidations.filter((item) =>
+      item.batchId === operation.batchId && (!batch || batchContainsRepo(batch, item.repo))
+    )) {
+      qa.total += 1;
+      if (validation.status === "in_progress") {
+        qa.inProgress += 1;
+      } else {
+        qa[validation.status] += 1;
+      }
+    }
+    return { ...operation, qa };
+  });
   const nonterminalWorkItems = workItems.filter((item) => !item.terminalState);
   const hasUnreconciledCoordinatedWork = nonterminalWorkItems.some((item) => {
     return hasCoordinationEvidence(item) && item.github?.loadState !== "loaded";

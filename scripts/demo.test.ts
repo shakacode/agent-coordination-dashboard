@@ -143,7 +143,7 @@ describe("demo coordination state", () => {
 
       const dashboard = (await (
         await fetch(`http://127.0.0.1:${port}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } })
-      ).json()) as { agents: Array<{ machineId?: string }>; batches: unknown[]; stateRoot: string; warnings: unknown[]; workItems: Array<{ target: string; terminalState?: string; terminalProvenance?: { source: string }; github?: { branchState?: string } }>; trulyOpenCountStatus: string };
+      ).json()) as { agents: Array<{ machineId?: string }>; batches: unknown[]; stateRoot: string; warnings: Array<{ message: string; target?: string }>; workItems: Array<{ target: string; terminalState?: string; terminalProvenance?: { source: string }; github?: { branchState?: string } }>; trulyOpenCountStatus: string };
       expect(new Set(dashboard.agents.map((agent) => agent.machineId))).toEqual(
         new Set(["demo-m1", "demo-m2", "demo-m3", "demo-m4"])
       );
@@ -154,10 +154,12 @@ describe("demo coordination state", () => {
       expect(dashboard.trulyOpenCountStatus).toBe("available");
       expect(dashboard.warnings).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ message: expect.stringContaining("demo-platform:ui is blocked") }),
-          expect.objectContaining({ message: expect.stringContaining("holder is not currently live or stale") })
+          expect.objectContaining({ message: expect.stringContaining("demo-platform:ui is blocked") })
         ])
       );
+      expect(dashboard.warnings.some((warning) =>
+        ["202", "203"].includes(warning.target || "") && warning.message.includes("holder is not currently live or stale")
+      )).toBe(false);
 
       child.kill("SIGTERM");
       const [exitCode] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
