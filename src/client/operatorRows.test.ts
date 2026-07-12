@@ -3511,6 +3511,41 @@ describe("operatorRows", () => {
     );
   });
 
+  it("keeps a loaded OPEN issue visible when legacy coordination has been archived", () => {
+    const openIssue = workItem({
+      type: "issue",
+      operatorState: "archived_view",
+      terminalState: undefined,
+      heartbeat: {
+        ...heartbeat,
+        status: "coding",
+        updatedAt: "2026-07-08T19:00:00Z",
+        expiresAt: "2026-07-08T19:10:00Z",
+        liveness: "dead"
+      },
+      github: {
+        ...workItem().github!,
+        type: "issue",
+        state: "OPEN",
+        url: "https://github.com/repo/app/issues/123"
+      }
+    });
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      trulyOpenCount: 1,
+      trulyOpenCountStatus: "available",
+      workItems: [openIssue]
+    });
+
+    const ageOut = filterOperatorRowsByAge(buildOperatorRows(model), model.generatedAt);
+
+    expect(ageOut.hiddenRows).toEqual([]);
+    expect(ageOut.visibleRows).toEqual([
+      expect.objectContaining({ target: "123", githubState: "OPEN", operatorState: "archived" })
+    ]);
+    expect(ageOut.visibleRows).toHaveLength(model.trulyOpenCount!);
+  });
+
   it("does not present terminal target work as a Batch Repair recovery row", () => {
     const terminal = workItem({
       terminalState: "done",

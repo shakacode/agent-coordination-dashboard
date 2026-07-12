@@ -1185,7 +1185,8 @@ export function isTerminalRowEligibleForAgeOut(row: OperatorRow): boolean {
   );
   return (
     (ACCEPTED_TERMINAL_STATUSES.has(row.retentionStatus.trim().toLowerCase()) || isLegacyArchived) &&
-    (isLegacyArchived || (githubState !== "OPEN" && githubState !== UNKNOWN)) &&
+    githubState !== "OPEN" &&
+    (isLegacyArchived || githubState !== UNKNOWN) &&
     row.liveness !== "live" &&
     row.liveness !== "stale" &&
     row.liveness !== "dead" &&
