@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
+import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
@@ -87,26 +88,19 @@ function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: 
   window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
-function canSelectWorkItem(item: WorkItem): boolean {
-  return item.schedulingState !== "in_process"
-    && !item.batchSignals?.length
-    && !item.terminalState
-    && !["terminal", "archived_view"].includes(item.operatorState || "");
-}
-
 function preserveWorkItemSelections(current: DashboardModel | null, next: DashboardModel): DashboardModel {
   if (!current) {
     return next;
   }
 
-  const selectedIds = new Set(current.workItems.filter((item) => item.selected && canSelectWorkItem(item)).map((item) => item.id));
+  const selectedIds = new Set(current.workItems.filter((item) => item.selected && isSelectableWorkItem(item)).map((item) => item.id));
   if (selectedIds.size === 0) {
     return next;
   }
 
   return {
     ...next,
-    workItems: next.workItems.map((item) => (selectedIds.has(item.id) && canSelectWorkItem(item) ? { ...item, selected: true } : item))
+    workItems: next.workItems.map((item) => (selectedIds.has(item.id) && isSelectableWorkItem(item) ? { ...item, selected: true } : item))
   };
 }
 
@@ -326,7 +320,7 @@ export function App() {
       return {
         ...current,
         workItems: current.workItems.map((item) =>
-          item.id === id && canSelectWorkItem(item)
+          item.id === id && isSelectableWorkItem(item)
             ? { ...item, selected: !item.selected }
             : item
         )

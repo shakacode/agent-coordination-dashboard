@@ -3393,4 +3393,65 @@ describe("operatorRows", () => {
       expect(operatorDeepLinkFromSearchParams(new URLSearchParams(`operatorFilter=${hostile}`)).overviewFilter).toBeUndefined();
     }
   });
+
+  it.each(["done", "closed"] as const)(
+    "treats GitHub-derived %s work as terminal even while coordination is still active",
+    (terminalState) => {
+      const terminal = workItem({
+        terminalState,
+        terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/123" },
+        operatorState: "terminal",
+        github: {
+          ...workItem().github!,
+          state: terminalState === "done" ? "MERGED" : "CLOSED"
+        },
+        claim,
+        heartbeat,
+        schedulingState: terminalState === "done" ? "in_process" : "started_not_processing"
+      });
+      const model = dashboard({ workItems: [terminal] });
+
+      expect(buildOperatorRows(model)[0]).toMatchObject({
+        operatorState: "done",
+        retentionStatus: terminalState
+      });
+      expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "processing_now")).toEqual([]);
+      expect(filterOperatorRowsForOverview(buildOperatorRows(model), model, "needs_recovery")).toEqual([]);
+    }
+  );
+
+  it("does not present terminal target work as a Batch Repair recovery row", () => {
+    const terminal = workItem({
+      terminalState: "done",
+      terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/123" },
+      operatorState: "terminal",
+      claim,
+      heartbeat,
+      batchSignals: [{ batchId: "batch-1", laneName: "implementation", status: "coding", blockedOn: [] }]
+    });
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "batch-1",
+      repo: "repo/app",
+      objective: "Repair retained batch metadata",
+      path: "batches/batch-1.json",
+      lanes: [{
+        name: "implementation",
+        owner: "agent-a",
+        targets: ["123"],
+        dependsOn: [],
+        blockedOn: [],
+        status: "coding",
+        liveness: "live"
+      }]
+    };
+    const model = dashboard({ workItems: [terminal], batches: [batch] });
+
+    const repairRows = filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair");
+
+    expect(repairRows).toEqual([
+      expect.objectContaining({ source: "batch", batchId: "batch-1" })
+    ]);
+    expect(repairRows[0].target).toBeUndefined();
+  });
 });

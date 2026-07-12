@@ -389,6 +389,9 @@ function deriveOperatorState(input: {
   const terminalTransitionIsSuperseded =
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
+  if (input.workItem?.terminalState || input.workItem?.operatorState === "terminal") {
+    return "done";
+  }
   if (PAUSED_PATTERN.test(currentText)) {
     return "paused";
   }
@@ -798,7 +801,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     item.heartbeat?.updatedAt,
     claimLifecycleAt
   );
-  const retentionStatus = latestLifecycleStatus(lifecycleCandidates);
+  const retentionStatus = item.terminalState || (item.operatorState === "terminal" ? "done" : latestLifecycleStatus(lifecycleCandidates));
   const ownerMetadata = firstObserved(
     notApplicable(),
     ["claim", item.claim?.operator],
@@ -1214,6 +1217,14 @@ function rowMatchesRepoTarget(row: OperatorRow, repo: string, target: string): b
   return row.repo === repo && row.target === target;
 }
 
+function rowRepresentsTerminalWorkItem(row: OperatorRow, dashboard: DashboardModel): boolean {
+  return dashboard.workItems.some(
+    (item) =>
+      rowMatchesRepoTarget(row, item.repo, item.target)
+      && Boolean(item.terminalState || item.operatorState === "terminal")
+  );
+}
+
 function batchMatchesOperation(batch: BatchRecord, operation: BatchOperation): boolean {
   if (batch.batchId !== operation.batchId) {
     return false;
@@ -1375,7 +1386,12 @@ export function filterOperatorRowsForOverview(
   if (["ready_for_batch", "needs_recovery", "processing_now"].includes(filter)) {
     const schedulingState =
       filter === "ready_for_batch" ? "ready_for_batch" : filter === "needs_recovery" ? "started_not_processing" : "in_process";
-    const items = dashboard.workItems.filter((item) => item.schedulingState === schedulingState);
+    const items = dashboard.workItems.filter(
+      (item) =>
+        item.schedulingState === schedulingState
+        && !item.terminalState
+        && item.operatorState !== "terminal"
+    );
     return rows.filter((row) => items.some((item) => rowMatchesRepoTarget(row, item.repo, item.target)));
   }
   if (filter === "qa_attention") {
@@ -1396,7 +1412,11 @@ export function filterOperatorRowsForOverview(
     const operation = stoppedOperations.find((candidate) => batchMatchesOperation(batch, candidate));
     const activityStatus = repairActivityStatus(batch, operation);
     const activityMetadata = repairActivityMetadata(batch, operation, activityStatus);
-    const matchingRows = rows.filter((row) => rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch));
+    const matchingRows = rows.filter(
+      (row) =>
+        !rowRepresentsTerminalWorkItem(row, dashboard)
+        && (rowMatchesBatchScope(row, batch) || rowMatchesBatchTarget(row, batch))
+    );
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
         const presentationRow = rowMatchesBatchScope(row, batch)
@@ -1414,7 +1434,9 @@ export function filterOperatorRowsForOverview(
     if (dashboard.batches.some((batch) => batchMatchesOperation(batch, operation))) {
       continue;
     }
-    const matchingRows = rows.filter((row) => rowMatchesOperationScope(row, operation));
+    const matchingRows = rows.filter(
+      (row) => !rowRepresentsTerminalWorkItem(row, dashboard) && rowMatchesOperationScope(row, operation)
+    );
     if (matchingRows.length > 0) {
       for (const row of matchingRows) {
         results.set(

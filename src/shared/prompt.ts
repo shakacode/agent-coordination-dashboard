@@ -1,6 +1,7 @@
 import type { WorkItem } from "./types";
 import { suggestBatchId } from "./batchManifest";
 import { displayAttribution } from "./attribution";
+import { isSelectableWorkItem } from "./workItemSelection";
 
 function itemLabel(item: WorkItem): string {
   const target = displayAttribution(item.target);
@@ -26,10 +27,7 @@ function duplicateTargetNumbersAcrossRepos(items: WorkItem[]): string[] {
 }
 
 export function generatePrBatchPrompt(items: WorkItem[]): string {
-  const selected = items.filter(
-    (item) => item.selected && item.schedulingState !== "in_process" && !(item.batchSignals?.length)
-      && !item.terminalState && !["terminal", "archived_view"].includes(item.operatorState || "")
-  );
+  const selected = items.filter((item) => item.selected && isSelectableWorkItem(item));
 
   if (selected.length === 0) {
     return "No selected items. Check issues or pull requests to generate a $pr-batch prompt.";

@@ -1,4 +1,5 @@
 import type { WorkItem } from "../../shared/types";
+import { isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 
@@ -113,13 +114,6 @@ function activityTime(item: WorkItem): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-function canSelect(item: WorkItem): boolean {
-  return item.schedulingState !== "in_process"
-    && !item.batchSignals?.length
-    && !item.terminalState
-    && !["terminal", "archived_view"].includes(item.operatorState || "");
-}
-
 function WorkCard({
   item,
   onCopyResume,
@@ -154,7 +148,7 @@ function WorkCard({
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
       <div className="attention-card-actions">
-        {canSelect(item) ? (
+        {isSelectableWorkItem(item) ? (
           <label className="attention-card-select">
             <input
               aria-label={`Include ${item.id} in PR-batch prompt`}
