@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
+import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
@@ -156,8 +157,11 @@ export function App() {
   const repairWorkItemIds = useMemo(() => new Set((dashboard?.workItems || []).filter((item) => repairBatches.some((batch) => {
     if (batch.repo && batch.repo !== item.repo) return false;
     if (batch.targets?.some((target) => target.target === item.target && (target.repo || batch.repo) === item.repo)) return true;
-    return batch.lanes.some((lane) => lane.targets.includes(item.target))
-      && item.batchSignals?.some((signal) => signal.batchId === batch.batchId);
+    if (batch.repo) {
+      return batch.lanes.some((lane) => lane.targets.includes(item.target))
+        && item.batchSignals?.some((signal) => signal.batchId === batch.batchId);
+    }
+    return repoLessBatchLaneMatchesWorkItem(batch, batch.batchId, item, dashboard?.workItems || []);
   })).map((item) => item.id)), [dashboard, repairBatches]);
   const repairBatchCount = dashboard
     ? repairBatches.length

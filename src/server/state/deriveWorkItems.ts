@@ -1,4 +1,5 @@
 import type { BatchEvent, BatchOperation, BatchRecord, QaValidationItem, WorkItem, WorkItemOperatorState, WorkItemTerminalState } from "../../shared/types";
+import { repoLessBatchLaneMatchesWorkItem } from "../../shared/batchSignal";
 
 export const WEDGED_AFTER_MS = 15 * 60 * 1000;
 export const ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -21,15 +22,7 @@ function operationMatchesItem(operation: BatchOperation, item: WorkItem, input: 
   if (batch?.repo) return batch.repo === item.repo;
   const explicitTarget = batch?.targets?.find((target) => target.target === item.target && (target.repo || batch.repo) === item.repo);
   if (explicitTarget) return true;
-  if (batch) {
-    const laneTargets = new Set(batch.lanes.flatMap((lane) => lane.targets));
-    if (!laneTargets.has(item.target)) return false;
-    const corroboratedRepos = new Set(input.workItems.filter((candidate) =>
-      laneTargets.has(candidate.target)
-      && candidate.batchSignals?.some((signal) => signal.batchId === operation.batchId)
-    ).map((candidate) => candidate.repo));
-    return corroboratedRepos.size === 1 && corroboratedRepos.has(item.repo);
-  }
+  if (batch) return repoLessBatchLaneMatchesWorkItem(batch, operation.batchId, item, input.workItems);
   const repos = new Set(input.workItems.filter((candidate) => candidate.batchSignals?.some((signal) => signal.batchId === operation.batchId)).map((candidate) => candidate.repo));
   return repos.size === 1 && repos.has(item.repo);
 }

@@ -250,6 +250,34 @@ describe("App", () => {
     expect(screen.queryByText("other/dashboard")).not.toBeInTheDocument();
   });
 
+  it("does not assign an ambiguous repo-less lane repair across repositories", async () => {
+    const laneOnlyBatch = {
+      schemaVersion: 1,
+      batchId: "lane-only",
+      source: "inferred" as const,
+      lanes: [{ name: "lane", owner: "worker", targets: ["43"], dependsOn: [], status: "running", liveness: "dead" as const, blockedOn: [] }],
+      path: "batches/lane-only.json"
+    };
+    const collisionItems = ["repo/a", "repo/b"].map((repo) => ({
+      ...model.workItems[2],
+      id: `${repo}#43`,
+      repo,
+      target: "43",
+      github: undefined,
+      batchSignals: [{ batchId: "lane-only", laneName: "lane", status: "running", blockedOn: [] }]
+    }));
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input) === "/api/settings" ? settings : { ...model, workItems: collisionItems, batches: [laneOnlyBatch] }
+    }) as Response);
+    window.history.pushState({}, "", "/?operatorFilter=batch_repair");
+    render(<App />);
+
+    expect(await screen.findByText("No work items match this search.")).toBeInTheDocument();
+    expect(screen.queryByText("repo/a")).not.toBeInTheDocument();
+    expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
+  });
+
   it("keeps repo plus target structured links exact when target numbers collide", async () => {
     const collision = { ...model.workItems[2], id: "other/repo/dashboard#45", repo: "other/repo/dashboard", github: { ...model.workItems[2].github!, repo: "other/repo/dashboard" } };
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
