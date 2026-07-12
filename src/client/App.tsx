@@ -417,7 +417,10 @@ export function App() {
           ) : hasAuthenticationFailure ? (
             <>
               <strong>
-                Coordination backend unreachable{degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — showing GitHub data only
+                {allRequiredSourcesFailed ? "Coordination backend unreachable" : "Coordination authentication failed"}
+                {degradedHttpStatus ? ` (${degradedHttpStatus})` : ""} — {allRequiredSourcesFailed
+                  ? "showing GitHub data only"
+                  : "some coordination data is unavailable"}
               </strong>
               <span>
                 Token source: {dashboard.coordinationTokenEnvVar || "no token environment variable found"}. Run{" "}

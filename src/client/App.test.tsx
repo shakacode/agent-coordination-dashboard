@@ -654,6 +654,29 @@ describe("App", () => {
     expect(screen.getByText("0 batch repairs")).toBeInTheDocument();
   });
 
+  it("keeps the loud banner but uses partial-outage copy for one authentication failure", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 0 ? source : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "Coordination backend degraded" });
+    expect(banner).toHaveTextContent("Coordination authentication failed (401) — some coordination data is unavailable");
+    expect(banner).not.toHaveTextContent("showing GitHub data only");
+  });
+
   it("does not turn an optional events-only failure into a full outage", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
       ok: true,

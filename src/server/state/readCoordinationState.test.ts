@@ -164,11 +164,26 @@ describe("readCoordinationState", () => {
       ])
     );
     expect(state.sourceStatus).toEqual([
-      expect.objectContaining({ resource: "claims", status: "unreachable" }),
-      expect.objectContaining({ resource: "heartbeats", status: "unreachable" }),
+      expect.objectContaining({ resource: "claims", status: "ok" }),
+      expect.objectContaining({ resource: "heartbeats", status: "ok" }),
       expect.objectContaining({ resource: "batches", status: "ok" }),
-      expect.objectContaining({ resource: "events", status: "unreachable" })
+      expect.objectContaining({ resource: "events", status: "ok" })
     ]);
+  });
+
+  it("marks a filesystem source unreachable when every discovered record is malformed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-all-malformed-"));
+    await mkdir(join(root, "claims"), { recursive: true });
+    await mkdir(join(root, "heartbeats"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+    await writeFile(join(root, "claims", "broken.json"), "{");
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.claims).toEqual([]);
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "fs", status: "unreachable" })
+    );
   });
 
   it("shows a setup notice instead of missing-directory warnings for empty roots", async () => {
