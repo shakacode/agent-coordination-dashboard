@@ -297,7 +297,9 @@ export function App() {
       return;
     }
     let cancelled = false;
-    setItemTimeline(null);
+    setItemTimeline((current) =>
+      current?.repo === itemRoute.repo && current.target === itemRoute.target ? current : null
+    );
     setItemError(null);
     void fetchItemTimeline(itemRoute.repo, itemRoute.target).then(
       (timeline) => {

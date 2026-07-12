@@ -155,4 +155,47 @@ describe("buildCustodyTimeline", () => {
       expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:05:00.000Z", durationMs: 300_000 })
     ]);
   });
+
+  it("clips old-holder liveness at claim transfer and release boundaries", () => {
+    const claim = (overrides: Partial<ClaimRecord>): ClaimRecord => ({
+      schemaVersion: 1,
+      repo: "shakacode/dashboard",
+      target: "46",
+      agentId: "worker-a",
+      status: "active",
+      path: "claims/shakacode/dashboard/46.json",
+      claimedAt: "2026-07-12T10:00:00Z",
+      ...overrides
+    });
+    const heartbeat = (overrides: Partial<HeartbeatRecord>): HeartbeatRecord => ({
+      schemaVersion: 1,
+      repo: "shakacode/dashboard",
+      target: "46",
+      agentId: "worker-a",
+      status: "implementing",
+      updatedAt: "2026-07-12T10:00:00Z",
+      expiresAt: "2026-07-12T10:05:00Z",
+      path: "heartbeats/worker-a.json",
+      liveness: "live",
+      ...overrides
+    });
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:30:00Z"),
+      claims: [
+        claim({ agentId: "worker-a", claimedAt: "2026-07-12T10:00:00Z" }),
+        claim({ agentId: "worker-b", claimedAt: "2026-07-12T10:10:00Z" }),
+        claim({ agentId: "worker-b", status: "released", updatedAt: "2026-07-12T10:20:00Z" })
+      ],
+      heartbeats: [
+        heartbeat({ agentId: "worker-a" }),
+        heartbeat({ agentId: "worker-b", updatedAt: "2026-07-12T10:10:00Z", expiresAt: "2026-07-12T10:15:00Z" })
+      ],
+      events: []
+    });
+
+    expect(timeline.liveness.filter((span) => span.agentId === "worker-a").every((span) => span.endedAt <= "2026-07-12T10:10:00.000Z")).toBe(true);
+    expect(timeline.liveness.filter((span) => span.agentId === "worker-b").every((span) => span.endedAt <= "2026-07-12T10:20:00.000Z")).toBe(true);
+  });
 });

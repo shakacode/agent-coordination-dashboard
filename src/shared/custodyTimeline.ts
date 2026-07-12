@@ -12,6 +12,11 @@ export interface LivenessSpan {
   endedAt: string;
 }
 
+export interface LivenessBoundary {
+  agentId: string;
+  endedAt: string;
+}
+
 export interface ClaimCustodyEvent {
   action: "acquired" | "renewed" | "released" | "taken_over";
   agentId: string;
@@ -79,7 +84,7 @@ function iso(value: number): string {
  * heartbeat ends any prior interval for the same holder, so an observed gap
  * remains visible as stale/dead rather than being hidden as raw records.
  */
-export function buildLivenessSpans(heartbeats: HeartbeatRecord[], now = new Date()): LivenessSpan[] {
+export function buildLivenessSpans(heartbeats: HeartbeatRecord[], now = new Date(), boundaries: LivenessBoundary[] = []): LivenessSpan[] {
   const nowMs = now.getTime();
   const byHolder = new Map<string, HeartbeatRecord[]>();
   for (const heartbeat of heartbeats) {
@@ -97,7 +102,11 @@ export function buildLivenessSpans(heartbeats: HeartbeatRecord[], now = new Date
       const expiresMs = time(heartbeat.expiresAt);
       if (startedMs === undefined || expiresMs === undefined || expiresMs <= startedMs || startedMs > nowMs) return;
       const nextMs = time(ordered[index + 1]?.updatedAt || "") || nowMs;
-      const endsAt = Math.min(Math.max(nextMs, startedMs), nowMs);
+      const boundaryMs = boundaries
+        .filter((boundary) => boundary.agentId === heartbeat.agentId)
+        .map((boundary) => time(boundary.endedAt))
+        .find((candidate): candidate is number => candidate !== undefined && candidate > startedMs);
+      const endsAt = Math.min(Math.max(Math.min(nextMs, boundaryMs || nowMs), startedMs), nowMs);
       const ttl = expiresMs - startedMs;
       const deadAt = startedMs + ttl * DEAD_AFTER_TTL_MULTIPLIER;
       const details = {
@@ -133,6 +142,25 @@ function optionalFields(record: Pick<ClaimRecord, "machineId" | "threadHandle" |
 
 function claimTimestamp(claim: ClaimRecord): string | undefined {
   return claim.updatedAt || claim.claimedAt;
+}
+
+function livenessBoundaries(claims: ClaimRecord[]): LivenessBoundary[] {
+  let activeAgent: string | undefined;
+  const boundaries: LivenessBoundary[] = [];
+  for (const claim of claims) {
+    const endedAt = claimTimestamp(claim);
+    if (!endedAt) continue;
+    if (claim.status === "released") {
+      boundaries.push({ agentId: claim.agentId, endedAt });
+      if (activeAgent === claim.agentId) activeAgent = undefined;
+      continue;
+    }
+    if (activeAgent && activeAgent !== claim.agentId) {
+      boundaries.push({ agentId: activeAgent, endedAt });
+    }
+    activeAgent = claim.agentId;
+  }
+  return boundaries;
 }
 
 function isPhaseEvent(event: BatchEvent): boolean {
@@ -213,7 +241,7 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     repo: input.repo,
     target: input.target,
     claims,
-    liveness: buildLivenessSpans(matchingHeartbeats, now),
+    liveness: buildLivenessSpans(matchingHeartbeats, now, livenessBoundaries(matchingClaims)),
     phases,
     events,
     branches: unique([...matchingClaims.map((claim) => claim.branch), ...matchingHeartbeats.map((heartbeat) => heartbeat.branch), ...events.map((event) => event.branch)]),

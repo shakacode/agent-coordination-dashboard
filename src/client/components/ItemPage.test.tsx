@@ -8,11 +8,11 @@ const timeline = {
   repo: "shakacode/dashboard",
   target: "46",
   claims: [
-    { action: "acquired", agentId: "worker-a", threadHandle: "first-chat", timestamp: "2026-07-12T10:00:00Z", generation: 3 },
-    { action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", threadHandle: "takeover-chat", timestamp: "2026-07-12T10:05:00Z", generation: 4 }
+    { action: "acquired", agentId: "worker-a", machineId: "m1", host: "codex", operator: "justin", threadHandle: "first-chat", timestamp: "2026-07-12T10:00:00Z", generation: 3 },
+    { action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a", machineId: "m2", host: "claude", operator: "riley", threadHandle: "takeover-chat", timestamp: "2026-07-12T10:05:00Z", generation: 4 }
   ],
-  liveness: [{ agentId: "worker-b", liveness: "live", status: "implementing", startedAt: "2026-07-12T10:05:00Z", endedAt: "2026-07-12T10:10:00Z" }],
-  phases: [{ eventId: "phase-1", phase: "implementing", startedAt: "2026-07-12T10:02:00Z", endedAt: "2026-07-12T10:10:00Z", durationMs: 480_000, threadHandle: "takeover-chat" }],
+  liveness: [{ agentId: "worker-b", machineId: "m2", host: "claude", operator: "riley", liveness: "live", status: "implementing", startedAt: "2026-07-12T10:05:00Z", endedAt: "2026-07-12T10:10:00Z" }],
+  phases: [{ eventId: "phase-1", phase: "implementing", machineId: "m3", host: "codex", operator: "devon", startedAt: "2026-07-12T10:02:00Z", endedAt: "2026-07-12T10:10:00Z", durationMs: 480_000, threadHandle: "takeover-chat" }],
   events: [],
   branches: ["codex/takeover"],
   prUrls: ["https://github.com/shakacode/dashboard/pull/47"],
@@ -41,7 +41,10 @@ describe("ItemPage", () => {
 
     expect(screen.getByRole("heading", { name: "Work item #46" })).toBeInTheDocument();
     expect(screen.getByText("Current state: running")).toBeInTheDocument();
-    expect(screen.getByText("GitHub: OPEN · APPROVED")).toBeInTheDocument();
+    expect(screen.getByText("GitHub: OPEN · APPROVED · CI: UNKNOWN")).toBeInTheDocument();
+    expect(screen.getByText("Machine: m1 · Host: codex · Operator: justin")).toBeInTheDocument();
+    expect(screen.getAllByText("Machine: m2 · Host: claude · Operator: riley")).toHaveLength(2);
+    expect(screen.getByText("Machine: m3 · Host: codex · Operator: devon")).toBeInTheDocument();
     expect(screen.getByText(/worker-a → worker-b/)).toBeInTheDocument();
     expect(screen.getByText("implementing · 8m")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/47");
@@ -67,5 +70,20 @@ describe("ItemPage", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       "agent-coord claim --repo shakacode/dashboard --target 46 --agent-id REPLACE_WITH_YOUR_AGENT_ID"
     );
+  });
+
+  it("keeps an active claim as holder when an older heartbeat is dead", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "active", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, agentId: "worker-a", liveness: "dead" }
+      }
+    }} />);
+
+    expect(screen.getByText("Holder: worker-b")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
   });
 });
