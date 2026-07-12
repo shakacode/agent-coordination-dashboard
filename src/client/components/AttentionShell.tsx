@@ -16,10 +16,28 @@ function holder(item: WorkItem): string {
   return item.claim?.agentId || item.heartbeat?.agentId || "unattributed";
 }
 
+function canonicalGithubItemUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") return undefined;
+    const pathname = url.pathname.replace(/\/$/, "");
+    if (!/^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)) return undefined;
+    return `${url.origin.toLowerCase()}${pathname.toLowerCase()}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function matches(item: WorkItem, query: string): boolean {
   const value = query.trim().toLowerCase();
   if (!value) return true;
   if (/^#?\d+$/.test(value)) return item.target === value.replace(/^#/, "");
+  const githubItemUrl = canonicalGithubItemUrl(query.trim());
+  if (githubItemUrl) {
+    return [item.github?.url, item.claim?.prUrl, item.heartbeat?.prUrl]
+      .some((candidate) => canonicalGithubItemUrl(candidate) === githubItemUrl);
+  }
   if (/^[^/#\s]+\/[^/#\s]+#\d+$/.test(value)) return item.id.toLowerCase() === value;
   return [
     item.id,

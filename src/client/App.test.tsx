@@ -151,7 +151,7 @@ describe("App", () => {
     expect(window.location.search).toBe("?q=worker-a");
   });
 
-  it.each(["feature/foo#bar", "https://github.com/repo/dashboard/pull/45#discussion_r1", "thread#lantern"])(
+  it.each(["feature/foo#bar", "https://github.com/repo/dashboard/pull/44#discussion_r1", "thread#lantern"])(
     "keeps noncanonical hash-bearing legacy item %s intact as universal text",
     async (legacyItem) => {
       window.history.pushState({}, "", `/?item=${encodeURIComponent(legacyItem)}`);
@@ -159,6 +159,7 @@ describe("App", () => {
       expect(await screen.findByRole("textbox", { name: "Find work" })).toHaveValue(legacyItem);
       expect(new URLSearchParams(window.location.search).get("q")).toBe(legacyItem);
       expect(new URLSearchParams(window.location.search).has("item")).toBe(false);
+      if (legacyItem.includes("github.com")) expect(screen.getByRole("heading", { name: /Finished dashboard work/ })).toBeInTheDocument();
     }
   );
 

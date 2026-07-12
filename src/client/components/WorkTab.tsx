@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CircleDot, GitPullRequest, Search } from "lucide-react";
 import type { WorkItem } from "../../shared/types";
+import { batchSignalIdentity } from "../../shared/batchSignal";
 import { StatusBadge } from "./StatusBadge";
 
 export function WorkTab({
@@ -94,7 +95,7 @@ export function WorkTab({
                     <div className="work-meta">
                       <span>{item.claim?.agentId || item.heartbeat?.agentId || batchSignal?.laneName || "Unclaimed"}</span>
                       <span>{item.heartbeat?.liveness || "no heartbeat"}</span>
-                      {batchSignal ? <span>{`${batchSignal.batchId}:${batchSignal.laneName}`}</span> : null}
+                      {batchSignal ? <span>{batchSignalIdentity(batchSignal)}</span> : null}
                       {item.github?.url ? (
                         <a href={item.github.url} rel="noreferrer" target="_blank">
                           Open

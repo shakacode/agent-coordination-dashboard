@@ -19,6 +19,7 @@ import type {
   OperatorRowProvenance
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
+import { batchSignalIdentity } from "../../shared/batchSignal";
 import { isQaEventType } from "../../shared/qaEvents";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
@@ -718,14 +719,14 @@ function warningsForWork(
       severity: "warning",
       repo,
       target,
-      message: `Work is already scheduled in batch ${signal.batchId}:${signal.laneName} (${signal.status}).`
+      message: `Work is already scheduled in ${batchSignalIdentity(signal)} (${signal.status}).`
     });
     if (signal.blockedOn.length > 0) {
       warnings.push({
         severity: "warning",
         repo,
         target,
-        message: `Batch lane ${signal.batchId}:${signal.laneName} is blocked on ${signal.blockedOn.join(", ")}.`
+        message: `${batchSignalIdentity(signal)} is blocked on ${signal.blockedOn.join(", ")}.`
       });
     }
   }

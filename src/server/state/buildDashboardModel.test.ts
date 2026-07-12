@@ -73,6 +73,11 @@ describe("buildDashboardModel", () => {
       { batchId: "batch-only", status: "implementation", blockedOn: [], updatedAt: "2026-07-12T11:59:00Z" },
       { laneName: "lane-only", status: "review", blockedOn: [], updatedAt: "2026-07-12T11:58:00Z" }
     ]);
+    expect(model.workItems[0].warnings.map((warning) => warning.message)).toEqual(expect.arrayContaining([
+      "Work is already scheduled in batch batch-only (implementation).",
+      "Work is already scheduled in lane lane-only (review)."
+    ]));
+    expect(model.workItems[0].warnings.every((warning) => !warning.message.includes("undefined"))).toBe(true);
   });
   it("exposes one canonical operator state on each work item", () => {
     const model = buildDashboardModel({

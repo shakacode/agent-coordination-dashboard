@@ -84,6 +84,20 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
   });
 
+  it("normalizes recognized GitHub item URLs before matching query and fragment suffixes", () => {
+    const pullRequest = {
+      ...ITEMS[0],
+      id: "repo/dashboard#44",
+      target: "44",
+      type: "pull_request" as const,
+      github: { repo: "repo/dashboard", target: "44", type: "pull_request" as const, title: "Canonical PR", url: "https://github.com/repo/dashboard/pull/44", state: "OPEN", labels: [], loadState: "loaded" as const }
+    };
+    const { rerender } = render(<AttentionShell items={[pullRequest]} onQueryChange={vi.fn()} query="https://github.com/repo/dashboard/pull/44#discussion_r1" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Canonical PR/ })).toBeInTheDocument();
+    rerender(<AttentionShell items={[pullRequest]} onQueryChange={vi.fn()} query="https://github.com/repo/dashboard/pull/44?notification_referrer_id=1#discussion_r1" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Canonical PR/ })).toBeInTheDocument();
+  });
+
   it("matches hash targets while preserving exact structured repo, batch, lane, and operator filters", async () => {
     const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
     const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
