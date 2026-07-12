@@ -65,7 +65,10 @@ const GITHUB_LIST_LIMIT = 1000;
 
 export function githubApiPath(repo: string, kind: "issues" | "branches", target: string): string {
   const repoSegments = repo.split("/");
-  if (repoSegments.length !== 2 || repoSegments.some((segment) => !/^[A-Za-z0-9_.-]+$/.test(segment))) {
+  if (
+    repoSegments.length !== 2 ||
+    repoSegments.some((segment) => !/^[A-Za-z0-9_.-]+$/.test(segment) || /^\.+$/.test(segment))
+  ) {
     throw new Error(`Invalid GitHub repository: ${repo}`);
   }
   if (kind === "issues" && !/^\d+$/.test(target)) {

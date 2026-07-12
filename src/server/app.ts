@@ -127,15 +127,19 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       .filter((event) => event.repo === item.repo && event.target === item.target && event.prUrl)
       .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0));
     // Keep the selected PR URL and branch source-atomic. Active claim and live/stale
-    // heartbeat sources are ordered by updatedAt; equal or invalid timestamps retain
+    // heartbeat sources are ordered by their live-record timestamp; claims fall back
+    // from updatedAt to claimedAt. Equal or invalid timestamps retain
     // the stable claim-before-heartbeat order. Matching lanes and history remain
     // lower-priority fallbacks. A branch from another source is not sufficient
     // evidence that it belongs to the selected pull request.
-    const liveSources = [item.claim?.status === "active" ? item.claim : undefined, item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined]
-      .map((source, index) => ({ source, index }))
-      .filter((candidate): candidate is { source: NonNullable<typeof candidate.source>; index: number } => Boolean(candidate.source))
+    const liveSources = [
+      { source: item.claim?.status === "active" ? item.claim : undefined, timestamp: item.claim?.updatedAt || item.claim?.claimedAt },
+      { source: item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined, timestamp: item.heartbeat?.updatedAt }
+    ]
+      .map((candidate, index) => ({ ...candidate, index }))
+      .filter((candidate): candidate is typeof candidate & { source: NonNullable<typeof candidate.source> } => Boolean(candidate.source))
       .sort((left, right) => {
-        const newestFirst = (Date.parse(right.source.updatedAt || "") || 0) - (Date.parse(left.source.updatedAt || "") || 0);
+        const newestFirst = (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0);
         return newestFirst || left.index - right.index;
       })
       .map(({ source }) => source);
