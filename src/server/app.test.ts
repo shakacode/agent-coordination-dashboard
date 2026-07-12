@@ -262,6 +262,44 @@ describe("dashboard app import endpoint", () => {
     expect(body.workItems[0]).toMatchObject({ target: "45", terminalState: "done", github: { state: "MERGED", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
   });
 
+  it("keeps a lane PR URL paired with the branch from that same lane", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-atomic-lane-pr-"));
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await Promise.all([
+      writeFile(join(stateRoot, "batches", "implementation.json"), JSON.stringify({
+        schema_version: 1,
+        batch_id: "implementation",
+        repo: "shakacode/react_on_rails",
+        updated_at: "2026-07-12T09:00:00Z",
+        targets: [{ type: "issue", target: "45" }],
+        lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "completed", branch: "feature/work", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
+      })),
+      writeFile(join(stateRoot, "batches", "qa.json"), JSON.stringify({
+        schema_version: 1,
+        batch_id: "qa",
+        repo: "shakacode/react_on_rails",
+        updated_at: "2026-07-12T10:00:00Z",
+        targets: [{ type: "issue", target: "45" }],
+        lanes: [{ name: "qa", owner: "qa-worker", targets: ["45"], depends_on: [], status: "completed", branch: "qa-proof" }]
+      }))
+    ]);
+    let receivedReference: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        receivedReference = references[0];
+        return {
+          items: references.map((reference) => ({ ...reference, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const })),
+          warnings: []
+        };
+      }
+    });
+
+    await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(receivedReference).toMatchObject({ target: "54", branch: "feature/work" });
+  });
+
   it("consumes a canonical open PR row when it becomes evidence for a coordinated issue", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-consumed-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

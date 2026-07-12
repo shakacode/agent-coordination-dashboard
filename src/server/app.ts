@@ -123,14 +123,18 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
     const lanes = batchLanesFor(item, model);
     const branch = item.claim?.branch || item.heartbeat?.branch || lanes.find((lane) => lane.branch)?.branch;
-    const eventPrUrl = model.events
+    const events = model.events
       .filter((event) => event.repo === item.repo && event.target === item.target && event.prUrl)
-      .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0))[0]?.prUrl;
-    // Prefer direct live coordination, then all matching lanes newest-first, then history.
-    const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, ...lanes.map((lane) => lane.prUrl), eventPrUrl]
-      .map((value) => githubPullRequestReference(value, item.repo))
-      .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
-    if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };
+      .sort((left, right) => (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0));
+    // Keep the selected PR URL and branch source-atomic: direct live coordination,
+    // then matching lanes newest-first, then history. A branch from another source
+    // is not sufficient evidence that it belongs to the selected pull request.
+    const pullRequest = [item.claim, item.heartbeat, ...lanes, ...events]
+      .flatMap((source) => {
+        const reference = githubPullRequestReference(source?.prUrl, item.repo);
+        return reference ? [{ ...reference, ...(source?.branch ? { branch: source.branch } : {}) }] : [];
+      })[0];
+    if (pullRequest) return pullRequest;
     if (item.terminalState) {
       return item.type === "pull_request"
         ? { repo: item.repo, target: item.target, type: "pull_request", ...(branch ? { branch } : {}) }
