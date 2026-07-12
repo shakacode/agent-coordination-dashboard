@@ -136,9 +136,15 @@ const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|change
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
 const ACCEPTED_TERMINAL_STATUSES = new Set(["done", "merged", "closed", "cancelled"]);
+const TERMINAL_PRESENTATION_ALIASES = new Set(["complete", "completed", "released"]);
 
 function isAcceptedTerminalStatus(value: string | undefined): boolean {
   return ACCEPTED_TERMINAL_STATUSES.has(value?.trim().toLowerCase() || "");
+}
+
+function isCurrentTerminalStatus(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() || "";
+  return ACCEPTED_TERMINAL_STATUSES.has(normalized) || TERMINAL_PRESENTATION_ALIASES.has(normalized);
 }
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
@@ -375,7 +381,7 @@ function deriveOperatorState(input: {
   const transitionAt = timestampMs(input.transitionEvent?.timestamp);
   const currentLifecycleAt = timestampMs(input.currentLifecycleAt);
   const terminalTransitionIsCurrent =
-    isAcceptedTerminalStatus(transitionStatus) &&
+    isCurrentTerminalStatus(transitionStatus) &&
     transitionAt > 0 &&
     (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : currentStatuses.length === 0);
 
@@ -385,7 +391,7 @@ function deriveOperatorState(input: {
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {
     return "blocked";
   }
-  if (currentStatuses.some(isAcceptedTerminalStatus) || terminalTransitionIsCurrent) {
+  if (currentStatuses.some(isCurrentTerminalStatus) || terminalTransitionIsCurrent) {
     return "done";
   }
   if (liveness === "dead") {
