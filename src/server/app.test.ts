@@ -490,6 +490,43 @@ describe("dashboard app import endpoint", () => {
     expect(body.trulyOpenCountStatus).toBe("available");
   });
 
+  it.each([
+    { status: "merged", expectedMergeTimeStatus: "unavailable" },
+    { status: "completed", expectedMergeTimeStatus: "available" }
+  ])("keeps heartbeat-declared $status terminal work trusted while reporting merge-time coverage as $expectedMergeTimeStatus", async ({ status, expectedMergeTimeStatus }) => {
+    const stateRoot = await mkdtemp(join(tmpdir(), `coord-dashboard-heartbeat-${status}-without-github-time-`));
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      agent_id: "worker",
+      status,
+      updated_at: "2026-07-12T10:00:00Z",
+      expires_at: "2026-07-12T10:30:00Z"
+    }));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async () => ({ items: [], warnings: [] })
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as {
+      workItems: Array<{ terminalState?: string; terminalProvenance?: { source: string }; github?: { mergedAt?: string } }>;
+      githubMergeTimeStatus: string;
+      trulyOpenCount?: number;
+      trulyOpenCountStatus: string;
+    };
+    expect(body.workItems[0]).toMatchObject({
+      terminalState: "done",
+      terminalProvenance: { source: "declared" }
+    });
+    expect(body.workItems[0].github?.mergedAt).toBeUndefined();
+    expect(body.githubMergeTimeStatus).toBe(expectedMergeTimeStatus);
+    expect(body.trulyOpenCount).toBe(0);
+    expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
   it("enriches a declared terminal pull request from its own target without requiring prUrl", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-declared-own-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

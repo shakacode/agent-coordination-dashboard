@@ -194,7 +194,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         && event.target === item.target
         && (explicitlyMerged(event.type) || explicitlyMerged(event.status))
       );
-      return eventDeclaresMerge || item.batchSignals?.some((signal) => explicitlyMerged(signal.status));
+      return explicitlyMerged(item.heartbeat?.status)
+        || eventDeclaresMerge
+        || item.batchSignals?.some((signal) => explicitlyMerged(signal.status));
     });
   }
 
