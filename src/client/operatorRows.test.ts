@@ -521,6 +521,15 @@ describe("operatorRows", () => {
           target: "123",
           timestamp: "2026-07-10T19:59:00Z",
           path: "events/event-only-completed.json"
+        },
+        {
+          eventId: "event-only-qa-newer",
+          type: "qa.validation_completed",
+          status: "passed",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-10T19:59:30Z",
+          path: "events/event-only-qa-newer.json"
         }
       ]
     });
