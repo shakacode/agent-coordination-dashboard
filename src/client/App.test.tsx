@@ -624,6 +624,30 @@ describe("App", () => {
     expect(stylesheet).toContain(".coordination-degraded-banner");
   });
 
+  it("passes failed source context into empty Machines and Health tabs", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              agents: [],
+              healthItems: [],
+              sourceStatus: degradedSourceStatus
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Machines" }));
+    expect(screen.getByText(/Coordination agent data unavailable:/)).toHaveTextContent("claims, heartbeats, events");
+    await userEvent.click(screen.getByRole("button", { name: "Health" }));
+    expect(screen.getByText(/Coordination health data unavailable:/)).toHaveTextContent(
+      "claims, heartbeats, batches, events"
+    );
+  });
+
   it("keeps a partial non-auth failure scoped to its dependent counts", async () => {
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
       ok: true,

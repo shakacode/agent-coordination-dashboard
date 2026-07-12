@@ -85,6 +85,8 @@ export function OverviewTab({
   const failedResources = new Set(failedSources.map((source) => source.resource));
   const summaryCount = (count: number, resources: readonly CoordinationResource[]) =>
     resources.some((resource) => failedResources.has(resource)) ? "—" : String(count);
+  const hasUnavailableSource = (resources: readonly CoordinationResource[]) =>
+    resources.some((resource) => failedResources.has(resource));
   const coordinationFailureTitle = (resources: readonly CoordinationResource[]) =>
     failedSources
       .filter((source) => resources.includes(source.resource))
@@ -288,7 +290,11 @@ export function OverviewTab({
             <h2>Current Work</h2>
           </header>
           {currentPresentationRows.length === 0 ? (
-            <p className="empty-state">No processing or claimed-but-idle work.</p>
+            <p className="empty-state" title={coordinationFailureTitle(claimedSources) || undefined}>
+              {hasUnavailableSource(claimedSources)
+                ? "Current Work coordination data is unavailable."
+                : "No processing or claimed-but-idle work."}
+            </p>
           ) : (
             <div className="overview-list">
               {firstItems(currentPresentationRows).map(({ row, status }) => (
@@ -310,7 +316,11 @@ export function OverviewTab({
             <h2>Batch Repair</h2>
           </header>
           {overviewRows.batch_repair.length === 0 ? (
-            <p className="empty-state">No batch repair items.</p>
+            <p className="empty-state" title={coordinationFailureTitle(batchRepairSources) || undefined}>
+              {hasUnavailableSource(batchRepairSources)
+                ? "Batch Repair coordination data is unavailable."
+                : "No batch repair items."}
+            </p>
           ) : (
             <div className="overview-list">
               {firstItems(overviewRows.batch_repair).map((row) => (
@@ -332,7 +342,11 @@ export function OverviewTab({
             <h2>QA Validation</h2>
           </header>
           {qaPresentationRows.length === 0 ? (
-            <p className="empty-state">No separate QA gaps for PRs.</p>
+            <p className="empty-state" title={coordinationFailureTitle(qaSources) || undefined}>
+              {hasUnavailableSource(qaSources)
+                ? "QA Validation coordination data is unavailable."
+                : "No separate QA gaps for PRs."}
+            </p>
           ) : (
             <div className="overview-list">
               {firstItems(qaPresentationRows).map(({ row, validations }) => (
@@ -358,7 +372,11 @@ export function OverviewTab({
             <h2>Ready To Batch</h2>
           </header>
           {overviewRows.ready_for_batch.length === 0 ? (
-            <p className="empty-state">No ready work items.</p>
+            <p className="empty-state" title={coordinationFailureTitle(readySources) || undefined}>
+              {hasUnavailableSource(readySources)
+                ? "Ready To Batch coordination data is unavailable."
+                : "No ready work items."}
+            </p>
           ) : (
             <div className="overview-list">
               {firstItems(overviewRows.ready_for_batch, 10).map((row) => (

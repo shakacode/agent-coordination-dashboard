@@ -1,9 +1,18 @@
 import { Monitor } from "lucide-react";
-import type { AgentSummary } from "../../shared/types";
+import type { AgentSummary, CoordinationResource } from "../../shared/types";
 import { StatusBadge } from "./StatusBadge";
 
-export function MachinesTab({ agents }: { agents: AgentSummary[] }) {
+export function MachinesTab({
+  agents,
+  unavailableSources = []
+}: {
+  agents: AgentSummary[];
+  unavailableSources?: CoordinationResource[];
+}) {
   if (agents.length === 0) {
+    if (unavailableSources.length > 0) {
+      return <p className="empty-state">Coordination agent data unavailable: {unavailableSources.join(", ")} could not be read.</p>;
+    }
     return <p className="empty-state">No agents or heartbeats found.</p>;
   }
 

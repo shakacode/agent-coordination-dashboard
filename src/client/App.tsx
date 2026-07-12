@@ -350,6 +350,8 @@ export function App() {
   const agentSources = ["claims", "heartbeats", "events"] as const;
   const eventSources = ["events"] as const;
   const healthSources = ["claims", "heartbeats", "batches", "events"] as const;
+  const unavailableSources = (resources: readonly CoordinationResource[]) =>
+    resources.filter((resource) => failedResources.has(resource));
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
@@ -547,7 +549,9 @@ export function App() {
             />
           )}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
-          {activeTab === "machines" && <MachinesTab agents={dashboard.agents} />}
+          {activeTab === "machines" && (
+            <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
+          )}
           {activeTab === "batches" && (
             <BatchesTab
               batches={dashboard.batches}
@@ -557,7 +561,9 @@ export function App() {
               operations={dashboard.batchOperations}
             />
           )}
-          {activeTab === "health" && <HealthTab items={dashboard.healthItems} />}
+          {activeTab === "health" && (
+            <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} />
+          )}
           <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
             <PromptDrawer prompt={prompt} />

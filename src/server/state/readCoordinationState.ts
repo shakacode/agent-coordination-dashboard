@@ -332,7 +332,7 @@ async function listStateFiles(
     };
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-    if (code === "ENOENT" && !warnMissing) {
+    if (code === "ENOENT") {
       return { files: [], unavailable: false };
     }
     const path = relative(root, directory);

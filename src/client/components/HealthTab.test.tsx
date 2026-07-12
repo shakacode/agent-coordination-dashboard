@@ -47,4 +47,11 @@ describe("HealthTab", () => {
     render(<HealthTab items={[]} />);
     expect(screen.getByText("No coordination health issues found.")).toBeInTheDocument();
   });
+
+  it("does not report a healthy empty state when health sources are unavailable", () => {
+    render(<HealthTab items={[]} unavailableSources={["claims", "events"]} />);
+
+    expect(screen.getByText("Coordination health data unavailable: claims, events could not be read.")).toBeInTheDocument();
+    expect(screen.queryByText("No coordination health issues found.")).not.toBeInTheDocument();
+  });
 });

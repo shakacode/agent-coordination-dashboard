@@ -220,7 +220,7 @@ describe("readCoordinationState", () => {
     expect(state.warnings[0].message).toContain("Set AGENT_COORD_STATE_ROOT to an existing coordination workspace");
   });
 
-  it("warns when partially initialized expected coordination directories cannot be read", async () => {
+  it("treats missing sibling directories in a partially initialized root as empty", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-state-partial-"));
     await mkdir(join(root, "claims"), { recursive: true });
 
@@ -230,18 +230,13 @@ describe("readCoordinationState", () => {
     expect(state.heartbeats).toEqual([]);
     expect(state.batches).toEqual([]);
     expect(state.events).toEqual([]);
-    expect(state.warnings.map((warning) => warning.message)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("heartbeats"),
-        expect.stringContaining("batches")
-      ])
-    );
+    expect(state.warnings).toEqual([]);
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("No coordination state found");
     expect(state.warnings.map((warning) => warning.message).join("\n")).not.toContain("claims");
     expect(state.sourceStatus).toEqual([
       expect.objectContaining({ resource: "claims", mode: "fs", status: "empty" }),
-      expect.objectContaining({ resource: "heartbeats", mode: "fs", status: "unreachable" }),
-      expect.objectContaining({ resource: "batches", mode: "fs", status: "unreachable" }),
+      expect.objectContaining({ resource: "heartbeats", mode: "fs", status: "empty" }),
+      expect.objectContaining({ resource: "batches", mode: "fs", status: "empty" }),
       expect.objectContaining({ resource: "events", mode: "fs", status: "empty" })
     ]);
   });
