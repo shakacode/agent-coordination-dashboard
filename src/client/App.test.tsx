@@ -691,7 +691,9 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("coordination-api", { selector: ".source-chip-error" });
-    expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Coordination backend degraded" })).toHaveTextContent(
+      "Coordination backend unreachable (503) — some dashboard data is unavailable"
+    );
     expect(screen.getByText("— agents")).toBeInTheDocument();
     expect(screen.getByText("0 events")).toBeInTheDocument();
     expect(screen.getByText("— health")).toBeInTheDocument();
@@ -700,6 +702,35 @@ describe("App", () => {
     expect(screen.getByText("— processing")).toBeInTheDocument();
     expect(screen.getByText("1 QA needs attention")).toBeInTheDocument();
     expect(screen.getByText("0 batch repairs")).toBeInTheDocument();
+  });
+
+  it("disables batching selection and prompt generation while a required coordination source is unavailable", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 0 ? { ...source, status: "unreachable", httpStatus: 503 } : { ...source, status: "empty", httpStatus: 200 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Work" }));
+    expect(screen.getByText("Batch selection is unavailable until claims, heartbeats, and batches can be read.")).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox").every((checkbox) => checkbox.hasAttribute("disabled"))).toBe(true);
+
+    await userEvent.click(screen.getByText("PR-batch prompt"));
+    const disabledPrompt = screen.getByText(
+      "PR-batch prompt generation is disabled until claims, heartbeats, and batches can be read."
+    );
+    expect(disabledPrompt).toBeInTheDocument();
+    expect(disabledPrompt).not.toHaveTextContent("Issue #4010");
+    expect(screen.getByTitle("Copy prompt")).toBeDisabled();
   });
 
   it("keeps the loud banner but uses partial-outage copy for one authentication failure", async () => {

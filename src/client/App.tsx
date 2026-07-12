@@ -25,6 +25,7 @@ type Tab = "overview" | "operator" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
+const REQUIRED_COORDINATION_RESOURCES: readonly CoordinationResource[] = ["claims", "heartbeats", "batches"];
 
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
@@ -97,7 +98,15 @@ export function App() {
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
 
-  const prompt = useMemo(() => generatePrBatchPrompt(dashboard?.workItems || []), [dashboard]);
+  const requiredCoordinationUnavailable = Boolean(
+    dashboard?.sourceStatus?.some(
+      (source) => REQUIRED_COORDINATION_RESOURCES.includes(source.resource) && ["auth_error", "unreachable"].includes(source.status)
+    )
+  );
+  const prompt = useMemo(
+    () => (requiredCoordinationUnavailable ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
+    [dashboard, requiredCoordinationUnavailable]
+  );
   function beginUserAction() {
     userActionInFlightCount.current += 1;
     setIsRefreshing(true);
@@ -240,6 +249,9 @@ export function App() {
   }
 
   function toggleWorkItem(id: string) {
+    if (requiredCoordinationUnavailable) {
+      return;
+    }
     setDashboard((current) => {
       if (!current) {
         return current;
@@ -332,9 +344,10 @@ export function App() {
   const coordinationSourceError = sourceFailures.length > 0;
   const failedResources = new Set(sourceFailures.map((source) => source.resource));
   const hasAuthenticationFailure = sourceFailures.some((source) => source.status === "auth_error");
-  const requiredResources = ["claims", "heartbeats", "batches"] as const;
+  const requiredResources = REQUIRED_COORDINATION_RESOURCES;
   const allRequiredSourcesFailed = requiredResources.every((resource) => failedResources.has(resource));
-  const coordinationDegraded = hasAuthenticationFailure || allRequiredSourcesFailed;
+  const hasRequiredSourceFailure = requiredResources.some((resource) => failedResources.has(resource));
+  const coordinationDegraded = hasAuthenticationFailure || hasRequiredSourceFailure;
   const filesystemOutage = coordinationDegraded && sourceFailures.every((source) => source.mode === "fs");
   const failedHttpStatuses = Array.from(
     new Set(sourceFailures.flatMap((source) => (source.httpStatus === undefined ? [] : [source.httpStatus])))
@@ -548,7 +561,9 @@ export function App() {
               revealOlderTerminalRows={revealOlderTerminalRows}
             />
           )}
-          {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}
+          {activeTab === "work" && (
+            <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} selectionDisabled={requiredCoordinationUnavailable} />
+          )}
           {activeTab === "machines" && (
             <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
           )}
@@ -566,7 +581,7 @@ export function App() {
           )}
           <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
-            <PromptDrawer prompt={prompt} />
+            <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
           </details>
         </section>
       </div>
