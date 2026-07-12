@@ -307,6 +307,16 @@ describe("AttentionShell", () => {
     expect(screen.queryByRole("link", { name: "Open" })).not.toBeInTheDocument();
   });
 
+  it("preserves the original case of a validated GitHub evidence link", () => {
+    const url = "https://github.com/RepoOwner/MixedCaseRepo/pull/44";
+    const item = {
+      ...ITEMS[1],
+      github: { repo: "RepoOwner/MixedCaseRepo", target: "44", type: "pull_request" as const, title: "Merged evidence", url, state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[item]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", url);
+  });
+
   it("keeps the coordinated issue label while linked PR evidence supplies the merge", () => {
     const issueWithMergedPr = {
       ...ITEMS[1],

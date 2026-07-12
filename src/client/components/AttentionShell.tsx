@@ -134,7 +134,7 @@ function WorkCard({
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
   const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
   const prUrl = pullRequestUrl(item);
-  const githubUrl = canonicalGithubItemUrl(item.github?.url);
+  const githubUrl = canonicalGithubItemUrl(item.github?.url) ? item.github?.url : undefined;
   return (
     <article className="attention-card">
       <div>
