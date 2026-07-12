@@ -151,6 +151,17 @@ describe("App", () => {
     expect(window.location.search).toBe("?q=worker-a");
   });
 
+  it.each(["feature/foo#bar", "https://github.com/repo/dashboard/pull/45#discussion_r1", "thread#lantern"])(
+    "keeps noncanonical hash-bearing legacy item %s intact as universal text",
+    async (legacyItem) => {
+      window.history.pushState({}, "", `/?item=${encodeURIComponent(legacyItem)}`);
+      render(<App />);
+      expect(await screen.findByRole("textbox", { name: "Find work" })).toHaveValue(legacyItem);
+      expect(new URLSearchParams(window.location.search).get("q")).toBe(legacyItem);
+      expect(new URLSearchParams(window.location.search).has("item")).toBe(false);
+    }
+  );
+
   it("makes structured constraints visible and clears them when a new universal search begins", async () => {
     window.history.pushState({}, "", "/?repo=repo/dashboard&target=45");
     render(<App />);
@@ -158,6 +169,57 @@ describe("App", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "worker-a");
     expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
     expect(window.location.search).toBe("?q=worker-a");
+  });
+
+  it("clears query and every structured constraint when the total WorkItem count is opened", async () => {
+    window.history.pushState({}, "", "/?repo=repo/dashboard&target=45&q=Ready");
+    render(<App />);
+    await screen.findByText(/Constrained by repo repo\/dashboard/);
+    await userEvent.click(screen.getByRole("button", { name: "3 open or coordinated items" }));
+    expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /PR #44/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Issue #45/ })).toBeInTheDocument();
+  });
+
+  it("scopes each positive header count to exactly agents, health, or event records", async () => {
+    const scopedModel = {
+      ...model,
+      agents: [{ agentId: "worker-only", claims: [], currentWork: [], liveness: "live", warnings: [] }],
+      healthItems: [{ id: "health-only", severity: "warning", category: "state", title: "Health only", detail: "Exact health record" }],
+      events: [{ eventId: "event-only", type: "lane_started", repo: "repo/dashboard", target: "45", batchId: "batch-one", laneName: "lane", timestamp: model.generatedAt, path: "events/event-only.json" }]
+    };
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input) === "/api/settings" ? settings : scopedModel }) as Response);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "1 agents" }));
+    expect(screen.getByText("Agents").closest("details")).toHaveAttribute("open");
+    expect(screen.getByRole("heading", { name: "worker-only" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Health only" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "1 health" }));
+    expect(screen.getByRole("heading", { name: "Health only" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "worker-only" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "1 events" }));
+    expect(screen.getByText("Event records").closest("details")).toHaveAttribute("open");
+    expect(screen.getByLabelText("Event records")).toHaveTextContent("lane_started");
+    expect(screen.queryByRole("heading", { name: "Import Batch Plan" })).not.toBeInTheDocument();
+  });
+
+  it("opens only fully-qualified repair batches from the legacy batch_repair count", async () => {
+    const repair = { schemaVersion: 1, batchId: "shared", repo: "repo/dashboard", source: "manifest" as const, launchPrompt: "saved", lanes: [], path: "batches/repair.json" };
+    const healthy = { schemaVersion: 1, batchId: "shared", repo: "other/dashboard", source: "manifest" as const, launchPrompt: "saved", lanes: [], path: "batches/healthy.json" };
+    const operation = { batchId: "shared", batchPath: repair.path, controlStatus: "stopped" as const, eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } };
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input) === "/api/settings" ? settings : { ...model, batches: [repair, healthy], batchOperations: [operation] } }) as Response);
+    window.history.pushState({}, "", "/?operatorFilter=batch_repair");
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Open 1 batch repair records" }));
+    expect(screen.getByText("Batch repairs").closest("details")).toHaveAttribute("open");
+    expect(screen.getByText("repo/dashboard", { selector: ".batch-scope" })).toBeInTheDocument();
+    expect(screen.queryByText("other/dashboard")).not.toBeInTheDocument();
   });
 
   it("keeps repo plus target structured links exact when target numbers collide", async () => {
@@ -304,6 +366,8 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "1 events" }));
+    expect(screen.getByText("Event records").closest("details")).toHaveAttribute("open");
+    await userEvent.click(screen.getByRole("button", { name: "Show all batch operations" }));
     expect(screen.getByText("Batch operations").closest("details")).toHaveAttribute("open");
     await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-recovery in repo/dashboard" }));
     expect(await screen.findByText("Batch stop requested for repo/dashboard.")).toBeInTheDocument();

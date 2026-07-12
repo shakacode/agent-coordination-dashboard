@@ -48,7 +48,7 @@ function isNowItem(item: WorkItem): boolean {
   );
 }
 
-function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined, repairBatchIds: ReadonlySet<string>): boolean {
+function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined, repairWorkItemIds: ReadonlySet<string>): boolean {
   if (!filter) return true;
   if (filter === "ready_for_batch") return item.schedulingState === "ready_for_batch";
   if (filter === "needs_recovery") return item.schedulingState === "started_not_processing";
@@ -56,22 +56,22 @@ function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | 
   if (filter === "qa_attention") return item.attention?.kind === "qa_missing";
   return item.attention?.kind === "batch_stopped"
     || item.attention?.kind === "batch_stop_requested"
-    || item.batchSignals?.some((signal) => repairBatchIds.has(signal.batchId) || /repair|missing|mismatch|stopp/i.test(signal.status)) === true;
+    || repairWorkItemIds.has(item.id)
+    || item.batchSignals?.some((signal) => /repair|missing|mismatch|stopp/i.test(signal.status)) === true;
 }
 
-function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined, repairBatchIds: ReadonlySet<string>): boolean {
+function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined, repairWorkItemIds: ReadonlySet<string>): boolean {
   if (!deepLink) return true;
   if (deepLink.repo && item.repo !== deepLink.repo) return false;
   if (deepLink.target && item.target !== deepLink.target) return false;
-  const exactIdentityMatch = Boolean(deepLink.repo && deepLink.target);
-  if (!exactIdentityMatch && (deepLink.batchId || deepLink.laneName)) {
+  if (deepLink.batchId || deepLink.laneName) {
     const sameSignalMatch = item.batchSignals?.some((signal) =>
       (!deepLink.batchId || signal.batchId === deepLink.batchId)
       && (!deepLink.laneName || signal.laneName === deepLink.laneName)
     );
     if (!sameSignalMatch) return false;
   }
-  return matchesOverviewFilter(item, deepLink.overviewFilter, repairBatchIds);
+  return matchesOverviewFilter(item, deepLink.overviewFilter, repairWorkItemIds);
 }
 
 function pullRequestUrl(item: WorkItem): string | undefined {
@@ -170,7 +170,7 @@ export function AttentionShell({
   mergeTimeStatus = "unavailable",
   historyMergedTodayOnly = false,
   onShowMergedToday,
-  repairBatchIds = new Set<string>(),
+  repairWorkItemIds = new Set<string>(),
   repairBatchCount = 0
 }: {
   items: WorkItem[];
@@ -188,7 +188,7 @@ export function AttentionShell({
   mergeTimeStatus?: "available" | "unavailable";
   historyMergedTodayOnly?: boolean;
   onShowMergedToday?: () => void;
-  repairBatchIds?: ReadonlySet<string>;
+  repairWorkItemIds?: ReadonlySet<string>;
   repairBatchCount?: number;
 }) {
   const attentionItems = items.filter((item) => item.operatorState === "needs_attention");
@@ -271,7 +271,7 @@ export function AttentionShell({
     );
   }
 
-  const results = items.filter((item) => matchesDeepLink(item, deepLink, repairBatchIds) && matches(item, query));
+  const results = items.filter((item) => matchesDeepLink(item, deepLink, repairWorkItemIds) && matches(item, query));
   const activeConstraints = [deepLink?.repo && `repo ${deepLink.repo}`, deepLink?.target && `target #${deepLink.target}`, deepLink?.batchId && `batch ${deepLink.batchId}`, deepLink?.laneName && `lane ${deepLink.laneName}`, deepLink?.overviewFilter && `filter ${deepLink.overviewFilter}`].filter(Boolean);
   return (
     <section aria-label="Find" className="attention-surface">

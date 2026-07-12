@@ -1069,6 +1069,30 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       }
     }
   }
+  for (const [id, workEvents] of eventsByWork) {
+    if (!nonterminalEventWorkKeys.has(id)) continue;
+    const identityEvents = workEvents.filter((candidate) =>
+      candidate.batchId
+      && candidate.laneName
+      && !TERMINAL_EVENT_PATTERN.test(candidate.type)
+      && !TERMINAL_EVENT_PATTERN.test(candidate.status || "")
+    );
+    const existing = batchSignalsByWork.get(id) || [];
+    const eventSignals = identityEvents.flatMap((event) => {
+      if (!event.batchId || !event.laneName) return [];
+      if ([...existing].some((signal) => signal.batchId === event.batchId && signal.laneName === event.laneName)) return [];
+      return [{
+        batchId: event.batchId,
+        laneName: event.laneName,
+        status: event.status || event.type,
+        blockedOn: [],
+        updatedAt: event.timestamp
+      }];
+    }).filter((signal, index, signals) => signals.findIndex((candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName) === index);
+    if (eventSignals.length > 0) batchSignalsByWork.set(id, [...existing, ...eventSignals]);
+    const evidence = batchEvidenceByWork.get(id) || [];
+    if (identityEvents.length > 0 && !evidence.includes("event")) batchEvidenceByWork.set(id, [...evidence, "event"]);
+  }
   const workKeys = new Set<string>([
     ...claimsByWork.keys(),
     ...previewsByWork.keys(),

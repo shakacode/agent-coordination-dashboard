@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
-import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
+import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
@@ -26,6 +26,13 @@ const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
   "events"
 ];
 
+function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, batches: BatchRecord[]): boolean {
+  if (operation.batchPath) return operation.batchPath === batch.path;
+  if (operation.batchId !== batch.batchId) return false;
+  if (operation.repo) return operation.repo === batch.repo;
+  return batches.filter((candidate) => candidate.batchId === operation.batchId).length === 1;
+}
+
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
   return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
@@ -35,13 +42,13 @@ function readOperatorDeepLink() {
   const params = new URLSearchParams(window.location.search);
   const parsed = operatorDeepLinkFromSearchParams(params);
   const legacyItem = params.get("item");
-  const hashIndex = legacyItem?.lastIndexOf("#") ?? -1;
-  const deepLink = hashIndex > 0
-    ? { ...parsed, repo: parsed.repo || legacyItem?.slice(0, hashIndex), target: parsed.target || legacyItem?.slice(hashIndex + 1) }
+  const canonicalItem = legacyItem?.match(/^([^/#]+\/[^/#]+)#(\d+)$/);
+  const deepLink = canonicalItem
+    ? { ...parsed, repo: parsed.repo || canonicalItem[1], target: parsed.target || canonicalItem[2] }
     : legacyItem && /^#?\d+$/.test(legacyItem)
       ? { ...parsed, target: parsed.target || legacyItem.replace(/^#/, "") }
     : parsed;
-  const arbitraryLegacyQuery = legacyItem && hashIndex <= 0 && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
+  const arbitraryLegacyQuery = legacyItem && !canonicalItem && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
   return {
     ...deepLink,
     query: deepLink.query || arbitraryLegacyQuery
@@ -110,6 +117,8 @@ export function App() {
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [historyMergedTodayOnly, setHistoryMergedTodayOnly] = useState(false);
+  const [batchDetailScope, setBatchDetailScope] = useState<"events" | "repairs" | "all">("all");
+  const [diagnosticScope, setDiagnosticScope] = useState<"agents" | "health" | "all">("all");
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -128,18 +137,30 @@ export function App() {
     () => (requiredCoordinationUnavailable ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
     [dashboard, requiredCoordinationUnavailable]
   );
-  const repairBatchIds = useMemo(() => {
-    if (!dashboard) return new Set<string>();
+  const repairBatches = useMemo(() => {
+    if (!dashboard) return [];
     const stopped = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
-    return new Set(dashboard.batches.filter((batch) =>
+    return dashboard.batches.filter((batch) =>
       batch.source === "inferred"
       || !batch.launchPrompt
-      || stopped.some((operation) => operation.batchPath ? operation.batchPath === batch.path : operation.batchId === batch.batchId && (!operation.repo || operation.repo === batch.repo))
-    ).map((batch) => batch.batchId));
+      || stopped.some((operation) => operationMatchesBatch(operation, batch, dashboard.batches))
+    );
   }, [dashboard]);
+  const repairOperations = useMemo(() => (dashboard?.batchOperations || []).filter((operation) =>
+    operation.controlStatus !== "running"
+    && (repairBatches.some((batch) => operationMatchesBatch(operation, batch, dashboard?.batches || []))
+      || !(dashboard?.batches || []).some((batch) => operationMatchesBatch(operation, batch, dashboard?.batches || [])))
+  ), [dashboard, repairBatches]);
+  const orphanRepairOperations = repairOperations.filter((operation) => !repairBatches.some((batch) => operationMatchesBatch(operation, batch, dashboard?.batches || [])));
+  const repairWorkItemIds = useMemo(() => new Set((dashboard?.workItems || []).filter((item) => repairBatches.some((batch) => {
+    if (batch.repo && batch.repo !== item.repo) return false;
+    if (batch.targets?.some((target) => target.target === item.target && (target.repo || batch.repo) === item.repo)) return true;
+    return batch.lanes.some((lane) => lane.targets.includes(item.target))
+      && item.batchSignals?.some((signal) => signal.batchId === batch.batchId);
+  })).map((item) => item.id)), [dashboard, repairBatches]);
   const repairBatchCount = dashboard
-    ? dashboard.batches.filter((batch) => repairBatchIds.has(batch.batchId)).length
-      + dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running" && !dashboard.batches.some((batch) => operation.batchPath ? operation.batchPath === batch.path : operation.batchId === batch.batchId && (!operation.repo || operation.repo === batch.repo))).length
+    ? repairBatches.length
+      + orphanRepairOperations.length
     : 0;
   function beginUserAction() {
     userActionInFlightCount.current += 1;
@@ -339,9 +360,27 @@ export function App() {
     }
   }
 
+  function openBatchDetails(scope: "events" | "repairs" | "all") {
+    setBatchDetailScope(scope);
+    openDetails(batchOperationsRef);
+  }
+
+  function openDiagnostics(scope: "agents" | "health" | "all") {
+    setDiagnosticScope(scope);
+    openDetails(diagnosticsRef);
+  }
+
+  function showAllWorkItems() {
+    const nextDeepLink: OperatorDeepLink = {};
+    setOperatorQuery("");
+    setOperatorDeepLink(nextDeepLink);
+    setActiveSurface("find");
+    writeOperatorLocation(nextDeepLink, "", "replace");
+  }
+
   function revealWarnings() {
     if (!warningsRef.current) {
-      openDetails(diagnosticsRef);
+      openDiagnostics("health");
       return;
     }
     warningsRef.current.querySelectorAll("details").forEach((details) => {
@@ -447,17 +486,17 @@ export function App() {
             ) : (
               dashboard.stateRoot
             )}{" "}
-            · <button className="inline-count" onClick={() => openSurface("find")} type="button">{dashboard.workItems.length} open or coordinated items</button>
+            · <button className="inline-count" onClick={showAllWorkItems} type="button">{dashboard.workItems.length} open or coordinated items</button>
           </p>
         </div>
         <div className="summary-strip">
-          <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(agentSources) || undefined} type="button">
+          <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("agents")} title={failedSourceDetails(agentSources) || undefined} type="button">
             {coordinationCount(dashboard.agents.length, agentSources)} agents
           </button>
-          <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openDetails(batchOperationsRef)} title={failedSourceDetails(eventSources) || undefined} type="button">
+          <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openBatchDetails("events")} title={failedSourceDetails(eventSources) || undefined} type="button">
             {coordinationCount(dashboard.events.length, eventSources)} events
           </button>
-          <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(healthSources) || undefined} type="button">
+          <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("health")} title={failedSourceDetails(healthSources) || undefined} type="button">
             {coordinationCount(dashboard.healthItems.length, healthSources)} health
           </button>
           <button className="summary-count" disabled={dashboard.warnings.length === 0} onClick={revealWarnings} type="button">
@@ -592,14 +631,14 @@ export function App() {
             now={dashboard.generatedAt}
             onCopyResume={copyResumePrompt}
             onQueryChange={updateOperatorQuery}
-            onOpenBatchOperations={() => openDetails(batchOperationsRef)}
+            onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
             onClearDeepLink={clearOperatorConstraints}
             onShowMergedToday={showMergedToday}
             onSurfaceChange={openSurface}
             onToggle={toggleWorkItem}
             query={operatorQuery}
             repairBatchCount={repairBatchCount}
-            repairBatchIds={repairBatchIds}
+            repairWorkItemIds={repairWorkItemIds}
             selectionDisabled={requiredCoordinationUnavailable}
             surface={activeSurface}
           />
@@ -608,19 +647,33 @@ export function App() {
             <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
           </details>
           <details className="secondary-tools" ref={batchOperationsRef}>
-            <summary>Batch operations</summary>
-            <BatchesTab
-              batches={dashboard.batches}
-              events={dashboard.events}
-              onImportBatch={importBatchManifest}
-              onRequestStop={stopBatch}
-              operations={dashboard.batchOperations}
-            />
+            <summary>{batchDetailScope === "events" ? "Event records" : batchDetailScope === "repairs" ? "Batch repairs" : "Batch operations"}</summary>
+            {batchDetailScope === "events" ? (
+              <>
+                <button className="secondary-action" onClick={() => setBatchDetailScope("all")} type="button">Show all batch operations</button>
+                <section aria-label="Event records" className="event-list">
+                  {dashboard.events.map((event) => <article className="event-row" key={event.eventId}><strong>{event.type}</strong><span>{event.repo || "unattributed"}{event.target ? `#${event.target}` : ""}</span><span>{event.batchId || "unbatched"}</span><span>{event.laneName || event.agentId || "unattributed"}</span><time>{event.timestamp || event.path}</time></article>)}
+                </section>
+              </>
+            ) : (
+              <BatchesTab
+                batches={batchDetailScope === "repairs" ? repairBatches : dashboard.batches}
+                events={batchDetailScope === "repairs" ? dashboard.events.filter((event) => repairBatches.some((batch) => event.batchPath ? event.batchPath === batch.path : event.batchId === batch.batchId && Boolean(event.repo && event.repo === batch.repo))) : dashboard.events}
+                onImportBatch={importBatchManifest}
+                onRequestStop={stopBatch}
+                operations={batchDetailScope === "repairs" ? repairOperations : dashboard.batchOperations}
+              />
+            )}
+            {batchDetailScope === "repairs" && orphanRepairOperations.length > 0 ? (
+              <section aria-label="Orphan repair operations" className="event-list">
+                {orphanRepairOperations.map((operation) => <article className="event-row" key={`${operation.batchPath || operation.repo || "unscoped"}:${operation.batchId}`}><strong>{operation.controlStatus}</strong><span>{operation.repo || operation.batchPath || "unattributed"}</span><span>{operation.batchId}</span><span>{operation.eventCount} events</span><time>{operation.latestEventAt || "time unavailable"}</time></article>)}
+              </section>
+            ) : null}
           </details>
           <details className="secondary-tools" ref={diagnosticsRef}>
-            <summary>Machines and health</summary>
-            <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
-            <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} />
+            <summary>{diagnosticScope === "agents" ? "Agents" : diagnosticScope === "health" ? "Health" : "Machines and health"}</summary>
+            {diagnosticScope !== "health" ? <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} /> : null}
+            {diagnosticScope !== "agents" ? <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} /> : null}
           </details>
         </section>
       </div>

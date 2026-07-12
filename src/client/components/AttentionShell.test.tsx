@@ -75,12 +75,15 @@ describe("AttentionShell", () => {
     const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
     const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
     const onClearDeepLink = vi.fn();
-    const { rerender } = render(<AttentionShell deepLink={{ repo: "repo/a", target: "43", batchId: "missing-batch", laneName: "missing-lane", query: "worker" }} items={[repoA, repoB]} onClearDeepLink={onClearDeepLink} onQueryChange={vi.fn()} query="#43" surface="find" />);
+    const { rerender } = render(<AttentionShell deepLink={{ repo: "repo/a", target: "43", batchId: "batch-a", laneName: "lane-a", query: "worker" }} items={[repoA, repoB]} onClearDeepLink={onClearDeepLink} onQueryChange={vi.fn()} query="#43" surface="find" />);
     expect(screen.getByText("repo/a")).toBeInTheDocument();
     expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
     expect(screen.getByText(/Constrained by repo repo\/a/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear constraints" }));
     expect(onClearDeepLink).toHaveBeenCalled();
+
+    rerender(<AttentionShell deepLink={{ repo: "repo/a", target: "43", batchId: "wrong", laneName: "wrong" }} items={[repoA, repoB]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("No work items match this search.")).toBeInTheDocument();
 
     const splitSignals = { ...repoB, id: "repo/c#43", repo: "repo/c", batchSignals: [{ batchId: "batch-b", laneName: "other-lane", status: "running", blockedOn: [] }, { batchId: "other-batch", laneName: "lane-b", status: "running", blockedOn: [] }] };
     rerender(<AttentionShell deepLink={{ batchId: "batch-b", laneName: "lane-b" }} items={[repoA, repoB, splitSignals]} onQueryChange={vi.fn()} query="" surface="find" />);
@@ -132,10 +135,18 @@ describe("AttentionShell", () => {
   it("keeps legacy batch repair categories mapped to repair membership and established statuses", () => {
     const inferred = { ...ITEMS[0], id: "repo/dashboard#50", target: "50", attention: undefined, batchSignals: [{ batchId: "missing-plan", laneName: "lane", status: "running", blockedOn: [] }] };
     const mismatch = { ...ITEMS[0], id: "repo/dashboard#51", target: "51", attention: undefined, batchSignals: [{ batchId: "healthy", laneName: "lane", status: "prompt_mismatch", blockedOn: [] }] };
-    render(<AttentionShell deepLink={{ overviewFilter: "batch_repair" }} items={[inferred, mismatch]} onQueryChange={vi.fn()} query="" repairBatchCount={2} repairBatchIds={new Set(["missing-plan"])} surface="find" />);
+    render(<AttentionShell deepLink={{ overviewFilter: "batch_repair" }} items={[inferred, mismatch]} onQueryChange={vi.fn()} query="" repairBatchCount={2} repairWorkItemIds={new Set([inferred.id])} surface="find" />);
     expect(screen.getByRole("heading", { name: /#50/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /#51/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open 2 batch repair records" })).toBeInTheDocument();
+  });
+
+  it("qualifies batch repair membership by canonical work identity instead of shared batch id", () => {
+    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", attention: undefined, batchSignals: [{ batchId: "shared", laneName: "a", status: "running", blockedOn: [] }] };
+    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", attention: undefined, batchSignals: [{ batchId: "shared", laneName: "b", status: "running", blockedOn: [] }] };
+    render(<AttentionShell deepLink={{ overviewFilter: "batch_repair" }} items={[repoA, repoB]} onQueryChange={vi.fn()} query="" repairBatchCount={1} repairWorkItemIds={new Set([repoA.id])} surface="find" />);
+    expect(screen.getByText("repo/a")).toBeInTheDocument();
+    expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
   });
 
   it("uses the Now population for the running count, sorts History newest-first, and filters it", async () => {

@@ -239,4 +239,26 @@ describe("deriveWorkItems", () => {
     });
     expect(onlyItem.attention?.kind).toBe("batch_stop_requested");
   });
+
+  it("uses corroborated lane membership for repo-less lane-only batch stops without leaking across repos", () => {
+    const laneOnlyBatch = { schemaVersion: 1, batchId: "lane-only", lanes: [{ name: "lane", owner: "worker", targets: ["43"], dependsOn: [], status: "running", liveness: "dead" as const, blockedOn: [] }], path: "batches/lane-only.json" };
+    const [only] = deriveWorkItems({
+      workItems: [{ ...BASE_ITEM, repo: "repo/a", id: "repo/a#43", batchSignals: [{ batchId: "lane-only", laneName: "lane", status: "running", blockedOn: [] }] }],
+      batches: [laneOnlyBatch],
+      batchOperations: [{ batchId: "lane-only", batchPath: laneOnlyBatch.path, controlStatus: "stopped", eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } }],
+      now: new Date("2026-07-12T11:20:00.000Z")
+    });
+    expect(only.attention?.kind).toBe("batch_stopped");
+
+    const collided = deriveWorkItems({
+      workItems: [
+        { ...BASE_ITEM, repo: "repo/a", id: "repo/a#43", batchSignals: [{ batchId: "lane-only", laneName: "lane", status: "running", blockedOn: [] }] },
+        { ...BASE_ITEM, repo: "repo/b", id: "repo/b#43", batchSignals: [{ batchId: "lane-only", laneName: "lane", status: "running", blockedOn: [] }] }
+      ],
+      batches: [laneOnlyBatch],
+      batchOperations: [{ batchId: "lane-only", batchPath: laneOnlyBatch.path, controlStatus: "stopped", eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } }],
+      now: new Date("2026-07-12T11:20:00.000Z")
+    });
+    expect(collided.every((item) => item.attention === undefined)).toBe(true);
+  });
 });

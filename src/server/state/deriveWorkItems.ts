@@ -21,7 +21,15 @@ function operationMatchesItem(operation: BatchOperation, item: WorkItem, input: 
   if (batch?.repo) return batch.repo === item.repo;
   const explicitTarget = batch?.targets?.find((target) => target.target === item.target && (target.repo || batch.repo) === item.repo);
   if (explicitTarget) return true;
-  if (batch) return false;
+  if (batch) {
+    const laneTargets = new Set(batch.lanes.flatMap((lane) => lane.targets));
+    if (!laneTargets.has(item.target)) return false;
+    const corroboratedRepos = new Set(input.workItems.filter((candidate) =>
+      laneTargets.has(candidate.target)
+      && candidate.batchSignals?.some((signal) => signal.batchId === operation.batchId)
+    ).map((candidate) => candidate.repo));
+    return corroboratedRepos.size === 1 && corroboratedRepos.has(item.repo);
+  }
   const repos = new Set(input.workItems.filter((candidate) => candidate.batchSignals?.some((signal) => signal.batchId === operation.batchId)).map((candidate) => candidate.repo));
   return repos.size === 1 && repos.has(item.repo);
 }
