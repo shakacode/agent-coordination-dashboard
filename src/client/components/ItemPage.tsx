@@ -30,6 +30,18 @@ function unique(values: Array<string | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value?.trim()))));
 }
 
+function uniquePullRequestUrls(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  return values.filter((value): value is string => {
+    if (!value?.trim()) return false;
+    const url = new URL(value);
+    const identity = `${url.hostname.toLowerCase()}${url.pathname.match(/^\/[^/]+\/[^/]+\/pull\/\d+/)?.[0] || url.pathname}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
 function TimelineWarnings({ timeline }: { timeline: ItemTimelineResponse }) {
   const warnings = timeline.warnings.filter(
     (warning, index, all) => all.findIndex((candidate) => candidate.severity === warning.severity && candidate.message === warning.message) === index
@@ -93,19 +105,19 @@ function Telemetry({ event }: { event: BatchEvent }) {
 }
 
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
-  const activeClaim = timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
+  const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
+  const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
   const loadedGitHub = timeline.item?.github?.loadState === "loaded" ? timeline.item.github : undefined;
-  const holder = firstDisplayAttribution([activeClaim?.agentId, timeline.item?.heartbeat?.agentId]);
+  const holder = firstDisplayAttribution([activeClaim?.agentId], "UNKNOWN");
   const state = timeline.item?.operatorState || "UNKNOWN";
-  const holderDead = timeline.item?.heartbeat?.liveness === "dead"
-    && (!activeClaim || activeClaim.agentId === timeline.item?.heartbeat?.agentId);
+  const holderDead = Boolean(activeClaim
+    && timeline.item?.heartbeat?.liveness === "dead"
+    && activeClaim.agentId === timeline.item.heartbeat.agentId);
   const primary = holderDead
     ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
     : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
-  const timelineBranches = unique(timeline.branches);
-  const branches = timelineBranches.length ? timelineBranches : unique([loadedGitHub?.branch]);
-  const timelinePrUrls = unique(timeline.prUrls.map(safePullRequestUrl));
-  const prUrls = timelinePrUrls.length ? timelinePrUrls : unique([loadedGitHub?.url ? safePullRequestUrl(loadedGitHub.url) : undefined]);
+  const branches = unique([...timeline.branches, loadedGitHub?.branch]);
+  const prUrls = uniquePullRequestUrls([...timeline.prUrls.map(safePullRequestUrl), loadedGitHub?.url ? safePullRequestUrl(loadedGitHub.url) : undefined]);
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),

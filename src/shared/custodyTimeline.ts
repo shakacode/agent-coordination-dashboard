@@ -340,10 +340,13 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     const startedAt = event.timestamp!;
     const startedMs = time(startedAt)!;
     const nextPhaseMs = time(phaseEvents[index + 1]?.timestamp || "") || now.getTime();
-    const terminalMs = events
-      .filter((candidate) => isTerminalLifecycleEvent(candidate))
-      .map((candidate) => time(candidate.timestamp || ""))
-      .find((candidate): candidate is number => candidate !== undefined && candidate > startedMs);
+    const terminalMs = [
+      ...events.filter((candidate) => isTerminalLifecycleEvent(candidate)).map((candidate) => candidate.timestamp),
+      ...claims.filter((claim) => claim.action === "released").map((claim) => claim.timestamp)
+    ]
+      .map((candidate) => time(candidate || ""))
+      .filter((candidate): candidate is number => candidate !== undefined && candidate > startedMs)
+      .sort((left, right) => left - right)[0];
     const endedMs = Math.max(startedMs, Math.min(nextPhaseMs, terminalMs || now.getTime(), now.getTime()));
     return {
       eventId: event.eventId,

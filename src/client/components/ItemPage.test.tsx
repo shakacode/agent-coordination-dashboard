@@ -79,7 +79,11 @@ describe("ItemPage", () => {
     Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
-      item: { ...timeline.item, heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" } }
+      item: {
+        ...timeline.item,
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "active", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+      }
     }} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
@@ -121,6 +125,7 @@ describe("ItemPage", () => {
           ...timeline.item,
           repo,
           target,
+          claim: { schemaVersion: 1, repo, target, agentId: "worker-b", status: "active", path: "claims/46.json" },
           heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
         }
       }} />);
@@ -147,6 +152,39 @@ describe("ItemPage", () => {
 
     expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
+  it("does not present terminal work as held or eligible for takeover", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        operatorState: "terminal",
+        terminalState: "done",
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "active", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+      }
+    }} />);
+
+    expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
+  });
+
+  it("does not present released custody with a dead historical heartbeat as held or eligible for takeover", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        operatorState: "ready",
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "released", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+      }
+    }} />);
+
+    expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
   });
 
   it("keeps an active claim as holder when an older heartbeat is dead", () => {
@@ -250,6 +288,26 @@ describe("ItemPage", () => {
 
     expect(screen.getAllByText("Branch: codex/github-only")).toHaveLength(1);
     expect(screen.getAllByRole("link", { name: "PR 47" })).toHaveLength(1);
+  });
+
+  it("merges distinct current GitHub anchors with historical custody anchors", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      branches: ["codex/historical"],
+      prUrls: ["https://github.com/shakacode/dashboard/pull/47"],
+      item: {
+        ...timeline.item,
+        github: {
+          ...timeline.item.github!,
+          branch: "codex/current",
+          url: "https://github.com/shakacode/dashboard/pull/48"
+        }
+      }
+    }} />);
+
+    expect(screen.getByText("Branch: codex/historical, codex/current")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/47");
+    expect(screen.getByRole("link", { name: "PR 48" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/48");
   });
 
   it("keeps target-scoped warnings visible beside one broad UNKNOWN notice", () => {

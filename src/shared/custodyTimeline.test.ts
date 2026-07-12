@@ -176,6 +176,37 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:04:00.000Z")).toBe(true);
   });
 
+  it("ends phases at a released current-claim snapshot without terminal telemetry", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [{
+        schemaVersion: 1,
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        status: "released",
+        updatedAt: "2026-07-12T10:04:00Z",
+        path: "claims/shakacode/dashboard/46.json"
+      }],
+      heartbeats: [],
+      events: [{
+        eventId: "implement",
+        type: "phase",
+        status: "implementing",
+        repo: "shakacode/dashboard",
+        target: "46",
+        timestamp: "2026-07-12T10:00:00Z",
+        path: "events/batch.jsonl:1"
+      }]
+    });
+
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:04:00.000Z", durationMs: 240_000 })
+    ]);
+  });
+
   it("keeps a newer current snapshot as a distinct renewal instead of rewriting history", () => {
     const timeline = buildCustodyTimeline({
       repo: "shakacode/dashboard",
