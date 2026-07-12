@@ -31,20 +31,32 @@ function terminalState(statuses: string[]): WorkItemTerminalState | undefined {
 
 function attention(item: WorkItem, statuses: string[], activityAt: string | undefined, input: DeriveWorkItemsInput) {
   const status = statuses.join(" ").toLowerCase();
-  const operation = input.batchOperations?.find((candidate) => item.batchSignals?.some((signal) => signal.batchId === candidate.batchId));
+  const operation = input.batchOperations?.find((candidate) =>
+    candidate.repo === item.repo
+    && item.batchSignals?.some((signal) => signal.batchId === candidate.batchId)
+  );
   const validation = input.qaValidations?.find(
     (candidate) => candidate.repo === item.repo && candidate.target === item.target && ["missing", "failed"].includes(candidate.status)
   );
   const age = input.now.getTime() - timestamp(activityAt);
 
-  if (operation && operation.controlStatus !== "running") {
+  if (operation?.controlStatus === "stopped") {
     return { kind: "batch_stopped" as const, label: "Batch is stopped", action: "Copy resume prompt" as const };
+  }
+  if (operation?.controlStatus === "stop_requested") {
+    return { kind: "batch_stop_requested" as const, label: "Batch stop is pending", action: "Open batch operations" as const };
   }
   if (/\bblocked[ _-]?user[ _-]?input\b|\bneeds[ _-]?user[ _-]?input\b/.test(status)) {
     return { kind: "blocked_user_input" as const, label: "Waiting for operator input", action: "Copy resume prompt" as const };
   }
   if (validation) {
-    return { kind: "qa_missing" as const, label: "QA evidence is missing or failing", action: "Open PR" as const };
+    const candidateUrl = item.github?.type === "pull_request" ? item.github.url : item.claim?.prUrl || item.heartbeat?.prUrl;
+    const hasPullRequestUrl = Boolean(candidateUrl && /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+(?:[/?#]|$)/i.test(candidateUrl));
+    return {
+      kind: "qa_missing" as const,
+      label: "QA evidence is missing or failing",
+      action: hasPullRequestUrl ? "Open PR" as const : "Copy resume prompt" as const
+    };
   }
   if (item.heartbeat?.liveness === "dead") {
     return { kind: "dead_holder" as const, label: "Holder is no longer live", action: "Copy resume prompt" as const };

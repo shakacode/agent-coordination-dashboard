@@ -1,4 +1,5 @@
 import type { WorkItem } from "../../shared/types";
+import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 
 export type DashboardSurface = "attention" | "now" | "find" | "history";
 
@@ -18,11 +19,13 @@ function holder(item: WorkItem): string {
 function matches(item: WorkItem, query: string): boolean {
   const value = query.trim().toLowerCase();
   if (!value) return true;
+  if (/^#?\d+$/.test(value)) return item.target === value.replace(/^#/, "");
   if (value.includes("#") && !value.includes("://")) return item.id.toLowerCase() === value;
   return [
     item.id,
     item.repo,
     item.target,
+    item.github?.title,
     item.github?.url,
     item.claim?.branch,
     item.heartbeat?.branch,
@@ -36,6 +39,38 @@ function matches(item: WorkItem, query: string): boolean {
     .some((candidate) => String(candidate).toLowerCase().includes(value));
 }
 
+function isNowItem(item: WorkItem): boolean {
+  return Boolean(
+    item.heartbeat
+    && ["live", "stale"].includes(item.heartbeat.liveness)
+    && !item.terminalState
+    && !["terminal", "archived_view"].includes(item.operatorState || "")
+  );
+}
+
+function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined): boolean {
+  if (!filter) return true;
+  if (filter === "ready_for_batch") return item.schedulingState === "ready_for_batch";
+  if (filter === "needs_recovery") return item.schedulingState === "started_not_processing";
+  if (filter === "processing_now") return isNowItem(item);
+  if (filter === "qa_attention") return item.attention?.kind === "qa_missing";
+  return item.attention?.kind === "batch_stopped" || item.attention?.kind === "batch_stop_requested";
+}
+
+function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined): boolean {
+  if (!deepLink) return true;
+  if (deepLink.repo && item.repo !== deepLink.repo) return false;
+  if (deepLink.target && item.target !== deepLink.target) return false;
+  if (deepLink.batchId && !item.batchSignals?.some((signal) => signal.batchId === deepLink.batchId)) return false;
+  if (deepLink.laneName && !item.batchSignals?.some((signal) => signal.laneName === deepLink.laneName)) return false;
+  return matchesOverviewFilter(item, deepLink.overviewFilter);
+}
+
+function pullRequestUrl(item: WorkItem): string | undefined {
+  const candidates = [item.github?.type === "pull_request" ? item.github.url : undefined, item.claim?.prUrl, item.heartbeat?.prUrl];
+  return candidates.find((candidate) => candidate && /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+(?:[/?#]|$)/i.test(candidate));
+}
+
 function elapsedSince(value: string | undefined): string {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   if (!Number.isFinite(timestamp)) return "unattributed";
@@ -43,6 +78,11 @@ function elapsedSince(value: string | undefined): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h`;
+}
+
+function activityTime(item: WorkItem): number {
+  const value = Date.parse(item.lastActivityAt || "");
+  return Number.isFinite(value) ? value : 0;
 }
 
 function canSelect(item: WorkItem): boolean {
@@ -55,12 +95,14 @@ function WorkCard({
   item,
   onCopyResume,
   onToggle,
-  selectionDisabled = false
+  selectionDisabled = false,
+  onOpenBatchOperations
 }: {
   item: WorkItem;
   onCopyResume?: (item: WorkItem) => void;
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
+  onOpenBatchOperations?: () => void;
 }) {
   const reason = item.attention;
   const heartbeat = item.heartbeat;
@@ -68,6 +110,7 @@ function WorkCard({
   const machine = heartbeat?.machineId || item.claim?.machineId || "unattributed";
   const thread = heartbeat?.threadHandle || item.claim?.threadHandle || "unattributed";
   const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
+  const prUrl = pullRequestUrl(item);
   return (
     <article className="attention-card">
       <div>
@@ -93,6 +136,10 @@ function WorkCard({
         {reason?.action === "Copy resume prompt" ? (
           <button onClick={() => onCopyResume?.(item)} type="button">Copy resume prompt</button>
         ) : null}
+        {reason?.action === "Open PR" && prUrl ? <a href={prUrl} rel="noreferrer" target="_blank">Open PR</a> : null}
+        {reason?.action === "Open batch operations" ? (
+          <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
+        ) : null}
         {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">Open</a> : null}
       </div>
     </article>
@@ -107,7 +154,10 @@ export function AttentionShell({
   onCopyResume,
   onToggle,
   selectionDisabled = false,
-  now = new Date()
+  now = new Date(),
+  deepLink,
+  onSurfaceChange,
+  onOpenBatchOperations
 }: {
   items: WorkItem[];
   surface: DashboardSurface;
@@ -117,22 +167,22 @@ export function AttentionShell({
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
   now?: Date | string;
+  deepLink?: OperatorDeepLink;
+  onSurfaceChange?: (surface: DashboardSurface) => void;
+  onOpenBatchOperations?: () => void;
 }) {
   const attentionItems = items.filter((item) => item.operatorState === "needs_attention");
-  const runningItems = items.filter((item) =>
-    item.heartbeat
-    && ["live", "stale"].includes(item.heartbeat.liveness)
-    && !item.terminalState
-    && !["terminal", "archived_view"].includes(item.operatorState || "")
-  );
-  const historyItems = items.filter((item) => ["terminal", "archived_view"].includes(item.operatorState || ""));
-  const runningToday = items.filter((item) => item.operatorState === "running").length;
+  const runningItems = items.filter(isNowItem);
+  const historyItems = items
+    .filter((item) => ["terminal", "archived_view"].includes(item.operatorState || ""))
+    .sort((left, right) => activityTime(right) - activityTime(left));
+  const runningToday = runningItems.length;
   const currentDay = new Date(now).toDateString();
   const mergedToday = historyItems.filter((item) =>
     item.github?.type === "pull_request"
     && item.github.state.toLowerCase() === "merged"
-    && item.lastActivityAt
-    && new Date(item.lastActivityAt).toDateString() === currentDay
+    && item.github.mergedAt
+    && new Date(item.github.mergedAt).toDateString() === currentDay
   ).length;
   const card = (item: WorkItem, allowResume = true) => (
     <WorkCard
@@ -141,6 +191,7 @@ export function AttentionShell({
       onCopyResume={allowResume ? onCopyResume : undefined}
       onToggle={onToggle}
       selectionDisabled={selectionDisabled}
+      onOpenBatchOperations={onOpenBatchOperations}
     />
   );
 
@@ -152,10 +203,13 @@ export function AttentionShell({
             <p className="eyebrow">Mission control</p>
             <h1>Attention</h1>
           </div>
-          <span className="status-strip">{runningToday} running · {attentionItems.length} need attention</span>
+          <span className="status-strip">
+            <button aria-label={`Show ${runningToday} running lanes`} onClick={() => onSurfaceChange?.("now")} type="button">{runningToday} running</button>
+            <button aria-label={`Show ${attentionItems.length} items needing attention`} onClick={() => onSurfaceChange?.("attention")} type="button">{attentionItems.length} need attention</button>
+          </span>
         </header>
         {attentionItems.length === 0 ? (
-          <p className="empty-state">All clear — {runningToday} lanes running, {mergedToday} merged today.</p>
+          <p className="empty-state">All clear — <button onClick={() => onSurfaceChange?.("now")} type="button">{runningToday} lanes running</button>, <button onClick={() => onSurfaceChange?.("history")} type="button">{mergedToday} merged today</button>.</p>
         ) : (
           <div className="attention-card-list">{attentionItems.map((item) => card(item))}</div>
         )}
@@ -171,7 +225,7 @@ export function AttentionShell({
     }
     return (
       <section aria-label="Now" className="attention-surface">
-        <header className="attention-surface-header"><div><p className="eyebrow">Live work only</p><h1>Now</h1></div><span className="status-strip">{runningItems.length} live or stale</span></header>
+        <header className="attention-surface-header"><div><p className="eyebrow">Live work only</p><h1>Now</h1></div><button className="status-strip" onClick={() => onSurfaceChange?.("now")} type="button">{runningItems.length} live or stale</button></header>
         {byBatch.size === 0 ? <p className="empty-state">No live lanes right now.</p> : Array.from(byBatch).map(([batch, batchItems]) => (
           <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => card(item, false))}</section>
         ))}
@@ -180,15 +234,17 @@ export function AttentionShell({
   }
 
   if (surface === "history") {
+    const filteredHistory = historyItems.filter((item) => matches(item, query));
     return (
       <section aria-label="History" className="attention-surface">
-        <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><span className="status-strip">{historyItems.length} items</span></header>
-        {historyItems.length === 0 ? <p className="empty-state">No terminal or aged-out work has been observed.</p> : <div className="attention-card-list">{historyItems.map((item) => card(item, false))}</div>}
+        <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><button aria-label={`Show all ${historyItems.length} history items`} className="status-strip" onClick={() => onQueryChange("")} type="button">{historyItems.length} items</button></header>
+        <label className="search-field"><span>Filter</span><input aria-label="Filter history" onChange={(event) => onQueryChange(event.target.value)} placeholder="Filter history" value={query} /></label>
+        {filteredHistory.length === 0 ? <p className="empty-state">No terminal or aged-out work matches this filter.</p> : <div className="attention-card-list">{filteredHistory.map((item) => card(item, false))}</div>}
       </section>
     );
   }
 
-  const results = items.filter((item) => matches(item, query));
+  const results = items.filter((item) => matchesDeepLink(item, deepLink) && matches(item, query));
   return (
     <section aria-label="Find" className="attention-surface">
       <header className="attention-surface-header"><div><p className="eyebrow">Target, branch, batch, thread, or machine</p><h1>Find</h1></div></header>

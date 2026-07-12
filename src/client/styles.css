@@ -109,11 +109,37 @@ textarea {
 }
 
 .summary-strip span,
+.summary-count,
 .status-badge {
   border: 1px solid #d8e0e8;
   border-radius: 6px;
   background: #f8fafc;
   padding: 3px 7px;
+}
+
+.summary-count,
+.inline-count,
+.status-strip button,
+.empty-state button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: #98a2b3;
+  text-underline-offset: 2px;
+}
+
+.summary-count {
+  border: 1px solid #d8e0e8;
+  background: #f8fafc;
+  padding: 3px 7px;
+  text-decoration: none;
+}
+
+.status-strip button + button {
+  margin-left: 8px;
 }
 
 .repo-filter {

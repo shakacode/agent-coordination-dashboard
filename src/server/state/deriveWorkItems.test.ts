@@ -142,11 +142,18 @@ describe("deriveWorkItems", () => {
     const items = deriveWorkItems({
       workItems: [
         { ...BASE_ITEM, batchSignals: [{ batchId: "batch-a", laneName: "build", status: "running", blockedOn: [] }] },
-        { ...BASE_ITEM, id: "shakacode/dashboard#44", target: "44", type: "pull_request" }
+        {
+          ...BASE_ITEM,
+          id: "shakacode/dashboard#44",
+          target: "44",
+          type: "pull_request",
+          github: { repo: BASE_ITEM.repo, target: "44", type: "pull_request", title: "PR", url: "https://github.com/shakacode/dashboard/pull/44", state: "OPEN", labels: [], loadState: "loaded" }
+        }
       ],
       batchOperations: [
         {
           batchId: "batch-a",
+          repo: BASE_ITEM.repo,
           controlStatus: "stopped",
           eventCount: 0,
           qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 }
@@ -169,5 +176,39 @@ describe("deriveWorkItems", () => {
       { kind: "batch_stopped", action: "Copy resume prompt" },
       { kind: "qa_missing", action: "Open PR" }
     ]);
+  });
+
+  it("scopes same-id batch operations by repository and distinguishes a pending stop request", () => {
+    const [repoA, repoB] = deriveWorkItems({
+      workItems: [
+        { ...BASE_ITEM, repo: "repo/a", id: "repo/a#43", batchSignals: [{ batchId: "shared", laneName: "a", status: "running", blockedOn: [] }] },
+        { ...BASE_ITEM, repo: "repo/b", id: "repo/b#43", batchSignals: [{ batchId: "shared", laneName: "b", status: "running", blockedOn: [] }] }
+      ],
+      batchOperations: [
+        { batchId: "shared", repo: "repo/b", controlStatus: "stopped", eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } },
+        { batchId: "shared", repo: "repo/a", controlStatus: "stop_requested", eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } }
+      ],
+      now: new Date("2026-07-12T11:20:00.000Z")
+    });
+
+    expect(repoA.attention).toMatchObject({ kind: "batch_stop_requested", label: "Batch stop is pending", action: "Open batch operations" });
+    expect(repoB.attention).toMatchObject({ kind: "batch_stopped", label: "Batch is stopped", action: "Copy resume prompt" });
+  });
+
+  it("falls back to a resume action when missing QA has no resolvable pull request URL", () => {
+    const [withoutUrl, withUrl] = deriveWorkItems({
+      workItems: [
+        { ...BASE_ITEM, type: "pull_request", id: "shakacode/dashboard#44", target: "44" },
+        { ...BASE_ITEM, type: "pull_request", id: "shakacode/dashboard#45", target: "45", claim: { schemaVersion: 1, agentId: "worker", repo: BASE_ITEM.repo, target: "45", status: "active", prUrl: "https://github.com/shakacode/dashboard/pull/45", path: "claims/45.json" } }
+      ],
+      qaValidations: [
+        { id: "qa-44", repo: BASE_ITEM.repo, target: "44", type: "pull_request", status: "missing", detail: "missing" },
+        { id: "qa-45", repo: BASE_ITEM.repo, target: "45", type: "pull_request", status: "missing", detail: "missing" }
+      ],
+      now: new Date("2026-07-12T11:20:00.000Z")
+    });
+
+    expect(withoutUrl.attention?.action).toBe("Copy resume prompt");
+    expect(withUrl.attention?.action).toBe("Open PR");
   });
 });

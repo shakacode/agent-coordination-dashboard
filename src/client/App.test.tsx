@@ -113,6 +113,13 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("repo/dashboard#43"));
+    expect(screen.getByRole("button", { name: "3 open or coordinated items" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 notices" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "0 events" }));
+    expect(screen.getByText("Batch operations").closest("details")).toHaveAttribute("open");
   });
 
   it("maps legacy query links into Find and retains their query", async () => {
@@ -121,6 +128,18 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Find" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("43");
+    expect(window.location.search).not.toContain("item=");
+    expect(window.location.search).toContain("repo=repo%2Fdashboard");
+    expect(window.location.search).toContain("target=43");
+  });
+
+  it("migrates target-only legacy item links without dropping their exact filter", async () => {
+    window.history.pushState({}, "", "/?item=%2345");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /Ready dashboard work/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Finished dashboard work/ })).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?target=45");
   });
 
   it("keeps repo plus target structured links exact when target numbers collide", async () => {
@@ -132,7 +151,7 @@ describe("App", () => {
     window.history.pushState({}, "", "/?repo=repo/dashboard&target=45");
     render(<App />);
 
-    expect(await screen.findByRole("textbox", { name: "Find work" })).toHaveValue("repo/dashboard#45");
+    expect(await screen.findByRole("textbox", { name: "Find work" })).toHaveValue("");
     expect(screen.getByText("repo/dashboard", { selector: ".attention-card-kicker" })).toBeInTheDocument();
     expect(screen.queryByText("other/repo/dashboard", { selector: ".attention-card-kicker" })).not.toBeInTheDocument();
   });
@@ -187,6 +206,31 @@ describe("App", () => {
     expect(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" })).toBeDisabled();
     await userEvent.click(screen.getByText("PR-batch prompt"));
     expect(screen.getByTitle("Copy prompt")).toBeDisabled();
+  });
+
+  it("clears degraded state and re-enables selection after every required source recovers", async () => {
+    let dashboardCalls = 0;
+    const degraded = ["claims", "heartbeats", "batches", "events"].map((resource) => ({
+      resource,
+      mode: "api" as const,
+      status: "unreachable" as const,
+      httpStatus: 503,
+      checkedAt: model.generatedAt
+    }));
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => dashboardCalls === 1 ? { ...model, sourceStatus: degraded } : { ...model, sourceStatus: degraded.map((source) => ({ ...source, status: "ok" as const, httpStatus: 200 })) } } as Response;
+    });
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" });
+    expect(checkbox).toBeDisabled();
+    expect(screen.getByRole("alert", { name: "Coordination backend degraded" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument());
+    expect(checkbox).toBeEnabled();
   });
 
   it("saves target repository settings and reloads dashboard data", async () => {
@@ -258,6 +302,41 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save batch plan" }));
     expect(await screen.findByText("Batch plan saved.")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/batches/import", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("serializes overlapping loopback writes instead of racing coordination mutations", async () => {
+    const batches = ["batch-one", "batch-two"].map((batchId) => ({
+      schemaVersion: 1,
+      batchId,
+      repo: "repo/dashboard",
+      source: "manifest" as const,
+      lanes: [],
+      path: `batches/${batchId}.json`
+    }));
+    const stopResolvers: Array<() => void> = [];
+    const stopBodies: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/batches/stop") {
+        stopBodies.push(String(init?.body));
+        await new Promise<void>((resolve) => stopResolvers.push(resolve));
+        return { ok: true, json: async () => ({ path: "local-event.json" }) } as Response;
+      }
+      return { ok: true, json: async () => url === "/api/settings" ? settings : { ...model, batches } } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await userEvent.click(await screen.findByText("Batch operations"));
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-one in repo/dashboard" }));
+    await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-two in repo/dashboard" }));
+
+    await waitFor(() => expect(stopResolvers).toHaveLength(1));
+    expect(stopBodies).toHaveLength(1);
+    stopResolvers[0]();
+    await waitFor(() => expect(stopResolvers).toHaveLength(2));
+    expect(stopBodies).toHaveLength(2);
+    stopResolvers[1]();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeEnabled());
   });
 
   it("retains narrow-layout containment safeguards for all four surfaces", () => {

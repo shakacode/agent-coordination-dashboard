@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
 import { generatePrBatchPrompt } from "../shared/prompt";
 import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
@@ -33,13 +33,17 @@ export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
 
 function readOperatorDeepLink() {
   const params = new URLSearchParams(window.location.search);
-  const deepLink = operatorDeepLinkFromSearchParams(params);
-  const structuredQuery = deepLink.repo && deepLink.target
-    ? `${deepLink.repo}#${deepLink.target}`
-    : deepLink.repo || deepLink.batchId || deepLink.target;
+  const parsed = operatorDeepLinkFromSearchParams(params);
+  const legacyItem = params.get("item");
+  const hashIndex = legacyItem?.lastIndexOf("#") ?? -1;
+  const deepLink = hashIndex > 0
+    ? { ...parsed, repo: parsed.repo || legacyItem?.slice(0, hashIndex), target: parsed.target || legacyItem?.slice(hashIndex + 1) }
+    : legacyItem && /^#?\d+$/.test(legacyItem)
+      ? { ...parsed, target: parsed.target || legacyItem.replace(/^#/, "") }
+    : parsed;
   return {
     ...deepLink,
-    query: deepLink.query || params.get("item") || structuredQuery || undefined
+    query: deepLink.query
   };
 }
 
@@ -54,7 +58,7 @@ export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter
 
 function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: "push" | "replace") {
   const url = new URL(window.location.href);
-  for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q"]) {
+  for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q", "item"]) {
     url.searchParams.delete(key);
   }
   const values = {
@@ -108,6 +112,9 @@ export function App() {
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
+  const batchOperationsRef = useRef<HTMLDetailsElement>(null);
+  const diagnosticsRef = useRef<HTMLDetailsElement>(null);
+  const warningsRef = useRef<HTMLElement>(null);
 
   const requiredCoordinationUnavailable = Boolean(
     dashboard?.sourceStatus?.some(
@@ -186,6 +193,12 @@ export function App() {
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("item")) {
+      writeOperatorLocation(operatorDeepLink, operatorQuery, "replace");
+    }
+  }, []);
 
   useEffect(() => {
     function restoreLocation() {
@@ -282,6 +295,28 @@ export function App() {
     const nextDeepLink = { ...operatorDeepLink, query: query || undefined };
     setOperatorDeepLink(nextDeepLink);
     writeOperatorLocation(nextDeepLink, query, "replace");
+  }
+
+  function openSurface(surface: DashboardSurface) {
+    setActiveSurface(surface);
+  }
+
+  function openDetails(details: RefObject<HTMLDetailsElement | null>) {
+    if (details.current) {
+      details.current.open = true;
+      details.current.scrollIntoView?.({ block: "start" });
+    }
+  }
+
+  function revealWarnings() {
+    if (!warningsRef.current) {
+      openDetails(diagnosticsRef);
+      return;
+    }
+    warningsRef.current.querySelectorAll("details").forEach((details) => {
+      details.open = true;
+    });
+    warningsRef.current.scrollIntoView?.({ block: "start" });
   }
 
   function copyResumePrompt(item: WorkItem) {
@@ -381,22 +416,22 @@ export function App() {
             ) : (
               dashboard.stateRoot
             )}{" "}
-            · {dashboard.workItems.length} open or coordinated items
+            · <button className="inline-count" onClick={() => openSurface("find")} type="button">{dashboard.workItems.length} open or coordinated items</button>
           </p>
         </div>
         <div className="summary-strip">
-          <span title={failedSourceDetails(agentSources) || undefined}>
+          <button className="summary-count" onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(agentSources) || undefined} type="button">
             {coordinationCount(dashboard.agents.length, agentSources)} agents
-          </span>
-          <span title={failedSourceDetails(eventSources) || undefined}>
+          </button>
+          <button className="summary-count" onClick={() => openDetails(batchOperationsRef)} title={failedSourceDetails(eventSources) || undefined} type="button">
             {coordinationCount(dashboard.events.length, eventSources)} events
-          </span>
-          <span title={failedSourceDetails(healthSources) || undefined}>
+          </button>
+          <button className="summary-count" onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(healthSources) || undefined} type="button">
             {coordinationCount(dashboard.healthItems.length, healthSources)} health
-          </span>
-          <span>
+          </button>
+          <button className="summary-count" onClick={revealWarnings} type="button">
             {dashboard.warnings.length} {warningLabel}
-          </span>
+          </button>
           <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
           <button
             aria-label="Refresh dashboard"
@@ -486,12 +521,12 @@ export function App() {
       </details>
 
       {dashboard.warnings.length > 0 && (
-        <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`}>
+        <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`} ref={warningsRef}>
           <div className="warnings-panel-summary">
             <span className="warnings-heading">{warningsHeading}</span>
-            <span>
+            <button className="inline-count" onClick={revealWarnings} type="button">
               {dashboard.warnings.length} {warningLabel}
-            </span>
+            </button>
           </div>
           <SignalGroupList
             ariaLabel={`Coordination ${warningLabel} grouped by type`}
@@ -513,16 +548,19 @@ export function App() {
         <section className="content-region">
           <nav className="surface-nav" aria-label="Dashboard surfaces">
             {(["attention", "now", "find", "history"] as const).map((surface) => (
-              <button className={activeSurface === surface ? "active" : ""} key={surface} onClick={() => setActiveSurface(surface)} type="button">
+              <button className={activeSurface === surface ? "active" : ""} key={surface} onClick={() => openSurface(surface)} type="button">
                 {surface[0].toUpperCase()}{surface.slice(1)}
               </button>
             ))}
           </nav>
           <AttentionShell
             items={dashboard.workItems}
+            deepLink={operatorDeepLink}
             now={dashboard.generatedAt}
             onCopyResume={copyResumePrompt}
             onQueryChange={updateOperatorQuery}
+            onOpenBatchOperations={() => openDetails(batchOperationsRef)}
+            onSurfaceChange={openSurface}
             onToggle={toggleWorkItem}
             query={operatorQuery}
             selectionDisabled={requiredCoordinationUnavailable}
@@ -532,7 +570,7 @@ export function App() {
             <summary>PR-batch prompt</summary>
             <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
           </details>
-          <details className="secondary-tools">
+          <details className="secondary-tools" ref={batchOperationsRef}>
             <summary>Batch operations</summary>
             <BatchesTab
               batches={dashboard.batches}
@@ -542,7 +580,7 @@ export function App() {
               operations={dashboard.batchOperations}
             />
           </details>
-          <details className="secondary-tools">
+          <details className="secondary-tools" ref={diagnosticsRef}>
             <summary>Machines and health</summary>
             <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
             <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} />
