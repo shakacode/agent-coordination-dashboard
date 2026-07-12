@@ -498,9 +498,32 @@ describe("readCoordinationState", () => {
         })
       ])
     );
-    expect(state.sourceStatus).toEqual(
-      expect.arrayContaining([expect.objectContaining({ resource: "batches", mode: "api", status: "unreachable" })])
+    expect(state.sourceStatus.find((source) => source.resource === "batches")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
     );
+    expect(state.sourceStatus.find((source) => source.resource === "batches")).not.toHaveProperty("httpStatus");
+  });
+
+  it("omits a successful HTTP status when the coordination API response shape is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ records: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    );
+
+    const state = await readCoordinationState("/unused", new Date("2026-06-17T20:00:00Z"), {
+      apiUrl: "https://coord.example.test",
+      token: "test-token"
+    });
+
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).toEqual(
+      expect.objectContaining({ mode: "api", status: "unreachable" })
+    );
+    expect(state.sourceStatus.find((source) => source.resource === "claims")).not.toHaveProperty("httpStatus");
   });
 
   it("times out stalled coordination API requests", async () => {

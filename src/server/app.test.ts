@@ -298,6 +298,27 @@ describe("dashboard app import endpoint", () => {
     expect(JSON.stringify(body)).not.toContain("secret-token-value");
   });
 
+  it("rejects coordination diagnostics requested from a non-loopback client", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-doctor-remote-"));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] })
+    });
+    const baseUrl = await listenServer(
+      createServer((req, res) => {
+        Object.defineProperty(req.socket, "remoteAddress", { value: "203.0.113.8" });
+        app(req, res);
+      }).listen(0, "127.0.0.1")
+    );
+
+    const response = await fetch(`${baseUrl}/api/doctor`);
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Coordination diagnostics can only be read from the machine running the dashboard."
+    });
+  });
+
   it("clears degraded source status on a fresh read without restarting the dashboard", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-recovery-"));
     let authorized = false;

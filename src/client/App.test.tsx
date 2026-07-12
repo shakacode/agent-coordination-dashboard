@@ -678,10 +678,35 @@ describe("App", () => {
     expect(screen.getByText("— events")).toBeInTheDocument();
     expect(screen.getByText("— health")).toBeInTheDocument();
     expect(screen.getByText("1 ready")).toBeInTheDocument();
-    expect(screen.getByText("1 claimed")).toBeInTheDocument();
+    expect(screen.getByText("— claimed")).toBeInTheDocument();
     expect(screen.getByText("0 processing")).toBeInTheDocument();
     expect(screen.getByText("— QA needs attention")).toBeInTheDocument();
     expect(screen.getByText("— batch repairs")).toBeInTheDocument();
+  });
+
+  it("shows a full outage when every required source fails and optional events are empty", async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () =>
+        String(input) === "/api/settings"
+          ? settings
+          : {
+              ...model,
+              stateRoot: "coordination-api",
+              coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+              sourceStatus: degradedSourceStatus.map((source, index) =>
+                index === 3
+                  ? { ...source, status: "empty", httpStatus: 200 }
+                  : { ...source, status: "unreachable", httpStatus: 503 }
+              )
+            }
+    }) as Response);
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Coordination backend degraded" })).toHaveTextContent(
+      "Coordination backend unreachable (503)"
+    );
   });
 
   it("uses filesystem remediation copy for an all-filesystem outage", async () => {

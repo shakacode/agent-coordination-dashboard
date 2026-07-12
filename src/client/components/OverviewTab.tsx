@@ -94,7 +94,7 @@ export function OverviewTab({
       })
       .join("; ");
   const readySources = ["claims", "heartbeats", "batches"] as const;
-  const claimedSources = ["claims", "heartbeats"] as const;
+  const claimedSources = ["claims", "heartbeats", "batches", "events"] as const;
   const processingSources = ["claims", "heartbeats"] as const;
   const qaSources = ["batches", "events"] as const;
   const batchRepairSources = ["batches", "events"] as const;

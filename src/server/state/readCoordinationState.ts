@@ -159,7 +159,7 @@ async function fetchApiEntries(
     const body = (await response.json()) as unknown;
     if (!isRecord(body) || !Array.isArray(body.entries)) {
       warnings.push(apiWarning(`Could not read coordination API ${prefix}: malformed response`));
-      return { entries: [], sourceStatus: apiSourceStatus(prefix, "unreachable", checkedAt, response.status) };
+      return { entries: [], sourceStatus: apiSourceStatus(prefix, "unreachable", checkedAt) };
     }
 
     const entries: ApiStateEntry[] = [];
@@ -265,9 +265,13 @@ async function readApiCoordinationState(options: Required<CoordinationApiOptions
     batches: batches.records,
     events: events.records,
     warnings,
-    sourceStatus: API_STATE_PREFIXES.map((prefix) =>
-      normalizedByPrefix[prefix].unavailable ? { ...results[prefix].sourceStatus, status: "unreachable" } : results[prefix].sourceStatus
-    )
+    sourceStatus: API_STATE_PREFIXES.map((prefix) => {
+      if (!normalizedByPrefix[prefix].unavailable) {
+        return results[prefix].sourceStatus;
+      }
+      const { httpStatus: _successfulHttpStatus, ...sourceStatus } = results[prefix].sourceStatus;
+      return { ...sourceStatus, status: "unreachable" };
+    })
   };
 }
 

@@ -332,9 +332,9 @@ export function App() {
   const coordinationSourceError = sourceFailures.length > 0;
   const failedResources = new Set(sourceFailures.map((source) => source.resource));
   const hasAuthenticationFailure = sourceFailures.some((source) => source.status === "auth_error");
-  const allSourcesFailed =
-    (dashboard.sourceStatus?.length || 0) > 0 && sourceFailures.length === dashboard.sourceStatus?.length;
-  const coordinationDegraded = hasAuthenticationFailure || allSourcesFailed;
+  const requiredResources = ["claims", "heartbeats", "batches"] as const;
+  const allRequiredSourcesFailed = requiredResources.every((resource) => failedResources.has(resource));
+  const coordinationDegraded = hasAuthenticationFailure || allRequiredSourcesFailed;
   const filesystemOutage = coordinationDegraded && sourceFailures.every((source) => source.mode === "fs");
   const failedHttpStatuses = Array.from(
     new Set(sourceFailures.flatMap((source) => (source.httpStatus === undefined ? [] : [source.httpStatus])))
