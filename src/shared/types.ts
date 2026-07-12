@@ -136,6 +136,7 @@ export interface BatchWorkSignal {
   laneName: string;
   status: string;
   blockedOn: string[];
+  updatedAt?: string;
 }
 
 export interface QaValidationItem {

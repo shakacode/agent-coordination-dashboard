@@ -83,6 +83,9 @@ export interface OperatorRow {
   activityStatus: string;
   activityMessage?: string;
   lastActivityAt?: string;
+  retentionStatus: string;
+  githubState?: string;
+  schedulingState?: WorkItem["schedulingState"];
   lastActivityAge: string;
   lastEventAt?: string;
   heartbeatUpdatedAt?: string;
@@ -126,12 +129,17 @@ interface MetadataFields {
   prUrl?: string;
 }
 
-const DONE_PATTERN = /\b(complete|completed|done|merged|closed|passed|released)\b/i;
+const DONE_PATTERN = /\b(complete|completed|done|merged|closed|cancelled|passed|released)\b/i;
 const PAUSED_PATTERN =
   /\b(paused?|token[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?window)\b/i;
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
 const READY_PATTERN = /\b(ready|queued|pending)\b/i;
 const ACTIVE_LANE_PATTERN = /\b(in_progress|running|coding|working|started|validating)\b/i;
+const ACCEPTED_TERMINAL_STATUSES = new Set(["done", "merged", "closed", "cancelled"]);
+
+function isAcceptedTerminalStatus(value: string | undefined): boolean {
+  return ACCEPTED_TERMINAL_STATUSES.has(value?.trim().toLowerCase() || "");
+}
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
   for (const value of values) {
@@ -170,8 +178,17 @@ function timestampMs(value: string | undefined): number {
 
 function maxTimestamp(...values: Array<string | undefined>): string | undefined {
   return values
-    .filter((value): value is string => Boolean(value))
+    .filter((value): value is string => timestampMs(value) > 0)
     .sort((left, right) => timestampMs(right) - timestampMs(left))[0];
+}
+
+function latestLifecycleStatus(
+  candidates: Array<{ status?: string; timestamp?: string }>
+): string {
+  return [...candidates]
+    .filter((candidate) => Boolean(candidate.status?.trim()) && timestampMs(candidate.timestamp) > 0)
+    .sort((left, right) => timestampMs(right.timestamp) - timestampMs(left.timestamp))[0]
+    ?.status?.trim().toLowerCase() || "unknown";
 }
 
 function latestEvent(events: BatchEvent[]): BatchEvent | undefined {
@@ -325,6 +342,7 @@ function deriveOperatorState(input: {
   event?: BatchEvent;
   transitionEvent?: BatchEvent;
   signalStatus?: string;
+  currentLifecycleAt?: string;
   liveness?: Liveness | "none";
   blockedOn: string[];
   nowMs: number;
@@ -339,11 +357,59 @@ function deriveOperatorState(input: {
     eventDrivesOperatorState ? input.event?.status : undefined,
     input.signalStatus
   ]);
+  const currentText = stateText([
+    input.workItem?.schedulingState,
+    input.heartbeat?.status,
+    input.claim?.status,
+    input.lane?.status,
+    input.signalStatus
+  ]);
 
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
   const hasActiveClaim = Boolean(input.claim && input.claim.status !== "released");
   const liveness = input.heartbeat?.liveness || input.liveness;
+  const currentStatuses = [input.heartbeat?.status, input.claim?.status, input.lane?.status, input.signalStatus].filter(
+    (status): status is string => Boolean(status?.trim())
+  );
+  const transitionStatus = input.transitionEvent?.status || input.transitionEvent?.type;
+  const transitionAt = timestampMs(input.transitionEvent?.timestamp);
+  const currentLifecycleAt = timestampMs(input.currentLifecycleAt);
+  const terminalTransitionIsCurrent =
+    isAcceptedTerminalStatus(transitionStatus) &&
+    transitionAt > 0 &&
+    (currentLifecycleAt > 0 ? transitionAt > currentLifecycleAt : currentStatuses.length === 0);
 
+  if (PAUSED_PATTERN.test(currentText)) {
+    return "paused";
+  }
+  if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {
+    return "blocked";
+  }
+  if (currentStatuses.some(isAcceptedTerminalStatus) || terminalTransitionIsCurrent) {
+    return "done";
+  }
+  if (liveness === "dead") {
+    return "dead";
+  }
+  if (liveness === "stale") {
+    return "stale";
+  }
+  if (liveness === "live") {
+    const activityAt = input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
+    if (timestampMs(activityAt) > 0 && input.nowMs - timestampMs(activityAt) >= WEDGED_THRESHOLD_MS) {
+      return "wedged";
+    }
+    return "running";
+  }
+  if (
+    (input.workItem?.schedulingState === "ready_for_batch" && !input.claim && !input.heartbeat) ||
+    (!input.claim && !input.heartbeat && READY_PATTERN.test(currentText))
+  ) {
+    return "ready";
+  }
+  if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(currentText)) {
+    return "dead";
+  }
   if (DONE_PATTERN.test(text)) {
     return "done";
   }
@@ -353,26 +419,10 @@ function deriveOperatorState(input: {
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(text)) {
     return "blocked";
   }
-  if (liveness === "dead") {
-    return "dead";
-  }
-  if (liveness === "stale") {
-    return "stale";
-  }
-  if (liveness === "live") {
-    const transitionAt = input.transitionEvent?.timestamp || input.heartbeat?.updatedAt;
-    if (timestampMs(transitionAt) > 0 && input.nowMs - timestampMs(transitionAt) >= WEDGED_THRESHOLD_MS) {
-      return "wedged";
-    }
-    return "running";
-  }
   if (!input.claim && !input.heartbeat && hasReadySignal) {
     return "ready";
   }
   if (input.workItem?.schedulingState === "started_not_processing" || hasActiveClaim) {
-    return "dead";
-  }
-  if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(text)) {
     return "dead";
   }
   if (input.heartbeat) {
@@ -665,6 +715,25 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   const batchTarget = batchTargetForWork(batch, item);
   const blockedOn = Array.from(new Set([...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean)));
   const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventHistoryMetadata);
+  const lifecycleSignalCandidates = (item.batchSignals || []).map((candidate) => {
+    const matchingBatch = dashboard.batches.find((candidateBatch) => {
+      if (candidateBatch.batchId !== candidate.batchId) {
+        return false;
+      }
+      const matchingLane = candidateBatch.lanes.find((candidateLane) => candidateLane.name === candidate.laneName);
+      return Boolean(matchingLane && batchContainsWork(candidateBatch, item, matchingLane));
+    });
+    return {
+      status: candidate.status,
+      timestamp: maxTimestamp(candidate.updatedAt, matchingBatch?.updatedAt, matchingBatch?.createdAt)
+    };
+  });
+  const claimLifecycleAt = maxTimestamp(item.claim?.updatedAt, item.claim?.claimedAt);
+  const currentLifecycleAt = maxTimestamp(
+    item.heartbeat?.updatedAt,
+    claimLifecycleAt,
+    ...lifecycleSignalCandidates.map((candidate) => candidate.timestamp)
+  );
   const state = deriveOperatorState({
     workItem: item,
     heartbeat: item.heartbeat,
@@ -673,10 +742,24 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     event: latest,
     transitionEvent,
     signalStatus: signal?.status,
+    currentLifecycleAt,
     blockedOn,
     nowMs
   });
   const lastActivityAt = maxTimestamp(latest?.timestamp, item.heartbeat?.updatedAt, item.claim?.updatedAt);
+  const lifecycleEvents = matchingEvents.filter((event) => !isQaEventType(event.type));
+  const lifecycleCandidates = [
+    ...lifecycleEvents.map((event) => ({ status: event.status || event.type, timestamp: event.timestamp })),
+    { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
+    { status: item.claim?.status, timestamp: claimLifecycleAt },
+    ...lifecycleSignalCandidates
+  ];
+  const latestLifecycleAt = maxTimestamp(
+    ...lifecycleCandidates.map((candidate) => candidate.timestamp),
+    item.heartbeat?.updatedAt,
+    claimLifecycleAt
+  );
+  const retentionStatus = latestLifecycleStatus(lifecycleCandidates);
   const ownerMetadata = firstObserved(
     notApplicable(),
     ["claim", item.claim?.operator],
@@ -754,8 +837,11 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
-    lastActivityAt,
-    lastActivityAge: ageLabel(lastActivityAt, nowMs),
+    lastActivityAt: latestLifecycleAt || lastActivityAt,
+    lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
+    retentionStatus,
+    githubState: item.github?.loadState === "loaded" ? item.github.state : UNKNOWN,
+    schedulingState: item.schedulingState,
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
     batchId,
@@ -855,11 +941,16 @@ function buildLaneRow(
     lane,
     event: latest,
     transitionEvent,
+    currentLifecycleAt: maxTimestamp(batch.updatedAt, batch.createdAt),
     liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,
     nowMs
   });
   const lastActivityAt = maxTimestamp(latest?.timestamp, batch.updatedAt, batch.createdAt);
+  const retentionStatus = latestLifecycleStatus([
+    { status: transitionEvent?.status || transitionEvent?.type, timestamp: transitionEvent?.timestamp },
+    { status: lane.status, timestamp: maxTimestamp(batch.updatedAt, batch.createdAt) }
+  ]);
   const title = targetRepoUnknown
     ? `Target #${target} (repository UNKNOWN)`
     : firstValue(target ? targetTitleFromBatch(batch, target) : undefined, batch.objective, `Batch lane ${lane.name}`) || UNKNOWN;
@@ -887,6 +978,8 @@ function buildLaneRow(
     activityMessage: latest?.message,
     lastActivityAt,
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
+    retentionStatus,
+    githubState: target ? UNKNOWN : undefined,
     lastEventAt: latest?.timestamp,
     batchId: batch.batchId,
     batchPath: batch.path,
@@ -985,6 +1078,59 @@ export function filterOperatorRowsByProvenance(rows: OperatorRow[], includeDeriv
   return includeDerived
     ? rows
     : rows.filter((row) => !["inferred", "synthetic"].includes(row.provenance.classification));
+}
+
+export const TERMINAL_ROW_AGE_OUT_MS = 24 * 60 * 60 * 1000;
+export const SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY = "agent-coordination-dashboard:show-older-terminal-work";
+
+export function savedOlderTerminalWorkPreference(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function filterOperatorRowsByAge(
+  rows: OperatorRow[],
+  now: Date | string | number,
+  revealOlderTerminalRows = false
+): { visibleRows: OperatorRow[]; hiddenRows: OperatorRow[] } {
+  if (revealOlderTerminalRows) {
+    return { visibleRows: rows, hiddenRows: [] };
+  }
+  const nowMs = now instanceof Date ? now.getTime() : typeof now === "number" ? now : timestampMs(now);
+  const visibleRows: OperatorRow[] = [];
+  const hiddenRows: OperatorRow[] = [];
+  for (const row of rows) {
+    const activityMs = timestampMs(row.lastActivityAt);
+    const shouldHide =
+      isTerminalRowEligibleForAgeOut(row) &&
+      activityMs > 0 &&
+      nowMs > 0 &&
+      nowMs - activityMs > TERMINAL_ROW_AGE_OUT_MS;
+    (shouldHide ? hiddenRows : visibleRows).push(row);
+  }
+  return { visibleRows, hiddenRows };
+}
+
+export function isTerminalRowEligibleForAgeOut(row: OperatorRow): boolean {
+  const githubState = row.githubState?.trim().toUpperCase();
+  const hasCurrentPresentationState = ["running", "wedged", "paused", "blocked", "stale", "dead", "ready", "unknown"].includes(
+    row.operatorState
+  );
+  return (
+    ACCEPTED_TERMINAL_STATUSES.has(row.retentionStatus.trim().toLowerCase()) &&
+    githubState !== "OPEN" &&
+    githubState !== UNKNOWN &&
+    row.liveness !== "live" &&
+    row.liveness !== "stale" &&
+    row.liveness !== "dead" &&
+    !hasCurrentPresentationState &&
+    row.schedulingState !== "started_not_processing" &&
+    row.schedulingState !== "ready_for_batch" &&
+    row.schedulingState !== "in_process"
+  );
 }
 
 export function filterOperatorRows(rows: OperatorRow[], query: string, targetRepos = Array.from(new Set(rows.map((row) => row.repo)))): OperatorRow[] {
@@ -1152,6 +1298,7 @@ function buildRepairBatchRow(batch: BatchRecord | undefined, operation: BatchOpe
     activityStatus,
     lastActivityAt,
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
+    retentionStatus: activityStatus,
     batchId,
     batchPath,
     dependencies: [],

@@ -4,7 +4,9 @@ import type { CoordinationWarning, DashboardModel, HealthItem, QaValidationItem 
 import {
   buildOperatorRows,
   filterOperatorRowsByProvenance,
+  filterOperatorRowsByAge,
   filterOperatorRowsForOverview,
+  isTerminalRowEligibleForAgeOut,
   operatorActivityLabel,
   safeGithubUrl,
   UNKNOWN,
@@ -41,35 +43,74 @@ function firstItems<T>(items: T[], count = 6): T[] {
   return items.slice(0, count);
 }
 
+const TERMINAL_STATUS_LABELS: Record<string, string> = {
+  done: "Done",
+  merged: "Merged",
+  closed: "Closed",
+  cancelled: "Cancelled"
+};
+
+function TerminalStatusBadge({ status }: { status: string }) {
+  const normalized = status.trim().toLowerCase();
+  return (
+    <span className={`status-badge status-terminal status-${normalized}`}>
+      {TERMINAL_STATUS_LABELS[normalized] || status}
+    </span>
+  );
+}
+
+export function sortRecentTerminalRows(rows: OperatorRow[]): OperatorRow[] {
+  const activityTime = (row: OperatorRow) => {
+    const parsed = row.lastActivityAt ? Date.parse(row.lastActivityAt) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  };
+  return [...rows].sort((left, right) => activityTime(right) - activityTime(left));
+}
+
 export function OverviewTab({
   dashboard,
-  onOpenOperatorFilter
+  onOpenOperatorFilter,
+  revealOlderTerminalRows = false,
+  onRevealOlderTerminalRowsChange
 }: {
   dashboard: DashboardModel;
   onOpenOperatorFilter: (filter: OverviewOperatorFilter) => void;
+  revealOlderTerminalRows?: boolean;
+  onRevealOlderTerminalRowsChange?: (reveal: boolean) => void;
 }) {
   const attentionItems = dashboard.healthItems.filter((item) => item.severity !== "info");
   const qaAttentionValidations = dashboard.qaValidations.filter((item) =>
     ["failed", "missing", "requested", "in_progress"].includes(item.status)
   );
-  const overviewRows = useMemo<Record<OverviewOperatorFilter, OperatorRow[]>>(() => {
+  const { overviewRows, terminalRows, hiddenTerminalCount } = useMemo(() => {
     const allOperatorRows = buildOperatorRows(dashboard);
     const operatorRows = filterOperatorRowsByProvenance(allOperatorRows, false);
+    const ageOut = filterOperatorRowsByAge(operatorRows, dashboard.generatedAt);
+    const batchRepairRows = filterOperatorRowsForOverview(allOperatorRows, dashboard, "batch_repair");
+    const batchRepairAgeOut = filterOperatorRowsByAge(batchRepairRows, dashboard.generatedAt);
+    const visibleOperatorRows = revealOlderTerminalRows ? operatorRows : ageOut.visibleRows;
     const rowsFor = (filter: OverviewOperatorFilter) => {
-      return filterOperatorRowsForOverview(
-        filter === "batch_repair" ? allOperatorRows : operatorRows,
+      const filtered = filterOperatorRowsForOverview(
+        filter === "batch_repair" ? allOperatorRows : visibleOperatorRows,
         dashboard,
         filter
       );
+      return filter === "batch_repair"
+        ? filterOperatorRowsByAge(filtered, dashboard.generatedAt, revealOlderTerminalRows).visibleRows
+        : filtered;
     };
     return {
-      ready_for_batch: rowsFor("ready_for_batch"),
-      needs_recovery: rowsFor("needs_recovery"),
-      processing_now: rowsFor("processing_now"),
-      qa_attention: rowsFor("qa_attention"),
-      batch_repair: rowsFor("batch_repair")
+      overviewRows: {
+        ready_for_batch: rowsFor("ready_for_batch"),
+        needs_recovery: rowsFor("needs_recovery"),
+        processing_now: rowsFor("processing_now"),
+        qa_attention: rowsFor("qa_attention"),
+        batch_repair: rowsFor("batch_repair")
+      } as Record<OverviewOperatorFilter, OperatorRow[]>,
+      terminalRows: sortRecentTerminalRows(visibleOperatorRows.filter(isTerminalRowEligibleForAgeOut)),
+      hiddenTerminalCount: new Set([...ageOut.hiddenRows, ...batchRepairAgeOut.hiddenRows].map((row) => row.id)).size
     };
-  }, [dashboard]);
+  }, [dashboard, revealOlderTerminalRows]);
   const healthGroups = groupHealthItems(attentionItems);
   const warningGroups = groupWarnings(dashboard.warnings);
   const visibleHealthGroups = healthGroups.slice(0, 6);
@@ -106,6 +147,20 @@ export function OverviewTab({
 
   return (
     <section className="overview-view">
+      <label className="operator-retention-filter">
+        <input
+          aria-label="Show older terminal work"
+          checked={revealOlderTerminalRows}
+          onChange={(event) => onRevealOlderTerminalRowsChange?.(event.target.checked)}
+          type="checkbox"
+        />
+        <span>Show older terminal work</span>
+        <small>
+          {revealOlderTerminalRows
+            ? `Showing ${hiddenTerminalCount} older terminal ${hiddenTerminalCount === 1 ? "row" : "rows"}`
+            : `${hiddenTerminalCount} older terminal ${hiddenTerminalCount === 1 ? "row" : "rows"} hidden`}
+        </small>
+      </label>
       <section className="summary-cards" aria-label="Coordination summary">
         <button
           aria-label={`Show ${overviewRows.ready_for_batch.length} ready for batch rows in Operator view`}
@@ -155,6 +210,25 @@ export function OverviewTab({
       </section>
 
       <section className="overview-grid">
+        {terminalRows.length > 0 && (
+          <article className="panel overview-panel overview-wide">
+            <header className="overview-panel-header">
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <h2>Recent Terminal Work</h2>
+            </header>
+            <div className="overview-list">
+              {firstItems(terminalRows, 10).map((row) => (
+                <div className="overview-row" key={row.id}>
+                  <div>
+                    <OperatorRowLink row={row} />
+                    <span>{row.lastActivityAge === UNKNOWN ? "Activity UNKNOWN" : `${row.lastActivityAge} ago`}</span>
+                  </div>
+                  <TerminalStatusBadge status={row.retentionStatus} />
+                </div>
+              ))}
+            </div>
+          </article>
+        )}
         <article className="panel overview-panel">
           <header className="overview-panel-header">
             <AlertTriangle size={18} aria-hidden="true" />

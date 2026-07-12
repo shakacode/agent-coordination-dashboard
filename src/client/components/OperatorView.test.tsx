@@ -94,6 +94,99 @@ const dashboard: DashboardModel = {
 describe("OperatorView", () => {
   beforeEach(() => localStorage.clear());
 
+  it("leaves older-terminal persistence to App when the preference is controlled", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    render(<OperatorView dashboard={dashboard} revealOlderTerminalRows={false} />);
+
+    expect(setItem.mock.calls.some(([key]) => key === "agent-coordination-dashboard:show-older-terminal-work")).toBe(false);
+  });
+
+  it("hides old terminal work by default and restores the exact rows with a persisted control", async () => {
+    const terminalDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [dashboard.workItems[1]],
+      batches: [
+        {
+          schemaVersion: 1,
+          batchId: "terminal-batch",
+          repo: "repo/app",
+          launchPrompt: "Use $pr-batch",
+          updatedAt: "2026-07-08T20:00:00Z",
+          path: "batches/terminal.json",
+          lanes: [
+            {
+              name: "closeout",
+              owner: "agent-old",
+              targets: [],
+              dependsOn: [],
+              status: "done",
+              liveness: "no-heartbeat",
+              blockedOn: []
+            }
+          ]
+        }
+      ],
+      events: [
+        {
+          eventId: "merged-123",
+          type: "done",
+          status: "done",
+          batchId: "terminal-batch",
+          repo: "repo/app",
+          laneName: "closeout",
+          timestamp: "2026-07-08T20:00:00Z",
+          path: "events/merged.json"
+        }
+      ]
+    };
+
+    const rendered = render(<OperatorView dashboard={terminalDashboard} />);
+
+    expect(screen.queryByText("Batch lane")).not.toBeInTheDocument();
+    expect(screen.getByText("1 older terminal row hidden")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Show older terminal work" }));
+    expect(screen.getByText("Batch lane")).toBeInTheDocument();
+    expect(screen.getByText("Issue #124")).toBeInTheDocument();
+    expect(localStorage.getItem("agent-coordination-dashboard:show-older-terminal-work")).toBe("true");
+
+    rendered.unmount();
+    render(<OperatorView dashboard={terminalDashboard} />);
+    expect(screen.getByRole("checkbox", { name: "Show older terminal work" })).toBeChecked();
+    expect(screen.getByText("Batch lane")).toBeInTheDocument();
+  });
+
+  it("keeps claimed-but-not-processing work visible despite old done history", () => {
+    const recoveryDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [
+        {
+          ...dashboard.workItems[0],
+          claim: { ...dashboard.workItems[0].claim!, status: "released", updatedAt: "2026-07-08T20:00:00Z" },
+          heartbeat: undefined,
+          schedulingState: "started_not_processing",
+          github: undefined
+        }
+      ],
+      events: [
+        {
+          eventId: "done-123",
+          type: "done",
+          status: "done",
+          repo: "repo/app",
+          target: "123",
+          timestamp: "2026-07-08T20:00:00Z",
+          path: "events/done.json"
+        }
+      ]
+    };
+
+    render(<OperatorView dashboard={recoveryDashboard} />);
+    expect(screen.getByText("PR #123")).toBeInTheDocument();
+  });
+
   it("hides inferred and synthetic rows by default and persists the reveal control per browser", async () => {
     const derivedDashboard: DashboardModel = {
       ...dashboard,

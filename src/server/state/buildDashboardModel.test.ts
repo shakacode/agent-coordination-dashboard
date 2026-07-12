@@ -1596,7 +1596,13 @@ describe("buildDashboardModel", () => {
       ["worker-b", ["4010"]]
     ]);
     expect(model.workItems.find((item) => item.target === "4010")?.batchSignals).toEqual([
-      { batchId: "batch-1", laneName: "worker-b", status: "in_progress", blockedOn: [] }
+      {
+        batchId: "batch-1",
+        laneName: "worker-b",
+        status: "in_progress",
+        blockedOn: [],
+        updatedAt: "2026-06-17T19:55:00Z"
+      }
     ]);
     expect(model.healthItems.map((item) => item.title)).toContain("Batch plan missing");
   });

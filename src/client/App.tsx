@@ -14,6 +14,8 @@ import { WorkTab } from "./components/WorkTab";
 import {
   hasStructuredOperatorDeepLink,
   operatorDeepLinkFromSearchParams,
+  savedOlderTerminalWorkPreference,
+  SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY,
   type OperatorDeepLink,
   type OverviewOperatorFilter
 } from "./operatorRows";
@@ -89,6 +91,7 @@ export function App() {
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) ? "operator" : "overview"
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [revealOlderTerminalRows, setRevealOlderTerminalRows] = useState(savedOlderTerminalWorkPreference);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -162,6 +165,14 @@ export function App() {
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY, String(revealOlderTerminalRows));
+    } catch {
+      // The in-memory App preference still works when browser storage is unavailable.
+    }
+  }, [revealOlderTerminalRows]);
 
   useEffect(() => {
     function restoreLocation() {
@@ -442,7 +453,14 @@ export function App() {
             </button>
           </nav>
 
-          {activeTab === "overview" && <OverviewTab dashboard={dashboard} onOpenOperatorFilter={openOverviewFilter} />}
+          {activeTab === "overview" && (
+            <OverviewTab
+              dashboard={dashboard}
+              onOpenOperatorFilter={openOverviewFilter}
+              onRevealOlderTerminalRowsChange={setRevealOlderTerminalRows}
+              revealOlderTerminalRows={revealOlderTerminalRows}
+            />
+          )}
           {activeTab === "operator" && (
             <OperatorView
               dashboard={dashboard}
@@ -451,6 +469,8 @@ export function App() {
               onQueryChange={updateOperatorQuery}
               onResetOverviewFilter={resetOverviewFilter}
               query={operatorQuery}
+              onRevealOlderTerminalRowsChange={setRevealOlderTerminalRows}
+              revealOlderTerminalRows={revealOlderTerminalRows}
             />
           )}
           {activeTab === "work" && <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} />}

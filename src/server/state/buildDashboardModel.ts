@@ -1060,7 +1060,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
               batchId: batch.batchId,
               laneName: lane.name,
               status: lane.status,
-              blockedOn: lane.blockedOn
+              blockedOn: lane.blockedOn,
+              updatedAt: batch.updatedAt
             }
           ]);
         }
