@@ -163,16 +163,22 @@ describe("AttentionShell", () => {
 
   it("counts only pull requests merged on the current day in the all-clear message", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-12T12:00:00.000Z"));
+    const localTime = (day: number, hour: number) => new Date(2026, 6, day, hour, 0, 0, 0).toISOString();
+    const generatedAt = new Date(2026, 6, 12, 12, 0, 0, 0);
+    const mergedAtToday = localTime(12, 10);
+    const mergedAtPreviousDay = localTime(11, 23);
+    expect(new Date(mergedAtToday).toDateString()).toBe(generatedAt.toDateString());
+    expect(new Date(mergedAtPreviousDay).toDateString()).not.toBe(generatedAt.toDateString());
+    vi.setSystemTime(generatedAt);
     const mergedToday = {
       ...ITEMS[1],
       type: "pull_request" as const,
-      lastActivityAt: "2026-07-11T20:00:00.000Z",
-      github: { repo: "repo/dashboard", target: "44", type: "pull_request" as const, title: "Merged", url: "https://github.com/repo/dashboard/pull/44", state: "MERGED", mergedAt: "2026-07-12T20:00:00.000Z", labels: [], loadState: "loaded" as const }
+      lastActivityAt: localTime(12, 9),
+      github: { repo: "repo/dashboard", target: "44", type: "pull_request" as const, title: "Merged", url: "https://github.com/repo/dashboard/pull/44", state: "MERGED", mergedAt: mergedAtToday, labels: [], loadState: "loaded" as const }
     };
-    const completedYesterday = { ...mergedToday, id: "repo/dashboard#42", target: "42", github: { ...mergedToday.github, mergedAt: "2026-07-12T08:00:00.000Z" } };
-    const unprovenMergeToday = { ...mergedToday, id: "repo/dashboard#46", target: "46", lastActivityAt: "2026-07-12T21:00:00.000Z", github: { ...mergedToday.github, target: "46", mergedAt: undefined } };
-    const completedIssueToday = { ...ITEMS[1], lastActivityAt: "2026-07-12T19:00:00.000Z" };
+    const completedYesterday = { ...mergedToday, id: "repo/dashboard#42", target: "42", github: { ...mergedToday.github, mergedAt: mergedAtPreviousDay } };
+    const unprovenMergeToday = { ...mergedToday, id: "repo/dashboard#46", target: "46", lastActivityAt: localTime(12, 11), github: { ...mergedToday.github, target: "46", mergedAt: undefined } };
+    const completedIssueToday = { ...ITEMS[1], lastActivityAt: localTime(12, 8) };
     const onShowMergedToday = vi.fn();
     const { rerender } = render(<AttentionShell items={[mergedToday, completedYesterday, unprovenMergeToday, completedIssueToday]} mergeTimeStatus="available" onQueryChange={vi.fn()} onShowMergedToday={onShowMergedToday} query="" surface="attention" />);
 
