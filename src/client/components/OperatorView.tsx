@@ -222,12 +222,15 @@ export function OperatorView({
   }, [showDerivedRows]);
 
   useEffect(() => {
+    if (controlledRevealOlderTerminalRows !== undefined) {
+      return;
+    }
     try {
       window.localStorage.setItem(SHOW_OLDER_TERMINAL_WORK_STORAGE_KEY, String(revealOlderTerminalRows));
     } catch {
       // Storage can be unavailable; the App-owned in-memory preference still works.
     }
-  }, [revealOlderTerminalRows]);
+  }, [controlledRevealOlderTerminalRows, revealOlderTerminalRows]);
 
   function updateRevealOlderTerminalRows(value: boolean) {
     if (onRevealOlderTerminalRowsChange) {

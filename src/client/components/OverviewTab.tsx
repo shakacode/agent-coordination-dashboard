@@ -43,6 +43,22 @@ function firstItems<T>(items: T[], count = 6): T[] {
   return items.slice(0, count);
 }
 
+const TERMINAL_STATUS_LABELS: Record<string, string> = {
+  done: "Done",
+  merged: "Merged",
+  closed: "Closed",
+  cancelled: "Cancelled"
+};
+
+function TerminalStatusBadge({ status }: { status: string }) {
+  const normalized = status.trim().toLowerCase();
+  return (
+    <span className={`status-badge status-terminal status-${normalized}`}>
+      {TERMINAL_STATUS_LABELS[normalized] || status}
+    </span>
+  );
+}
+
 export function sortRecentTerminalRows(rows: OperatorRow[]): OperatorRow[] {
   const activityTime = (row: OperatorRow) => {
     const parsed = row.lastActivityAt ? Date.parse(row.lastActivityAt) : Number.NaN;
@@ -207,7 +223,7 @@ export function OverviewTab({
                     <OperatorRowLink row={row} />
                     <span>{row.lastActivityAge === UNKNOWN ? "Activity UNKNOWN" : `${row.lastActivityAge} ago`}</span>
                   </div>
-                  <StatusBadge value={row.retentionStatus} />
+                  <TerminalStatusBadge status={row.retentionStatus} />
                 </div>
               ))}
             </div>

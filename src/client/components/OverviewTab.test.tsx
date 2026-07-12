@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../../shared/types";
 import { OverviewTab, sortRecentTerminalRows } from "./OverviewTab";
@@ -68,6 +68,50 @@ describe("OverviewTab", () => {
     ] as any;
 
     expect(sortRecentTerminalRows(rows).map((row) => row.id)).toEqual(["newest", "older", "missing", "invalid"]);
+  });
+
+  it("renders friendly styled badges for every accepted terminal token", () => {
+    const statuses = ["done", "merged", "closed", "cancelled"] as const;
+    const terminalDashboard: DashboardModel = {
+      ...dashboard,
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [],
+      batches: statuses.map((status, index) => ({
+        schemaVersion: 1,
+        batchId: `terminal-${status}`,
+        repo: "repo/app",
+        updatedAt: `2026-07-10T19:0${index}:00Z`,
+        path: `batches/terminal-${status}.json`,
+        lanes: [
+          {
+            name: status,
+            owner: "agent-a",
+            targets: [],
+            dependsOn: [],
+            status,
+            liveness: "no-heartbeat" as const,
+            blockedOn: []
+          }
+        ]
+      })),
+      events: statuses.map((status, index) => ({
+        eventId: `terminal-${status}`,
+        type: status,
+        status,
+        batchId: `terminal-${status}`,
+        repo: "repo/app",
+        laneName: status,
+        timestamp: `2026-07-10T19:0${index}:00Z`,
+        path: `events/terminal-${status}.json`
+      }))
+    };
+
+    render(<OverviewTab dashboard={terminalDashboard} onOpenOperatorFilter={vi.fn()} />);
+    const panel = within(screen.getByRole("heading", { name: "Recent Terminal Work" }).closest("article") as HTMLElement);
+    for (const status of statuses) {
+      const label = `${status[0].toUpperCase()}${status.slice(1)}`;
+      expect(panel.getByText(label)).toHaveClass("status-badge", "status-terminal", `status-${status}`);
+    }
   });
   it("excludes inferred and synthetic rows from default summaries while preserving unknown rows", () => {
     render(<OverviewTab dashboard={dashboard} onOpenOperatorFilter={vi.fn()} />);

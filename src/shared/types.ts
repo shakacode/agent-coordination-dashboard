@@ -185,7 +185,6 @@ export interface GitHubPreview {
   labels: string[];
   branch?: string;
   reviewDecision?: string;
-  updatedAt?: string;
   loadState: "loaded" | "unknown";
 }
 

@@ -1143,6 +1143,7 @@ textarea {
 .status-in_process,
 .status-running,
 .status-done,
+.status-terminal,
 .status-passed {
   border-color: #9bd6ae;
   background: #ecfdf3;

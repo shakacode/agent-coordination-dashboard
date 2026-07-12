@@ -407,6 +407,9 @@ function deriveOperatorState(input: {
   ) {
     return "ready";
   }
+  if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(currentText)) {
+    return "dead";
+  }
   if (DONE_PATTERN.test(text)) {
     return "done";
   }
@@ -420,9 +423,6 @@ function deriveOperatorState(input: {
     return "ready";
   }
   if (input.workItem?.schedulingState === "started_not_processing" || hasActiveClaim) {
-    return "dead";
-  }
-  if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(text)) {
     return "dead";
   }
   if (input.heartbeat) {
@@ -732,8 +732,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   const currentLifecycleAt = maxTimestamp(
     item.heartbeat?.updatedAt,
     claimLifecycleAt,
-    ...lifecycleSignalCandidates.map((candidate) => candidate.timestamp),
-    item.github?.updatedAt
+    ...lifecycleSignalCandidates.map((candidate) => candidate.timestamp)
   );
   const state = deriveOperatorState({
     workItem: item,
@@ -753,8 +752,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ...lifecycleEvents.map((event) => ({ status: event.status || event.type, timestamp: event.timestamp })),
     { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
     { status: item.claim?.status, timestamp: claimLifecycleAt },
-    ...lifecycleSignalCandidates,
-    { status: item.github?.state, timestamp: item.github?.updatedAt }
+    ...lifecycleSignalCandidates
   ];
   const latestLifecycleAt = maxTimestamp(
     ...lifecycleCandidates.map((candidate) => candidate.timestamp),

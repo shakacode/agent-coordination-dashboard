@@ -94,6 +94,14 @@ const dashboard: DashboardModel = {
 describe("OperatorView", () => {
   beforeEach(() => localStorage.clear());
 
+  it("leaves older-terminal persistence to App when the preference is controlled", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    render(<OperatorView dashboard={dashboard} revealOlderTerminalRows={false} />);
+
+    expect(setItem.mock.calls.some(([key]) => key === "agent-coordination-dashboard:show-older-terminal-work")).toBe(false);
+  });
+
   it("hides old terminal work by default and restores the exact rows with a persisted control", async () => {
     const terminalDashboard: DashboardModel = {
       ...dashboard,

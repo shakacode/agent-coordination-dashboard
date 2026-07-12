@@ -132,7 +132,7 @@ describe("operatorRows", () => {
     expect(result.visibleRows).toEqual(rows);
   });
 
-  it("uses the latest valid lifecycle timestamp across coordination and GitHub evidence", () => {
+  it("uses the latest valid lifecycle timestamp across coordination evidence", () => {
     const model = dashboard({
       generatedAt: "2026-07-10T20:00:00Z",
       workItems: [
@@ -152,7 +152,6 @@ describe("operatorRows", () => {
           github: {
             ...workItem().github!,
             state: "CLOSED",
-            updatedAt: "2026-07-09T20:15:00Z",
             loadState: "loaded"
           }
         })
@@ -445,6 +444,50 @@ describe("operatorRows", () => {
 
     expect(buildOperatorRows(model)[0].operatorState).toBe("running");
   });
+
+  it.each(["working", "in_progress", "coding"] as const)(
+    "keeps a targetless %s lane without a heartbeat current over old terminal history",
+    (status) => {
+      const model = dashboard({
+        generatedAt: "2026-07-10T20:00:00Z",
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: `active-${status}`,
+            repo: "repo/app",
+            path: `batches/active-${status}.json`,
+            lanes: [
+              {
+                name: "implementation",
+                owner: "agent-a",
+                targets: [],
+                dependsOn: [],
+                status,
+                liveness: "no-heartbeat",
+                blockedOn: []
+              }
+            ]
+          }
+        ],
+        events: [
+          {
+            eventId: `old-done-${status}`,
+            type: "done",
+            status: "done",
+            batchId: `active-${status}`,
+            repo: "repo/app",
+            laneName: "implementation",
+            timestamp: "2026-07-08T20:00:00Z",
+            path: `events/old-done-${status}.json`
+          }
+        ]
+      });
+      const row = buildOperatorRows(model)[0];
+
+      expect(row).toMatchObject({ operatorState: "dead", retentionStatus: "done" });
+      expect(filterOperatorRowsByAge([row], model.generatedAt).visibleRows).toEqual([row]);
+    }
+  );
 
   it("disables age-out for an invalid dashboard snapshot and keeps future timestamps visible", () => {
     const rows = [
