@@ -250,6 +250,126 @@ describe("dashboard app import endpoint", () => {
     expect(received).toMatchObject({ target: "54", branch: "claim/tie" });
   });
 
+  it("reconciles an open issue from a merged PR recorded only by a dead heartbeat", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-dead-heartbeat-pr-"));
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      agent_id: "worker",
+      status: "coding",
+      branch: "completed/from-heartbeat",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54",
+      updated_at: "2026-07-10T10:00:00Z",
+      expires_at: "2026-07-10T10:30:00Z"
+    }));
+    let received: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({
+        items: [{ repo: "shakacode/react_on_rails", target: "45", type: "issue", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" }],
+        warnings: []
+      }),
+      loadGitHubTargets: async (references) => {
+        received = references[0];
+        return {
+          items: references.map((reference) => ({ ...reference, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-11T10:00:00Z", labels: [], loadState: "loaded" as const })),
+          warnings: []
+        };
+      }
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>> };
+    expect(received).toMatchObject({ target: "54", branch: "completed/from-heartbeat" });
+    expect(body.workItems[0]).toMatchObject({
+      id: "shakacode/react_on_rails#45",
+      operatorState: "archived_view",
+      terminalState: "done",
+      terminalProvenance: { source: "github", url: "https://github.com/shakacode/react_on_rails/pull/54" },
+      github: { state: "MERGED", mergedAt: "2026-07-11T10:00:00Z" }
+    });
+  });
+
+  it("keeps a current event PR ahead of a newer dead-heartbeat fallback", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-event-before-dead-pr-"));
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await mkdir(join(stateRoot, "history"), { recursive: true });
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "coding",
+      branch: "dead/fallback", pr_url: "https://github.com/shakacode/react_on_rails/pull/99",
+      updated_at: "2026-07-12T11:00:00Z", expires_at: "2026-07-12T11:01:00Z"
+    }));
+    await writeFile(join(stateRoot, "history", "merged.json"), JSON.stringify({
+      event_id: "merged-45", type: "merged", status: "merged", repo: "shakacode/react_on_rails", target: "45",
+      branch: "event/current", pr_url: "https://github.com/shakacode/react_on_rails/pull/54", timestamp: "2026-07-12T10:00:00Z"
+    }));
+    let received: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        received = references[0];
+        return { items: [], warnings: [] };
+      }
+    });
+    await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(received).toMatchObject({ target: "54", branch: "event/current" });
+  });
+
+  it("keeps a matching lane PR ahead of a newer dead-heartbeat fallback", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-lane-before-dead-pr-"));
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await mkdir(join(stateRoot, "batches"), { recursive: true });
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "coding",
+      branch: "dead/fallback", pr_url: "https://github.com/shakacode/react_on_rails/pull/99",
+      updated_at: "2026-07-12T11:00:00Z", expires_at: "2026-07-12T11:01:00Z"
+    }));
+    await writeFile(join(stateRoot, "batches", "implementation.json"), JSON.stringify({
+      schema_version: 1, batch_id: "implementation", repo: "shakacode/react_on_rails",
+      targets: [{ type: "issue", target: "45" }],
+      lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "completed", branch: "lane/current", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
+    }));
+    let received: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        received = references[0];
+        return { items: [], warnings: [] };
+      }
+    });
+    await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(received).toMatchObject({ target: "54", branch: "lane/current" });
+  });
+
+  it("uses recency within inactive claim and dead-heartbeat PR fallbacks", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-inactive-pr-recency-"));
+    await mkdir(join(stateRoot, "claims", "shakacode", "react_on_rails"), { recursive: true });
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await writeFile(join(stateRoot, "claims", "shakacode", "react_on_rails", "45.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "unknown",
+      branch: "unknown-claim/newer", pr_url: "https://github.com/shakacode/react_on_rails/pull/56", updated_at: "2026-07-12T12:00:00Z"
+    }));
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "coding",
+      branch: "dead/older", pr_url: "https://github.com/shakacode/react_on_rails/pull/55",
+      updated_at: "2026-07-12T11:00:00Z", expires_at: "2026-07-12T11:01:00Z"
+    }));
+    let received: { target: string; branch?: string } | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        received = references[0];
+        return { items: [], warnings: [] };
+      }
+    });
+    await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(received).toMatchObject({ target: "56", branch: "unknown-claim/newer" });
+  });
+
   it("enriches a declared terminal issue from its PR URL without overriding declared precedence", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-declared-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

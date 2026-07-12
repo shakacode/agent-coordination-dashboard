@@ -139,8 +139,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     // heartbeat sources are ordered by their live-record timestamp; claims fall back
     // from updatedAt to claimedAt. Equal or invalid timestamps retain
     // the stable claim-before-heartbeat order. Matching lanes and history remain
-    // lower-priority fallbacks. A branch from another source is not sufficient
-    // evidence that it belongs to the selected pull request.
+    // lower-priority fallbacks. Dead/unknown heartbeats and non-active claims
+    // remain usable only after lanes and history, ordered by recency within that
+    // fallback tier. A branch from another source is not sufficient evidence
+    // that it belongs to the selected pull request.
     const liveSources = [
       { source: item.claim?.status === "active" ? item.claim : undefined, timestamp: item.claim?.updatedAt || item.claim?.claimedAt },
       { source: item.heartbeat && ["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined, timestamp: item.heartbeat?.updatedAt }
@@ -152,7 +154,18 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         return newestFirst || left.index - right.index;
       })
       .map(({ source }) => source);
-    const pullRequest = [...liveSources, ...lanes, ...events]
+    const inactiveSources = [
+      { source: item.claim?.status !== "active" ? item.claim : undefined, timestamp: item.claim?.updatedAt || item.claim?.claimedAt },
+      { source: item.heartbeat && !["live", "stale"].includes(item.heartbeat.liveness) ? item.heartbeat : undefined, timestamp: item.heartbeat?.updatedAt }
+    ]
+      .map((candidate, index) => ({ ...candidate, index }))
+      .filter((candidate): candidate is typeof candidate & { source: NonNullable<typeof candidate.source> } => Boolean(candidate.source))
+      .sort((left, right) => {
+        const newestFirst = (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0);
+        return newestFirst || left.index - right.index;
+      })
+      .map(({ source }) => source);
+    const pullRequest = [...liveSources, ...lanes, ...events, ...inactiveSources]
       .flatMap((source) => {
         const reference = githubPullRequestReference(source?.prUrl, item.repo);
         return reference ? [{ ...reference, ...(source?.branch ? { branch: source.branch } : {}) }] : [];

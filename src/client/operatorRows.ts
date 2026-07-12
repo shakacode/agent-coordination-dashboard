@@ -1222,7 +1222,7 @@ function rowRepresentsTerminalWorkItem(row: OperatorRow, dashboard: DashboardMod
   return dashboard.workItems.some(
     (item) =>
       rowMatchesRepoTarget(row, item.repo, item.target)
-      && Boolean(item.terminalState || item.operatorState === "terminal")
+      && !isOperationalWorkItem(item)
   );
 }
 

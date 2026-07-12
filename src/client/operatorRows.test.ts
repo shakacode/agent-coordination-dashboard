@@ -3481,4 +3481,39 @@ describe("operatorRows", () => {
     ]);
     expect(repairRows[0].target).toBeUndefined();
   });
+
+  it("does not present archived-view target work as a Batch Repair recovery row", () => {
+    const archived = workItem({
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      operatorState: "archived_view",
+      claim: undefined,
+      heartbeat: { ...heartbeat, liveness: "dead" },
+      batchSignals: [{ batchId: "batch-1", laneName: "implementation", status: "coding", blockedOn: [] }]
+    });
+    const batch: BatchRecord = {
+      schemaVersion: 1,
+      batchId: "batch-1",
+      repo: "repo/app",
+      objective: "Repair retained batch metadata",
+      path: "batches/batch-1.json",
+      lanes: [{
+        name: "implementation",
+        owner: "agent-a",
+        targets: ["123"],
+        dependsOn: [],
+        blockedOn: [],
+        status: "coding",
+        liveness: "dead"
+      }]
+    };
+    const model = dashboard({ workItems: [archived], batches: [batch] });
+
+    const repairRows = filterOperatorRowsForOverview(buildOperatorRows(model), model, "batch_repair");
+
+    expect(repairRows).toEqual([
+      expect.objectContaining({ source: "batch", batchId: "batch-1" })
+    ]);
+    expect(repairRows[0].target).toBeUndefined();
+  });
 });
