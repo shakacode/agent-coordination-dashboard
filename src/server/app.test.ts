@@ -116,6 +116,46 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.warnings.map((warning) => warning.message).join("\n")).not.toContain("other/private_repo");
   });
 
+  it("redacts foreign repository metadata from an otherwise in-scope item timeline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-timeline-redaction-"));
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "history"), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(root, "claims", "shakacode", "react_on_rails", "46.json"), JSON.stringify({
+        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "active",
+        updated_at: "2026-07-12T10:00:00Z", pr_url: "https://github.com/other/private_repo/pull/46"
+      })),
+      writeFile(join(root, "heartbeats", "worker-a.json"), JSON.stringify({
+        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "implementing",
+        updated_at: "2026-07-12T10:00:00Z", expires_at: "2026-07-12T10:05:00Z", branch: "feature/in-scope"
+      })),
+      writeFile(join(root, "history", "timeline.jsonl"), JSON.stringify({
+        event_id: "started", type: "lane.started", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a",
+        at: "2026-07-12T10:00:00Z", operator: "other/private_repo operator"
+      }) + "\n")
+    ]);
+
+    const baseUrl = await listen(root);
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    const timeline = await response.json() as {
+      claims: Array<{ prUrl?: string }>;
+      liveness: Array<{ branch?: string }>;
+      events: Array<{ operator?: string }>;
+      branches: string[];
+      prUrls: string[];
+    };
+
+    expect(response.ok).toBe(true);
+    expect(timeline.claims.at(-1)?.prUrl).toBeUndefined();
+    expect(timeline.events[0]?.operator).toBeUndefined();
+    expect(timeline.prUrls).toEqual([]);
+    expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
+    expect(timeline.branches).toEqual(["feature/in-scope"]);
+  });
+
   it("builds item timeline and header state from one fresh snapshot instead of dashboard cache", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-item-snapshot-"));
     const claimPath = join(root, "claims", "shakacode", "react_on_rails", "46.json");

@@ -359,7 +359,7 @@ function hasOutOfScopeRepoRef(refs: string[], targetRepoSet: Set<string>): boole
   return refs.some((repo) => !targetRepoSet.has(repo));
 }
 
-function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: T, targetRepoSet: Set<string>): T {
+export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: T, targetRepoSet: Set<string>): T {
   const redacted = { ...metadata };
   if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.threadHandle), targetRepoSet)) {
     delete redacted.threadHandle;

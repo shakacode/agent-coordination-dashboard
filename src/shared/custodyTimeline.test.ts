@@ -311,6 +311,44 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
   });
 
+  it("releases the active holder for a generic lifecycle handoff", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [heartbeat({ agentId: "worker-a", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "handoff", type: "lifecycle", status: "handoff", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+    ]);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
+  });
+
+  it("retains a generic custody renewal for the current holder", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      claims: [],
+      heartbeats: [],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "renewed", type: "custody", status: "renewed", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "renewed", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+    ]);
+  });
+
   it("uses only explicit phase-bearing telemetry and collapses repeated phase names", () => {
     const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
       eventId: "event",

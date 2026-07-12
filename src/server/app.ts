@@ -12,7 +12,7 @@ import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
-import { buildDashboardModel, hasCoordinationEvidence } from "./state/buildDashboardModel";
+import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
@@ -137,8 +137,16 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const captured = await captureCoordinationSnapshot();
     const model = await buildItemScopedDashboard(settings, captured);
     const item = model.workItems.find((candidate) => candidate.repo === repo && candidate.target === target);
+    const targetRepoSet = new Set(settings.targetRepos);
     res.json({
-      ...buildCustodyTimeline({ repo, target, claims: captured.state.claims, heartbeats: captured.state.heartbeats, events: captured.state.events, now: captured.now }),
+      ...buildCustodyTimeline({
+        repo,
+        target,
+        claims: captured.state.claims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet)),
+        heartbeats: captured.state.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet)),
+        events: captured.state.events.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet)),
+        now: captured.now
+      }),
       item,
       sourceStatus: captured.state.sourceStatus,
       // Reuse the dashboard model's target-repository sanitization, then keep

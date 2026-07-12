@@ -70,7 +70,7 @@ export interface BuildCustodyTimelineInput {
 }
 
 const DEAD_AFTER_TTL_MULTIPLIER = 4;
-const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|cancel(?:led|ed)?)(?:$|[._\s-])/i;
+const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
 const OWNERSHIP_EVENT_TYPES = new Set([
   "claim", "claimed", "acquire", "acquired", "takeover", "renew", "renewed", "continued", "resumed", "heartbeat", "handoff", "release", "released", "lane.started", "lane.handoff"
 ]);
@@ -231,7 +231,9 @@ function isTerminalLifecycleEvent(event: BatchEvent): boolean {
 }
 
 function isRenewalEvidence(event: BatchEvent): boolean {
-  return /(?:^|[._\s-])(heartbeat|renew(?:ed|al)?|continued|resumed|claim(?:ed)?|acquir(?:e|ed)|take[._\s-]?over|started)(?:$|[._\s-])/i.test(event.type);
+  return /(?:^|[._\s-])(heartbeat|renew(?:ed|al)?|continued|resumed|claim(?:ed)?|acquir(?:e|ed)|take[._\s-]?over|started)(?:$|[._\s-])/i.test(event.type)
+    || (/^(?:claim|custody|lifecycle)$/i.test(event.type)
+      && /^(?:acquired|takeover|renewed|continued|resumed)$/i.test(event.status || ""));
 }
 
 /**
