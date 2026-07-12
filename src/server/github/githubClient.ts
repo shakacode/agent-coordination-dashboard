@@ -50,6 +50,7 @@ export interface GitHubTargetReference {
   repo: string;
   target: string;
   type: GitHubPreview["type"];
+  branch?: string;
 }
 
 const GITHUB_LIST_LIMIT = 1000;
@@ -153,6 +154,19 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
 
   async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
     const result = await runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
+    let branchState: GitHubPreview["branchState"];
+    const branchWarnings: CoordinationWarning[] = [];
+    if (reference.branch) {
+      const branchResult = await runner.run(["api", `repos/${reference.repo}/branches/${encodeURIComponent(reference.branch)}`]);
+      if (branchResult.exitCode === 0) {
+        branchState = "present";
+      } else if (/\b(?:HTTP\s+)?404\b/i.test(branchResult.stderr)) {
+        branchState = "deleted";
+      } else {
+        branchState = "unknown";
+        branchWarnings.push({ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub branch lookup failed for ${reference.repo}:${reference.branch}: ${branchResult.stderr || `exit ${branchResult.exitCode}`}` });
+      }
+    }
     if (result.exitCode !== 0) {
       return {
         items: [{
@@ -163,27 +177,28 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
           url: "",
           state: "UNKNOWN",
           labels: [],
+          ...(branchState ? { branchState } : {}),
           loadState: "unknown"
         }],
-        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation failed for ${reference.repo}#${reference.target}: ${result.stderr || `exit ${result.exitCode}`}` }]
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation failed for ${reference.repo}#${reference.target}: ${result.stderr || `exit ${result.exitCode}`}` }, ...branchWarnings]
       };
     }
     try {
-      return { items: [parseGitHubTarget(reference.repo, result.stdout)], warnings: [] };
+      return { items: [{ ...parseGitHubTarget(reference.repo, result.stdout), ...(branchState ? { branchState } : {}) }], warnings: branchWarnings };
     } catch (error) {
       return {
-        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
-        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation returned unreadable JSON for ${reference.repo}#${reference.target}: ${error instanceof Error ? error.message : "unknown error"}` }]
+        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], ...(branchState ? { branchState } : {}), loadState: "unknown" }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation returned unreadable JSON for ${reference.repo}#${reference.target}: ${error instanceof Error ? error.message : "unknown error"}` }, ...branchWarnings]
       };
     }
   }
 
   return {
     async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
-      const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target) === index);
+      const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target && candidate.branch === reference.branch) === index);
       const now = Date.now();
       const results = await Promise.all(unique.map((reference) => {
-        const key = `${reference.repo}#${reference.target}`;
+        const key = `${reference.repo}#${reference.target}:${reference.branch || ""}`;
         const existing = cache.get(key);
         if (!options.bypassCache && existing && existing.expiresAt > now) return existing.promise;
         const promise = schedule(() => loadOne(reference));

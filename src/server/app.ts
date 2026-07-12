@@ -94,12 +94,38 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return dashboardBuildSequence;
   }
 
-  function reconciliationReference(item: WorkItem): GitHubTargetReference | undefined {
+  function githubPullRequestReference(value: string | undefined, expectedRepo: string): Pick<GitHubTargetReference, "repo" | "target" | "type"> | undefined {
+    if (!value) return undefined;
+    try {
+      const url = new URL(value);
+      const match = url.pathname.match(/^\/([^/]+\/[^/]+)\/pull\/(\d+)(?:\/.*)?$/i);
+      if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com" || !match || match[1].toLowerCase() !== expectedRepo.toLowerCase()) return undefined;
+      return { repo: expectedRepo, target: match[2], type: "pull_request" };
+    } catch {
+      return undefined;
+    }
+  }
+
+  function batchLaneFor(item: WorkItem, model: DashboardModel) {
+    for (const signal of item.batchSignals || []) {
+      const batch = model.batches.find((candidate) => candidate.batchId === signal.batchId && (!candidate.repo || candidate.repo === item.repo));
+      const lane = batch?.lanes.find((candidate) => candidate.name === signal.laneName && candidate.targets.includes(item.target));
+      if (lane) return lane;
+    }
+    return undefined;
+  }
+
+  function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
     const hasCoordinationEvidence = Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
-    if (!hasCoordinationEvidence || item.terminalState || item.github?.loadState === "loaded" || !/^\d+$/.test(item.target)) return undefined;
-    const prUrl = item.claim?.prUrl || item.heartbeat?.prUrl;
-    const type = item.type !== "unknown" ? item.type : prUrl && /\/pull\/\d+(?:[/?#]|$)/i.test(prUrl) ? "pull_request" : "unknown";
-    return { repo: item.repo, target: item.target, type };
+    if (!hasCoordinationEvidence || item.terminalState || !/^\d+$/.test(item.target)) return undefined;
+    const lane = batchLaneFor(item, model);
+    const branch = item.claim?.branch || item.heartbeat?.branch || lane?.branch;
+    const pullRequest = [item.claim?.prUrl, item.heartbeat?.prUrl, lane?.prUrl]
+      .map((value) => githubPullRequestReference(value, item.repo))
+      .find((reference): reference is Pick<GitHubTargetReference, "repo" | "target" | "type"> => Boolean(reference));
+    if (pullRequest) return { ...pullRequest, ...(branch ? { branch } : {}) };
+    if (item.github?.loadState === "loaded") return undefined;
+    return { repo: item.repo, target: item.target, type: item.type, ...(branch ? { branch } : {}) };
   }
 
   async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
@@ -123,11 +149,19 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       warnings: [...state.warnings, ...openGithubWarnings],
       now
     });
-    const references = preliminaryModel.workItems.map(reconciliationReference).filter((reference): reference is GitHubTargetReference => Boolean(reference));
-    const reconciled = await loadGitHubTargets(references, { bypassCache: options.bypassGitHubCache });
-    const reconciledKeys = new Set(reconciled.items.map((item) => `${item.repo}#${item.target}`));
-    const githubItems = [...openGithubItems.filter((item) => !reconciledKeys.has(`${item.repo}#${item.target}`)), ...reconciled.items];
-    const model = references.length === 0 ? preliminaryModel : buildDashboardModel({
+    const reconciliationPlans = preliminaryModel.workItems.flatMap((item) => {
+      const reference = reconciliationReference(item, preliminaryModel);
+      return reference ? [{ workItemId: item.id, item, reference }] : [];
+    });
+    const reconciled = await loadGitHubTargets(reconciliationPlans.map((plan) => plan.reference), { bypassCache: options.bypassGitHubCache });
+    const resultByReference = new Map(reconciled.items.map((item) => [`${item.repo}#${item.target}`, item]));
+    const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
+      const result = resultByReference.get(`${plan.reference.repo}#${plan.reference.target}`);
+      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target }] : [];
+    });
+    const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
+    const githubItems = [...openGithubItems.filter((item) => !reconciledWorkItemIds.has(`${item.repo}#${item.target}`)), ...remappedGithubItems];
+    const model = reconciliationPlans.length === 0 ? preliminaryModel : buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: state.claims,

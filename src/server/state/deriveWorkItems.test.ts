@@ -59,6 +59,15 @@ describe("deriveWorkItems", () => {
     expect(item.terminalState).toBeUndefined();
     expect(item.terminalProvenance).toBeUndefined();
   });
+
+  it("never infers terminal state from a deleted branch alone", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{ ...BASE_ITEM, github: { repo: BASE_ITEM.repo, target: BASE_ITEM.target, type: "issue", title: "Open", url: "https://github.com/repo/app/issues/43", state: "OPEN", branchState: "deleted", labels: [], loadState: "loaded" } }]
+    });
+    expect(item).toMatchObject({ operatorState: "ready", github: { branchState: "deleted" } });
+    expect(item.terminalState).toBeUndefined();
+  });
   it("makes a wedged live lane an actionable attention item", () => {
     const [item] = deriveWorkItems({
       workItems: [

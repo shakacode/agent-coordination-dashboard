@@ -49,6 +49,31 @@ describe("github list parsers", () => {
     expect(result.warnings[0].message).toContain("auth required");
   });
 
+  it("records branch deletion only as supporting evidence", async () => {
+    let calls = 0;
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      calls += 1;
+      return args[1].includes("/branches/")
+      ? { stdout: "", stderr: "HTTP 404: Branch not found", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work" };
+    const result = await reconciler.load([reference]);
+    await reconciler.load([reference]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "deleted" });
+    expect(result.warnings).toEqual([]);
+    expect(calls).toBe(2);
+  });
+
+  it("keeps branch lookup failures UNKNOWN without discarding trustworthy target state", async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => args[1].includes("/branches/")
+      ? { stdout: "", stderr: "auth required", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 } });
+    const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "unknown" });
+    expect(result.warnings[0].message).toContain("auth required");
+  });
+
   it("bounds GitHub target fan-out", async () => {
     let active = 0;
     let maximum = 0;
@@ -57,10 +82,11 @@ describe("github list parsers", () => {
       maximum = Math.max(maximum, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       active -= 1;
+      if (args[1].includes("/branches/")) return { stdout: "{}", stderr: "", exitCode: 0 };
       const target = args[1].split("/").at(-1);
       return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
     } }, 60_000, 2);
-    await reconciler.load([1, 2, 3, 4].map((target) => ({ repo: "repo/app", target: String(target), type: "issue" as const })));
+    await reconciler.load([1, 2, 3, 4].map((target) => ({ repo: "repo/app", target: String(target), type: "issue" as const, branch: `feature/${target}` })));
     expect(maximum).toBe(2);
   });
   it("normalizes open PRs", () => {

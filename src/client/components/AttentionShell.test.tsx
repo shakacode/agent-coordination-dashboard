@@ -253,6 +253,13 @@ describe("AttentionShell", () => {
     expect(screen.getByText("GitHub state: UNKNOWN")).toBeInTheDocument();
   });
 
+  it("presents branch deletion as supporting evidence rather than completion", () => {
+    const openWithDeletedBranch = { ...ITEMS[0], operatorState: "needs_attention" as const, github: { repo: "repo/dashboard", target: "43", type: "issue" as const, title: "Open work", url: "https://github.com/repo/dashboard/issues/43", state: "OPEN", branchState: "deleted" as const, labels: [], loadState: "loaded" as const } };
+    render(<AttentionShell items={[openWithDeletedBranch]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText("Branch deleted (supporting signal)")).toBeInTheDocument();
+    expect(screen.queryByText("Derived from GitHub")).not.toBeInTheDocument();
+  });
+
   it("renders every declared attention action, including resolvable PR and batch-operation actions", async () => {
     const onOpenBatchOperations = vi.fn();
     const qa = { ...ITEMS[0], attention: { kind: "qa_missing" as const, label: "QA missing", action: "Open PR" as const }, claim: { schemaVersion: 1, agentId: "worker", repo: "repo/dashboard", target: "43", status: "active" as const, prUrl: "https://github.com/repo/dashboard/pull/43", path: "claims/43.json" } };

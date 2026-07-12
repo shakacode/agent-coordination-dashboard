@@ -203,6 +203,8 @@ export interface GitHubPreview {
   mergedAt?: string;
   /** Present only when GitHub supplied a trustworthy close timestamp. */
   closedAt?: string;
+  /** Supporting signal only. Branch deletion never implies terminal work. */
+  branchState?: "present" | "deleted" | "unknown";
   loadState: "loaded" | "unknown";
 }
 

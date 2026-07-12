@@ -252,6 +252,10 @@ if [ "$1" != "api" ]; then
   printf '[]\\n'
   exit 0
 fi
+case "$2" in
+  */branches/demo%2Fpublish) printf 'HTTP 404: Branch not found\\n' >&2; exit 1 ;;
+  */branches/*) printf '{}\\n'; exit 0 ;;
+esac
 target="\${2##*/}"
 case "$target" in
   202) printf '{"number":202,"title":"Merged QA demo lane","html_url":"https://github.com/${DEMO_REPO}/pull/202","state":"closed","closed_at":"2026-07-12T10:00:00Z","pull_request":{"merged_at":"2026-07-12T09:59:00Z"},"labels":[]}\\n' ;;

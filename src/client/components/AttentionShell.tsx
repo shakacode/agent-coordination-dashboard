@@ -147,6 +147,8 @@ function WorkCard({
         {reason ? <p>{reason.label}</p> : null}
         {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
         {item.github?.loadState === "unknown" ? <p className="attention-card-meta">GitHub state: UNKNOWN</p> : null}
+        {item.github?.branchState === "deleted" ? <p className="attention-card-meta">Branch deleted (supporting signal)</p> : null}
+        {item.github?.branchState === "unknown" ? <p className="attention-card-meta">Branch state: UNKNOWN</p> : null}
         <p className="attention-card-meta">Holder: {holder(item)} · {displayAttribution(item.batchSignals?.[0]?.batchId, "unbatched")}</p>
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
