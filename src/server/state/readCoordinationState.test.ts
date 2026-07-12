@@ -2,12 +2,29 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readCoordinationState } from "./readCoordinationState";
+import { finiteNonNegativeDecimalInteger, readCoordinationState } from "./readCoordinationState";
 
 describe("readCoordinationState", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ["number zero", 0, 0],
+    ["number eight", 8, 8],
+    ["decimal string", "8", 8],
+    ["blank string", "", undefined],
+    ["whitespace string", "   ", undefined],
+    ["negative number", -1, undefined],
+    ["fraction", 1.5, undefined],
+    ["leading zero string", "08", undefined],
+    ["hex string", "0x10", undefined],
+    ["exponent string", "1e2", undefined],
+    ["NaN", Number.NaN, undefined],
+    ["Infinity", Number.POSITIVE_INFINITY, undefined]
+  ])("normalizes generation only for non-negative decimal integers: %s", (_label, value, expected) => {
+    expect(finiteNonNegativeDecimalInteger(value)).toBe(expected);
   });
 
   it("normalizes a missing claim agent id to display-safe unattributed", async () => {

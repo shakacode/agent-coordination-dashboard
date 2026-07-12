@@ -267,6 +267,41 @@ describe("buildCustodyTimeline", () => {
     ]);
   });
 
+  it("treats done as terminal while releasing custody only for the active holder", () => {
+    const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
+      eventId: "event",
+      type: "lifecycle",
+      repo: "shakacode/dashboard",
+      target: "46",
+      timestamp: "2026-07-12T10:00:00Z",
+      path: "events/batch.jsonl:1",
+      ...overrides
+    });
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [heartbeat({ agentId: "worker-a", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        event({ eventId: "started", type: "lane.started", agentId: "worker-a" }),
+        event({ eventId: "phase", type: "phase", status: "implementing", agentId: "worker-a", timestamp: "2026-07-12T10:01:00Z" }),
+        event({ eventId: "coordinator-done", status: "done", agentId: "coordinator", timestamp: "2026-07-12T10:04:00Z" }),
+        event({ eventId: "holder-done", status: "done", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+      ]
+    });
+
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:04:00.000Z", durationMs: 180_000 })
+    ]);
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+    ]);
+    expect(timeline.claims.some((entry) => entry.agentId === "coordinator")).toBe(false);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
+  });
+
   it("uses only explicit phase-bearing telemetry and collapses repeated phase names", () => {
     const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
       eventId: "event",

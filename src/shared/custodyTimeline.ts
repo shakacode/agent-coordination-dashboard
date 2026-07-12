@@ -68,7 +68,7 @@ export interface BuildCustodyTimelineInput {
 }
 
 const DEAD_AFTER_TTL_MULTIPLIER = 4;
-const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(final|merged|complete(?:d)?|released|cancel(?:led|ed)?)(?:$|[._\s-])/i;
+const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|cancel(?:led|ed)?)(?:$|[._\s-])/i;
 const OWNERSHIP_EVENT_TYPES = new Set([
   "claim", "claimed", "acquire", "acquired", "takeover", "renew", "renewed", "continued", "resumed", "heartbeat", "handoff", "release", "released", "lane.started", "lane.handoff"
 ]);
@@ -240,7 +240,7 @@ function isOwnershipBearingEvent(event: BatchEvent): boolean {
   if (OWNERSHIP_EVENT_TYPES.has(type)) return true;
   if (/^(?:claim|custody)\.(?:acquired|takeover|renewed|continued|resumed|released)$/.test(type)) return true;
   return /^(?:claim|custody|lifecycle)$/i.test(event.type)
-    && /^(?:acquired|takeover|renewed|continued|resumed|released|handoff)$/i.test(event.status || "");
+    && /^(?:acquired|takeover|renewed|continued|resumed|released|handoff|done)$/i.test(event.status || "");
 }
 
 function isCustodyTerminalEvent(event: BatchEvent): boolean {
