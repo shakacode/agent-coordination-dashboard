@@ -278,6 +278,108 @@ describe("buildDashboardModel", () => {
     expect(merged.healthItems.map((item) => item.title)).toContain("Prompt missing");
   });
 
+  it("does not report a uniquely corroborated terminal repo-less batch lane as missing its heartbeat", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "repo-less-terminal",
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/repo-less-terminal.json"
+    };
+    const input = {
+      now: new Date("2026-07-14T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [{ ...claim, repo: "repo/app", target: "55", batchId: batch.batchId }],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      warnings: []
+    };
+    const github = {
+      repo: "repo/app",
+      target: "55",
+      type: "pull_request" as const,
+      title: "Batch work",
+      url: "https://github.com/repo/app/pull/55",
+      labels: [],
+      loadState: "loaded" as const
+    };
+    const open = buildDashboardModel({ ...input, githubItems: [{ ...github, state: "OPEN" }] });
+    const merged = buildDashboardModel({
+      ...input,
+      githubItems: [{ ...github, state: "MERGED", mergedAt: "2026-07-12T11:00:00Z" }]
+    });
+
+    expect(open.healthItems.map((item) => item.title)).toContain("Batch lane has no heartbeat");
+    expect(merged.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: "repo/app", target: "55", terminalState: "done", operatorState: "archived_view" })
+    ]));
+    expect(merged.healthItems.map((item) => item.title)).not.toContain("Batch lane has no heartbeat");
+  });
+
+  it("keeps the no-heartbeat diagnostic for an ambiguous cross-repo repo-less batch lane", () => {
+    const batch = {
+      schemaVersion: 1 as const,
+      batchId: "repo-less-ambiguous",
+      source: "manifest" as const,
+      targets: [
+        { type: "pull_request" as const, target: "55", repo: "repo/app" },
+        { type: "pull_request" as const, target: "55", repo: "repo/api" }
+      ],
+      lanes: [{
+        name: "implementation",
+        owner: "worker-a",
+        targets: ["55"],
+        dependsOn: [],
+        status: "queued",
+        liveness: "no-heartbeat" as const,
+        blockedOn: []
+      }],
+      path: "batches/repo-less-ambiguous.json"
+    };
+    const github = (repo: string, state: "OPEN" | "MERGED") => ({
+      repo,
+      target: "55",
+      type: "pull_request" as const,
+      title: `${repo} batch work`,
+      url: `https://github.com/${repo}/pull/55`,
+      state,
+      ...(state === "MERGED" ? { mergedAt: "2026-07-12T11:00:00Z" } : {}),
+      labels: [],
+      loadState: "loaded" as const
+    });
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app", "repo/api"],
+      claims: [
+        { ...claim, repo: "repo/app", target: "55", batchId: batch.batchId },
+        { ...claim, repo: "repo/api", target: "55", batchId: batch.batchId, agentId: "worker-b" }
+      ],
+      heartbeats: [],
+      batches: [batch],
+      events: [],
+      githubItems: [github("repo/app", "MERGED"), github("repo/api", "OPEN")],
+      warnings: []
+    });
+
+    expect(model.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: "repo/app", target: "55", terminalState: "done" }),
+      expect.objectContaining({ repo: "repo/api", target: "55", terminalState: undefined })
+    ]));
+    expect(model.healthItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Batch lane has no heartbeat", batchId: batch.batchId, laneName: "implementation" })
+    ]));
+  });
+
   it("declares merge-time truth unavailable until a trusted GitHub producer supplies it", () => {
     const model = buildDashboardModel({
       now: new Date("2026-07-12T12:00:00Z"),

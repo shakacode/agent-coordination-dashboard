@@ -19,7 +19,7 @@ import type {
   OperatorRowProvenance
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
-import { batchSignalIdentity } from "../../shared/batchSignal";
+import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../shared/batchSignal";
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { isOperationalWorkItem } from "../../shared/workItemSelection";
@@ -459,6 +459,13 @@ function manifestReposForTarget(batch: BatchRecord, target: string): string[] {
 
 function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
   return batch.repo === repo || Boolean((batch.targets || []).some((target) => target.repo === repo));
+}
+
+function batchLaneContainsWorkItem(batch: BatchRecord, item: WorkItem, workItems: WorkItem[]): boolean {
+  if (batch.repo) return batch.repo === item.repo;
+  const explicitMatch = explicitBatchTargetRepoMatch(batch, item.target, item.repo);
+  if (explicitMatch !== undefined) return explicitMatch;
+  return repoLessBatchLaneMatchesWorkItem(batch, batch.batchId, item, workItems);
 }
 
 function explicitBatchTargetRepoMatch(batch: BatchRecord, target: string, repo: string): boolean | undefined {
@@ -1461,7 +1468,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
 
     for (const lane of batch.lanes) {
       const laneWorkItems = workItems.filter((item) =>
-        batchContainsRepo(batch, item.repo)
+        batchLaneContainsWorkItem(batch, item, workItems)
         && item.batchSignals?.some((signal) => signal.batchId === batch.batchId && signal.laneName === lane.name)
       );
       const hasOperationalLaneWork = laneWorkItems.length === 0 || laneWorkItems.some(isOperationalWorkItem);
