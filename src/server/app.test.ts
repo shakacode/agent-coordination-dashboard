@@ -34,11 +34,16 @@ async function listenServer(server: Server): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function listen(stateRoot: string, overrides: Partial<ServerConfig> = {}): Promise<string> {
+async function listen(
+  stateRoot: string,
+  overrides: Partial<ServerConfig> = {},
+  appOptions: NonNullable<Parameters<typeof createDashboardApp>[1]> = {}
+): Promise<string> {
   const app = await createDashboardApp(testConfig(stateRoot, overrides), {
     serveFrontend: false,
     loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
-    loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
+    loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] }),
+    ...appOptions
   });
   const server = app.listen(0, "127.0.0.1");
   return listenServer(server);
@@ -150,6 +155,49 @@ describe("dashboard app import endpoint", () => {
     expect(item.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ agentId: "worker-b", status: "implementing" })]));
     expect(item.item?.claim).toMatchObject({ agentId: "worker-b" });
     expect(item.item?.heartbeat).toMatchObject({ agentId: "worker-b", status: "implementing" });
+  });
+
+  it("refreshes item state from a captured snapshot without repeating cached dashboard GitHub work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-cached-github-"));
+    const claimPath = join(root, "claims", "shakacode", "react_on_rails", "46.json");
+    const heartbeatPath = join(root, "heartbeats", "worker.json");
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "batches"), { recursive: true })
+    ]);
+    const writeCurrentState = async (agentId: string) => {
+      const updatedAt = new Date().toISOString();
+      await Promise.all([
+        writeFile(claimPath, JSON.stringify({ repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "active", updated_at: updatedAt })),
+        writeFile(heartbeatPath, JSON.stringify({ repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "implementing", updated_at: updatedAt, expires_at: new Date(Date.now() + 60_000).toISOString() }))
+      ]);
+    };
+    let openListCalls = 0;
+    let reconciliationCalls = 0;
+    await writeCurrentState("worker-a");
+    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 }, {
+      loadOpenGitHubItems: async () => {
+        openListCalls += 1;
+        return { items: [], warnings: [] };
+      },
+      loadGitHubTargets: async (references) => {
+        reconciliationCalls += 1;
+        return { items: [], warnings: [], references };
+      }
+    });
+    await fetch(`${baseUrl}/api/dashboard`);
+    await writeCurrentState("worker-b");
+
+    const first = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { claim?: { agentId: string } }; claims: Array<{ agentId: string }> };
+    const second = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { heartbeat?: { agentId: string } }; claims: Array<{ agentId: string }> };
+
+    expect(first.item?.claim).toMatchObject({ agentId: "worker-b" });
+    expect(first.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(second.item?.heartbeat).toMatchObject({ agentId: "worker-b" });
+    expect(second.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(openListCalls).toBe(1);
+    expect(reconciliationCalls).toBe(1);
   });
 
   it("returns runtime refresh settings with target repositories", async () => {
@@ -572,6 +620,35 @@ describe("dashboard app import endpoint", () => {
     expect(body.githubMergeTimeStatus).toBe("available");
     expect(body.trulyOpenCount).toBe(0);
     expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
+  it("preserves rich open PR preview data when an issue links to another PR target", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-linked-open-pr-"));
+    const directory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "45.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "active",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54"
+    }));
+    const linkedPreview = {
+      repo: "shakacode/react_on_rails", target: "54", type: "pull_request" as const, title: "Linked open PR",
+      url: "https://github.com/shakacode/react_on_rails/pull/54", state: "OPEN", reviewDecision: "APPROVED", ciStatus: "passing" as const, labels: [], loadState: "loaded" as const
+    };
+    let receivedExistingTarget: typeof linkedPreview | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [linkedPreview], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        receivedExistingTarget = references[0]?.existingTarget as typeof linkedPreview | undefined;
+        return { items: references.map((reference) => ({ ...reference.existingTarget!, branchState: "present" as const })), warnings: [] };
+      }
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; github?: { reviewDecision?: string; ciStatus?: string; url: string } }> };
+    expect(receivedExistingTarget).toMatchObject({ target: "54", reviewDecision: "APPROVED", ciStatus: "passing" });
+    expect(body.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "shakacode/react_on_rails#45", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54", reviewDecision: "APPROVED", ciStatus: "passing" }) })
+    ]));
   });
 
   it.each([

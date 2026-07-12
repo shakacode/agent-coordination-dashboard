@@ -135,7 +135,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const captured = await captureCoordinationSnapshot();
-    const model = await buildScopedDashboard(settings, { captured });
+    const model = await buildItemScopedDashboard(settings, captured);
     const item = model.workItems.find((candidate) => candidate.repo === repo && candidate.target === target);
     res.json({
       ...buildCustodyTimeline({ repo, target, claims: captured.state.claims, heartbeats: captured.state.heartbeats, events: captured.state.events, now: captured.now }),
@@ -212,7 +212,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         const reference = githubPullRequestReference(source?.prUrl, item.repo);
         return reference ? [{ ...reference, ...(source?.branch ? { branch: source.branch } : {}) }] : [];
       })[0];
-    if (pullRequest) return pullRequest;
+    if (pullRequest) {
+      const existingTarget = model.workItems.find((candidate) =>
+        candidate.repo === pullRequest.repo
+        && candidate.target === pullRequest.target
+        && candidate.github?.type === "pull_request"
+        && candidate.github.loadState === "loaded"
+      )?.github;
+      return { ...pullRequest, ...(existingTarget ? { existingTarget } : {}) };
+    }
     if (item.terminalState) {
       return item.type === "pull_request"
         ? { repo: item.repo, target: item.target, type: "pull_request", ...(branch ? { branch } : {}) }
@@ -319,6 +327,31 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       key,
       model
     };
+  }
+
+  async function cachedDashboardForItem(settings: DashboardSettings): Promise<DashboardModel | undefined> {
+    const key = dashboardCacheKey(settings);
+    if (cachedDashboard?.key === key && cachedDashboard.expiresAt > Date.now()) return cachedDashboard.model;
+    return dashboardBuildInFlight?.key === key ? dashboardBuildInFlight.promise : undefined;
+  }
+
+  async function buildItemScopedDashboard(settings: DashboardSettings, captured: CoordinationSnapshot): Promise<DashboardModel> {
+    const cached = await cachedDashboardForItem(settings);
+    if (!cached) return buildScopedDashboard(settings, { captured });
+    // Item refreshes need fresh coordination state, but can safely reuse the
+    // already-loaded GitHub previews from the current dashboard cache.
+    const githubItems = cached.workItems.flatMap((item) => item.github ? [item.github] : []);
+    return buildDashboardModel({
+      stateRoot: displayedStateRoot,
+      targetRepos: settings.targetRepos,
+      claims: captured.state.claims,
+      heartbeats: captured.state.heartbeats,
+      batches: captured.state.batches,
+      events: captured.state.events,
+      githubItems,
+      warnings: captured.state.warnings,
+      now: captured.now
+    });
   }
 
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {

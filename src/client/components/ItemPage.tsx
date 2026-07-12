@@ -17,7 +17,7 @@ function sourceIsUnknown(timeline: ItemTimelineResponse): boolean {
 function safePullRequestUrl(value: string): string | undefined {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname)
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/pull\/\d+(?:\/(?:files|commits|checks)(?:\/[^/]*)?)?\/?$/.test(url.pathname)
       ? url.toString()
       : undefined;
   } catch {
@@ -49,7 +49,7 @@ function Ownership({ machineId, host, operator }: { machineId?: string; host?: s
 
 function RowAnchors({ branch, prUrl }: { branch?: string; prUrl?: string }) {
   const href = prUrl ? safePullRequestUrl(prUrl) : undefined;
-  const number = href?.match(/\/pull\/(\d+)\/?$/)?.[1];
+  const number = href?.match(/\/pull\/(\d+)(?:\/|$)/)?.[1];
   return <span className="timeline-anchors"><span>Branch: {branch || "UNKNOWN"}</span>{href ? <a href={href} rel="noreferrer" target="_blank">PR {number}</a> : <span>PR: UNKNOWN</span>}</span>;
 }
 
@@ -110,7 +110,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
         {timeline.branches.length ? <span>Branch: {timeline.branches.join(", ")}</span> : <span>Branch: UNKNOWN</span>}
         {timeline.prUrls.length ? timeline.prUrls.map((value) => {
           const href = safePullRequestUrl(value);
-          const number = href?.match(/\/pull\/(\d+)\/?$/)?.[1];
+          const number = href?.match(/\/pull\/(\d+)(?:\/|$)/)?.[1];
           return href ? <a href={href} key={href} rel="noreferrer" target="_blank">PR {number}</a> : <span key={value}>PR UNKNOWN</span>;
         }) : <span>PR: UNKNOWN</span>}
       </section>

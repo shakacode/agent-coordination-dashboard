@@ -266,6 +266,39 @@ describe("App", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("refresh failed");
   });
 
+  it("aborts superseded item requests so stale route completions cannot win", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: (response: Response) => void = () => undefined;
+    const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings") return Promise.resolve({ ok: true, json: async () => settings } as Response);
+      if (url.endsWith("/44")) {
+        firstSignal = init?.signal || undefined;
+        return firstResponse;
+      }
+      if (url.endsWith("/45")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ repo: "repo/dashboard", target: "45", claims: [], liveness: [], phases: [], events: [], branches: ["codex/current"], prUrls: [], item: model.workItems[2], sourceStatus: [], warnings: [] })
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => model } as Response);
+    }));
+    render(<App />);
+    await waitFor(() => expect(firstSignal).toBeDefined());
+
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F45");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+    expect(await screen.findByRole("heading", { name: "Work item #45" })).toBeInTheDocument();
+
+    resolveFirst({ ok: true, json: async () => ({ repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: ["codex/stale"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: [] }) } as Response);
+    expect(screen.queryByText("Branch: codex/stale")).not.toBeInTheDocument();
+    expect(screen.getByText("Branch: codex/current")).toBeInTheDocument();
+  });
+
   it("migrates target-only legacy item links without dropping their exact filter", async () => {
     window.history.pushState({}, "", "/?item=%2345");
     render(<App />);

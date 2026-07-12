@@ -203,4 +203,15 @@ describe("ItemPage", () => {
     expect(screen.getAllByText("PR: UNKNOWN")).toHaveLength(2);
     expect(screen.queryByRole("link", { name: "PR 1" })).not.toBeInTheDocument();
   });
+
+  it("accepts safe GitHub PR subpages while rejecting non-PR and foreign anchors", () => {
+    const safeUrl = "https://github.com/shakacode/dashboard/pull/47/files?diff=unified#file-1";
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      prUrls: [safeUrl, "https://github.com/shakacode/dashboard/issues/47", "https://example.test/shakacode/dashboard/pull/47"]
+    }} />);
+
+    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", safeUrl);
+    expect(screen.getAllByText("PR UNKNOWN")).toHaveLength(2);
+  });
 });

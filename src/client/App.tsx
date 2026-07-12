@@ -297,20 +297,22 @@ export function App() {
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     setItemTimeline((current) =>
       current?.repo === itemRoute.repo && current.target === itemRoute.target ? current : null
     );
     setItemError(null);
-    void fetchItemTimeline(itemRoute.repo, itemRoute.target).then(
+    void fetchItemTimeline(itemRoute.repo, itemRoute.target, { signal: controller.signal }).then(
       (timeline) => {
         if (!cancelled) setItemTimeline(timeline);
       },
       (caught: unknown) => {
-        if (!cancelled) setItemError(caught instanceof Error ? caught.message : "Work item failed to load");
+        if (!cancelled && !controller.signal.aborted) setItemError(caught instanceof Error ? caught.message : "Work item failed to load");
       }
     );
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [dashboard?.generatedAt, itemRoute]);
 
