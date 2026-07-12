@@ -48,3 +48,9 @@ stay read-only.
   - `in_process`: active claim with live or stale heartbeat.
   - `started_not_processing`: claim or heartbeat exists but no live/stale holder.
   - `ready_for_batch`: open GitHub item with no current coordination signal.
+
+## Agent Workflow Configuration
+
+Portable shared skills resolve this repo's commands and policy through:
+- **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
+- **Policy / config** — `.agents/agent-workflow.yml`.
