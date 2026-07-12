@@ -61,4 +61,10 @@ describe("HealthTab", () => {
     expect(screen.getByText("Coordination health data may be incomplete: events could not be read.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Heartbeat missing machine id" })).toBeInTheDocument();
   });
+
+  it("renders legacy unknown health attribution as unattributed", () => {
+    render(<HealthTab items={[healthItem({ machineId: "UNKNOWN machine", agentId: "UNKNOWN", target: "UNKNOWN" })]} />);
+    expect(screen.queryByText(/UNKNOWN/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText("unattributed").length).toBeGreaterThan(0);
+  });
 });

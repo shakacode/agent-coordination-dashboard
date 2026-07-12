@@ -1,5 +1,6 @@
 import { Activity } from "lucide-react";
 import type { CoordinationResource, HealthItem } from "../../shared/types";
+import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import { groupHealthItems } from "../signalGroups";
 import { SignalGroupList } from "./SignalGroups";
 import { StatusBadge } from "./StatusBadge";
@@ -14,9 +15,9 @@ function HealthRow({ item }: { item: HealthItem }) {
       </div>
       <StatusBadge value={item.severity} />
       <div className="health-meta">
-        <span>{item.machineId || "UNKNOWN machine"}</span>
-        <span>{item.agentId || item.batchId || item.repo || item.category}</span>
-        {item.target ? <span>#{item.target}</span> : null}
+        <span>{displayAttribution(item.machineId)}</span>
+        <span>{firstDisplayAttribution([item.agentId, item.batchId, item.repo], item.category)}</span>
+        {item.target ? <span>{displayAttribution(item.target) === "unattributed" ? "unattributed" : `#${item.target}`}</span> : null}
       </div>
     </article>
   );

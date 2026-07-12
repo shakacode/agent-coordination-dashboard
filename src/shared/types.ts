@@ -1,6 +1,9 @@
 export type Liveness = "live" | "stale" | "dead" | "unknown" | "no-heartbeat";
 export type ClaimStatus = "active" | "released" | "unknown";
 export type SchedulingState = "in_process" | "started_not_processing" | "ready_for_batch";
+export type WorkItemOperatorState = "needs_attention" | "running" | "ready" | "terminal" | "archived_view";
+export type WorkItemTerminalState = "done" | "closed" | "abandoned" | "superseded";
+export type AttentionReasonKind = "wedged" | "blocked_user_input" | "dead_holder" | "qa_missing" | "batch_stopped" | "batch_stop_requested";
 export type WorkItemType = "issue" | "pull_request" | "unknown";
 export type WarningSeverity = "info" | "warning" | "critical";
 export type BatchControlStatus = "running" | "stop_requested" | "stopped";
@@ -143,8 +146,8 @@ export interface BatchEvent {
 }
 
 export interface BatchWorkSignal {
-  batchId: string;
-  laneName: string;
+  batchId?: string;
+  laneName?: string;
   status: string;
   blockedOn: string[];
   updatedAt?: string;
@@ -196,6 +199,8 @@ export interface GitHubPreview {
   labels: string[];
   branch?: string;
   reviewDecision?: string;
+  /** Present only when GitHub supplied a trustworthy merge timestamp. */
+  mergedAt?: string;
   loadState: "loaded" | "unknown";
 }
 
@@ -218,6 +223,18 @@ export interface WorkItem {
   github?: GitHubPreview;
   provenance?: OperatorRowProvenance;
   schedulingState: SchedulingState;
+  /**
+   * Dashboard-only presentation state. It is derived from read-only
+   * coordination and GitHub preview data and never writes back to either.
+   */
+  operatorState?: WorkItemOperatorState;
+  terminalState?: WorkItemTerminalState;
+  attention?: {
+    kind: AttentionReasonKind;
+    label: string;
+    action: "Copy resume prompt" | "Open PR" | "Open batch operations";
+  };
+  lastActivityAt?: string;
   warnings: CoordinationWarning[];
   selected: boolean;
 }
@@ -262,4 +279,6 @@ export interface DashboardModel {
   warnings: CoordinationWarning[];
   sourceStatus?: CoordinationSourceStatus[];
   coordinationTokenEnvVar?: "AGENT_COORD_API_TOKEN" | "AGENT_COORD_TOKEN";
+  /** Capability flag; unavailable prevents the UI from presenting a false zero merge count. */
+  githubMergeTimeStatus?: "available" | "unavailable";
 }

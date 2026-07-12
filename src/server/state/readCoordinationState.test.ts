@@ -10,6 +10,14 @@ describe("readCoordinationState", () => {
     vi.unstubAllGlobals();
   });
 
+  it("normalizes a missing claim agent id to display-safe unattributed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-missing-agent-"));
+    await mkdir(join(root, "claims", "repo", "app"), { recursive: true });
+    await writeFile(join(root, "claims", "repo", "app", "43.json"), JSON.stringify({ repo: "repo/app", target: "43", status: "active" }));
+    const state = await readCoordinationState(root, new Date("2026-07-12T12:00:00Z"));
+    expect(state.claims[0].agentId).toBe("unattributed");
+  });
+
   it("reads claims, heartbeats, batches, and malformed file warnings", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-state-"));
     await mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true });

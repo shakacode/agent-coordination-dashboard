@@ -19,8 +19,11 @@ import type {
   OperatorRowProvenance
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
+import { batchSignalIdentity } from "../../shared/batchSignal";
+import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { deriveWorkItems } from "./deriveWorkItems";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
 const TERMINAL_EVENT_PATTERN =
@@ -41,6 +44,12 @@ interface BuildInput {
 
 function workId(repo: string, target: string): string {
   return `${repo}#${target}`;
+}
+
+function displayWorkRef(repo: string | undefined, target: string | undefined): string {
+  const safeRepo = displayAttribution(repo);
+  const safeTarget = displayAttribution(target);
+  return safeTarget === "unattributed" ? `${safeRepo} (unattributed target)` : `${safeRepo}#${safeTarget}`;
 }
 
 function laneRef(batch: BatchRecord, lane: BatchLane): string {
@@ -184,7 +193,7 @@ function promptTargetHealth(batch: BatchRecord): { title: "Prompt parse failed" 
   } catch (error) {
     return {
       title: "Prompt parse failed",
-      detail: `${batch.batchId} saved coordination prompt could not be parsed: ${
+      detail: `${displayAttribution(batch.batchId)} saved coordination prompt could not be parsed: ${
         error instanceof Error ? error.message : "unknown error"
       }.`
     };
@@ -203,7 +212,7 @@ function promptTargetHealth(batch: BatchRecord): { title: "Prompt parse failed" 
 
   return {
     title: "Prompt target mismatch",
-    detail: `${batch.batchId} saved coordination prompt and batch plan targets differ: ${[
+    detail: `${displayAttribution(batch.batchId)} saved coordination prompt and batch plan targets differ: ${[
       promptOnly.length > 0 ? `prompt has ${promptOnly.join(", ")}` : "",
       manifestOnly.length > 0 ? `plan has ${manifestOnly.join(", ")}` : ""
     ]
@@ -687,8 +696,8 @@ function warningsForWork(
       repo,
       target,
       agentId: claim.agentId,
-      message: `Claim holder heartbeat currently points at ${claimAgentHeartbeat.repo || "UNKNOWN repo"}#${
-        claimAgentHeartbeat.target || "UNKNOWN target"
+      message: `Claim holder heartbeat currently points at ${displayAttribution(claimAgentHeartbeat.repo)}${
+        displayAttribution(claimAgentHeartbeat.target) === "unattributed" ? " (unattributed target)" : `#${claimAgentHeartbeat.target}`
       }.`
     });
   }
@@ -699,7 +708,7 @@ function warningsForWork(
       repo,
       target,
       agentId: otherHeartbeat.agentId,
-      message: `Work has a heartbeat from ${otherHeartbeat.agentId} but the claim is held by ${claim?.agentId}.`
+      message: `Work has a heartbeat from ${displayAttribution(otherHeartbeat.agentId)} but the claim is held by ${displayAttribution(claim?.agentId)}.`
     });
   }
 
@@ -717,14 +726,14 @@ function warningsForWork(
       severity: "warning",
       repo,
       target,
-      message: `Work is already scheduled in batch ${signal.batchId}:${signal.laneName} (${signal.status}).`
+      message: `Work is already scheduled in ${batchSignalIdentity(signal)} (${signal.status}).`
     });
     if (signal.blockedOn.length > 0) {
       warnings.push({
         severity: "warning",
         repo,
         target,
-        message: `Batch lane ${signal.batchId}:${signal.laneName} is blocked on ${signal.blockedOn.join(", ")}.`
+        message: `${batchSignalIdentity(signal)} is blocked on ${signal.blockedOn.join(", ")}.`
       });
     }
   }
@@ -984,15 +993,13 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     for (const lane of batch.lanes) {
       const ownerHeartbeat = heartbeatsByAgent.get(lane.owner);
       const heartbeat = ownerHeartbeat && heartbeatMatchesLane(batch, lane, ownerHeartbeat) ? ownerHeartbeat : undefined;
-      const ref = laneRef(batch, lane);
-
       if (ownerHeartbeat && !heartbeat) {
         batchWarnings.push({
           severity: "warning",
           repo: batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined),
           agentId: lane.owner,
-          message: `Lane ${ref} owner heartbeat points at ${ownerHeartbeat.repo || "UNKNOWN repo"}#${
-            ownerHeartbeat.target || "UNKNOWN target"
+          message: `Lane ${displayAttribution(batch.batchId)}:${displayAttribution(lane.name)} owner heartbeat points at ${displayAttribution(ownerHeartbeat.repo)}${
+            displayAttribution(ownerHeartbeat.target) === "unattributed" ? " (unattributed target)" : `#${ownerHeartbeat.target}`
           } and was not applied.`
         });
       }
@@ -1068,6 +1075,28 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       }
     }
   }
+  for (const [id, workEvents] of eventsByWork) {
+    if (!nonterminalEventWorkKeys.has(id)) continue;
+    const identityEvents = workEvents.filter((candidate) =>
+      (candidate.batchId || candidate.laneName)
+      && !TERMINAL_EVENT_PATTERN.test(candidate.type)
+      && !TERMINAL_EVENT_PATTERN.test(candidate.status || "")
+    );
+    const existing = batchSignalsByWork.get(id) || [];
+    const eventSignals = identityEvents.flatMap((event) => {
+      if ([...existing].some((signal) => signal.batchId === event.batchId && signal.laneName === event.laneName)) return [];
+      return [{
+        ...(event.batchId ? { batchId: event.batchId } : {}),
+        ...(event.laneName ? { laneName: event.laneName } : {}),
+        status: event.status || event.type,
+        blockedOn: [],
+        updatedAt: event.timestamp
+      }];
+    }).filter((signal, index, signals) => signals.findIndex((candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName) === index);
+    if (eventSignals.length > 0) batchSignalsByWork.set(id, [...existing, ...eventSignals]);
+    const evidence = batchEvidenceByWork.get(id) || [];
+    if (identityEvents.length > 0 && !evidence.includes("event")) batchEvidenceByWork.set(id, [...evidence, "event"]);
+  }
   const workKeys = new Set<string>([
     ...claimsByWork.keys(),
     ...previewsByWork.keys(),
@@ -1082,7 +1111,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
   }
 
-  const workItems: WorkItem[] = Array.from(workKeys)
+  let workItems: WorkItem[] = Array.from(workKeys)
     .sort()
     .map((id) => {
       const hashIndex = id.lastIndexOf("#");
@@ -1204,6 +1233,15 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     };
   });
 
+  workItems = deriveWorkItems({
+    workItems,
+    events: scopedEvents,
+    qaValidations,
+    batchOperations,
+    batches,
+    now: input.now
+  });
+
   const workByAgent = new Map<string, WorkItem[]>();
   for (const item of workItems) {
     const eventAgentId = eventsByWork.get(item.id)?.find((event) => event.agentId)?.agentId;
@@ -1267,7 +1305,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: "machine",
           title: "Heartbeat missing machine id",
-          detail: `${agent.agentId} does not report machine_id, so machine ownership cannot be shown reliably.`,
+          detail: `${displayAttribution(agent.agentId)} does not report machine_id, so machine ownership cannot be shown reliably.`,
           agentId: agent.agentId,
           repo: agent.heartbeat.repo,
           target: agent.heartbeat.target,
@@ -1284,7 +1322,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: "heartbeat",
           title: "Active claim has no matching heartbeat",
-          detail: `${claim.agentId} holds ${claim.repo}#${claim.target}, but no heartbeat currently points at that work.`,
+          detail: `${displayAttribution(claim.agentId)} holds ${displayWorkRef(claim.repo, claim.target)}, but no heartbeat currently points at that work.`,
           machineId: claim.machineId,
           agentId: claim.agentId,
           repo: claim.repo,
@@ -1302,7 +1340,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: item.batchSignals?.length ? "batch" : "heartbeat",
           title: "Work started but not currently processing",
-          detail: `${item.repo}#${item.target} has coordination state but no live/stale holder.`,
+          detail: `${displayWorkRef(item.repo, item.target)} has coordination state but no live/stale holder.`,
           machineId: item.heartbeat?.machineId || item.claim?.machineId,
           agentId: item.heartbeat?.agentId || item.claim?.agentId,
           repo: item.repo,
@@ -1328,7 +1366,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: "batch",
           title: "Batch plan missing",
-          detail: `${batch.batchId} was inferred from coordination records because no saved batch plan was found.`,
+          detail: `${displayAttribution(batch.batchId)} was inferred from coordination records because no saved batch plan was found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
@@ -1339,7 +1377,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           severity: "warning",
           category: "batch",
           title: "Prompt missing",
-          detail: `${batch.batchId} has a saved batch plan, but no coordination prompt was saved.`,
+          detail: `${displayAttribution(batch.batchId)} has a saved batch plan, but no coordination prompt was saved.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
@@ -1368,8 +1406,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           title: "Batch has no history events",
           detail:
             batch.source === "inferred"
-              ? `${batch.batchId} has inferred lanes, but no events/history records were found.`
-              : `${batch.batchId} has a saved batch plan, but no events/history records were found.`,
+              ? `${displayAttribution(batch.batchId)} has inferred lanes, but no events/history records were found.`
+              : `${displayAttribution(batch.batchId)} has a saved batch plan, but no events/history records were found.`,
           repo: batch.repo,
           batchId: batch.batchId
         })
@@ -1383,7 +1421,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             severity: "warning",
             category: "batch",
             title: "Batch lane has no heartbeat",
-            detail: `${batch.batchId}:${lane.name} is ${lane.status}, but owner ${lane.owner} has no matching heartbeat.`,
+            detail: `${displayAttribution(batch.batchId)}:${displayAttribution(lane.name)} is ${lane.status}, but owner ${displayAttribution(lane.owner)} has no matching heartbeat.`,
             repo: batch.repo,
             batchId: batch.batchId,
             laneName: lane.name,
@@ -1405,6 +1443,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     batchOperations,
     qaValidations,
     healthItems,
-    warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
+    warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings],
+    githubMergeTimeStatus: "unavailable"
   };
 }

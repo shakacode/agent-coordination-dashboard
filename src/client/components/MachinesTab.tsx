@@ -1,5 +1,6 @@
 import { Monitor } from "lucide-react";
 import type { AgentSummary, CoordinationResource } from "../../shared/types";
+import { displayAttribution } from "../../shared/attribution";
 import { StatusBadge } from "./StatusBadge";
 
 export function MachinesTab({
@@ -18,7 +19,7 @@ export function MachinesTab({
 
   const agentsByMachine = agents.reduce<Map<string, { label: string; agents: AgentSummary[] }>>((groups, agent) => {
     const state = agent.machineMetadata?.state || (agent.machineId ? "observed" : agent.heartbeat ? "missing" : "not_applicable");
-    const label = agent.machineId || (state === "not_applicable" ? "Not applicable" : "UNKNOWN machine");
+    const label = state === "not_applicable" ? "Not applicable" : displayAttribution(agent.machineId);
     const key = `${state}:${label}`;
     const group = groups.get(key) || { label, agents: [] };
     groups.set(key, { ...group, agents: [...group.agents, agent] });
@@ -44,7 +45,7 @@ export function MachinesTab({
                 <header className="panel-header">
                   <Monitor size={18} aria-hidden="true" />
                   <div>
-                    <h2>{agent.agentId}</h2>
+                    <h2>{displayAttribution(agent.agentId)}</h2>
                     <StatusBadge value={agent.liveness} />
                   </div>
                 </header>
@@ -52,7 +53,7 @@ export function MachinesTab({
                   <div>
                     <dt>Machine</dt>
                     <dd>
-                      <span>{agent.machineId || (agent.machineMetadata?.state === "not_applicable" ? "Not applicable" : "UNKNOWN")}</span>
+                      <span>{agent.machineMetadata?.state === "not_applicable" ? "Not applicable" : displayAttribution(agent.machineId)}</span>
                       {agent.machineMetadata && (
                         <small className="metadata-provenance-inline">
                           {agent.machineMetadata.state.replace("_", " ")}
@@ -70,8 +71,11 @@ export function MachinesTab({
                     <dd>{agent.currentWork.map((item) => `${item.repo}#${item.target}`).join(", ") || "None"}</dd>
                   </div>
                 </dl>
-                {agent.warnings.map((warning) => (
-                  <p className="warning" key={warning.message}>
+                {agent.warnings.map((warning, warningIndex) => (
+                  <p
+                    className="warning"
+                    key={`${warning.repo || "repo"}:${warning.target || "target"}:${warning.agentId || agent.agentId}:${warning.severity}:${warning.message}:${warningIndex}`}
+                  >
                     {warning.message}
                   </p>
                 ))}
