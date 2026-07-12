@@ -198,6 +198,29 @@ describe("dashboard app import endpoint", () => {
     expect(body.trulyOpenCount).toBe(1);
   });
 
+  it("consumes a canonical open PR row when it becomes evidence for an unknown-type coordinated lane", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-consumed-pr-unknown-"));
+    const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(join(claimDirectory, "45.json"), JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      agent_id: "worker",
+      status: "active",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54"
+    }));
+    const openPr = { repo: "shakacode/react_on_rails", target: "54", type: "pull_request" as const, title: "Open PR", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "OPEN", labels: [], loadState: "loaded" as const };
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [openPr], warnings: [] }),
+      loadGitHubTargets: async () => ({ items: [openPr], warnings: [] })
+    });
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { url: string } }>; trulyOpenCount: number };
+    expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", type: "unknown", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
+    expect(body.trulyOpenCount).toBe(1);
+  });
+
   it("preserves a consumed canonical PR row when it has independent coordination evidence", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-independent-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });

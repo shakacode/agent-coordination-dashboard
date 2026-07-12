@@ -172,8 +172,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
     const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
     const consumedCanonicalIds = new Set(reconciliationPlans.flatMap((plan) => {
-      if (plan.item.type !== "issue" || plan.reference.type !== "pull_request") return [];
+      if (plan.reference.type !== "pull_request") return [];
       const canonicalId = `${plan.reference.repo}#${plan.reference.target}`;
+      if (canonicalId === plan.workItemId) return [];
       const canonicalWorkItem = preliminaryModel.workItems.find((item) => item.id === canonicalId);
       return canonicalWorkItem && hasCoordinationEvidence(canonicalWorkItem) ? [] : [canonicalId];
     }));
