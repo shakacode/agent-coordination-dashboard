@@ -608,7 +608,7 @@ function preferredSignalForWork(item: WorkItem) {
   const signals = item.batchSignals || [];
   const activeBatchIds = activeBatchIdsForWork(item);
   if (activeBatchIds.size > 0) {
-    const activeSignal = signals.find((signal) => activeBatchIds.has(signal.batchId));
+    const activeSignal = signals.find((signal) => Boolean(signal.batchId && activeBatchIds.has(signal.batchId)));
     if (activeSignal) {
       return activeSignal;
     }

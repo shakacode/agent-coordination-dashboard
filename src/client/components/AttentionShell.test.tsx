@@ -71,6 +71,19 @@ describe("AttentionShell", () => {
     expect(screen.queryByText("other/repo/dashboard")).not.toBeInTheDocument();
   });
 
+  it("treats only strict owner/repo#numeric values as canonical ids and keeps hash metadata searchable", () => {
+    const metadataItem = {
+      ...ITEMS[0],
+      claim: { schemaVersion: 1, agentId: "worker", repo: "repo/dashboard", target: "43", status: "active" as const, branch: "feature/foo#bar", threadHandle: "thread#lantern", path: "claims/43.json" }
+    };
+    const { rerender } = render(<AttentionShell items={[metadataItem]} onQueryChange={vi.fn()} query="feature/foo#bar" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    rerender(<AttentionShell items={[metadataItem]} onQueryChange={vi.fn()} query="thread#lantern" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    rerender(<AttentionShell items={[metadataItem]} onQueryChange={vi.fn()} query="repo/dashboard#43" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+  });
+
   it("matches hash targets while preserving exact structured repo, batch, lane, and operator filters", async () => {
     const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
     const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
@@ -94,6 +107,24 @@ describe("AttentionShell", () => {
     rerender(<AttentionShell deepLink={{ overviewFilter: "processing_now" }} items={[repoA, { ...repoB, operatorState: "ready", heartbeat: undefined }]} onQueryChange={vi.fn()} query="" surface="find" />);
     expect(screen.getByText("repo/a")).toBeInTheDocument();
     expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
+  });
+
+  it("matches independently preserved batch-only and lane-only signals while keeping combined constraints same-signal", () => {
+    const batchOnly = { ...ITEMS[0], id: "repo/batch#43", repo: "repo/batch", batchSignals: [{ batchId: "batch-x", status: "implementation", blockedOn: [] }] };
+    const laneOnly = { ...ITEMS[0], id: "repo/lane#43", repo: "repo/lane", batchSignals: [{ laneName: "lane-x", status: "review", blockedOn: [] }] };
+    const paired = { ...ITEMS[0], id: "repo/paired#43", repo: "repo/paired", batchSignals: [{ batchId: "batch-x", laneName: "lane-x", status: "qa", blockedOn: [] }] };
+    const { rerender } = render(<AttentionShell deepLink={{ batchId: "batch-x" }} items={[batchOnly, laneOnly, paired]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("repo/batch")).toBeInTheDocument();
+    expect(screen.getByText("repo/paired")).toBeInTheDocument();
+    expect(screen.queryByText("repo/lane")).not.toBeInTheDocument();
+    rerender(<AttentionShell deepLink={{ laneName: "lane-x" }} items={[batchOnly, laneOnly, paired]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("repo/lane")).toBeInTheDocument();
+    expect(screen.getByText("repo/paired")).toBeInTheDocument();
+    expect(screen.queryByText("repo/batch")).not.toBeInTheDocument();
+    rerender(<AttentionShell deepLink={{ batchId: "batch-x", laneName: "lane-x" }} items={[batchOnly, laneOnly, paired]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("repo/paired")).toBeInTheDocument();
+    expect(screen.queryByText("repo/batch")).not.toBeInTheDocument();
+    expect(screen.queryByText("repo/lane")).not.toBeInTheDocument();
   });
 
   it("keeps terminal items out of Now even when their heartbeat TTL is still live", () => {

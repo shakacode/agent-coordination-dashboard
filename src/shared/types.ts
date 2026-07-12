@@ -146,8 +146,8 @@ export interface BatchEvent {
 }
 
 export interface BatchWorkSignal {
-  batchId: string;
-  laneName: string;
+  batchId?: string;
+  laneName?: string;
   status: string;
   blockedOn: string[];
   updatedAt?: string;

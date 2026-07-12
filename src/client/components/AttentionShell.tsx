@@ -20,7 +20,7 @@ function matches(item: WorkItem, query: string): boolean {
   const value = query.trim().toLowerCase();
   if (!value) return true;
   if (/^#?\d+$/.test(value)) return item.target === value.replace(/^#/, "");
-  if (value.includes("#") && !value.includes("://")) return item.id.toLowerCase() === value;
+  if (/^[^/#\s]+\/[^/#\s]+#\d+$/.test(value)) return item.id.toLowerCase() === value;
   return [
     item.id,
     item.repo,

@@ -61,6 +61,19 @@ describe("buildDashboardModel", () => {
       { batchId: "batch-event-2", laneName: "lane-event-2", status: "review", blockedOn: [], updatedAt: "2026-07-12T11:58:00Z" }
     ]);
   });
+  it("preserves batch-only and lane-only event identity independently", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"), stateRoot: "/state", targetRepos: ["repo/app"], claims: [], heartbeats: [], batches: [], githubItems: [], warnings: [],
+      events: [
+        { eventId: "batch-only", type: "batch_seen", status: "implementation", repo: "repo/app", target: "43", batchId: "batch-only", timestamp: "2026-07-12T11:59:00Z", path: "events/batch-only.json" },
+        { eventId: "lane-only", type: "lane_seen", status: "review", repo: "repo/app", target: "43", laneName: "lane-only", timestamp: "2026-07-12T11:58:00Z", path: "events/lane-only.json" }
+      ]
+    });
+    expect(model.workItems[0].batchSignals).toEqual([
+      { batchId: "batch-only", status: "implementation", blockedOn: [], updatedAt: "2026-07-12T11:59:00Z" },
+      { laneName: "lane-only", status: "review", blockedOn: [], updatedAt: "2026-07-12T11:58:00Z" }
+    ]);
+  });
   it("exposes one canonical operator state on each work item", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",
