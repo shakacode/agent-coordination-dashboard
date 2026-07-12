@@ -37,6 +37,21 @@ const preview: GitHubPreview = {
 };
 
 describe("buildDashboardModel", () => {
+  it("exposes one canonical operator state on each work item", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [claim],
+      heartbeats: [{ ...heartbeat, status: "wedged", updatedAt: "2026-06-17T19:40:00Z" }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.workItems[0]).toMatchObject({ operatorState: "needs_attention", attention: { kind: "wedged" } });
+  });
+
   it("classifies target provenance from direct, inferred, and degraded evidence", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",

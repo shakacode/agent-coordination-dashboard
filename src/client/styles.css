@@ -584,6 +584,96 @@ textarea {
   color: #ffffff;
 }
 
+.surface-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.surface-nav button,
+.attention-card-actions button,
+.attention-card-actions a {
+  border: 1px solid #cdd6e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #172026;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.75rem;
+  text-decoration: none;
+}
+
+.surface-nav button.active {
+  background: #172026;
+  color: #ffffff;
+}
+
+.attention-surface {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.attention-surface-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.attention-surface h1,
+.attention-surface h2,
+.attention-surface p {
+  margin: 0;
+}
+
+.eyebrow,
+.attention-card-kicker,
+.attention-card-meta {
+  color: #5f6b7a;
+  font-size: 0.82rem;
+}
+
+.status-strip {
+  border: 1px solid #d8e0e8;
+  border-radius: 999px;
+  color: #344054;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.attention-card-list,
+.now-batch {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.attention-card {
+  align-items: start;
+  background: #ffffff;
+  border: 1px solid #d8e0e8;
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.9rem;
+}
+
+.attention-card > div:first-child {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.attention-card-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

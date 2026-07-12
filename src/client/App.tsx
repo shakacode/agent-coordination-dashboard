@@ -4,6 +4,7 @@ import { generatePrBatchPrompt } from "../shared/prompt";
 import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
+import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
 import { HealthTab } from "./components/HealthTab";
 import { MachinesTab } from "./components/MachinesTab";
 import { OperatorView } from "./components/OperatorView";
@@ -21,7 +22,6 @@ import {
 } from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
 
-type Tab = "overview" | "operator" | "work" | "batches" | "machines" | "health";
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
@@ -37,7 +37,17 @@ export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
 }
 
 function readOperatorDeepLink() {
-  return operatorDeepLinkFromSearchParams(new URLSearchParams(window.location.search));
+  const params = new URLSearchParams(window.location.search);
+  const deepLink = operatorDeepLinkFromSearchParams(params);
+  return {
+    ...deepLink,
+    query: deepLink.query || params.get("item") || params.get("batch") || params.get("target") || undefined
+  };
+}
+
+function hasLegacyFindLink(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  return Boolean(params.get("item") || params.get("q") || params.get("batch") || params.get("lane") || params.get("repo") || params.get("target"));
 }
 
 export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter, query: string): OperatorDeepLink {
@@ -90,10 +100,10 @@ export function App() {
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [operatorDeepLink, setOperatorDeepLink] = useState(readOperatorDeepLink);
+  const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
   const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
-  const [activeTab, setActiveTab] = useState<Tab>(() =>
-    operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) ? "operator" : "overview"
+  const [activeSurface, setActiveSurface] = useState<DashboardSurface>(() =>
+    operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [revealOlderTerminalRows, setRevealOlderTerminalRows] = useState(savedOlderTerminalWorkPreference);
@@ -193,15 +203,21 @@ export function App() {
       const nextDeepLink = readOperatorDeepLink();
       setOperatorDeepLink(nextDeepLink);
       setOperatorQuery(nextDeepLink.query || "");
-      setActiveTab((currentTab) => {
-        if (currentTab !== "overview" && currentTab !== "operator") {
-          return currentTab;
-        }
-        return nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) ? "operator" : "overview";
-      });
+      setActiveSurface(nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) || hasLegacyFindLink() ? "find" : "attention");
     }
     window.addEventListener("popstate", restoreLocation);
     return () => window.removeEventListener("popstate", restoreLocation);
+  }, []);
+
+  useEffect(() => {
+    function openFind(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setActiveSurface("find");
+      }
+    }
+    window.addEventListener("keydown", openFind);
+    return () => window.removeEventListener("keydown", openFind);
   }, []);
 
   useEffect(() => {
@@ -275,7 +291,7 @@ export function App() {
   function openOverviewFilter(filter: OverviewOperatorFilter) {
     const nextDeepLink = operatorDeepLinkForOverviewFilter(filter, operatorQuery);
     setOperatorDeepLink(nextDeepLink);
-    setActiveTab("operator");
+    setActiveSurface("find");
     writeOperatorLocation(nextDeepLink, operatorQuery, "push");
   }
 
@@ -302,6 +318,12 @@ export function App() {
     const nextDeepLink = { ...operatorDeepLink, query: query || undefined };
     setOperatorDeepLink(nextDeepLink);
     writeOperatorLocation(nextDeepLink, query, "replace");
+  }
+
+  function copyResumePrompt(item: WorkItem) {
+    const branch = item.claim?.branch || item.heartbeat?.branch;
+    const prompt = `$pr-batch\nResume ${item.repo}#${item.target}${branch ? ` on ${branch}` : ""}. Verify current coordination state before edits.`;
+    void navigator.clipboard?.writeText(prompt);
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
@@ -525,65 +547,20 @@ export function App() {
 
       <div className="dashboard-layout">
         <section className="content-region">
-          <nav className="tabs" aria-label="Dashboard views">
-            <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")} type="button">
-              Overview
-            </button>
-            <button className={activeTab === "operator" ? "active" : ""} onClick={() => setActiveTab("operator")} type="button">
-              Operator
-            </button>
-            <button className={activeTab === "work" ? "active" : ""} onClick={() => setActiveTab("work")} type="button">
-              Work
-            </button>
-            <button className={activeTab === "batches" ? "active" : ""} onClick={() => setActiveTab("batches")} type="button">
-              Batches
-            </button>
-            <button className={activeTab === "machines" ? "active" : ""} onClick={() => setActiveTab("machines")} type="button">
-              Machines
-            </button>
-            <button className={activeTab === "health" ? "active" : ""} onClick={() => setActiveTab("health")} type="button">
-              Health
-            </button>
+          <nav className="surface-nav" aria-label="Dashboard surfaces">
+            {(["attention", "now", "find", "history"] as const).map((surface) => (
+              <button className={activeSurface === surface ? "active" : ""} key={surface} onClick={() => setActiveSurface(surface)} type="button">
+                {surface[0].toUpperCase()}{surface.slice(1)}
+              </button>
+            ))}
           </nav>
-
-          {activeTab === "overview" && (
-            <OverviewTab
-              dashboard={dashboard}
-              onOpenOperatorFilter={openOverviewFilter}
-              onRevealOlderTerminalRowsChange={setRevealOlderTerminalRows}
-              revealOlderTerminalRows={revealOlderTerminalRows}
-            />
-          )}
-          {activeTab === "operator" && (
-            <OperatorView
-              dashboard={dashboard}
-              deepLink={operatorDeepLink}
-              onClearExactLink={clearExactOperatorLink}
-              onQueryChange={updateOperatorQuery}
-              onResetOverviewFilter={resetOverviewFilter}
-              query={operatorQuery}
-              onRevealOlderTerminalRowsChange={setRevealOlderTerminalRows}
-              revealOlderTerminalRows={revealOlderTerminalRows}
-            />
-          )}
-          {activeTab === "work" && (
-            <WorkTab items={dashboard.workItems} onToggle={toggleWorkItem} selectionDisabled={requiredCoordinationUnavailable} />
-          )}
-          {activeTab === "machines" && (
-            <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} />
-          )}
-          {activeTab === "batches" && (
-            <BatchesTab
-              batches={dashboard.batches}
-              events={dashboard.events}
-              onImportBatch={importBatchManifest}
-              onRequestStop={stopBatch}
-              operations={dashboard.batchOperations}
-            />
-          )}
-          {activeTab === "health" && (
-            <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} />
-          )}
+          <AttentionShell
+            items={dashboard.workItems}
+            onCopyResume={copyResumePrompt}
+            onQueryChange={updateOperatorQuery}
+            query={operatorQuery}
+            surface={activeSurface}
+          />
           <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
             <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />

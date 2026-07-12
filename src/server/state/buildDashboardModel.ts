@@ -21,6 +21,7 @@ import type {
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { isQaEventType } from "../../shared/qaEvents";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { deriveWorkItems } from "./deriveWorkItems";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
 const TERMINAL_EVENT_PATTERN =
@@ -1082,7 +1083,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     }
   }
 
-  const workItems: WorkItem[] = Array.from(workKeys)
+  let workItems: WorkItem[] = Array.from(workKeys)
     .sort()
     .map((id) => {
       const hashIndex = id.lastIndexOf("#");
@@ -1202,6 +1203,14 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       stoppedAt: stopEvents.filter(isStoppedEvent).sort(compareEventRecency)[0]?.timestamp,
       qa
     };
+  });
+
+  workItems = deriveWorkItems({
+    workItems,
+    events: scopedEvents,
+    qaValidations,
+    batchOperations,
+    now: input.now
   });
 
   const workByAgent = new Map<string, WorkItem[]>();

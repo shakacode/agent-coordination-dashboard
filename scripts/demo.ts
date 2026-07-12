@@ -15,7 +15,7 @@ interface DemoLane {
   agentId: string;
   machineId: string;
   target: string;
-  status: "running" | "wedged" | "paused" | "blocked" | "stale" | "dead";
+  status: "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "done";
 }
 
 const DEMO_LANES: DemoLane[] = [
@@ -72,6 +72,15 @@ const DEMO_LANES: DemoLane[] = [
     machineId: "demo-m3",
     target: "203",
     status: "dead"
+  },
+  {
+    batchId: "demo-release",
+    batchLane: "closeout",
+    dependsOn: ["demo-release:publish"],
+    agentId: "demo-closeout",
+    machineId: "demo-m4",
+    target: "204",
+    status: "done"
   }
 ];
 
@@ -83,7 +92,7 @@ function heartbeatTimes(status: DemoLane["status"], now: Date): { updated_at: st
   if (status === "stale") {
     return { updated_at: isoAt(now, -20_000), expires_at: isoAt(now, -10_000) };
   }
-  if (status === "dead") {
+  if (status === "dead" || status === "done") {
     return { updated_at: isoAt(now, -120_000), expires_at: isoAt(now, -110_000) };
   }
   return { updated_at: isoAt(now, -1_000), expires_at: isoAt(now, 9_000) };
@@ -185,7 +194,7 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
 }
 
 export async function tickDemoState(root: string, sequence: number, now = new Date()): Promise<void> {
-  const activeLanes = DEMO_LANES.filter((lane) => lane.status !== "stale" && lane.status !== "dead");
+  const activeLanes = DEMO_LANES.filter((lane) => !["stale", "dead", "done"].includes(lane.status));
   const phases = ["implementing", "validating", "reviewing"];
   const phase = phases[sequence % phases.length];
 
