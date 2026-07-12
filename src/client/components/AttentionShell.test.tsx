@@ -71,16 +71,22 @@ describe("AttentionShell", () => {
     expect(screen.queryByText("other/repo/dashboard")).not.toBeInTheDocument();
   });
 
-  it("matches hash targets while preserving exact structured repo, batch, lane, and operator filters", () => {
+  it("matches hash targets while preserving exact structured repo, batch, lane, and operator filters", async () => {
     const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
     const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
-    const { rerender } = render(<AttentionShell deepLink={{ repo: "repo/a", target: "43", query: "worker" }} items={[repoA, repoB]} onQueryChange={vi.fn()} query="#43" surface="find" />);
+    const onClearDeepLink = vi.fn();
+    const { rerender } = render(<AttentionShell deepLink={{ repo: "repo/a", target: "43", batchId: "missing-batch", laneName: "missing-lane", query: "worker" }} items={[repoA, repoB]} onClearDeepLink={onClearDeepLink} onQueryChange={vi.fn()} query="#43" surface="find" />);
     expect(screen.getByText("repo/a")).toBeInTheDocument();
     expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
+    expect(screen.getByText(/Constrained by repo repo\/a/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Clear constraints" }));
+    expect(onClearDeepLink).toHaveBeenCalled();
 
-    rerender(<AttentionShell deepLink={{ batchId: "batch-b", laneName: "lane-b" }} items={[repoA, repoB]} onQueryChange={vi.fn()} query="" surface="find" />);
+    const splitSignals = { ...repoB, id: "repo/c#43", repo: "repo/c", batchSignals: [{ batchId: "batch-b", laneName: "other-lane", status: "running", blockedOn: [] }, { batchId: "other-batch", laneName: "lane-b", status: "running", blockedOn: [] }] };
+    rerender(<AttentionShell deepLink={{ batchId: "batch-b", laneName: "lane-b" }} items={[repoA, repoB, splitSignals]} onQueryChange={vi.fn()} query="" surface="find" />);
     expect(screen.getByText("repo/b")).toBeInTheDocument();
     expect(screen.queryByText("repo/a")).not.toBeInTheDocument();
+    expect(screen.queryByText("repo/c")).not.toBeInTheDocument();
 
     rerender(<AttentionShell deepLink={{ overviewFilter: "processing_now" }} items={[repoA, { ...repoB, operatorState: "ready", heartbeat: undefined }]} onQueryChange={vi.fn()} query="" surface="find" />);
     expect(screen.getByText("repo/a")).toBeInTheDocument();
@@ -94,7 +100,7 @@ describe("AttentionShell", () => {
     expect(screen.getByText("No live lanes right now.")).toBeInTheDocument();
   });
 
-  it("counts only pull requests merged on the current day in the all-clear message", () => {
+  it("counts only pull requests merged on the current day in the all-clear message", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-12T12:00:00.000Z"));
     const mergedToday = {
@@ -106,9 +112,30 @@ describe("AttentionShell", () => {
     const completedYesterday = { ...mergedToday, id: "repo/dashboard#42", target: "42", github: { ...mergedToday.github, mergedAt: "2026-07-12T08:00:00.000Z" } };
     const unprovenMergeToday = { ...mergedToday, id: "repo/dashboard#46", target: "46", lastActivityAt: "2026-07-12T21:00:00.000Z", github: { ...mergedToday.github, target: "46", mergedAt: undefined } };
     const completedIssueToday = { ...ITEMS[1], lastActivityAt: "2026-07-12T19:00:00.000Z" };
-    render(<AttentionShell items={[mergedToday, completedYesterday, unprovenMergeToday, completedIssueToday]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    const onShowMergedToday = vi.fn();
+    const { rerender } = render(<AttentionShell items={[mergedToday, completedYesterday, unprovenMergeToday, completedIssueToday]} mergeTimeStatus="available" onQueryChange={vi.fn()} onShowMergedToday={onShowMergedToday} query="" surface="attention" />);
 
-    expect(screen.getByText(/1 merged today/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "1 merged today" }));
+    expect(onShowMergedToday).toHaveBeenCalled();
+    rerender(<AttentionShell historyMergedTodayOnly items={[mergedToday, completedYesterday, unprovenMergeToday, completedIssueToday]} mergeTimeStatus="available" onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByText("Merged", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Issue #42/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Issue #46/ })).not.toBeInTheDocument();
+  });
+
+  it("renders merge-day truth as unavailable instead of a false zero without a trusted producer", () => {
+    render(<AttentionShell items={[]} mergeTimeStatus="unavailable" onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText("merged today unavailable")).toHaveAttribute("title", "GitHub merge timestamps are not available");
+    expect(screen.queryByRole("button", { name: /merged today/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy batch repair categories mapped to repair membership and established statuses", () => {
+    const inferred = { ...ITEMS[0], id: "repo/dashboard#50", target: "50", attention: undefined, batchSignals: [{ batchId: "missing-plan", laneName: "lane", status: "running", blockedOn: [] }] };
+    const mismatch = { ...ITEMS[0], id: "repo/dashboard#51", target: "51", attention: undefined, batchSignals: [{ batchId: "healthy", laneName: "lane", status: "prompt_mismatch", blockedOn: [] }] };
+    render(<AttentionShell deepLink={{ overviewFilter: "batch_repair" }} items={[inferred, mismatch]} onQueryChange={vi.fn()} query="" repairBatchCount={2} repairBatchIds={new Set(["missing-plan"])} surface="find" />);
+    expect(screen.getByRole("heading", { name: /#50/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /#51/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open 2 batch repair records" })).toBeInTheDocument();
   });
 
   it("uses the Now population for the running count, sorts History newest-first, and filters it", async () => {

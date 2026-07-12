@@ -279,4 +279,6 @@ export interface DashboardModel {
   warnings: CoordinationWarning[];
   sourceStatus?: CoordinationSourceStatus[];
   coordinationTokenEnvVar?: "AGENT_COORD_API_TOKEN" | "AGENT_COORD_TOKEN";
+  /** Capability flag; unavailable prevents the UI from presenting a false zero merge count. */
+  githubMergeTimeStatus?: "available" | "unavailable";
 }

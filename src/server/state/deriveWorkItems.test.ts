@@ -211,4 +211,32 @@ describe("deriveWorkItems", () => {
     expect(withoutUrl.attention?.action).toBe("Copy resume prompt");
     expect(withUrl.attention?.action).toBe("Open PR");
   });
+
+  it("scopes repo-less operations through exact batch membership and avoids same-id cross-repo collisions", () => {
+    const [repoA, repoB] = deriveWorkItems({
+      workItems: [
+        { ...BASE_ITEM, repo: "repo/a", id: "repo/a#43", batchSignals: [{ batchId: "shared", laneName: "a", status: "running", blockedOn: [] }] },
+        { ...BASE_ITEM, repo: "repo/b", id: "repo/b#43", batchSignals: [{ batchId: "shared", laneName: "b", status: "running", blockedOn: [] }] }
+      ],
+      batches: [
+        { schemaVersion: 1, batchId: "shared", targets: [{ type: "issue", target: "43", repo: "repo/a" }], lanes: [], path: "batches/a.json" },
+        { schemaVersion: 1, batchId: "shared", targets: [{ type: "issue", target: "43", repo: "repo/b" }], lanes: [], path: "batches/b.json" }
+      ],
+      batchOperations: [
+        { batchId: "shared", batchPath: "batches/a.json", controlStatus: "stopped", eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } }
+      ],
+      now: new Date("2026-07-12T11:20:00.000Z")
+    });
+    expect(repoA.attention?.kind).toBe("batch_stopped");
+    expect(repoB.attention).toBeUndefined();
+  });
+
+  it("applies an unscoped repo-less operation only when batch membership is unique", () => {
+    const [onlyItem] = deriveWorkItems({
+      workItems: [{ ...BASE_ITEM, batchSignals: [{ batchId: "unique", laneName: "lane", status: "running", blockedOn: [] }] }],
+      batchOperations: [{ batchId: "unique", controlStatus: "stop_requested", eventCount: 1, qa: { total: 0, missing: 0, requested: 0, inProgress: 0, passed: 0, failed: 0, unknown: 0 } }],
+      now: new Date("2026-07-12T11:20:00.000Z")
+    });
+    expect(onlyItem.attention?.kind).toBe("batch_stop_requested");
+  });
 });

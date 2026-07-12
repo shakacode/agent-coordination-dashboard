@@ -41,9 +41,10 @@ function readOperatorDeepLink() {
     : legacyItem && /^#?\d+$/.test(legacyItem)
       ? { ...parsed, target: parsed.target || legacyItem.replace(/^#/, "") }
     : parsed;
+  const arbitraryLegacyQuery = legacyItem && hashIndex <= 0 && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
   return {
     ...deepLink,
-    query: deepLink.query
+    query: deepLink.query || arbitraryLegacyQuery
   };
 }
 
@@ -108,6 +109,7 @@ export function App() {
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [historyMergedTodayOnly, setHistoryMergedTodayOnly] = useState(false);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -126,6 +128,19 @@ export function App() {
     () => (requiredCoordinationUnavailable ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
     [dashboard, requiredCoordinationUnavailable]
   );
+  const repairBatchIds = useMemo(() => {
+    if (!dashboard) return new Set<string>();
+    const stopped = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
+    return new Set(dashboard.batches.filter((batch) =>
+      batch.source === "inferred"
+      || !batch.launchPrompt
+      || stopped.some((operation) => operation.batchPath ? operation.batchPath === batch.path : operation.batchId === batch.batchId && (!operation.repo || operation.repo === batch.repo))
+    ).map((batch) => batch.batchId));
+  }, [dashboard]);
+  const repairBatchCount = dashboard
+    ? dashboard.batches.filter((batch) => repairBatchIds.has(batch.batchId)).length
+      + dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running" && !dashboard.batches.some((batch) => operation.batchPath ? operation.batchPath === batch.path : operation.batchId === batch.batchId && (!operation.repo || operation.repo === batch.repo))).length
+    : 0;
   function beginUserAction() {
     userActionInFlightCount.current += 1;
     setIsRefreshing(true);
@@ -292,13 +307,29 @@ export function App() {
 
   function updateOperatorQuery(query: string) {
     setOperatorQuery(query);
-    const nextDeepLink = { ...operatorDeepLink, query: query || undefined };
+    const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
+    const nextDeepLink = startingUniversalSearch
+      ? { query: query || undefined }
+      : { ...operatorDeepLink, query: query || undefined };
     setOperatorDeepLink(nextDeepLink);
     writeOperatorLocation(nextDeepLink, query, "replace");
   }
 
   function openSurface(surface: DashboardSurface) {
+    setHistoryMergedTodayOnly(false);
     setActiveSurface(surface);
+  }
+
+  function clearOperatorConstraints() {
+    const nextDeepLink = { query: operatorQuery || undefined };
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
+  }
+
+  function showMergedToday() {
+    setOperatorQuery("");
+    setHistoryMergedTodayOnly(true);
+    setActiveSurface("history");
   }
 
   function openDetails(details: RefObject<HTMLDetailsElement | null>) {
@@ -420,16 +451,16 @@ export function App() {
           </p>
         </div>
         <div className="summary-strip">
-          <button className="summary-count" onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(agentSources) || undefined} type="button">
+          <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(agentSources) || undefined} type="button">
             {coordinationCount(dashboard.agents.length, agentSources)} agents
           </button>
-          <button className="summary-count" onClick={() => openDetails(batchOperationsRef)} title={failedSourceDetails(eventSources) || undefined} type="button">
+          <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openDetails(batchOperationsRef)} title={failedSourceDetails(eventSources) || undefined} type="button">
             {coordinationCount(dashboard.events.length, eventSources)} events
           </button>
-          <button className="summary-count" onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(healthSources) || undefined} type="button">
+          <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDetails(diagnosticsRef)} title={failedSourceDetails(healthSources) || undefined} type="button">
             {coordinationCount(dashboard.healthItems.length, healthSources)} health
           </button>
-          <button className="summary-count" onClick={revealWarnings} type="button">
+          <button className="summary-count" disabled={dashboard.warnings.length === 0} onClick={revealWarnings} type="button">
             {dashboard.warnings.length} {warningLabel}
           </button>
           <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
@@ -556,13 +587,19 @@ export function App() {
           <AttentionShell
             items={dashboard.workItems}
             deepLink={operatorDeepLink}
+            historyMergedTodayOnly={historyMergedTodayOnly}
+            mergeTimeStatus={dashboard.githubMergeTimeStatus || "unavailable"}
             now={dashboard.generatedAt}
             onCopyResume={copyResumePrompt}
             onQueryChange={updateOperatorQuery}
             onOpenBatchOperations={() => openDetails(batchOperationsRef)}
+            onClearDeepLink={clearOperatorConstraints}
+            onShowMergedToday={showMergedToday}
             onSurfaceChange={openSurface}
             onToggle={toggleWorkItem}
             query={operatorQuery}
+            repairBatchCount={repairBatchCount}
+            repairBatchIds={repairBatchIds}
             selectionDisabled={requiredCoordinationUnavailable}
             surface={activeSurface}
           />

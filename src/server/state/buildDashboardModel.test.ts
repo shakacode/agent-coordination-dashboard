@@ -37,6 +37,15 @@ const preview: GitHubPreview = {
 };
 
 describe("buildDashboardModel", () => {
+  it("declares merge-time truth unavailable until a trusted GitHub producer supplies it", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-07-12T12:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: ["repo/app"],
+      claims: [], heartbeats: [], batches: [], events: [], githubItems: [], warnings: []
+    });
+    expect(model.githubMergeTimeStatus).toBe("unavailable");
+  });
   it("exposes one canonical operator state on each work item", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",

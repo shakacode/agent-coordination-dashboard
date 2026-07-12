@@ -1210,6 +1210,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     events: scopedEvents,
     qaValidations,
     batchOperations,
+    batches,
     now: input.now
   });
 
@@ -1414,6 +1415,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     batchOperations,
     qaValidations,
     healthItems,
-    warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings]
+    warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings],
+    githubMergeTimeStatus: "unavailable"
   };
 }

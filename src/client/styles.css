@@ -138,6 +138,30 @@ textarea {
   text-decoration: none;
 }
 
+.summary-count:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.active-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #475467;
+  font-size: 12px;
+}
+
+.active-filter button {
+  border: 1px solid #cdd6e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #344054;
+  cursor: pointer;
+  padding: 3px 7px;
+}
+
 .status-strip button + button {
   margin-left: 8px;
 }

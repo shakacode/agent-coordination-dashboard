@@ -118,8 +118,10 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 notices" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "0 events" }));
-    expect(screen.getByText("Batch operations").closest("details")).toHaveAttribute("open");
+    expect(screen.getByRole("button", { name: "0 agents" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "0 events" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "0 health" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
   });
 
   it("maps legacy query links into Find and retains their query", async () => {
@@ -140,6 +142,22 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: /Ready dashboard work/ })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /Finished dashboard work/ })).not.toBeInTheDocument();
     expect(window.location.search).toBe("?target=45");
+  });
+
+  it("migrates arbitrary legacy item values into universal Find text before removing item", async () => {
+    window.history.pushState({}, "", "/?item=worker-a");
+    render(<App />);
+    expect(await screen.findByRole("textbox", { name: "Find work" })).toHaveValue("worker-a");
+    expect(window.location.search).toBe("?q=worker-a");
+  });
+
+  it("makes structured constraints visible and clears them when a new universal search begins", async () => {
+    window.history.pushState({}, "", "/?repo=repo/dashboard&target=45");
+    render(<App />);
+    expect(await screen.findByText(/Constrained by repo repo\/dashboard/)).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "worker-a");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?q=worker-a");
   });
 
   it("keeps repo plus target structured links exact when target numbers collide", async () => {
@@ -281,11 +299,12 @@ describe("App", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/batches/import" || url === "/api/batches/stop") return { ok: true, json: async () => ({ path: "local-state.json" }) } as Response;
-      return { ok: true, json: async () => url === "/api/settings" ? settings : { ...model, batches: [batch] } } as Response;
+      return { ok: true, json: async () => url === "/api/settings" ? settings : { ...model, batches: [batch], events: [{ eventId: "event-1", type: "lane_started", batchId: "batch-recovery", batchPath: batch.path, repo: "repo/dashboard", timestamp: model.generatedAt, path: "events/event-1.json" }] } } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    await userEvent.click(await screen.findByText("Batch operations"));
+    await userEvent.click(await screen.findByRole("button", { name: "1 events" }));
+    expect(screen.getByText("Batch operations").closest("details")).toHaveAttribute("open");
     await userEvent.click(screen.getByRole("button", { name: "Request stop for batch-recovery in repo/dashboard" }));
     expect(await screen.findByText("Batch stop requested for repo/dashboard.")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/batches/stop", expect.objectContaining({ method: "POST" }));

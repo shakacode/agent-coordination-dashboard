@@ -1,4 +1,4 @@
-import type { BatchEvent, BatchOperation, QaValidationItem, WorkItem, WorkItemOperatorState, WorkItemTerminalState } from "../../shared/types";
+import type { BatchEvent, BatchOperation, BatchRecord, QaValidationItem, WorkItem, WorkItemOperatorState, WorkItemTerminalState } from "../../shared/types";
 
 export const WEDGED_AFTER_MS = 15 * 60 * 1000;
 export const ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -9,6 +9,21 @@ interface DeriveWorkItemsInput {
   events?: BatchEvent[];
   qaValidations?: QaValidationItem[];
   batchOperations?: BatchOperation[];
+  batches?: BatchRecord[];
+}
+
+function operationMatchesItem(operation: BatchOperation, item: WorkItem, input: DeriveWorkItemsInput): boolean {
+  if (!item.batchSignals?.some((signal) => signal.batchId === operation.batchId)) return false;
+  if (operation.repo) return operation.repo === item.repo;
+  const batch = input.batches?.find((candidate) =>
+    operation.batchPath ? candidate.path === operation.batchPath : candidate.batchId === operation.batchId
+  );
+  if (batch?.repo) return batch.repo === item.repo;
+  const explicitTarget = batch?.targets?.find((target) => target.target === item.target && (target.repo || batch.repo) === item.repo);
+  if (explicitTarget) return true;
+  if (batch) return false;
+  const repos = new Set(input.workItems.filter((candidate) => candidate.batchSignals?.some((signal) => signal.batchId === operation.batchId)).map((candidate) => candidate.repo));
+  return repos.size === 1 && repos.has(item.repo);
 }
 
 function timestamp(value: string | undefined): number {
@@ -31,10 +46,7 @@ function terminalState(statuses: string[]): WorkItemTerminalState | undefined {
 
 function attention(item: WorkItem, statuses: string[], activityAt: string | undefined, input: DeriveWorkItemsInput) {
   const status = statuses.join(" ").toLowerCase();
-  const operation = input.batchOperations?.find((candidate) =>
-    candidate.repo === item.repo
-    && item.batchSignals?.some((signal) => signal.batchId === candidate.batchId)
-  );
+  const operation = input.batchOperations?.find((candidate) => operationMatchesItem(candidate, item, input));
   const validation = input.qaValidations?.find(
     (candidate) => candidate.repo === item.repo && candidate.target === item.target && ["missing", "failed"].includes(candidate.status)
   );

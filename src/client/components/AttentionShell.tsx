@@ -48,22 +48,30 @@ function isNowItem(item: WorkItem): boolean {
   );
 }
 
-function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined): boolean {
+function matchesOverviewFilter(item: WorkItem, filter: OverviewOperatorFilter | undefined, repairBatchIds: ReadonlySet<string>): boolean {
   if (!filter) return true;
   if (filter === "ready_for_batch") return item.schedulingState === "ready_for_batch";
   if (filter === "needs_recovery") return item.schedulingState === "started_not_processing";
   if (filter === "processing_now") return isNowItem(item);
   if (filter === "qa_attention") return item.attention?.kind === "qa_missing";
-  return item.attention?.kind === "batch_stopped" || item.attention?.kind === "batch_stop_requested";
+  return item.attention?.kind === "batch_stopped"
+    || item.attention?.kind === "batch_stop_requested"
+    || item.batchSignals?.some((signal) => repairBatchIds.has(signal.batchId) || /repair|missing|mismatch|stopp/i.test(signal.status)) === true;
 }
 
-function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined): boolean {
+function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined, repairBatchIds: ReadonlySet<string>): boolean {
   if (!deepLink) return true;
   if (deepLink.repo && item.repo !== deepLink.repo) return false;
   if (deepLink.target && item.target !== deepLink.target) return false;
-  if (deepLink.batchId && !item.batchSignals?.some((signal) => signal.batchId === deepLink.batchId)) return false;
-  if (deepLink.laneName && !item.batchSignals?.some((signal) => signal.laneName === deepLink.laneName)) return false;
-  return matchesOverviewFilter(item, deepLink.overviewFilter);
+  const exactIdentityMatch = Boolean(deepLink.repo && deepLink.target);
+  if (!exactIdentityMatch && (deepLink.batchId || deepLink.laneName)) {
+    const sameSignalMatch = item.batchSignals?.some((signal) =>
+      (!deepLink.batchId || signal.batchId === deepLink.batchId)
+      && (!deepLink.laneName || signal.laneName === deepLink.laneName)
+    );
+    if (!sameSignalMatch) return false;
+  }
+  return matchesOverviewFilter(item, deepLink.overviewFilter, repairBatchIds);
 }
 
 function pullRequestUrl(item: WorkItem): string | undefined {
@@ -157,7 +165,13 @@ export function AttentionShell({
   now = new Date(),
   deepLink,
   onSurfaceChange,
-  onOpenBatchOperations
+  onOpenBatchOperations,
+  onClearDeepLink,
+  mergeTimeStatus = "unavailable",
+  historyMergedTodayOnly = false,
+  onShowMergedToday,
+  repairBatchIds = new Set<string>(),
+  repairBatchCount = 0
 }: {
   items: WorkItem[];
   surface: DashboardSurface;
@@ -170,6 +184,12 @@ export function AttentionShell({
   deepLink?: OperatorDeepLink;
   onSurfaceChange?: (surface: DashboardSurface) => void;
   onOpenBatchOperations?: () => void;
+  onClearDeepLink?: () => void;
+  mergeTimeStatus?: "available" | "unavailable";
+  historyMergedTodayOnly?: boolean;
+  onShowMergedToday?: () => void;
+  repairBatchIds?: ReadonlySet<string>;
+  repairBatchCount?: number;
 }) {
   const attentionItems = items.filter((item) => item.operatorState === "needs_attention");
   const runningItems = items.filter(isNowItem);
@@ -178,12 +198,13 @@ export function AttentionShell({
     .sort((left, right) => activityTime(right) - activityTime(left));
   const runningToday = runningItems.length;
   const currentDay = new Date(now).toDateString();
-  const mergedToday = historyItems.filter((item) =>
+  const mergedTodayItems = historyItems.filter((item) =>
     item.github?.type === "pull_request"
     && item.github.state.toLowerCase() === "merged"
     && item.github.mergedAt
     && new Date(item.github.mergedAt).toDateString() === currentDay
-  ).length;
+  );
+  const mergedToday = mergedTodayItems.length;
   const card = (item: WorkItem, allowResume = true) => (
     <WorkCard
       item={item}
@@ -209,7 +230,11 @@ export function AttentionShell({
           </span>
         </header>
         {attentionItems.length === 0 ? (
-          <p className="empty-state">All clear — <button onClick={() => onSurfaceChange?.("now")} type="button">{runningToday} lanes running</button>, <button onClick={() => onSurfaceChange?.("history")} type="button">{mergedToday} merged today</button>.</p>
+          <p className="empty-state">
+            All clear — <button onClick={() => onSurfaceChange?.("now")} type="button">{runningToday} lanes running</button>, {mergeTimeStatus === "available" ? (
+              <button onClick={onShowMergedToday} type="button">{mergedToday} merged today</button>
+            ) : <span title="GitHub merge timestamps are not available">merged today unavailable</span>}.
+          </p>
         ) : (
           <div className="attention-card-list">{attentionItems.map((item) => card(item))}</div>
         )}
@@ -234,21 +259,26 @@ export function AttentionShell({
   }
 
   if (surface === "history") {
-    const filteredHistory = historyItems.filter((item) => matches(item, query));
+    const historyScope = historyMergedTodayOnly ? mergedTodayItems : historyItems;
+    const filteredHistory = historyScope.filter((item) => matches(item, query));
     return (
       <section aria-label="History" className="attention-surface">
-        <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><button aria-label={`Show all ${historyItems.length} history items`} className="status-strip" onClick={() => onQueryChange("")} type="button">{historyItems.length} items</button></header>
+        <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><button aria-label={`Show all ${historyItems.length} history items`} className="status-strip" onClick={() => { onQueryChange(""); onSurfaceChange?.("history"); }} type="button">{historyScope.length} items</button></header>
+        {historyMergedTodayOnly ? <p className="active-filter">Showing proven merges from today. <button onClick={() => onSurfaceChange?.("history")} type="button">Clear</button></p> : null}
         <label className="search-field"><span>Filter</span><input aria-label="Filter history" onChange={(event) => onQueryChange(event.target.value)} placeholder="Filter history" value={query} /></label>
         {filteredHistory.length === 0 ? <p className="empty-state">No terminal or aged-out work matches this filter.</p> : <div className="attention-card-list">{filteredHistory.map((item) => card(item, false))}</div>}
       </section>
     );
   }
 
-  const results = items.filter((item) => matchesDeepLink(item, deepLink) && matches(item, query));
+  const results = items.filter((item) => matchesDeepLink(item, deepLink, repairBatchIds) && matches(item, query));
+  const activeConstraints = [deepLink?.repo && `repo ${deepLink.repo}`, deepLink?.target && `target #${deepLink.target}`, deepLink?.batchId && `batch ${deepLink.batchId}`, deepLink?.laneName && `lane ${deepLink.laneName}`, deepLink?.overviewFilter && `filter ${deepLink.overviewFilter}`].filter(Boolean);
   return (
     <section aria-label="Find" className="attention-surface">
       <header className="attention-surface-header"><div><p className="eyebrow">Target, branch, batch, thread, or machine</p><h1>Find</h1></div></header>
       <label className="search-field"><span>⌘K</span><input aria-label="Find work" autoFocus onChange={(event) => onQueryChange(event.target.value)} placeholder="Find work" value={query} /></label>
+      {activeConstraints.length > 0 ? <p className="active-filter">Constrained by {activeConstraints.join(" · ")} <button onClick={onClearDeepLink} type="button">Clear constraints</button></p> : null}
+      {deepLink?.overviewFilter === "batch_repair" && repairBatchCount > 0 ? <button className="secondary-action" onClick={onOpenBatchOperations} type="button">Open {repairBatchCount} batch repair records</button> : null}
       {results.length === 0 ? <p className="empty-state">No work items match this search.</p> : <div className="attention-card-list">{results.map((item) => card(item))}</div>}
     </section>
   );
