@@ -3451,6 +3451,52 @@ describe("operatorRows", () => {
     }
   );
 
+  it("ages out archived dead-heartbeat work without treating actionable dead work as terminal", () => {
+    const oldHeartbeat = {
+      ...heartbeat,
+      status: "coding",
+      updatedAt: "2026-07-08T19:00:00Z",
+      expiresAt: "2026-07-08T19:10:00Z",
+      liveness: "dead" as const
+    };
+    const closedGithub = {
+      ...workItem().github!,
+      state: "CLOSED" as const
+    };
+    const archived = workItem({
+      operatorState: "archived_view",
+      terminalState: undefined,
+      heartbeat: oldHeartbeat,
+      github: closedGithub
+    });
+    const actionable = workItem({
+      id: "repo/app#124",
+      target: "124",
+      operatorState: "needs_attention",
+      terminalState: undefined,
+      heartbeat: { ...oldHeartbeat, target: "124" },
+      github: { ...closedGithub, target: "124", url: "https://github.com/repo/app/pull/124" }
+    });
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [archived, actionable]
+    });
+
+    const rows = buildOperatorRows(model);
+    expect(rows.find((row) => row.target === "123")).toMatchObject({
+      operatorState: "done",
+      retentionStatus: "done"
+    });
+    expect(rows.find((row) => row.target === "124")).toMatchObject({
+      operatorState: "dead",
+      retentionStatus: "coding"
+    });
+    expect(filterOperatorRowsByAge(rows, model.generatedAt)).toMatchObject({
+      hiddenRows: [expect.objectContaining({ target: "123" })],
+      visibleRows: [expect.objectContaining({ target: "124" })]
+    });
+  });
+
   it("does not present terminal target work as a Batch Repair recovery row", () => {
     const terminal = workItem({
       terminalState: "done",

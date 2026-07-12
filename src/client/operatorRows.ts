@@ -401,7 +401,7 @@ function deriveOperatorState(input: {
   const terminalTransitionIsSuperseded =
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
 
-  if (input.workItem?.terminalState || input.workItem?.operatorState === "terminal") {
+  if (input.workItem && !isOperationalWorkItem(input.workItem)) {
     return "done";
   }
   if (PAUSED_PATTERN.test(currentText)) {
@@ -813,7 +813,8 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     item.heartbeat?.updatedAt,
     claimLifecycleAt
   );
-  const retentionStatus = item.terminalState || (item.operatorState === "terminal" ? "done" : latestLifecycleStatus(lifecycleCandidates));
+  const retentionStatus = item.terminalState || (!isOperationalWorkItem(item) ? "done" : latestLifecycleStatus(lifecycleCandidates));
+  const isArchivedView = item.operatorState === "archived_view";
   const ownerMetadata = firstObserved(
     notApplicable(),
     ["claim", item.claim?.operator],
@@ -887,7 +888,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     title: item.github?.title || batchTarget?.title || workTitle(item),
     url: item.github?.url || batchTarget?.url,
     operatorState: state,
-    liveness: item.heartbeat?.liveness || "none",
+    liveness: isArchivedView ? "none" : item.heartbeat?.liveness || "none",
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
@@ -895,7 +896,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
     retentionStatus,
     githubState: item.github?.loadState === "loaded" ? item.github.state : UNKNOWN,
-    schedulingState: item.schedulingState,
+    schedulingState: isArchivedView ? undefined : item.schedulingState,
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
     batchId,
