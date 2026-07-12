@@ -2,6 +2,7 @@ import type { ClaimCustodyEvent, LivenessSpan, PhaseSpan } from "../../shared/cu
 import type { BatchEvent } from "../../shared/types";
 import { firstDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
+import { resumePrompt } from "../resumePrompt";
 
 function duration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
@@ -23,6 +24,22 @@ function safePullRequestUrl(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function unique(values: Array<string | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value?.trim()))));
+}
+
+function TimelineWarnings({ timeline }: { timeline: ItemTimelineResponse }) {
+  const warnings = timeline.warnings.filter(
+    (warning, index, all) => all.findIndex((candidate) => candidate.severity === warning.severity && candidate.message === warning.message) === index
+  );
+  if (warnings.length === 0) return null;
+  return <section aria-label="Timeline warnings">{warnings.map((warning) => (
+    <p className={`item-timeline-warning item-timeline-warning-${warning.severity}`} key={`${warning.severity}:${warning.message}`}>
+      {warning.severity.toUpperCase()}: {warning.message}
+    </p>
+  ))}</section>;
 }
 
 function copy(value: string) {
@@ -77,13 +94,18 @@ function Telemetry({ event }: { event: BatchEvent }) {
 
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
   const activeClaim = timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
+  const loadedGitHub = timeline.item?.github?.loadState === "loaded" ? timeline.item.github : undefined;
   const holder = firstDisplayAttribution([activeClaim?.agentId, timeline.item?.heartbeat?.agentId]);
   const state = timeline.item?.operatorState || "UNKNOWN";
   const holderDead = timeline.item?.heartbeat?.liveness === "dead"
     && (!activeClaim || activeClaim.agentId === timeline.item?.heartbeat?.agentId);
   const primary = holderDead
     ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
-    : { label: "Copy resume prompt", value: `Resume work item ${timeline.repo}#${timeline.target} from its custody timeline.` };
+    : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
+  const timelineBranches = unique(timeline.branches);
+  const branches = timelineBranches.length ? timelineBranches : unique([loadedGitHub?.branch]);
+  const timelinePrUrls = unique(timeline.prUrls.map(safePullRequestUrl));
+  const prUrls = timelinePrUrls.length ? timelinePrUrls : unique([loadedGitHub?.url ? safePullRequestUrl(loadedGitHub.url) : undefined]);
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
@@ -106,12 +128,12 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
         <button onClick={() => copy(primary.value)} type="button">{primary.label}</button>
       </header>
       {sourceIsUnknown(timeline) ? <p className="item-timeline-warning">Coordination data: UNKNOWN</p> : null}
+      <TimelineWarnings timeline={timeline} />
       <section className="item-anchors" aria-label="GitHub anchors">
-        {timeline.branches.length ? <span>Branch: {timeline.branches.join(", ")}</span> : <span>Branch: UNKNOWN</span>}
-        {timeline.prUrls.length ? timeline.prUrls.map((value) => {
-          const href = safePullRequestUrl(value);
-          const number = href?.match(/\/pull\/(\d+)(?:\/|$)/)?.[1];
-          return href ? <a href={href} key={href} rel="noreferrer" target="_blank">PR {number}</a> : <span key={value}>PR UNKNOWN</span>;
+        {branches.length ? <span>Branch: {branches.join(", ")}</span> : <span>Branch: UNKNOWN</span>}
+        {prUrls.length ? prUrls.map((href) => {
+          const number = href.match(/\/pull\/(\d+)(?:\/|$)/)?.[1];
+          return <a href={href} key={href} rel="noreferrer" target="_blank">PR {number}</a>;
         }) : <span>PR: UNKNOWN</span>}
       </section>
       <section aria-label="Full custody chain">

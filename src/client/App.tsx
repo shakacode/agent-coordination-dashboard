@@ -20,6 +20,7 @@ import {
   type OverviewOperatorFilter
 } from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
+import { resumePrompt } from "./resumePrompt";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -495,9 +496,7 @@ export function App() {
   }
 
   function copyResumePrompt(item: WorkItem) {
-    const branch = item.claim?.branch || item.heartbeat?.branch;
-    const prompt = `$pr-batch\nResume ${item.repo}#${item.target}${branch ? ` on ${branch}` : ""}. Verify current coordination state before edits.`;
-    void navigator.clipboard?.writeText(prompt);
+    void navigator.clipboard?.writeText(resumePrompt(item));
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {

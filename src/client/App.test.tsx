@@ -36,6 +36,7 @@ const model = {
         repo: "repo/dashboard",
         target: "43",
         status: "wedged",
+        branch: "codex/heartbeat",
         updatedAt: "2026-07-12T11:00:00.000Z",
         expiresAt: "2026-07-12T11:30:00.000Z",
         path: "heartbeats/worker-a.json",
@@ -126,7 +127,9 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("repo/dashboard#43"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "$pr-batch\nResume repo/dashboard#43 on codex/heartbeat. Verify current coordination state before edits."
+    );
     expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
@@ -136,6 +139,37 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 events" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "0 health" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
+  });
+
+  it("uses the same resume contract with a loaded GitHub branch fallback", async () => {
+    const githubFallbackModel = {
+      ...model,
+      workItems: [{
+        ...model.workItems[0],
+        heartbeat: undefined,
+        github: {
+          repo: "repo/dashboard",
+          target: "43",
+          type: "issue" as const,
+          title: "GitHub branch fallback",
+          url: "https://github.com/repo/dashboard/issues/43",
+          state: "OPEN",
+          branch: "codex/github-fallback",
+          labels: [],
+          loadState: "loaded" as const
+        }
+      }, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input) === "/api/settings" ? settings : githubFallbackModel)
+    })));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Copy resume prompt" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "$pr-batch\nResume repo/dashboard#43 on codex/github-fallback. Verify current coordination state before edits."
+    );
   });
 
   it("maps legacy query links into Find and retains their query", async () => {

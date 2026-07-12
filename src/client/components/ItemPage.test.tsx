@@ -88,6 +88,24 @@ describe("ItemPage", () => {
     );
   });
 
+  it("copies the shared resume contract using the active claim branch first", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "active", branch: "codex/claim", path: "claims/46.json" },
+        heartbeat: { ...timeline.item.heartbeat!, branch: "codex/heartbeat" },
+        github: { ...timeline.item.github!, branch: "codex/github" }
+      }
+    }} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "$pr-batch\nResume shakacode/dashboard#46 on codex/claim. Verify current coordination state before edits."
+    );
+  });
+
   it("shell-quotes hostile repository and target text in copied takeover commands", async () => {
     const directory = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "custody-command-"));
     const marker = nodePath.join(directory, "must-not-exist");
@@ -212,6 +230,41 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", safeUrl);
-    expect(screen.getAllByText("PR UNKNOWN")).toHaveLength(2);
+    expect(screen.queryByText("PR UNKNOWN")).not.toBeInTheDocument();
+  });
+
+  it("falls back to loaded GitHub anchors and renders each safe global anchor once", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      branches: [],
+      prUrls: ["https://github.com/shakacode/dashboard/pull/47", "https://github.com/shakacode/dashboard/pull/47"],
+      item: {
+        ...timeline.item,
+        github: {
+          ...timeline.item.github!,
+          branch: "codex/github-only",
+          url: "https://github.com/shakacode/dashboard/pull/47"
+        }
+      }
+    }} />);
+
+    expect(screen.getAllByText("Branch: codex/github-only")).toHaveLength(1);
+    expect(screen.getAllByRole("link", { name: "PR 47" })).toHaveLength(1);
+  });
+
+  it("keeps target-scoped warnings visible beside one broad UNKNOWN notice", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      sourceStatus: [{ resource: "events", mode: "fs", status: "unreachable", checkedAt: "2026-07-12T10:10:00Z" }],
+      warnings: [
+        { severity: "warning", message: "Target coordination history is partial." },
+        { severity: "warning", message: "Target coordination history is partial." },
+        { severity: "info", message: "Target source remained reachable." }
+      ]
+    }} />);
+
+    expect(screen.getAllByText("Coordination data: UNKNOWN")).toHaveLength(1);
+    expect(screen.getAllByText("WARNING: Target coordination history is partial.")).toHaveLength(1);
+    expect(screen.getByText("INFO: Target source remained reachable.")).toBeInTheDocument();
   });
 });
