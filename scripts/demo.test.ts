@@ -101,9 +101,9 @@ describe("demo coordination state", () => {
       now
     });
     expect(timeline.claims).toEqual([
-      expect.objectContaining({ action: "acquired", agentId: "demo-api-initial" }),
-      expect.objectContaining({ action: "renewed", agentId: "demo-api-initial" }),
-      expect.objectContaining({ action: "taken_over", agentId: "demo-api", previousAgentId: "demo-api-initial" })
+      expect.objectContaining({ action: "acquired", agentId: "demo-api-initial", generation: 1 }),
+      expect.objectContaining({ action: "renewed", agentId: "demo-api-initial", generation: 1 }),
+      expect.objectContaining({ action: "taken_over", agentId: "demo-api", previousAgentId: "demo-api-initial", generation: 2 })
     ]);
     expect(state.warnings).toEqual([]);
   });

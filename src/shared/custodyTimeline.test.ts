@@ -120,14 +120,54 @@ describe("buildCustodyTimeline", () => {
       claims: [],
       heartbeats: [],
       events: [
-        event({ eventId: "a", agentId: "worker-a" }),
-        event({ eventId: "release", type: "lane.handoff", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" }),
-        event({ eventId: "b", agentId: "worker-b", timestamp: "2026-07-12T10:06:00Z" })
+        event({ eventId: "a", agentId: "worker-a", generation: 3 }),
+        event({ eventId: "release", type: "lane.handoff", agentId: "worker-a", generation: 4, timestamp: "2026-07-12T10:05:00Z" }),
+        event({ eventId: "b", agentId: "worker-b", generation: 5, timestamp: "2026-07-12T10:06:00Z" })
       ]
     });
 
-    expect(timeline.claims.map((event) => event.action)).toEqual(["acquired", "released", "acquired"]);
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", generation: 3 }),
+      expect.objectContaining({ action: "released", generation: 4 }),
+      expect.objectContaining({ action: "acquired", generation: 5 })
+    ]);
     expect(timeline.claims[2]).not.toHaveProperty("previousAgentId");
+  });
+
+  it("ignores non-ownership telemetry until explicit continuation transfers custody", () => {
+    const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
+      eventId: "event",
+      type: "phase",
+      repo: "shakacode/dashboard",
+      target: "46",
+      path: "history/batch.jsonl:1",
+      timestamp: "2026-07-12T10:00:00Z",
+      ...overrides
+    });
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [heartbeat({ agentId: "worker-a", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        event({ eventId: "started", type: "lane.started", agentId: "worker-a" }),
+        event({ eventId: "resumed", type: "resumed", agentId: "worker-a", timestamp: "2026-07-12T10:01:00Z" }),
+        event({ eventId: "qa", type: "qa.validation_started", agentId: "qa-agent", timestamp: "2026-07-12T10:02:00Z" }),
+        event({ eventId: "phase", type: "phase", agentId: "phase-agent", timestamp: "2026-07-12T10:03:00Z" }),
+        event({ eventId: "blocked", type: "blocked", agentId: "coordinator", timestamp: "2026-07-12T10:04:00Z" }),
+        event({ eventId: "review", type: "review", agentId: "reviewer", timestamp: "2026-07-12T10:05:00Z" }),
+        event({ eventId: "final", type: "final", agentId: "coordinator", timestamp: "2026-07-12T10:06:00Z" }),
+        event({ eventId: "continued", type: "continued", agentId: "worker-b", timestamp: "2026-07-12T10:07:00Z" })
+      ]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "renewed", agentId: "worker-a" }),
+      expect.objectContaining({ action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a" })
+    ]);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:07:00.000Z")).toBe(true);
   });
 
   it("ends the final phase at the first terminal lifecycle event", () => {

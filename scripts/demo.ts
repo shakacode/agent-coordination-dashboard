@@ -172,6 +172,7 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
         repo: DEMO_REPO,
         target: "101",
         branch: "demo/api-initial",
+        generation: 1,
         at: isoAt(now, -720_000),
         message: "Initial API custody started."
       },
@@ -189,6 +190,7 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
         repo: DEMO_REPO,
         target: "101",
         branch: "demo/api-initial",
+        generation: 1,
         at: isoAt(now, -600_000),
         message: "Initial API holder reported progress."
       },
@@ -206,6 +208,7 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
         repo: DEMO_REPO,
         target: "101",
         branch: "demo/api",
+        generation: 2,
         at: isoAt(now, -300_000),
         message: "API custody continued with a new holder."
       },
@@ -223,6 +226,7 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
         repo: DEMO_REPO,
         target: "101",
         branch: "demo/api",
+        generation: 2,
         phase: "implementing",
         at: isoAt(now, -290_000),
         message: "Demo custody takeover is implementing."

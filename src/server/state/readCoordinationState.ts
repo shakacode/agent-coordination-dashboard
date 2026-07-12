@@ -506,6 +506,7 @@ function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchE
   return {
     eventId: stringValue(raw.event_id) || stringValue(raw.id) || `${path}:${timestamp || idFromPath(path)}`,
     type: stringValue(raw.type) || stringValue(raw.event_type) || stringValue(raw.name, "unknown"),
+    generation: finiteNumber(raw.generation ?? raw.claim_generation),
     batchId,
     laneName,
     machineId: machineIdFrom(raw),

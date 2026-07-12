@@ -129,6 +129,8 @@ export interface BatchRecord {
 export interface BatchEvent {
   eventId: string;
   type: string;
+  /** Compare-and-swap generation, when append-only telemetry supplied one. */
+  generation?: number;
   batchId?: string;
   batchPath?: string;
   laneName?: string;

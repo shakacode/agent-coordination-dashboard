@@ -101,7 +101,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.repo).toBe("shakacode/react_on_rails");
     expect(timeline.target).toBe("46");
     expect(timeline.claims).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "acquired", agentId: "worker-a", generation: 3 }),
       expect.objectContaining({ action: "taken_over", generation: 4 })
     ]));
     expect(timeline.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ liveness: "live" })]));

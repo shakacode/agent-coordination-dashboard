@@ -107,6 +107,7 @@ describe("readCoordinationState", () => {
         target: "4005",
         branch: "feature/operator-view",
         pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
+        generation: "8",
         timestamp: "2026-06-17T19:45:00Z"
       })}\n{\n`
     );
@@ -159,7 +160,8 @@ describe("readCoordinationState", () => {
       host: "codex",
       operator: "justin",
       branch: "feature/operator-view",
-      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005",
+      generation: 8
     });
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("events/batch-1.jsonl:2")])
