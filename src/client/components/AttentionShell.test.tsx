@@ -235,6 +235,24 @@ describe("AttentionShell", () => {
     expect(screen.queryByText("Newer terminal", { exact: false })).not.toBeInTheDocument();
   });
 
+  it("labels GitHub-derived terminal history and retains its merge link", () => {
+    const derived = {
+      ...ITEMS[1],
+      type: "pull_request" as const,
+      terminalProvenance: { source: "github" as const, url: "https://github.com/repo/dashboard/pull/44" },
+      github: { repo: "repo/dashboard", target: "44", type: "pull_request" as const, title: "Merged work", url: "https://github.com/repo/dashboard/pull/44", state: "MERGED", labels: [], loadState: "loaded" as const }
+    };
+    render(<AttentionShell items={[derived]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByText("Derived from GitHub")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open merge" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/44");
+  });
+
+  it("shows UNKNOWN instead of guessing when GitHub reconciliation failed", () => {
+    const unknown = { ...ITEMS[0], github: { repo: "repo/dashboard", target: "43", type: "unknown" as const, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" as const } };
+    render(<AttentionShell items={[unknown]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText("GitHub state: UNKNOWN")).toBeInTheDocument();
+  });
+
   it("renders every declared attention action, including resolvable PR and batch-operation actions", async () => {
     const onOpenBatchOperations = vi.fn();
     const qa = { ...ITEMS[0], attention: { kind: "qa_missing" as const, label: "QA missing", action: "Open PR" as const }, claim: { schemaVersion: 1, agentId: "worker", repo: "repo/dashboard", target: "43", status: "active" as const, prUrl: "https://github.com/repo/dashboard/pull/43", path: "claims/43.json" } };

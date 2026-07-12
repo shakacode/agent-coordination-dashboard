@@ -2,9 +2,9 @@ import express from "express";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
-import type { BatchRecord, DashboardModel, DashboardSettings } from "../shared/types";
+import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
-import { loadOpenGitHubItems as defaultLoadOpenGitHubItems } from "./github/githubClient";
+import { createGitHubTargetReconciler, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
@@ -15,6 +15,7 @@ import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
+type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
 
 export function canBypassDashboardCache(refreshHeader: string | undefined, remoteAddress: string | undefined): boolean {
@@ -25,12 +26,16 @@ export function canBypassDashboardCache(refreshHeader: string | undefined, remot
 interface CreateDashboardAppOptions {
   serveFrontend?: boolean;
   loadOpenGitHubItems?: LoadOpenGitHubItems;
+  loadGitHubTargets?: LoadGitHubTargets;
 }
 
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
+  const defaultTargetReconciler = createGitHubTargetReconciler();
+  const loadGitHubTargets = options.loadGitHubTargets
+    || (options.loadOpenGitHubItems ? async () => ({ items: [], warnings: [] }) : defaultTargetReconciler.load);
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
@@ -89,17 +94,40 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return dashboardBuildSequence;
   }
 
-  async function buildScopedDashboard(settings: DashboardSettings): Promise<DashboardModel> {
+  function reconciliationReference(item: WorkItem): GitHubTargetReference | undefined {
+    const hasCoordinationEvidence = Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
+    if (!hasCoordinationEvidence || item.terminalState || item.github?.loadState === "loaded" || !/^\d+$/.test(item.target)) return undefined;
+    const prUrl = item.claim?.prUrl || item.heartbeat?.prUrl;
+    const type = item.type !== "unknown" ? item.type : prUrl && /\/pull\/\d+(?:[/?#]|$)/i.test(prUrl) ? "pull_request" : "unknown";
+    return { repo: item.repo, target: item.target, type };
+  }
+
+  async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
     const now = new Date();
     const state = await readCoordinationState(config.stateRoot, now, {
       apiUrl: coordApiUrl,
       token: coordApiToken
     });
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
-    const githubItems = githubResults.flatMap((result) => result.items);
-    const githubWarnings = githubResults.flatMap((result) => result.warnings);
+    const openGithubItems = githubResults.flatMap((result) => result.items);
+    const openGithubWarnings = githubResults.flatMap((result) => result.warnings);
 
-    const model = buildDashboardModel({
+    const preliminaryModel = buildDashboardModel({
+      stateRoot: displayedStateRoot,
+      targetRepos: settings.targetRepos,
+      claims: state.claims,
+      heartbeats: state.heartbeats,
+      batches: state.batches,
+      events: state.events,
+      githubItems: openGithubItems,
+      warnings: [...state.warnings, ...openGithubWarnings],
+      now
+    });
+    const references = preliminaryModel.workItems.map(reconciliationReference).filter((reference): reference is GitHubTargetReference => Boolean(reference));
+    const reconciled = await loadGitHubTargets(references, { bypassCache: options.bypassGitHubCache });
+    const reconciledKeys = new Set(reconciled.items.map((item) => `${item.repo}#${item.target}`));
+    const githubItems = [...openGithubItems.filter((item) => !reconciledKeys.has(`${item.repo}#${item.target}`)), ...reconciled.items];
+    const model = references.length === 0 ? preliminaryModel : buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: state.claims,
@@ -107,11 +135,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       batches: state.batches,
       events: state.events,
       githubItems,
-      warnings: [...state.warnings, ...githubWarnings],
+      warnings: [...state.warnings, ...openGithubWarnings, ...reconciled.warnings],
       now
     });
+    const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
+    const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     return {
       ...model,
+      ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
+      githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
       ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
     };
@@ -138,7 +170,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       invalidateDashboardCache();
       const generation = dashboardCacheGeneration;
       const sequence = nextCacheableDashboardBuild();
-      const model = await buildScopedDashboard(settings);
+      const model = await buildScopedDashboard(settings, { bypassGitHubCache: true });
       cacheDashboardModel(key, model, generation, sequence, Date.now() + dashboardCacheTtlMs);
       return model;
     }

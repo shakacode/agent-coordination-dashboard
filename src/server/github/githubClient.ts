@@ -30,9 +30,26 @@ interface GhIssue {
   labels?: GhLabel[];
 }
 
-interface GitHubLoadResult {
+interface GhTarget {
+  number: number;
+  title: string;
+  html_url: string;
+  state: string;
+  closed_at?: string;
+  user?: GhAuthor;
+  labels?: GhLabel[];
+  pull_request?: { merged_at?: string };
+}
+
+export interface GitHubLoadResult {
   items: GitHubPreview[];
   warnings: CoordinationWarning[];
+}
+
+export interface GitHubTargetReference {
+  repo: string;
+  target: string;
+  type: GitHubPreview["type"];
 }
 
 const GITHUB_LIST_LIMIT = 1000;
@@ -94,6 +111,88 @@ export function parseIssueList(repo: string, stdout: string): GitHubPreview[] {
     labels: labelNames(issue.labels),
     loadState: "loaded"
   }));
+}
+
+export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
+  const item = JSON.parse(stdout) as GhTarget;
+  const isPullRequest = Boolean(item.pull_request);
+  const mergedAt = item.pull_request?.merged_at || undefined;
+  return {
+    repo,
+    target: String(item.number),
+    type: isPullRequest ? "pull_request" : "issue",
+    title: item.title,
+    url: item.html_url,
+    state: mergedAt ? "MERGED" : item.state.toUpperCase(),
+    author: item.user?.login,
+    labels: labelNames(item.labels),
+    ...(mergedAt ? { mergedAt } : {}),
+    ...(item.closed_at ? { closedAt: item.closed_at } : {}),
+    loadState: "loaded"
+  };
+}
+
+export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 8) {
+  const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult> }>();
+  const queue: Array<() => void> = [];
+  let activeLoads = 0;
+
+  function schedule<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const start = () => {
+        activeLoads += 1;
+        void task().then(resolve, reject).finally(() => {
+          activeLoads -= 1;
+          queue.shift()?.();
+        });
+      };
+      if (activeLoads < Math.max(1, maxConcurrency)) start();
+      else queue.push(start);
+    });
+  }
+
+  async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
+    const result = await runner.run(["api", `repos/${reference.repo}/issues/${reference.target}`]);
+    if (result.exitCode !== 0) {
+      return {
+        items: [{
+          repo: reference.repo,
+          target: reference.target,
+          type: reference.type,
+          title: "GitHub state unavailable",
+          url: "",
+          state: "UNKNOWN",
+          labels: [],
+          loadState: "unknown"
+        }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation failed for ${reference.repo}#${reference.target}: ${result.stderr || `exit ${result.exitCode}`}` }]
+      };
+    }
+    try {
+      return { items: [parseGitHubTarget(reference.repo, result.stdout)], warnings: [] };
+    } catch (error) {
+      return {
+        items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" }],
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation returned unreadable JSON for ${reference.repo}#${reference.target}: ${error instanceof Error ? error.message : "unknown error"}` }]
+      };
+    }
+  }
+
+  return {
+    async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
+      const unique = references.filter((reference, index) => references.findIndex((candidate) => candidate.repo === reference.repo && candidate.target === reference.target) === index);
+      const now = Date.now();
+      const results = await Promise.all(unique.map((reference) => {
+        const key = `${reference.repo}#${reference.target}`;
+        const existing = cache.get(key);
+        if (!options.bypassCache && existing && existing.expiresAt > now) return existing.promise;
+        const promise = schedule(() => loadOne(reference));
+        cache.set(key, { expiresAt: now + ttlMs, promise });
+        return promise;
+      }));
+      return { items: results.flatMap((result) => result.items), warnings: results.flatMap((result) => result.warnings) };
+    }
+  };
 }
 
 export async function loadOpenGitHubItems(

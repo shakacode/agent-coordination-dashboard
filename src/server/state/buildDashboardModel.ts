@@ -1241,6 +1241,11 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     batches,
     now: input.now
   });
+  const nonterminalWorkItems = workItems.filter((item) => !item.terminalState);
+  const hasUnreconciledCoordinatedWork = nonterminalWorkItems.some((item) => {
+    const hasCoordinationEvidence = Boolean(item.claim || item.heartbeat || item.batchSignals?.length || item.provenance?.evidence.some((source) => ["event", "manifest", "inferred_batch"].includes(source)));
+    return hasCoordinationEvidence && item.github?.loadState !== "loaded";
+  });
 
   const workByAgent = new Map<string, WorkItem[]>();
   for (const item of workItems) {
@@ -1444,6 +1449,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
     qaValidations,
     healthItems,
     warnings: [...scopedInputWarnings, ...scopeWarnings, ...workItems.flatMap((item) => item.warnings), ...batchWarnings],
-    githubMergeTimeStatus: "unavailable"
+    githubMergeTimeStatus: "unavailable",
+    ...(hasUnreconciledCoordinatedWork ? {} : { trulyOpenCount: nonterminalWorkItems.length }),
+    trulyOpenCountStatus: hasUnreconciledCoordinatedWork ? "unknown" : "available"
   };
 }

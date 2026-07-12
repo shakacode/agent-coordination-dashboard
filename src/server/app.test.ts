@@ -128,6 +128,61 @@ describe("dashboard app import endpoint", () => {
     expect(githubLoads).toBe(3);
   });
 
+  it("reconciles coordinated targets with GitHub terminal state and exposes a trusted open count", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-reconcile-"));
+    const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(join(claimDirectory, "4005.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "4005", agent_id: "worker", status: "active"
+    }));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => ({
+        items: references.map((reference) => ({ ...reference, type: "pull_request" as const, title: "Merged work", url: "https://github.com/shakacode/react_on_rails/pull/4005", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const })),
+        warnings: []
+      })
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+    const body = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>>; trulyOpenCount: number; trulyOpenCountStatus: string };
+    expect(body.workItems[0]).toMatchObject({ operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github" } });
+    expect(body.trulyOpenCount).toBe(0);
+    expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
+  it("reports the truly-open headline as UNKNOWN when target reconciliation is unavailable", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-reconcile-unknown-"));
+    const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(join(claimDirectory, "4005.json"), JSON.stringify({ schema_version: 1, repo: "shakacode/react_on_rails", target: "4005", agent_id: "worker", status: "active" }));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => ({
+        items: references.map((reference) => ({ ...reference, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" as const })),
+        warnings: [{ severity: "warning", repo: "shakacode/react_on_rails", target: "4005", message: "GitHub auth required" }]
+      })
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+    const body = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { trulyOpenCount?: number; trulyOpenCountStatus: string; warnings: Array<{ message: string }> };
+    expect(body.trulyOpenCount).toBeUndefined();
+    expect(body.trulyOpenCountStatus).toBe("unknown");
+    expect(body.warnings.some((warning) => warning.message.toLowerCase().includes("auth required"))).toBe(true);
+  });
+
+  it("keeps the truly-open headline UNKNOWN when GitHub list coverage is partial", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-github-partial-"));
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [{ severity: "warning", repo: "shakacode/react_on_rails", message: "GitHub issue list failed" }] }),
+      loadGitHubTargets: async () => ({ items: [], warnings: [] })
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+    const body = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { trulyOpenCount?: number; trulyOpenCountStatus: string };
+    expect(body.trulyOpenCount).toBeUndefined();
+    expect(body.trulyOpenCountStatus).toBe("unknown");
+  });
+
   it("does not cache in-flight dashboard reads after a local write invalidates them", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-inflight-"));
     let githubLoads = 0;
@@ -342,14 +397,20 @@ describe("dashboard app import endpoint", () => {
 
     const degraded = (await (await fetch(`${baseUrl}/api/dashboard`)).json()) as {
       sourceStatus: Array<{ status: string }>;
+      trulyOpenCount?: number;
+      trulyOpenCountStatus: string;
     };
     expect(degraded.sourceStatus.every((source) => source.status === "auth_error")).toBe(true);
+    expect(degraded.trulyOpenCount).toBeUndefined();
+    expect(degraded.trulyOpenCountStatus).toBe("unknown");
 
     authorized = true;
     const recovered = (await (
       await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } })
-    ).json()) as { sourceStatus: Array<{ status: string }> };
+    ).json()) as { sourceStatus: Array<{ status: string }>; trulyOpenCount?: number; trulyOpenCountStatus: string };
     expect(recovered.sourceStatus.every((source) => source.status === "empty")).toBe(true);
+    expect(recovered.trulyOpenCount).toBe(0);
+    expect(recovered.trulyOpenCountStatus).toBe("available");
   });
 
   it("treats a blank coordination API URL as filesystem mode", async () => {

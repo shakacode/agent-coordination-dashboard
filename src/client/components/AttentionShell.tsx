@@ -145,6 +145,8 @@ function WorkCard({
         <p className="attention-card-kicker">{displayAttribution(item.repo)}</p>
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
+        {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
+        {item.github?.loadState === "unknown" ? <p className="attention-card-meta">GitHub state: UNKNOWN</p> : null}
         <p className="attention-card-meta">Holder: {holder(item)} · {displayAttribution(item.batchSignals?.[0]?.batchId, "unbatched")}</p>
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
@@ -168,7 +170,7 @@ function WorkCard({
         {reason?.action === "Open batch operations" ? (
           <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
         ) : null}
-        {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">Open</a> : null}
+        {item.github?.url ? <a href={item.github.url} rel="noreferrer" target="_blank">{item.terminalProvenance?.source === "github" && item.terminalState === "done" ? "Open merge" : "Open"}</a> : null}
       </div>
     </article>
   );

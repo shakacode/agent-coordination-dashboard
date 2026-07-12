@@ -201,6 +201,8 @@ export interface GitHubPreview {
   reviewDecision?: string;
   /** Present only when GitHub supplied a trustworthy merge timestamp. */
   mergedAt?: string;
+  /** Present only when GitHub supplied a trustworthy close timestamp. */
+  closedAt?: string;
   loadState: "loaded" | "unknown";
 }
 
@@ -229,6 +231,10 @@ export interface WorkItem {
    */
   operatorState?: WorkItemOperatorState;
   terminalState?: WorkItemTerminalState;
+  terminalProvenance?: {
+    source: "declared" | "github";
+    url?: string;
+  };
   attention?: {
     kind: AttentionReasonKind;
     label: string;
@@ -281,4 +287,7 @@ export interface DashboardModel {
   coordinationTokenEnvVar?: "AGENT_COORD_API_TOKEN" | "AGENT_COORD_TOKEN";
   /** Capability flag; unavailable prevents the UI from presenting a false zero merge count. */
   githubMergeTimeStatus?: "available" | "unavailable";
+  /** Trustworthy only when every resolvable coordinated target was reconciled. */
+  trulyOpenCount?: number;
+  trulyOpenCountStatus?: "available" | "unknown";
 }

@@ -498,7 +498,9 @@ export function App() {
             ) : (
               dashboard.stateRoot
             )}{" "}
-            · <button className="inline-count" onClick={showAllWorkItems} type="button">{dashboard.workItems.length} open or coordinated items</button>
+            · <button className="inline-count" onClick={showAllWorkItems} type="button">
+              {dashboard.trulyOpenCountStatus === "unknown" ? "UNKNOWN" : dashboard.trulyOpenCount ?? dashboard.workItems.filter((item) => !item.terminalState).length} lanes truly open
+            </button>
           </p>
         </div>
         <div className="summary-strip">

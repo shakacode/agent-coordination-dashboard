@@ -19,6 +19,8 @@ const model = {
   qaValidations: [],
   healthItems: [],
   warnings: [],
+  trulyOpenCount: 2,
+  trulyOpenCountStatus: "available",
   workItems: [
     {
       id: "repo/dashboard#43",
@@ -113,7 +115,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("repo/dashboard#43"));
-    expect(screen.getByRole("button", { name: "3 open or coordinated items" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
@@ -176,7 +178,7 @@ describe("App", () => {
     window.history.pushState({}, "", "/?repo=repo/dashboard&target=45&q=Ready");
     render(<App />);
     await screen.findByText(/Constrained by repo repo\/dashboard/);
-    await userEvent.click(screen.getByRole("button", { name: "3 open or coordinated items" }));
+    await userEvent.click(screen.getByRole("button", { name: "2 lanes truly open" }));
     expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("");
     expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
     expect(window.location.search).toBe("");
