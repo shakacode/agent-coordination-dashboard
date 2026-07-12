@@ -71,8 +71,11 @@ export function MachinesTab({
                     <dd>{agent.currentWork.map((item) => `${item.repo}#${item.target}`).join(", ") || "None"}</dd>
                   </div>
                 </dl>
-                {agent.warnings.map((warning) => (
-                  <p className="warning" key={warning.message}>
+                {agent.warnings.map((warning, warningIndex) => (
+                  <p
+                    className="warning"
+                    key={`${warning.repo || "repo"}:${warning.target || "target"}:${warning.agentId || agent.agentId}:${warning.severity}:${warning.message}:${warningIndex}`}
+                  >
                     {warning.message}
                   </p>
                 ))}
