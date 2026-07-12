@@ -64,6 +64,32 @@ export function githubTargetReferenceKey(reference: GitHubTargetReference): stri
 
 const GITHUB_LIST_LIMIT = 1000;
 
+/**
+ * Mirrors `git check-ref-format --branch` without invoking Git. Branch names
+ * are untrusted coordination data, so reject them before constructing or
+ * executing any GitHub CLI request.
+ */
+function isValidGitBranchName(branch: string): boolean {
+  if (
+    !branch
+    || branch === "HEAD"
+    || branch.startsWith("-")
+    || branch.startsWith("/")
+    || branch.endsWith("/")
+    || branch.endsWith(".")
+    || branch.includes("//")
+    || branch.includes("..")
+    || branch.includes("@{")
+    || /[\x00-\x20\x7f~^:?*\[\\]/.test(branch)
+  ) {
+    return false;
+  }
+
+  return branch.split("/").every((component) =>
+    !component.startsWith(".") && !component.endsWith(".lock")
+  );
+}
+
 export function githubApiPath(repo: string, kind: "issues" | "branches", target: string): string {
   const repoSegments = repo.split("/");
   if (!isValidGitHubRepository(repo)) {
@@ -72,7 +98,7 @@ export function githubApiPath(repo: string, kind: "issues" | "branches", target:
   if (kind === "issues" && !/^\d+$/.test(target)) {
     throw new Error(`Invalid GitHub issue target: ${target}`);
   }
-  if (kind === "branches" && (!target || target.includes("..") || target.split("/").some((segment) => segment === "." || segment === ".."))) {
+  if (kind === "branches" && !isValidGitBranchName(target)) {
     throw new Error(`Invalid GitHub branch: ${target || "empty branch name"}`);
   }
   return `repos/${repoSegments.map(encodeURIComponent).join("/")}/${kind}/${encodeURIComponent(target)}`;

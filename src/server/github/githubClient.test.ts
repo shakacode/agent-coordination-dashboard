@@ -24,13 +24,70 @@ describe("github list parsers", () => {
 
   it("constructs GitHub API paths from validated owner and repository segments", () => {
     expect(githubApiPath("shaka-code/agent_coordination.dashboard", "issues", "45")).toBe("repos/shaka-code/agent_coordination.dashboard/issues/45");
-    expect(githubApiPath("repo/app", "branches", "feature/work?#x")).toBe("repos/repo/app/branches/feature%2Fwork%3F%23x");
+    expect(githubApiPath("repo/app", "branches", "feature/work-#x")).toBe("repos/repo/app/branches/feature%2Fwork-%23x");
     expect(() => githubApiPath("repo/app/../../secret", "issues", "45")).toThrow(/repository/i);
     expect(() => githubApiPath("../app", "issues", "45")).toThrow(/repository/i);
     expect(() => githubApiPath("repo/...", "issues", "45")).toThrow(/repository/i);
     expect(() => githubApiPath("repo/app", "issues", "45/../../secret")).toThrow(/issue target/i);
     expect(() => githubApiPath("repo/app", "branches", "feature/../secret")).toThrow(/branch/i);
     expect(() => githubApiPath("repo/app", "branches", "feature/foo..bar")).toThrow(/branch/i);
+  });
+
+  it.each([
+    "",
+    "-leading-dash",
+    "/leading-slash",
+    "trailing-slash/",
+    "trailing-dot.",
+    "double//slash",
+    "double..dot",
+    "feature/@{upstream}",
+    "feature/control\u0001char",
+    "feature/delete\u007fchar",
+    "feature/has space",
+    "feature/tilde~name",
+    "feature/caret^name",
+    "feature/colon:name",
+    "feature/question?name",
+    "feature/star*name",
+    "feature/[bracket",
+    "feature/back\\slash",
+    ".hidden",
+    "feature/.hidden",
+    "feature/branch.lock",
+    "HEAD"
+  ])("rejects a branch Git would reject: %j", (branch) => {
+    expect(() => githubApiPath("repo/app", "branches", branch)).toThrow(/branch/i);
+  });
+
+  it.each([
+    "main",
+    "codex/issue-45",
+    "release/v1.2.3",
+    "feature/-nested-dash",
+    "feature/dotted.name",
+    "feature/hash#name",
+    "feature/foo.locked",
+    "@"
+  ])("accepts a common branch Git accepts: %j", (branch) => {
+    expect(githubApiPath("repo/app", "branches", branch)).toBe(`repos/repo/app/branches/${encodeURIComponent(branch)}`);
+  });
+
+  it("returns UNKNOWN without GitHub calls for every invalid branch instead of inferring deletion", async () => {
+    const run = vi.fn(async () => ({ stdout: "", stderr: "HTTP 404", exitCode: 1 }));
+    const invalidBranches = ["-leading", "feature/.hidden", "feature/branch.lock", "feature/has space", "feature/@{upstream}"];
+    const result = await createGitHubTargetReconciler({ run }).load(invalidBranches.map((branch, index) => ({
+      repo: "repo/app",
+      target: String(100 + index),
+      type: "issue" as const,
+      branch
+    })));
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result.items).toHaveLength(invalidBranches.length);
+    expect(result.items.every((item) => item.state === "UNKNOWN" && item.loadState === "unknown" && item.branchState === undefined)).toBe(true);
+    expect(result.warnings).toHaveLength(invalidBranches.length);
+    expect(result.warnings.every((warning) => /branch/i.test(warning.message))).toBe(true);
   });
 
   it("rejects hostile target references without invoking gh", async () => {
