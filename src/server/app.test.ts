@@ -670,6 +670,7 @@ describe("dashboard app import endpoint", () => {
 
   it("uses a claim PR URL as the canonical GitHub target and maps its terminal result onto the issue WorkItem", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-reconcile-"));
+    const mergedAt = new Date().toISOString();
     const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
     await mkdir(claimDirectory, { recursive: true });
     await writeFile(join(claimDirectory, "45.json"), JSON.stringify({
@@ -682,7 +683,7 @@ describe("dashboard app import endpoint", () => {
       loadGitHubTargets: async (references) => ({
         items: references.map((reference) => {
           reconciledTarget = reference.target;
-          return { ...reference, type: "pull_request" as const, title: "Merged work", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const };
+          return { ...reference, type: "pull_request" as const, title: "Merged work", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt, labels: [], loadState: "loaded" as const };
         }),
         warnings: []
       })

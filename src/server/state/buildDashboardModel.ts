@@ -20,9 +20,10 @@ import type {
 } from "../../shared/types";
 import { parsePrBatchLaunchPrompt } from "../../shared/batchManifest";
 import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../shared/batchSignal";
-import { displayAttribution } from "../../shared/attribution";
+import { displayAttribution, hasDisplayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { isOperationalWorkItem } from "../../shared/workItemSelection";
+import { inferLegacyMachineId } from "../../shared/legacyMachine";
 import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromStructuredEventField, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
@@ -135,7 +136,7 @@ function timestampValue(value: string | undefined): number {
 
 function normalizedMetadataValue(value: string | undefined): string | undefined {
   const normalized = value?.trim();
-  return normalized || undefined;
+  return hasDisplayAttribution(normalized) ? normalized : undefined;
 }
 
 function compareEventRecency(left: BatchEvent, right: BatchEvent): number {
@@ -1333,15 +1334,18 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const claimMachineId = normalizedMetadataValue(claimWithMachine?.machineId);
       const eventWithMachine = agentEvents.find((event) => normalizedMetadataValue(event.machineId));
       const eventMachineId = normalizedMetadataValue(eventWithMachine?.machineId);
+      const inferredMachineId = inferLegacyMachineId(agentId);
       const currentWork = workByAgent.get(agentId) || [];
       const warnings = currentWork.flatMap((item) => item.warnings);
-      const machineId = heartbeatMachineId || claimMachineId || eventMachineId;
+      const machineId = heartbeatMachineId || claimMachineId || eventMachineId || inferredMachineId;
       const machineMetadata = heartbeatMachineId
         ? { value: heartbeatMachineId, state: "observed" as const, source: "heartbeat" as const }
         : claimMachineId
           ? { value: claimMachineId, state: "observed" as const, source: "claim" as const }
           : eventMachineId
             ? { value: eventMachineId, state: "observed" as const, source: "event" as const }
+            : inferredMachineId
+              ? { value: inferredMachineId, state: "inferred" as const, source: "dashboard" as const }
             : heartbeat
               ? { state: "missing" as const, source: "heartbeat" as const }
               : { state: "not_applicable" as const };

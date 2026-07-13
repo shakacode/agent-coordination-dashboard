@@ -33,10 +33,206 @@ const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
   ...REQUIRED_COORDINATION_RESOURCES,
   "events"
 ];
+export const DASHBOARD_SNAPSHOT_CACHE_KEY = "agent-coordination-dashboard:last-known-snapshot:v1";
+
+interface CachedDashboardSnapshot {
+  version: 1;
+  savedAt: string;
+  dashboard: DashboardModel;
+  settings: DashboardSettings;
+}
 
 interface ItemRoute {
   repo: string;
   target: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function hasStrings(value: Record<string, unknown>, fields: string[]): boolean {
+  return fields.every((field) => typeof value[field] === "string");
+}
+
+function hasOptionalStrings(value: Record<string, unknown>, fields: string[]): boolean {
+  return fields.every((field) => value[field] === undefined || typeof value[field] === "string");
+}
+
+function isWarning(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["severity", "message"])
+    && hasOptionalStrings(value, ["agentId", "repo", "target"]);
+}
+
+function isClaim(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["repo", "target", "agentId", "status", "path"])
+    && hasOptionalStrings(value, ["machineId", "threadHandle", "host", "operator", "batchId", "branch", "prUrl", "claimedAt", "updatedAt", "expiresAt"]);
+}
+
+function isHeartbeat(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["agentId", "status", "updatedAt", "expiresAt", "path", "liveness"])
+    && hasOptionalStrings(value, ["machineId", "threadHandle", "host", "operator", "repo", "target", "batchId", "branch", "prUrl"]);
+}
+
+function isWorkItem(value: unknown): boolean {
+  if (!isRecord(value) || !hasStrings(value, ["id", "repo", "target", "type", "schedulingState"])) return false;
+  if (!hasOptionalStrings(value, ["operatorState", "terminalState", "lastActivityAt"])) return false;
+  if (typeof value.selected !== "boolean" || !Array.isArray(value.warnings) || !value.warnings.every(isWarning)) return false;
+  if (value.batchSignals !== undefined && (!Array.isArray(value.batchSignals) || !value.batchSignals.every((signal) =>
+    isRecord(signal)
+      && typeof signal.status === "string"
+      && hasOptionalStrings(signal, ["batchId", "laneName", "updatedAt"])
+      && isStringArray(signal.blockedOn)
+  ))) return false;
+  if (value.github !== undefined && (!isRecord(value.github)
+    || !hasStrings(value.github, ["repo", "target", "type", "title", "url", "state", "loadState"])
+    || !hasOptionalStrings(value.github, ["coordinatedType", "author", "branch", "reviewDecision", "ciStatus", "mergedAt", "closedAt", "branchState"])
+    || !isStringArray(value.github.labels))) return false;
+  if (value.claim !== undefined && !isClaim(value.claim)) return false;
+  if (value.heartbeat !== undefined && !isHeartbeat(value.heartbeat)) return false;
+  if (value.provenance !== undefined && (!isRecord(value.provenance) || typeof value.provenance.classification !== "string" || !isStringArray(value.provenance.evidence))) return false;
+  if (value.attention !== undefined && (!isRecord(value.attention) || !hasStrings(value.attention, ["kind", "label", "action"]))) return false;
+  if (value.annotation !== undefined && (!isRecord(value.annotation) || !hasStrings(value.annotation, ["key", "kind", "createdAt"]) || !hasOptionalStrings(value.annotation, ["until", "note", "operator"]))) return false;
+  if (value.terminalProvenance !== undefined && (!isRecord(value.terminalProvenance) || typeof value.terminalProvenance.source !== "string" || !hasOptionalStrings(value.terminalProvenance, ["url"]))) return false;
+  return true;
+}
+
+function isBatch(value: unknown): boolean {
+  if (!isRecord(value) || !hasStrings(value, ["batchId", "path"])
+    || !hasOptionalStrings(value, ["repo", "objective", "source", "createdAt", "createdByMachine", "launchPrompt", "updatedAt"])
+    || !Array.isArray(value.lanes)
+    || !value.lanes.every((lane) => isRecord(lane)
+      && hasStrings(lane, ["name", "owner", "status", "liveness"])
+      && hasOptionalStrings(lane, ["threadHandle", "host", "operator", "branch", "prUrl"])
+      && isStringArray(lane.targets)
+      && isStringArray(lane.dependsOn)
+      && isStringArray(lane.blockedOn))) return false;
+  if (value.targets !== undefined && (!Array.isArray(value.targets) || !value.targets.every((target) =>
+    isRecord(target) && hasStrings(target, ["type", "target"]) && hasOptionalStrings(target, ["url", "title", "repo"])
+  ))) return false;
+  if (value.reservations !== undefined && (!Array.isArray(value.reservations) || !value.reservations.every((reservation) =>
+    isRecord(reservation) && hasStrings(reservation, ["type", "target"]) && hasOptionalStrings(reservation, ["reason", "owner", "laneName", "repo"])
+  ))) return false;
+  return true;
+}
+
+function isEvent(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["eventId", "type", "path"])
+    && hasOptionalStrings(value, ["batchId", "batchPath", "laneName", "machineId", "agentId", "threadHandle", "host", "operator", "repo", "target", "branch", "prUrl", "status", "message", "timestamp"]);
+}
+
+function isAgent(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["agentId", "liveness"])
+    && hasOptionalStrings(value, ["machineId"])
+    && Array.isArray(value.claims)
+    && value.claims.every(isClaim)
+    && Array.isArray(value.currentWork)
+    && value.currentWork.every(isWorkItem)
+    && Array.isArray(value.warnings)
+    && value.warnings.every(isWarning)
+    && (value.heartbeat === undefined || isHeartbeat(value.heartbeat))
+    && (value.latestEvent === undefined || isEvent(value.latestEvent))
+    && (value.machineMetadata === undefined || (isRecord(value.machineMetadata)
+      && typeof value.machineMetadata.state === "string"
+      && hasOptionalStrings(value.machineMetadata, ["value", "source"])));
+}
+
+function isBatchOperation(value: unknown): boolean {
+  if (!isRecord(value) || !hasStrings(value, ["batchId", "controlStatus"]) || typeof value.eventCount !== "number" || !isRecord(value.qa)) return false;
+  if (!hasOptionalStrings(value, ["repo", "batchPath", "latestEventAt", "latestEventType", "stopRequestedAt", "stoppedAt"])) return false;
+  const qa = value.qa;
+  return ["total", "missing", "requested", "inProgress", "passed", "failed", "unknown"]
+    .every((field) => typeof qa[field] === "number");
+}
+
+function isQaValidation(value: unknown): boolean {
+  return isRecord(value) && hasStrings(value, ["id", "repo", "target", "type", "status", "detail"])
+    && hasOptionalStrings(value, ["title", "url", "batchId", "laneName"])
+    && (value.latestEvent === undefined || isEvent(value.latestEvent));
+}
+
+function isHealthItem(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["id", "severity", "category", "title", "detail"])
+    && hasOptionalStrings(value, ["machineId", "agentId", "repo", "target", "batchId", "laneName"]);
+}
+
+function isSourceStatus(value: unknown): boolean {
+  return isRecord(value)
+    && hasStrings(value, ["resource", "mode", "status", "checkedAt"])
+    && (value.httpStatus === undefined || typeof value.httpStatus === "number");
+}
+
+function isCachedDashboardSnapshot(value: unknown): value is CachedDashboardSnapshot {
+  if (!isRecord(value) || value.version !== 1 || typeof value.savedAt !== "string") return false;
+  if (!isRecord(value.settings)) return false;
+  const settings = value.settings;
+  const settingsTargetRepos = settings.targetRepos;
+  if (!isStringArray(settingsTargetRepos)
+    || (settings.refreshIntervalMs !== undefined && typeof settings.refreshIntervalMs !== "number")) return false;
+  const dashboard = value.dashboard;
+  if (!isRecord(dashboard) || typeof dashboard.generatedAt !== "string" || typeof dashboard.stateRoot !== "string") return false;
+  if (!isStringArray(dashboard.targetRepos)
+    || dashboard.targetRepos.length !== settingsTargetRepos.length
+    || dashboard.targetRepos.some((repo, index) => repo !== settingsTargetRepos[index])) return false;
+  return (dashboard.sourceStatus === undefined || (Array.isArray(dashboard.sourceStatus) && dashboard.sourceStatus.every(isSourceStatus)))
+    && (dashboard.trulyOpenCount === undefined || typeof dashboard.trulyOpenCount === "number")
+    && Array.isArray(dashboard.agents) && dashboard.agents.every(isAgent)
+    && Array.isArray(dashboard.batches) && dashboard.batches.every(isBatch)
+    && Array.isArray(dashboard.events) && dashboard.events.every(isEvent)
+    && Array.isArray(dashboard.batchOperations) && dashboard.batchOperations.every(isBatchOperation)
+    && Array.isArray(dashboard.qaValidations) && dashboard.qaValidations.every(isQaValidation)
+    && Array.isArray(dashboard.healthItems) && dashboard.healthItems.every(isHealthItem)
+    && Array.isArray(dashboard.warnings) && dashboard.warnings.every(isWarning)
+    && Array.isArray(dashboard.workItems) && dashboard.workItems.every(isWorkItem);
+}
+
+function readCachedDashboardSnapshot(): CachedDashboardSnapshot | undefined {
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    return isCachedDashboardSnapshot(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCachedDashboardSnapshot(dashboard: DashboardModel, settings: DashboardSettings): string | undefined {
+  const savedAt = new Date().toISOString();
+  try {
+    window.localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({ version: 1, savedAt, dashboard, settings }));
+    return savedAt;
+  } catch {
+    return undefined;
+  }
+}
+
+function DashboardLoadingSkeleton() {
+  return (
+    <main aria-label="Loading coordination dashboard" className="app-shell loading-state" role="status">
+      <span className="sr-only">Loading coordination dashboard</span>
+      <div aria-hidden="true" className="loading-skeleton">
+        <div className="loading-skeleton-line loading-skeleton-title" />
+        <div className="loading-skeleton-line loading-skeleton-meta" />
+        <div className="loading-skeleton-line loading-skeleton-nav" />
+        <div className="loading-skeleton-grid">
+          <div className="loading-skeleton-card"><div className="loading-skeleton-line" /><div className="loading-skeleton-line loading-skeleton-short" /></div>
+          <div className="loading-skeleton-card"><div className="loading-skeleton-line" /><div className="loading-skeleton-line loading-skeleton-short" /></div>
+          <div className="loading-skeleton-card"><div className="loading-skeleton-line" /><div className="loading-skeleton-line loading-skeleton-short" /></div>
+        </div>
+      </div>
+    </main>
+  );
 }
 
 function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefined {
@@ -137,8 +333,10 @@ function preserveWorkItemSelections(current: DashboardModel | null, next: Dashbo
 }
 
 export function App() {
-  const [dashboard, setDashboard] = useState<DashboardModel | null>(null);
-  const [settings, setSettings] = useState<DashboardSettings | null>(null);
+  const initialSnapshot = useMemo(readCachedDashboardSnapshot, []);
+  const [dashboard, setDashboard] = useState<DashboardModel | null>(initialSnapshot?.dashboard || null);
+  const [settings, setSettings] = useState<DashboardSettings | null>(initialSnapshot?.settings || null);
+  const [cachedSnapshotAt, setCachedSnapshotAt] = useState<string | null>(initialSnapshot?.savedAt || null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
@@ -151,9 +349,11 @@ export function App() {
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [foregroundLoadInFlight, setForegroundLoadInFlight] = useState(false);
   const [historyMergedTodayOnly, setHistoryMergedTodayOnly] = useState(false);
   const [batchDetailScope, setBatchDetailScope] = useState<"events" | "repairs" | "all">("all");
   const [diagnosticScope, setDiagnosticScope] = useState<"agents" | "health" | "all">("all");
+  const currentDataUnavailable = Boolean(cachedSnapshotAt || error || foregroundLoadInFlight);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -162,15 +362,20 @@ export function App() {
   const diagnosticsRef = useRef<HTMLDetailsElement>(null);
   const warningsRef = useRef<HTMLElement>(null);
 
+  useEffect(() => {
+    document.title = "Agent Coordination Dashboard";
+  }, []);
+
   const requiredCoordinationUnavailable = Boolean(
     dashboard?.sourceStatus?.some(
       (source) =>
         BATCH_ACTION_COORDINATION_RESOURCES.includes(source.resource) && ["auth_error", "unreachable"].includes(source.status)
     )
   );
+  const batchPromptDisabled = requiredCoordinationUnavailable || currentDataUnavailable;
   const prompt = useMemo(
-    () => (requiredCoordinationUnavailable ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
-    [dashboard, requiredCoordinationUnavailable]
+    () => (batchPromptDisabled ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
+    [batchPromptDisabled, dashboard]
   );
   const repairBatches = useMemo(() => {
     if (!dashboard) return [];
@@ -230,6 +435,7 @@ export function App() {
     if (isBackground) {
       backgroundLoadInFlight.current = true;
     } else {
+      setForegroundLoadInFlight(true);
       setError(null);
       beginUserAction();
     }
@@ -248,6 +454,9 @@ export function App() {
       }
       setSettings(loadedSettings);
       setDashboard((current) => (isBackground ? preserveWorkItemSelections(current, loadedDashboard) : loadedDashboard));
+      writeCachedDashboardSnapshot(loadedDashboard, loadedSettings);
+      setCachedSnapshotAt(null);
+      setError(null);
     } catch (caught: unknown) {
       if (!isBackground) {
         setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
@@ -259,6 +468,7 @@ export function App() {
       if (isBackground) {
         backgroundLoadInFlight.current = false;
       } else {
+        setForegroundLoadInFlight(false);
         finishUserAction();
       }
     }
@@ -369,17 +579,18 @@ export function App() {
   }, [dashboard, loadDashboard, settings?.refreshIntervalMs]);
 
   async function persistRepos(nextRepos: string[]) {
+    if (cachedSnapshotAt || error) return;
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
       setError(null);
       try {
         const saved = await saveSettings({ targetRepos: nextRepos });
-        if (requestVersion === dashboardRequestVersion.current) {
-          setSettings(saved);
-        }
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
+          setSettings(saved);
           setDashboard(loadedDashboard);
+          writeCachedDashboardSnapshot(loadedDashboard, saved);
+          setCachedSnapshotAt(null);
         }
       } catch (caught: unknown) {
         setError(caught instanceof Error ? caught.message : "Settings failed to save");
@@ -532,6 +743,7 @@ export function App() {
   }
 
   async function mutateAnnotation(item: WorkItem, action?: AnnotationAction) {
+    if (cachedSnapshotAt || error) throw new Error("Local actions require current coordination data");
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
       if (action) await saveAnnotation({ repo: item.repo, target: item.target, ...action });
@@ -543,11 +755,14 @@ export function App() {
       if (requestVersion === dashboardRequestVersion.current) {
         setDashboard(loadedDashboard);
         if (loadedTimeline) setItemTimeline(loadedTimeline);
+        if (settings) writeCachedDashboardSnapshot(loadedDashboard, settings);
+        setCachedSnapshotAt(null);
       }
     });
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
+    if (cachedSnapshotAt || error) throw new Error("Local actions require current coordination data");
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
       try {
@@ -555,6 +770,8 @@ export function App() {
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
           setDashboard(loadedDashboard);
+          if (settings) writeCachedDashboardSnapshot(loadedDashboard, settings);
+          setCachedSnapshotAt(null);
         }
       } catch (caught: unknown) {
         throw caught instanceof Error ? caught : new Error("Batch plan import failed");
@@ -563,6 +780,7 @@ export function App() {
   }
 
   async function stopBatch(input: { batchId: string; repo?: string; reason?: string }) {
+    if (cachedSnapshotAt || error) throw new Error("Local actions require current coordination data");
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
       try {
@@ -570,6 +788,8 @@ export function App() {
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
           setDashboard(loadedDashboard);
+          if (settings) writeCachedDashboardSnapshot(loadedDashboard, settings);
+          setCachedSnapshotAt(null);
         }
       } catch (caught: unknown) {
         throw caught instanceof Error ? caught : new Error("Batch stop request failed");
@@ -577,13 +797,15 @@ export function App() {
     });
   }
 
-  if (error) {
+  if (error && (!dashboard || !settings)) {
     return <main className="app-shell error-state">{error}</main>;
   }
 
   if (!dashboard || !settings) {
-    return <main className="app-shell loading-state">Loading coordination dashboard...</main>;
+    return <DashboardLoadingSkeleton />;
   }
+
+  const localWritesDisabled = currentDataUnavailable;
 
   const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
   const sourceFailures = (dashboard.sourceStatus || []).filter((source) =>
@@ -634,7 +856,7 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <h1>Agent Coordination</h1>
+          <h1>Agent Coordination Dashboard</h1>
           <p>
             {coordinationSourceError ? (
               <span className="source-chip source-chip-error">{dashboard.stateRoot}</span>
@@ -674,6 +896,19 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {cachedSnapshotAt && !error ? (
+        <section aria-label="Last-known dashboard snapshot" className="snapshot-banner" role="status">
+          <strong>Showing last-known snapshot</strong>
+          <span>Refreshing current coordination data · saved {new Date(cachedSnapshotAt).toLocaleString()}</span>
+        </section>
+      ) : null}
+      {error ? (
+        <section aria-label="Dashboard refresh failed" className="snapshot-banner snapshot-banner-error" role="alert">
+          <strong>Current coordination data could not be loaded</strong>
+          <span>{error}. Showing the last available dashboard snapshot; local write controls are disabled until current data loads.</span>
+        </section>
+      ) : null}
 
       {coordinationDegraded && (
         <section aria-label="Coordination backend degraded" className="coordination-degraded-banner" role="alert">
@@ -725,7 +960,7 @@ export function App() {
                 {repo}
                 <button
                   aria-label={`Remove ${repo}`}
-                  disabled={settings.targetRepos.length === 1 || isRefreshing}
+                  disabled={settings.targetRepos.length === 1 || isRefreshing || localWritesDisabled}
                   onClick={() => removeRepo(repo)}
                   title={`Remove ${repo}`}
                   type="button"
@@ -738,11 +973,13 @@ export function App() {
           <form className="repo-add-form" onSubmit={addRepo}>
             <input
               aria-label="Add target repository"
+              disabled={localWritesDisabled}
+              name="targetRepository"
               onChange={(event) => setRepoDraft(event.target.value)}
               placeholder="owner/repo"
               value={repoDraft}
             />
-            <button aria-label="Add repository" disabled={isRefreshing} title="Add repository" type="submit">
+            <button aria-label="Add repository" disabled={isRefreshing || localWritesDisabled} title="Add repository" type="submit">
               <Plus size={16} aria-hidden="true" />
             </button>
           </form>
@@ -786,9 +1023,9 @@ export function App() {
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
               <ItemPage
-                onAnnotate={(annotation) => mutateAnnotation(timelineWorkItem!, annotation)}
+                onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(timelineWorkItem!, annotation)}
                 onBack={closeItem}
-                onClearAnnotation={() => mutateAnnotation(timelineWorkItem!)}
+                onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(timelineWorkItem!)}
                 timeline={itemTimeline}
               />
             </>
@@ -800,8 +1037,8 @@ export function App() {
             historyMergedTodayOnly={historyMergedTodayOnly}
             mergeTimeStatus={dashboard.githubMergeTimeStatus || "unavailable"}
             now={dashboard.generatedAt}
-            onAnnotate={mutateAnnotation}
-            onClearAnnotation={(item) => mutateAnnotation(item)}
+            onAnnotate={localWritesDisabled ? undefined : mutateAnnotation}
+            onClearAnnotation={localWritesDisabled ? undefined : (item) => mutateAnnotation(item)}
             onQueryChange={updateOperatorQuery}
             onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
             onOpenItem={openItem}
@@ -812,12 +1049,12 @@ export function App() {
             query={operatorQuery}
             repairBatchCount={repairBatchCount}
             repairWorkItemIds={repairWorkItemIds}
-            selectionDisabled={requiredCoordinationUnavailable}
+            selectionDisabled={batchPromptDisabled}
             surface={activeSurface}
           />}
           {!itemRoute && <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
-            <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
+            <PromptDrawer disabled={batchPromptDisabled} prompt={prompt} />
           </details>}
           {!itemRoute && <details className="secondary-tools" ref={batchOperationsRef}>
             <summary>{batchDetailScope === "events" ? "Event records" : batchDetailScope === "repairs" ? "Batch repairs" : "Batch operations"}</summary>
@@ -836,8 +1073,9 @@ export function App() {
               <BatchesTab
                 batches={batchDetailScope === "repairs" ? repairBatches : dashboard.batches}
                 events={batchDetailScope === "repairs" ? dashboard.events.filter((event) => repairBatches.some((batch) => event.batchPath ? event.batchPath === batch.path : event.batchId === batch.batchId && Boolean(event.repo && event.repo === batch.repo))) : dashboard.events}
-                onImportBatch={importBatchManifest}
-                onRequestStop={stopBatch}
+                localWritesDisabled={localWritesDisabled}
+                onImportBatch={localWritesDisabled ? undefined : importBatchManifest}
+                onRequestStop={localWritesDisabled ? undefined : stopBatch}
                 operations={batchDetailScope === "repairs" ? repairOperations : dashboard.batchOperations}
               />
             )}

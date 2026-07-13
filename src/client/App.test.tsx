@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../shared/types";
-import { App, nextActiveSnoozeDelayMs } from "./App";
+import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, nextActiveSnoozeDelayMs } from "./App";
 
 const model = {
   generatedAt: "2026-07-12T11:20:00.000Z",
@@ -93,6 +93,7 @@ const settings = { targetRepos: ["repo/dashboard"] };
 
 describe("App", () => {
   beforeEach(() => {
+    localStorage.clear();
     window.history.pushState({}, "", "/");
     vi.stubGlobal(
       "fetch",
@@ -134,6 +135,8 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    expect(document.title).toBe("Agent Coordination Dashboard");
+    expect(screen.getByRole("heading", { name: "Agent Coordination Dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
@@ -150,9 +153,139 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
   });
 
+  it("renders an accessible dashboard skeleton when no cached snapshot exists", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".loading-skeleton-line").length).toBeGreaterThanOrEqual(4);
+    view.unmount();
+  });
+
+  it("paints the last-known snapshot immediately while refreshing current data", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: "2026-07-12T11:19:00.000Z",
+      dashboard: model,
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Last-known dashboard snapshot" })).toHaveTextContent(
+      "Refreshing current coordination data"
+    );
+    expect(screen.queryByRole("status", { name: "Loading coordination dashboard" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("ignores malformed cached dashboard snapshots", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: model.generatedAt,
+      dashboard: { ...model, workItems: [null] },
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("ignores cached snapshots with malformed optional containers", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: model.generatedAt,
+      dashboard: { ...model, sourceStatus: {} },
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("keeps cached-only state read-only until current coordination data loads", async () => {
+    const cachedModel = {
+      ...model,
+      batches: [{ schemaVersion: 1, batchId: "cached-batch", repo: "repo/dashboard", lanes: [], path: "batches/cached-batch.json" }]
+    };
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: model.generatedAt,
+      dashboard: cachedModel,
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("refresh unavailable"); }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("Showing the last available dashboard snapshot");
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText("Batch operations"));
+    expect(screen.getByRole("button", { name: "Request stop for cached-batch in repo/dashboard" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review batch plan" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" })).toBeDisabled();
+    await userEvent.click(screen.getByText("PR-batch prompt"));
+    expect(screen.getByTitle("Copy prompt")).toBeDisabled();
+  });
+
+  it("clears a foreground refresh error after an automatic background recovery", async () => {
+    const pollingSettings = { ...settings, refreshIntervalMs: 20 };
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: model.generatedAt,
+      dashboard: model,
+      settings: pollingSettings
+    }));
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => pollingSettings } as Response;
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) throw new Error("initial refresh unavailable");
+      return { ok: true, json: async () => model } as Response;
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("initial refresh unavailable");
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("status", { name: "Last-known dashboard snapshot" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeEnabled();
+  });
+
+  it("persists a validated last-known snapshot after a successful load", async () => {
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Attention" });
+    expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
+      version: 1,
+      dashboard: { generatedAt: model.generatedAt, stateRoot: model.stateRoot },
+      settings
+    });
+  });
+
   it("persists a card snooze through the dashboard annotation API", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-07-12T11:20:00.000Z"));
+    const snoozedModel = { ...model, generatedAt: "2026-07-12T11:21:00.000Z" };
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      if (url === "/api/annotations") return { ok: true, json: async () => ({ path: "annotations/43.json" }) } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => dashboardCalls === 1 ? model : snoozedModel } as Response;
+    }));
     render(<App />);
     await screen.findByRole("heading", { name: "Attention" });
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
@@ -164,6 +297,9 @@ describe("App", () => {
     expect(Date.parse(body.until)).toBeGreaterThan(Date.now());
     expect(Date.parse(body.until) - Date.now()).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
     expect(await screen.findByRole("status")).toHaveTextContent("Presentation preference saved");
+    expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
+      dashboard: { generatedAt: snoozedModel.generatedAt }
+    });
   });
 
   it("reloads once at the earliest active snooze expiry when polling is disabled", async () => {
@@ -739,6 +875,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" }));
     await userEvent.click(screen.getByText("PR-batch prompt"));
 
+    expect(screen.getByText("Builds a copyable $pr-batch handoff from the work selected in Find.")).toBeInTheDocument();
     expect(screen.getByText(/Issue #45: https:\/\/github.com\/repo\/dashboard\/issues\/45/)).toBeInTheDocument();
     expect(screen.getByTitle("Copy prompt")).toBeEnabled();
   });
@@ -834,6 +971,35 @@ describe("App", () => {
     expect(fetch).toHaveBeenCalledWith("/api/dashboard", expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } }));
   });
 
+  it("keeps the displayed repository scope atomic when its dashboard reload fails", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return { ok: true, json: async () => ({ targetRepos: ["repo/dashboard", "other/repo"] }) } as Response;
+      }
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("scoped dashboard reload failed");
+    }));
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("Add target repository"), "other/repo");
+    await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("scoped dashboard reload failed");
+    expect(screen.queryByText("other/repo")).not.toBeInTheDocument();
+    expect(screen.getAllByText("repo/dashboard").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+
+    vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => undefined));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+  });
+
   it("preserves shell selection across background refreshes and hides transient refresh failures", async () => {
     let dashboardCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -903,10 +1069,13 @@ describe("App", () => {
       lanes: [],
       path: "batches/batch-recovery.json"
     };
+    let dashboardCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/batches/import" || url === "/api/batches/stop") return { ok: true, json: async () => ({ path: "local-state.json" }) } as Response;
-      return { ok: true, json: async () => url === "/api/settings" ? settings : { ...model, batches: [batch], events: [{ eventId: "event-1", type: "lane_started", batchId: "batch-recovery", batchPath: batch.path, repo: "repo/dashboard", timestamp: model.generatedAt, path: "events/event-1.json" }] } } as Response;
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: `2026-07-12T11:2${dashboardCalls}:00.000Z`, batches: [batch], events: [{ eventId: "event-1", type: "lane_started", batchId: "batch-recovery", batchPath: batch.path, repo: "repo/dashboard", timestamp: model.generatedAt, path: "events/event-1.json" }] }) } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
@@ -930,6 +1099,9 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save batch plan" }));
     expect(await screen.findByText("Batch plan saved.")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/batches/import", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
+      dashboard: { generatedAt: "2026-07-12T11:23:00.000Z" }
+    });
   });
 
   it("serializes overlapping loopback writes instead of racing coordination mutations", async () => {
@@ -975,5 +1147,11 @@ describe("App", () => {
     const srOnlyRule = stylesheet.match(/\.sr-only\s*\{[^}]+\}/)?.[0] || "";
     expect(srOnlyRule).toContain("clip-path: inset(50%)");
     expect(srOnlyRule).not.toMatch(/\n\s*clip:/);
+    expect(stylesheet).toMatch(/:root\s*{[\s\S]*--color-canvas:/);
+    expect(stylesheet).toMatch(/@media \(prefers-color-scheme: dark\)\s*{[\s\S]*color-scheme: dark/);
+    expect(stylesheet).toMatch(/--color-on-danger-strong:\s*#ffffff/);
+    expect(stylesheet).toMatch(/\.coordination-degraded-banner\s*{[\s\S]*color:\s*var\(--color-on-danger-strong\)/);
+    expect(stylesheet).toMatch(/\.source-chip-error\s*{[\s\S]*color:\s*var\(--color-danger-text\)/);
+    expect(stylesheet).toMatch(/\.loading-skeleton-line\s*{[\s\S]*animation:/);
   });
 });
