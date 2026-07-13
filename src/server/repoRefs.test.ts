@@ -50,7 +50,18 @@ describe("repoRefsFromStructuredEventField", () => {
     "See ftphttps://github.com/other/private",
     "See javascript:https://github.com/other/private",
     "See data:https://github.com/other/private",
-    "See vbscript:https://github.com/other/private"
+    "See vbscript:https://github.com/other/private",
+    "See javascript:x:github.com/other/private",
+    "See javascript:x:https://github.com/other/private",
+    "See data:x:github.com/other/private",
+    "See vbscript:x:https://github.com/other/private",
+    "See ssh:https://github.com/other/private",
+    "See git:github.com/other/private",
+    "See git+ssh:https://github.com/other/private",
+    "See blob:https://github.com/other/private",
+    "See about:github.com/other/private",
+    "See custom:https://github.com/other/private",
+    "See javascript:blocked:https://github.com/other/private"
   ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
@@ -59,7 +70,10 @@ describe("repoRefsFromStructuredEventField", () => {
     "blocked:https://github.com/other/private",
     "PR:https://github.com/other/private",
     "blocked:github.com/other/private",
-    "PR:github.com/other/private"
+    "PR:github.com/other/private",
+    "status:https://github.com/other/private",
+    "phase:github.com/other/private",
+    "waiting:https://github.com/other/private"
   ])("detects a canonical GitHub URL after a label colon: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
@@ -302,7 +316,11 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://[user&name@localhost/private/path",
     "https://[user)name@localhost/private/path",
     "https://[user}name@localhost/private/path",
-    "https://[user>name@localhost/private/path"
+    "https://[user>name@localhost/private/path",
+    "https://[user]foo|bar@other/private/path",
+    "https://[user]|bar@other/private/path",
+    "https://x[user]foo|bar@other/private/path",
+    "https://[[user]]foo|bar@localhost/private/path"
   ])("does not reinterpret a valid non-GitHub userinfo URL as a repository: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });

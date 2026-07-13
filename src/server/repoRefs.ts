@@ -3,7 +3,7 @@ const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/
 const OWNER_REPO_REF_AT_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+/y;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
-const REJECTED_URL_SCHEME_PREFIXES = ["javascript:", "data:", "vbscript:", "file:", "ftp:", "mailto:"];
+const URL_LABEL_PREFIXES = ["blocked", "pr", "status", "phase", "repo", "repository", "waiting", "depends"];
 
 function isClearLocalFileReference(ref: string): boolean {
   return LOCAL_FILE_REF_PATTERN.test(ref);
@@ -58,12 +58,12 @@ function isValidHttpAuthority(value: string, start: number, end: number): boolea
   }
 }
 
-function hasRejectedSchemePrefix(value: string, urlStart: number): boolean {
-  return REJECTED_URL_SCHEME_PREFIXES.some((prefix) => {
-    const prefixStart = urlStart - prefix.length;
-    if (prefixStart < 0 || value.slice(prefixStart, urlStart).toLowerCase() !== prefix) return false;
-    const beforePrefix = value[prefixStart - 1] || "";
-    return prefixStart === 0 || !/[A-Za-z0-9+.-]/.test(beforePrefix);
+function hasExplicitUrlLabel(value: string, urlStart: number): boolean {
+  return URL_LABEL_PREFIXES.some((label) => {
+    const labelStart = urlStart - label.length - 1;
+    if (labelStart < 0 || value.slice(labelStart, urlStart).toLowerCase() !== `${label}:`) return false;
+    const beforeLabel = value[labelStart - 1] || "";
+    return labelStart === 0 || /\s/.test(beforeLabel) || "(<[{'\"`|;=,!&".includes(beforeLabel);
   });
 }
 
@@ -85,7 +85,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     const schemelessMatch = schemelessGithubRepoMatchAt(value, index);
     const previous = value[index - 1] || "";
     const validBoundary = index === 0 || forcedBoundary || /\s/.test(previous) || openingBoundaries.includes(previous) || "|;=,!&".includes(previous) ||
-      (previous === ":" && !hasRejectedSchemePrefix(value, index));
+      (previous === ":" && hasExplicitUrlLabel(value, index));
     if ((!isHttp && !isHttps && !schemelessMatch) || !validBoundary) {
       output.push(value[index]);
       index += 1;
@@ -135,9 +135,13 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     let authorityDelimiter = -1;
     let bracketFallbackDelimiter = -1;
     let bracketDepth = 0;
+    let sawBracket = false;
     while (coarseAuthorityEnd < value.length && !/\s/.test(value[coarseAuthorityEnd]) && !"/?#".includes(value[coarseAuthorityEnd])) {
       const character = value[coarseAuthorityEnd];
-      if (character === "[") bracketDepth += 1;
+      if (character === "[") {
+        sawBracket = true;
+        bracketDepth += 1;
+      }
       if (character === "]" && bracketDepth > 0) {
         bracketDepth -= 1;
         coarseAuthorityEnd += 1;
@@ -163,7 +167,8 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       }
       coarseAuthorityEnd += 1;
     }
-    if (bracketDepth > 0 && lastAt >= 0 && isValidHttpAuthority(value, index, coarseAuthorityEnd)) {
+    const delimiterPrefixIsValidAuthority = authorityDelimiter >= 0 && isValidHttpAuthority(value, index, authorityDelimiter);
+    if (sawBracket && lastAt >= 0 && !delimiterPrefixIsValidAuthority && isValidHttpAuthority(value, index, coarseAuthorityEnd)) {
       authorityDelimiter = -1;
     } else if (bracketDepth > 0 && authorityDelimiter < 0) {
       authorityDelimiter = bracketFallbackDelimiter;
