@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { repoRefsFromStructuredEventField } from "./repoRefs";
 
 describe("repoRefsFromStructuredEventField", () => {
+  it("preserves a standalone owner/repo issue reference", () => {
+    expect(repoRefsFromStructuredEventField("other/private#12")).toEqual(["other/private"]);
+  });
+
   it("does not derive a spurious com/owner ref from a Repository GitHub URL", () => {
     expect(repoRefsFromStructuredEventField("Repository: https://github.com/other/private")).toEqual(["other/private"]);
   });
@@ -28,6 +32,10 @@ describe("repoRefsFromStructuredEventField", () => {
     "See https://gist.github.com/user/abcdef",
     "See https://api.github.com/repos/other/private",
     "See https://notgithub.com/other/private",
+    "See https://example.com/other/private#12",
+    "See https://example.com/docs/other/private#12",
+    "See https://evil.example/other/private#123",
+    "See https://example.com/?next=https://evil.example/other/private#12",
     "Repository: https://docs.github.com/en/repositories",
     "Repository: https://notgithub.com/other/private"
   ])("does not extract repository refs from a non-GitHub-repository host: %s", (value) => {
@@ -235,6 +243,11 @@ describe("repoRefsFromStructuredEventField", () => {
 
   it("handles thousands of URL segments without recursion or lost suffix refs", () => {
     const value = `${"https://example.com/x|".repeat(10_000)}other/private/path`;
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it("handles thousands of query-bearing URL resets with forward-only work", () => {
+    const value = `${"https://example.com/?x|".repeat(4_000)}other/private/path`;
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 

@@ -91,10 +91,9 @@ function withoutNonRepositoryUriTokens(value: string): string {
     if (value[schemeEnd] !== ":" || URI_SCHEMES_TO_KEEP.has(scheme)) {
       if (value[schemeEnd] === ":" && (scheme === "http" || scheme === "https")) {
         let urlTokenEnd = schemeEnd + 1;
-        while (urlTokenEnd < value.length && !/\s/.test(value[urlTokenEnd])) urlTokenEnd += 1;
-        const queryIndex = value.slice(index, urlTokenEnd).search(/[?#]/);
-        if (queryIndex >= 0) {
-          const queryStart = index + queryIndex + 1;
+        while (urlTokenEnd < value.length && !/\s/.test(value[urlTokenEnd]) && !"?#".includes(value[urlTokenEnd])) urlTokenEnd += 1;
+        if ("?#".includes(value[urlTokenEnd] || "")) {
+          const queryStart = urlTokenEnd + 1;
           output.push(value.slice(index, queryStart));
           index = queryStart;
         } else {
@@ -144,6 +143,16 @@ function withoutNonRepositoryUriTokens(value: string): string {
   return output.join("");
 }
 
+function isNestedUriSchemeColon(value: string, colon: number, stateStart: number): boolean {
+  let schemeStart = colon;
+  while (schemeStart > stateStart && /[A-Za-z0-9+.-]/.test(value[schemeStart - 1])) schemeStart -= 1;
+  if (schemeStart === colon || !/[A-Za-z]/.test(value[schemeStart])) return false;
+  const scheme = value.slice(schemeStart, colon).toLowerCase();
+  if (URL_LABEL_PREFIXES.includes(scheme)) return false;
+  const beforeScheme = value[schemeStart - 1] || "";
+  return schemeStart === stateStart || "=([{<,?&#".includes(beforeScheme);
+}
+
 function consumeNamedUrlState(value: string, start: number, structuralDelimiters: string, closingDelimiters: string): number {
   const wrapperClosers: string[] = [];
   let quote = "";
@@ -179,6 +188,10 @@ function consumeNamedUrlState(value: string, start: number, structuralDelimiters
     }
     if (character === wrapperClosers.at(-1)) {
       wrapperClosers.pop();
+      cursor += 1;
+      continue;
+    }
+    if (wrapperClosers.length === 0 && character === ":" && isNestedUriSchemeColon(value, cursor, start)) {
       cursor += 1;
       continue;
     }
@@ -434,9 +447,10 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
 export function highConfidenceRepoRefsFromMessage(value: string | undefined): string[] {
   if (!value) return [];
   const textWithoutNonRepositoryUris = withoutNonRepositoryUriTokens(value);
+  const textWithoutRepositoryUrls = withoutRepositoryUrls(textWithoutNonRepositoryUris);
   const refs = new Set<string>();
   for (const ref of githubRepoRefsFromText(textWithoutNonRepositoryUris)) refs.add(ref);
-  for (const match of textWithoutNonRepositoryUris.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) refs.add(match[1]);
+  for (const match of textWithoutRepositoryUrls.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) refs.add(match[1]);
   for (const repo of repoRefsFromPromptHeaders(textWithoutNonRepositoryUris)) refs.add(repo);
   const standalone = textWithoutNonRepositoryUris.trim().match(/^([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)$/)?.[1];
   if (standalone) refs.add(standalone);
