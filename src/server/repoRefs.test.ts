@@ -101,7 +101,10 @@ describe("repoRefsFromStructuredEventField", () => {
 
   it.each([
     "https://example.com|other/private/path",
-    "https://github.com|other/private/path"
+    "https://github.com|other/private/path",
+    "https://example.com=other/private/path",
+    "https://example.com:other/private/path",
+    "https://example.com&other/private/path"
   ])("preserves a foreign chain after a host-only URL: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
@@ -113,8 +116,23 @@ describe("repoRefsFromStructuredEventField", () => {
   it.each([
     "https://user@@github.com/other/private",
     "https://user:pa@ss@github.com/other/private",
-    "https://@github.com/other/private"
+    "https://@github.com/other/private",
+    "https://user'name@github.com/other/private",
+    "https://user,name@github.com/other/private",
+    "https://user)name@github.com/other/private"
   ])("lets URL resolve valid raw or empty userinfo: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it("preserves a bare foreign chain after query or fragment state resets", () => {
+    for (const delimiter of ["|", ";", ",", ":", "!"]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com/?x=1${delimiter}other/private/path`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`https://example.com/#section${delimiter}other/private/path`)).toContain("other/private");
+    }
+  });
+
+  it("handles thousands of URL segments without recursion or lost suffix refs", () => {
+    const value = `${"https://example.com/x|".repeat(2_500)}other/private/path`;
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 

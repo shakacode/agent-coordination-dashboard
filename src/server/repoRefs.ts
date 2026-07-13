@@ -1,5 +1,3 @@
-const HTTP_URL_SCAN_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[^\s)]+/gim;
-const HTTP_URL_CANDIDATE_PATTERN = /(^|[|;=,!?&#:])(https?:\/\/[^\s/)\]}>,'"`|?#]+(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?)/gim;
 const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
 const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
@@ -14,58 +12,122 @@ function normalizeGithubRepoRef(ref: string): string {
   return ref.replace(/\.+$/, "").replace(/\.git$/i, "").replace(/\.+$/, "");
 }
 
-function withoutHttpUrls(value: string): string {
-  return value.replace(HTTP_URL_SCAN_PATTERN, (match, boundary: string) => {
-    const token = match.slice(boundary.length);
-    const authorityEnd = token.indexOf("://") + 3;
-    const pathStart = token.indexOf("/", authorityEnd);
-    const queryIndexes = [token.indexOf("?", pathStart), token.indexOf("#", pathStart)].filter((index) => index >= 0);
-    const queryStart = queryIndexes.length > 0 ? Math.min(...queryIndexes) : -1;
-    const earlySuffixOffset = token.slice(authorityEnd).search(/[|;,!]/);
-    const earlySuffixStart = earlySuffixOffset >= 0 ? authorityEnd + earlySuffixOffset : -1;
-    const pathSuffixOffset = pathStart >= 0 ? token.slice(pathStart).search(/[=,:&]/) : -1;
-    const pathSuffixStart = pathSuffixOffset >= 0 ? pathStart + pathSuffixOffset : -1;
-    const suffixCandidates = [earlySuffixStart, pathSuffixStart].filter((index) => index >= 0);
-    const suffixStart = suffixCandidates.length > 0 ? Math.min(...suffixCandidates) : -1;
-    if (suffixStart >= 0 && (queryStart < 0 || suffixStart < queryStart)) {
-      const suffix = token.slice(suffixStart);
-      const cleanedSuffix = withoutHttpUrls(` ${suffix.slice(1)}`).slice(1);
-      return `${boundary} ${suffix[0]}${cleanedSuffix}`;
-    }
-    return `${boundary} `;
-  });
-}
-
-function githubRepoRefsFromText(value: string): string[] {
+function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   const refs = new Set<string>();
-  for (const match of value.matchAll(HTTP_URL_SCAN_PATTERN)) {
-    const httpToken = match[0].slice(match[1].length);
-    for (const candidate of httpToken.matchAll(HTTP_URL_CANDIDATE_PATTERN)) {
-      if (candidate.index > 0) {
-        const queryStart = Math.max(httpToken.lastIndexOf("?", candidate.index), httpToken.lastIndexOf("#", candidate.index));
-        const structuralReset = Math.max(
-          ...["|", ";", ",", ":", "!"].map((delimiter) => httpToken.lastIndexOf(delimiter, candidate.index))
-        );
-        if (queryStart > structuralReset && httpToken.slice(queryStart + 1, candidate.index).length > 0) continue;
+  const output: string[] = [];
+  const openingBoundaries = "(<[{'\"`";
+  const structuralDelimiters = "|;=,:!&";
+  const closingDelimiters = ")]}>\'\"`";
+  let index = 0;
+  let forcedBoundary = false;
+
+  while (index < value.length) {
+    const isHttp = value.slice(index, index + 7).toLowerCase() === "http://";
+    const isHttps = value.slice(index, index + 8).toLowerCase() === "https://";
+    const previous = value[index - 1] || "";
+    const validBoundary = index === 0 || forcedBoundary || /\s/.test(previous) || openingBoundaries.includes(previous) || "|;=,!&".includes(previous);
+    if ((!isHttp && !isHttps) || !validBoundary) {
+      output.push(value[index]);
+      index += 1;
+      forcedBoundary = false;
+      continue;
+    }
+
+    const schemeEnd = index + (isHttps ? 8 : 7);
+    let coarseAuthorityEnd = schemeEnd;
+    while (coarseAuthorityEnd < value.length && !/\s/.test(value[coarseAuthorityEnd]) && !"/?#".includes(value[coarseAuthorityEnd])) {
+      coarseAuthorityEnd += 1;
+    }
+    const lastAt = value.lastIndexOf("@", coarseAuthorityEnd - 1);
+    let cursor = schemeEnd;
+    let delimiterIndex = -1;
+
+    while (cursor < value.length && !/\s/.test(value[cursor]) && !"/?#".includes(value[cursor])) {
+      const character = value[cursor];
+      if ((structuralDelimiters + closingDelimiters).includes(character) && cursor > lastAt) {
+        if (character === ":") {
+          let portEnd = cursor + 1;
+          while (/\d/.test(value[portEnd] || "")) portEnd += 1;
+          const portBoundary = value[portEnd] || "";
+          if (portEnd > cursor + 1 && (!portBoundary || portBoundary === "/" || /\s/.test(portBoundary) || structuralDelimiters.includes(portBoundary) || closingDelimiters.includes(portBoundary))) {
+            cursor = portEnd;
+            continue;
+          }
+        }
+        if (structuralDelimiters.includes(character)) delimiterIndex = cursor;
+        break;
       }
-      const rawUrl = candidate[2].replace(/[>}\],.'"`]+$/, "");
+      cursor += 1;
+    }
+
+    let urlEnd = delimiterIndex >= 0 ? delimiterIndex : cursor;
+    if (delimiterIndex < 0 && value[cursor] === "/") {
+      cursor += 1;
+      while (cursor < value.length && !/\s/.test(value[cursor]) && !structuralDelimiters.includes(value[cursor]) && !"?#".includes(value[cursor]) && !closingDelimiters.includes(value[cursor])) {
+        cursor += 1;
+      }
+      urlEnd = cursor;
+      if (structuralDelimiters.includes(value[cursor] || "")) delimiterIndex = cursor;
+    }
+
+    if (delimiterIndex < 0 && "?#".includes(value[cursor] || "")) {
+      const queryDelimiter = cursor;
+      const queryValueStart = cursor + 1;
+      const directHttp = value.slice(queryValueStart, queryValueStart + 7).toLowerCase() === "http://" ||
+        value.slice(queryValueStart, queryValueStart + 8).toLowerCase() === "https://";
+      if (directHttp) {
+        delimiterIndex = queryDelimiter;
+      } else {
+        cursor = queryValueStart;
+        while (cursor < value.length && !/\s/.test(value[cursor]) && !closingDelimiters.includes(value[cursor])) {
+          if ("|;,:!".includes(value[cursor])) {
+            delimiterIndex = cursor;
+            break;
+          }
+          cursor += 1;
+        }
+      }
+    }
+
+    const rawUrl = value.slice(index, urlEnd).replace(/\.+$/, "");
+    if (rawUrl.length > (isHttps ? 8 : 7)) {
       try {
         const url = new URL(rawUrl);
         const hostname = url.hostname.toLowerCase();
-        if (hostname !== "github.com" && hostname !== "www.github.com") continue;
-        if (url.protocol === "https:" && url.port && url.port !== "443") continue;
-        if (url.protocol === "http:" && url.port && url.port !== "80") continue;
-        if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+        const validHost = hostname === "github.com" || hostname === "www.github.com";
+        const validPort = (url.protocol === "https:" && (!url.port || url.port === "443")) ||
+          (url.protocol === "http:" && (!url.port || url.port === "80"));
         const [owner, repository] = url.pathname.split("/").filter(Boolean);
-        if (!owner || !repository || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repository)) continue;
-        refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+        if (validHost && validPort && owner && repository && /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) && /^[A-Za-z0-9._-]+$/.test(repository)) {
+          refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+        }
       } catch {
-        // Ignore malformed URLs and continue with later candidates.
+        // Ignore malformed URLs; their structured suffix remains visible.
       }
     }
+
+    output.push(" ");
+    if (delimiterIndex >= 0) {
+      output.push(value[delimiterIndex]);
+      index = delimiterIndex + 1;
+      forcedBoundary = true;
+    } else {
+      index = Math.max(cursor, urlEnd, index + 1);
+      forcedBoundary = false;
+    }
   }
-  const textWithoutHttpUrls = withoutHttpUrls(value);
-  for (const match of textWithoutHttpUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
+
+  return { refs: Array.from(refs), withoutUrls: output.join("") };
+}
+
+function withoutHttpUrls(value: string): string {
+  return scanHttpText(value).withoutUrls;
+}
+
+function githubRepoRefsFromText(value: string): string[] {
+  const scan = scanHttpText(value);
+  const refs = new Set(scan.refs);
+  for (const match of scan.withoutUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
     refs.add(normalizeGithubRepoRef(match[2]));
   }
   return Array.from(refs);
