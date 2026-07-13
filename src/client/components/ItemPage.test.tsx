@@ -54,6 +54,9 @@ describe("ItemPage", () => {
       "not a URL",
       "https://example.test/shakacode/dashboard/pull/47",
       "https://github.com/shakacode/dashboard/issues/47",
+      "https://operator@github.com/shakacode/dashboard/pull/47",
+      "https://operator:secret@github.com/shakacode/dashboard/pull/47",
+      "https://github.com:444/shakacode/dashboard/pull/47",
       "https://github.com/shakacode/dashboard/pull/47",
       "https://github.com/shakacode/dashboard/pull/47/files"
     ])).toEqual(["https://github.com/shakacode/dashboard/pull/47"]);

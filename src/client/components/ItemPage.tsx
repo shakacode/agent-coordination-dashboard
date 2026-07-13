@@ -18,7 +18,12 @@ function sourceIsUnknown(timeline: ItemTimelineResponse): boolean {
 function safePullRequestUrl(value: string): string | undefined {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/pull\/\d+(?:\/(?:files|commits|checks)(?:\/[^/]*)?)?\/?$/.test(url.pathname)
+    return url.protocol === "https:"
+      && url.hostname.toLowerCase() === "github.com"
+      && !url.username
+      && !url.password
+      && !url.port
+      && /^\/[^/]+\/[^/]+\/pull\/\d+(?:\/(?:files|commits|checks)(?:\/[^/]*)?)?\/?$/.test(url.pathname)
       ? url.toString()
       : undefined;
   } catch {

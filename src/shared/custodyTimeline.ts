@@ -76,7 +76,7 @@ export interface BuildCustodyTimelineInput {
   now?: Date;
 }
 
-const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|closed|stopped|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
+const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|release(?:d)?|closed|stopped|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
 const OWNERSHIP_EVENT_TYPES = new Set([
   "claim", "claimed", "acquire", "acquired", "takeover", "renew", "renewed", "continued", "resumed", "heartbeat", "handoff", "release", "released", "lane.started", "lane.handoff"
 ]);
@@ -265,7 +265,8 @@ function isOwnershipBearingEvent(event: BatchEvent): boolean {
 }
 
 function isTerminalOwnershipType(type: string): boolean {
-  return /^(?:lane\.)?(?:done|final|merged|complete|completed|released|closed|stopped|cancel|cancelled|canceled)$/.test(type);
+  return /^(?:lane\.)?(?:done|final|merged|complete|completed|released|closed|stopped|cancel|cancelled|canceled)$/.test(type)
+    || /^(?:(?:lane|claim|custody)\.)?(?:release|released|handoff)$/.test(type);
 }
 
 function isRenewalOnlyEvent(event: BatchEvent): boolean {
