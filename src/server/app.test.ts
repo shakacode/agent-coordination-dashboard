@@ -302,6 +302,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "safe-vocabulary-with-local-path", type: "phase", phase: "ci/passed checks; updated ./ci/passed/private", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:24:00Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-wrapped-local-path", type: "phase", phase: "ci/passed checks; updated [./ci/passed/private]", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:00Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -367,6 +371,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "foreign-vocabulary-prefix-status")?.status).toBeUndefined();
     expect(JSON.stringify(timeline.phases.find((phase) => phase.eventId === "foreign-vocabulary-prefix-status") ?? {})).not.toContain("ci/passed/private");
     expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-local-path")?.status).toBe("ci/passed checks; updated ./ci/passed/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-wrapped-local-path")?.status).toBe("ci/passed checks; updated [./ci/passed/private]");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
