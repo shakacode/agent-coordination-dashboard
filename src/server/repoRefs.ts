@@ -76,7 +76,7 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 
 function withoutExplicitStructuredPaths(value: string): string {
   return value.replace(
-    /(^|[^A-Za-z0-9._/-])(?:(?:file:\/\/)?(?:\.{1,2}\/|\/))[^\s)\]}`"']+/gi,
+    /(^|[^A-Za-z0-9._/-])(?:(?:file:\/\/)?(?:\.{1,2}\/|\/))[^\s)\]}`"',;:>]+/gi,
     "$1"
   );
 }
