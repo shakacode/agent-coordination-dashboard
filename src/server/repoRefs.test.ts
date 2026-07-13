@@ -7,6 +7,19 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it.each([
+    "Repository: https://github.com/other/private?tab=readme",
+    "Repository: https://github.com/other/private#readme",
+    "Repository: https://github.com/other/private.",
+    "Repository: https://github.com/other/private,",
+    "Repository: <https://github.com/other/private>",
+    "Repository: https://github.com/other/private.git",
+    "Repository: http://github.com/other/private",
+    "Repository: github.com/other/private"
+  ])("canonicalizes a Repository GitHub URL: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual(["other/private"]);
+  });
+
+  it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
     ["blocked on ci/passed", "ci/passed"],
