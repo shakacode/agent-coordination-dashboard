@@ -266,8 +266,6 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://[[bad;github.com/other/private",
     "https://[bad:github.com/other/private",
     "https://[bad:other/private/path",
-    "https://[bad:@other/private/path",
-    "https://[bad:user@other/private/path",
     "https://[bad)other/private/path",
     "https://[::1:github.com/other/private",
     "https://[::1:https://github.com/other/private",
@@ -275,6 +273,15 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://[bad)https://github.com/other/private"
   ])("replays structural delimiters after an unmatched authority bracket: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it.each([
+    "https://[bad:@other/private/path",
+    "https://[bad:user@other/private/path",
+    "https://[user:pass@localhost/private/path",
+    "https://[user:pa@ss@localhost/private/path"
+  ])("does not reinterpret a valid non-GitHub userinfo URL as a repository: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
 
   it.each([

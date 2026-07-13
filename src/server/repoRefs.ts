@@ -109,7 +109,6 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     const schemeEnd = index + (isHttps ? 8 : 7);
     let coarseAuthorityEnd = schemeEnd;
     let lastAt = -1;
-    let lastColon = -1;
     let authorityDelimiter = -1;
     let bracketFallbackDelimiter = -1;
     let bracketDepth = 0;
@@ -121,13 +120,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         coarseAuthorityEnd += 1;
         continue;
       }
-      if (character === ":") lastColon = coarseAuthorityEnd;
-      if (character === "@") {
-        lastAt = coarseAuthorityEnd;
-        if (bracketDepth > 0 && lastColon >= 0 && isOwnerRepoRefAt(value, coarseAuthorityEnd + 1)) {
-          bracketFallbackDelimiter = lastColon;
-        }
-      }
+      if (character === "@") lastAt = coarseAuthorityEnd;
       if (character === ":" && (isRepositoryUrlAt(value, coarseAuthorityEnd + 1) || isOwnerRepoRefAt(value, coarseAuthorityEnd + 1))) {
         bracketFallbackDelimiter = coarseAuthorityEnd;
       } else if (bracketFallbackDelimiter < 0 && (structuralDelimiters + closingDelimiters).replace(":", "").includes(character)) {
