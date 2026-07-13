@@ -81,14 +81,24 @@ function withoutExplicitStructuredPaths(value: string): string {
     new RegExp(`'${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^'\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*'`, "gi"),
     new RegExp(`\`${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^\`\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*\``, "gi")
   ];
-  const withoutQuotedPaths = quotedPathPatterns.reduce(
-    (text, pattern) => text.replace(pattern, (match, offset: number) => {
+  const withoutQuotedPaths = quotedPathPatterns.reduce((text, pattern) => {
+    let searchFrom = 0;
+    while (searchFrom < text.length) {
+      pattern.lastIndex = searchFrom;
+      const match = pattern.exec(text);
+      if (!match) break;
       let precedingBackslashes = 0;
-      for (let index = offset - 1; index >= 0 && text[index] === "\\"; index -= 1) precedingBackslashes += 1;
-      return precedingBackslashes % 2 === 0 ? " " : match;
-    }),
-    value
-  );
+      for (let index = match.index - 1; index >= 0 && text[index] === "\\"; index -= 1) precedingBackslashes += 1;
+      if (precedingBackslashes % 2 === 1) {
+        searchFrom = match.index + 1;
+        continue;
+      }
+      text = `${text.slice(0, match.index)} ${text.slice(match.index + match[0].length)}`;
+      searchFrom = match.index + 1;
+    }
+    pattern.lastIndex = 0;
+    return text;
+  }, value);
   const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(
     /(^|[^\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D._/@%+~-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D@%+~._/-]+/giu,
     "$1"

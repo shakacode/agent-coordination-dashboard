@@ -137,4 +137,12 @@ describe("repoRefsFromStructuredEventField", () => {
   ])("treats an even-backslash quote as a path opener: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
+
+  it.each([
+    String.raw`ci/passed checks; updated \"./junk"./Program Files/ci/passed/private"`,
+    String.raw`ci/passed checks; updated \'./junk'./Program Files/ci/passed/private'`,
+    "ci/passed checks; updated \\`./junk`./Program Files/ci/passed/private`"
+  ])("reconsiders the next quote after rejecting an escaped opener: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
 });
