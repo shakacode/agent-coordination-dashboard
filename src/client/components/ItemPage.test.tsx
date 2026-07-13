@@ -49,6 +49,11 @@ const timeline = {
 } satisfies ItemTimelineResponse;
 
 describe("ItemPage", () => {
+  it("does not offer resume when no current item was resolved for the timeline", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{ ...timeline, item: undefined }} />);
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
   it("filters malformed and unsafe values while deduplicating pull request URLs", () => {
     expect(uniquePullRequestUrls([
       "not a URL",

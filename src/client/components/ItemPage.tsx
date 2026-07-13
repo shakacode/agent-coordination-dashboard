@@ -185,7 +185,7 @@ export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { 
           <p>Holder: {holder}</p>
           <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: ${(timeline.item.github.ciStatus || "unknown").toUpperCase()}` : "UNKNOWN"}</p>
         </div>
-        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} resumeAvailable={!terminal} takeoverAvailable={holderDead} />
+        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} resumeAvailable={Boolean(timeline.item) && !terminal} takeoverAvailable={holderDead} />
       </header>
       {sourceIsUnknown(timeline) ? <p className="item-timeline-warning">Coordination data: UNKNOWN</p> : null}
       <TimelineWarnings timeline={timeline} />

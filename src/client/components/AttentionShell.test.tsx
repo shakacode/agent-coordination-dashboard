@@ -131,11 +131,22 @@ describe("AttentionShell", () => {
 
   it("offers eligible items for batch selection and keeps the prompt selection controlled by App", async () => {
     const onToggle = vi.fn();
+    const onAnnotate = vi.fn();
+    const onOpenItem = vi.fn();
     const readyItem: WorkItem = { ...ITEMS[0], id: "repo/dashboard#45", target: "45", schedulingState: "ready_for_batch", operatorState: "ready" };
-    render(<AttentionShell items={[readyItem]} onQueryChange={vi.fn()} onToggle={onToggle} query="" surface="find" />);
+    render(<AttentionShell items={[readyItem]} onAnnotate={onAnnotate} onOpenItem={onOpenItem} onQueryChange={vi.fn()} onToggle={onToggle} query="" surface="find" />);
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" }));
     expect(onToggle).toHaveBeenCalledWith(readyItem.id);
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Dismiss or snooze" })).toBeInTheDocument();
+  });
+
+  it("does not expose resume on a running Find result", () => {
+    render(<AttentionShell items={[{ ...ITEMS[0], operatorState: "running", attention: undefined }]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
   });
 
   it("matches canonical ids so structured repo and target searches do not collide", () => {

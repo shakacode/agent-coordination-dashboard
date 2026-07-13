@@ -133,7 +133,7 @@ function WorkCard({
   onOpenItem,
   onAnnotate,
   onClearAnnotation,
-  resumeAvailable
+  showResumeAction
 }: {
   item: WorkItem;
   onToggle?: (id: string) => void;
@@ -142,7 +142,7 @@ function WorkCard({
   onOpenItem?: (item: WorkItem) => void;
   onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
-  resumeAvailable: boolean;
+  showResumeAction: boolean;
 }) {
   const reason = item.attention;
   const { claim, heartbeat, heartbeatConflict } = effectiveCustody(item);
@@ -189,7 +189,7 @@ function WorkCard({
           item={item}
           onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
           onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
-          resumeAvailable={resumeAvailable}
+          resumeAvailable={showResumeAction}
           takeoverAvailable={reason?.kind === "dead_holder" && heartbeat?.liveness === "dead"}
         />
       </div>
@@ -252,7 +252,7 @@ export function AttentionShell({
     && new Date(item.github.mergedAt).toDateString() === currentDay
   );
   const mergedToday = mergedTodayItems.length;
-  const card = (item: WorkItem, allowResume = true) => (
+  const card = (item: WorkItem, options: { annotationsAvailable?: boolean; showResumeAction?: boolean } = {}) => (
     <WorkCard
       item={item}
       key={item.id}
@@ -260,9 +260,9 @@ export function AttentionShell({
       selectionDisabled={selectionDisabled}
       onOpenBatchOperations={onOpenBatchOperations}
       onOpenItem={onOpenItem}
-      onAnnotate={allowResume ? onAnnotate : undefined}
+      onAnnotate={options.annotationsAvailable === false ? undefined : onAnnotate}
       onClearAnnotation={onClearAnnotation}
-      resumeAvailable={allowResume && !["terminal", "archived_view"].includes(item.operatorState || "")}
+      showResumeAction={options.showResumeAction === true}
     />
   );
 
@@ -286,7 +286,7 @@ export function AttentionShell({
             ) : <span title="GitHub merge timestamps are not available">merged today unavailable</span>}.
           </p>
         ) : (
-          <div className="attention-card-list">{attentionItems.map((item) => card(item))}</div>
+          <div className="attention-card-list">{attentionItems.map((item) => card(item, { showResumeAction: true }))}</div>
         )}
       </section>
     );
@@ -302,7 +302,7 @@ export function AttentionShell({
       <section aria-label="Now" className="attention-surface">
         <header className="attention-surface-header"><div><p className="eyebrow">Live work only</p><h1>Now</h1></div><button className="status-strip" onClick={() => onSurfaceChange?.("now")} type="button">{runningItems.length} live or stale</button></header>
         {byBatch.size === 0 ? <p className="empty-state">No live lanes right now.</p> : Array.from(byBatch).map(([batch, batchItems]) => (
-          <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => card(item, false))}</section>
+          <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => card(item, { annotationsAvailable: false }))}</section>
         ))}
       </section>
     );
@@ -316,7 +316,7 @@ export function AttentionShell({
         <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><button aria-label={`Show all ${historyItems.length} history items`} className="status-strip" onClick={() => { onQueryChange(""); onSurfaceChange?.("history"); }} type="button">{historyScope.length} items</button></header>
         {historyMergedTodayOnly ? <p className="active-filter">Showing proven merges from today. <button onClick={() => onSurfaceChange?.("history")} type="button">Clear</button></p> : null}
         <label className="search-field"><span>Filter</span><input aria-label="Filter history" onChange={(event) => onQueryChange(event.target.value)} placeholder="Filter history" value={query} /></label>
-        {filteredHistory.length === 0 ? <p className="empty-state">No terminal or aged-out work matches this filter.</p> : <div className="attention-card-list">{filteredHistory.map((item) => card(item, false))}</div>}
+        {filteredHistory.length === 0 ? <p className="empty-state">No terminal or aged-out work matches this filter.</p> : <div className="attention-card-list">{filteredHistory.map((item) => card(item, { annotationsAvailable: false }))}</div>}
       </section>
     );
   }
