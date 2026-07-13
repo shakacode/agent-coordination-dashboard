@@ -23,7 +23,7 @@ import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../sha
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { isOperationalWorkItem } from "../../shared/workItemSelection";
-import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromStructuredEventField, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
@@ -391,9 +391,9 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
  * another saved repository's state.
  */
 export function redactOutOfScopeBatchEvent(event: BatchEvent, targetRepoSet: Set<string>): BatchEvent | undefined {
-  if (hasOutOfScopeRepoRef(repoRefsFromText(event.type), targetRepoSet)) return undefined;
+  if (hasOutOfScopeRepoRef(repoRefsFromStructuredEventField(event.type), targetRepoSet)) return undefined;
   const redacted = redactOutOfScopeOperatorMetadata(event, targetRepoSet);
-  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.status), targetRepoSet)) {
+  if (hasOutOfScopeRepoRef(repoRefsFromStructuredEventField(redacted.status), targetRepoSet)) {
     delete redacted.status;
   }
   return redacted;

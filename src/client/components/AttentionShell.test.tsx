@@ -40,8 +40,14 @@ const ITEMS: WorkItem[] = [
   }
 ];
 
+const initialClipboard = navigator.clipboard;
+
 describe("AttentionShell", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    Object.assign(navigator, { clipboard: initialClipboard });
+  });
 
   it("shows the attention queue first and offers its safe resume action", async () => {
     const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };

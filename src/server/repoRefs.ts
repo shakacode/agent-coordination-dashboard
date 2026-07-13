@@ -62,3 +62,39 @@ export function highConfidenceRepoRefsFromMessage(value: string | undefined): st
   if (standalone) refs.add(standalone);
   return Array.from(refs);
 }
+
+const STRUCTURED_SLASH_VOCABULARY = [
+  /^read\/write$/i,
+  /^frontend\/backend$/i,
+  /^ci\/(?:passed|failed|pending|running|success|successful|complete|completed)$/i,
+  /^deploy\/(?:staging|production|preview|development|dev|test)$/i
+];
+
+function isStructuredSlashVocabulary(ref: string): boolean {
+  return STRUCTURED_SLASH_VOCABULARY.some((pattern) => pattern.test(ref));
+}
+
+/**
+ * Event type/status fields are structured enough to recognize embedded repo
+ * references, but they also use conventional slash vocabulary. Treat URL and
+ * issue references, standalone refs, repo-like punctuation, and explicit repo
+ * context as identity evidence without mistaking common operational terms for
+ * repositories.
+ */
+export function repoRefsFromStructuredEventField(value: string | undefined): string[] {
+  if (!value) return [];
+  const refs = new Set<string>();
+  const highConfidence = new Set(highConfidenceRepoRefsFromMessage(value));
+  const explicitContext = new Set<string>();
+  const contextPattern = /\b(?:phase|repo(?:sitory)?|blocked\s+on|waiting\s+on|depends\s+on)\s*:?[ \t]+(?:repo(?:sitory)?[ \t]+)?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
+  for (const match of value.matchAll(contextPattern)) explicitContext.add(match[1]);
+
+  for (const ref of repoRefsFromText(value)) {
+    if (isStructuredSlashVocabulary(ref)) continue;
+    const [owner = "", repo = ""] = ref.split("/", 2);
+    if (highConfidence.has(ref) || /[._-]/.test(owner) || /[._-]/.test(repo) || explicitContext.has(ref)) {
+      refs.add(ref);
+    }
+  }
+  return Array.from(refs);
+}
