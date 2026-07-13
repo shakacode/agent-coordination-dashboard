@@ -107,6 +107,13 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   );
 
+  it.each(["\u0085", "\u0000", "\t", "\u200B"])(
+    "does not let an escaped control boundary remain inside a quoted path: U+%s",
+    (boundary) => {
+      expect(repoRefsFromStructuredEventField(`ci/passed; updated "./x/y\\${boundary}other/private/path"`)).toContain("other/private");
+    }
+  );
+
   it.each([
     'ci/passed; updated ./safe"./x/y"other/private/path',
     "ci/passed; updated ./safe'./x/y'other/private/path",
