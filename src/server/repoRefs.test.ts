@@ -174,6 +174,21 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   });
 
+  it("detects a schemeless canonical ref replayed after a structural delimiter", () => {
+    for (const delimiter of ["|", ";", "=", ",", ":", "!", "&"]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com${delimiter}github.com/other/private`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`https://example.com${delimiter}www.github.com/other/private`)).toContain("other/private");
+    }
+  });
+
+  it.each([
+    "Repository: https://first.last:pass@github.com/other/private",
+    "Repository: https://first.last|pass@github.com/other/private",
+    "Repository: https://user,name@github.com/other/private"
+  ])("does not add URL substrings as prompt-header repository refs: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual(["other/private"]);
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],

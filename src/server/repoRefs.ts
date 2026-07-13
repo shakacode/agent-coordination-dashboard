@@ -143,7 +143,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       continue;
     }
     if (delimiterIndex >= 0) {
-      output.push(value[delimiterIndex]);
+      output.push(value[delimiterIndex], " ");
       index = delimiterIndex + 1;
       forcedBoundary = true;
     } else {
@@ -206,6 +206,11 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
     for (const ref of githubRepoRefsFromText(repository)) refs.add(ref);
     const repositoryWithoutGithubUrls = withoutRepositoryUrls(repository);
     for (const match of repositoryWithoutGithubUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
+      const start = match.index || 0;
+      const end = start + match[1].length;
+      const before = repositoryWithoutGithubUrls[start - 1] || "";
+      const after = repositoryWithoutGithubUrls[end] || "";
+      if (/[/.]/.test(before) || after === "/") continue;
       refs.add(match[1]);
     }
   }
