@@ -1,5 +1,4 @@
 const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`|;=,!&])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
-const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`|;=,!&])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+(?:[?#][^\s)\]}>,'"`|;,:!]+)?/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
@@ -30,6 +29,48 @@ function addGithubRepoRef(refs: Set<string>, rawUrl: string): boolean {
   return false;
 }
 
+function scanSchemelessGithubText(value: string): { refs: string[]; withoutUrls: string } {
+  const refs = new Set<string>();
+  const output: string[] = [];
+  let cursor = 0;
+  SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = 0;
+
+  while (cursor < value.length) {
+    SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = cursor;
+    const match = SCHEMELESS_GITHUB_REPO_REF_PATTERN.exec(value);
+    if (!match) break;
+    const boundary = match[1];
+    output.push(value.slice(cursor, match.index), boundary, " ");
+    refs.add(normalizeGithubRepoRef(match[2]));
+    cursor = match.index + match[0].length;
+
+    if ("?#".includes(value[cursor] || "")) {
+      const queryDelimiter = value[cursor];
+      const queryValueStart = cursor + 1;
+      const directHttp = value.slice(queryValueStart, queryValueStart + 7).toLowerCase() === "http://" ||
+        value.slice(queryValueStart, queryValueStart + 8).toLowerCase() === "https://";
+      if (directHttp) {
+        output.push(queryDelimiter, " ");
+        cursor = queryValueStart;
+      } else {
+        cursor = queryValueStart;
+        while (cursor < value.length && !/\s/.test(value[cursor]) && !")]}>\'\"`".includes(value[cursor])) {
+          if ("|;,:!".includes(value[cursor])) break;
+          cursor += 1;
+        }
+        if ("|;,:!".includes(value[cursor] || "")) {
+          output.push(value[cursor], " ");
+          cursor += 1;
+        }
+      }
+    }
+  }
+
+  output.push(value.slice(cursor));
+  SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = 0;
+  return { refs: Array.from(refs), withoutUrls: output.join("") };
+}
+
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   const refs = new Set<string>();
   const output: string[] = [];
@@ -55,6 +96,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     let coarseAuthorityEnd = schemeEnd;
     let lastAt = -1;
     let authorityDelimiter = -1;
+    let bracketFallbackDelimiter = -1;
     let bracketDepth = 0;
     while (coarseAuthorityEnd < value.length && !/\s/.test(value[coarseAuthorityEnd]) && !"/?#".includes(value[coarseAuthorityEnd])) {
       const character = value[coarseAuthorityEnd];
@@ -65,6 +107,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         continue;
       }
       if (character === "@" && bracketDepth === 0) lastAt = coarseAuthorityEnd;
+      if (bracketFallbackDelimiter < 0 && "|;=,!&".includes(character)) bracketFallbackDelimiter = coarseAuthorityEnd;
       if (authorityDelimiter < 0 && bracketDepth === 0 && (structuralDelimiters + closingDelimiters).includes(character)) {
         if (character === ":") {
           let portEnd = coarseAuthorityEnd + 1;
@@ -79,6 +122,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       }
       coarseAuthorityEnd += 1;
     }
+    if (bracketDepth > 0 && authorityDelimiter < 0) authorityDelimiter = bracketFallbackDelimiter;
     let cursor = authorityDelimiter >= 0 ? authorityDelimiter : coarseAuthorityEnd;
     let delimiterIndex = authorityDelimiter >= 0 && structuralDelimiters.includes(value[authorityDelimiter]) ? authorityDelimiter : -1;
 
@@ -176,16 +220,17 @@ function withoutHttpUrls(value: string): string {
 }
 
 function githubRepoRefsFromText(value: string): string[] {
-  const scan = scanHttpText(value);
-  const refs = new Set(scan.refs);
-  for (const match of scan.withoutUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
-    refs.add(normalizeGithubRepoRef(match[2]));
-  }
+  const schemeless = scanSchemelessGithubText(value);
+  const http = scanHttpText(schemeless.withoutUrls);
+  const replayedSchemeless = scanSchemelessGithubText(http.withoutUrls);
+  const refs = new Set([...schemeless.refs, ...http.refs, ...replayedSchemeless.refs]);
   return Array.from(refs);
 }
 
 function withoutRepositoryUrls(value: string): string {
-  return withoutHttpUrls(value).replace(SCHEMELESS_GITHUB_URL_TEXT_PATTERN, "$1");
+  const schemeless = scanSchemelessGithubText(value);
+  const http = scanHttpText(schemeless.withoutUrls);
+  return scanSchemelessGithubText(http.withoutUrls).withoutUrls;
 }
 
 export function repoRefsFromText(value: string | undefined): string[] {

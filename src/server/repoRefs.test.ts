@@ -212,6 +212,24 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   });
 
+  it("applies direct-versus-named query semantics to schemeless canonical URLs", () => {
+    for (const delimiter of ["?", "#"]) {
+      expect(repoRefsFromStructuredEventField(`github.com/saved/repo${delimiter}https://github.com/other/private`)).toEqual(
+        expect.arrayContaining(["saved/repo", "other/private"])
+      );
+      expect(repoRefsFromStructuredEventField(`github.com/saved/repo${delimiter}next=https://github.com/other/private`)).toEqual(["saved/repo"]);
+    }
+  });
+
+  it.each([
+    "https://[::1|github.com/other/private",
+    "https://[::1|other/private/path",
+    "https://[::1|https://github.com/other/private",
+    "https://[[bad;github.com/other/private"
+  ])("replays structural delimiters after an unmatched authority bracket: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
