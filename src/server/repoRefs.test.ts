@@ -189,6 +189,14 @@ describe("repoRefsFromStructuredEventField", () => {
     expect(repoRefsFromStructuredEventField(value)).toEqual(["other/private"]);
   });
 
+  it("parses a direct query or fragment URL after a canonical userinfo URL", () => {
+    for (const delimiter of ["?", "#"]) {
+      expect(repoRefsFromStructuredEventField(`https://first.last:pass@github.com/saved/repo${delimiter}https://github.com/other/private`)).toEqual(
+        expect.arrayContaining(["saved/repo", "other/private"])
+      );
+    }
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],

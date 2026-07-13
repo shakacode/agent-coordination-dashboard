@@ -114,6 +114,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     addGithubRepoRef(refs, value.slice(index, urlEnd));
     let canonicalAlternateReplay: string | undefined;
     let canonicalAlternateResume = -1;
+    let canonicalAlternateForcesBoundary = false;
     if (authorityDelimiter >= 0 && authorityDelimiter < lastAt) {
       let alternateEnd = coarseAuthorityEnd;
       if (value[alternateEnd] === "/") {
@@ -126,10 +127,20 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         canonicalAlternateReplay = value.slice(authorityDelimiter, alternateEnd);
         canonicalAlternateResume = alternateEnd;
         if ("?#".includes(value[canonicalAlternateResume] || "")) {
-          canonicalAlternateResume += 1;
-          while (canonicalAlternateResume < value.length && !/\s/.test(value[canonicalAlternateResume]) && !closingDelimiters.includes(value[canonicalAlternateResume])) {
-            if ("|;,:!".includes(value[canonicalAlternateResume])) break;
-            canonicalAlternateResume += 1;
+          const queryDelimiter = value[canonicalAlternateResume];
+          const queryValueStart = canonicalAlternateResume + 1;
+          const directHttp = value.slice(queryValueStart, queryValueStart + 7).toLowerCase() === "http://" ||
+            value.slice(queryValueStart, queryValueStart + 8).toLowerCase() === "https://";
+          if (directHttp) {
+            canonicalAlternateReplay += `${queryDelimiter} `;
+            canonicalAlternateResume = queryValueStart;
+            canonicalAlternateForcesBoundary = true;
+          } else {
+            canonicalAlternateResume = queryValueStart;
+            while (canonicalAlternateResume < value.length && !/\s/.test(value[canonicalAlternateResume]) && !closingDelimiters.includes(value[canonicalAlternateResume])) {
+              if ("|;,:!".includes(value[canonicalAlternateResume])) break;
+              canonicalAlternateResume += 1;
+            }
           }
         }
       }
@@ -139,7 +150,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     if (canonicalAlternateReplay !== undefined) {
       output.push(canonicalAlternateReplay);
       index = canonicalAlternateResume;
-      forcedBoundary = false;
+      forcedBoundary = canonicalAlternateForcesBoundary;
       continue;
     }
     if (delimiterIndex >= 0) {
