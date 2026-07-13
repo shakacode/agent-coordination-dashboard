@@ -391,9 +391,9 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
  * another saved repository's state.
  */
 export function redactOutOfScopeBatchEvent(event: BatchEvent, targetRepoSet: Set<string>): BatchEvent | undefined {
-  if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(event.type), targetRepoSet)) return undefined;
+  if (hasOutOfScopeRepoRef(repoRefsFromText(event.type), targetRepoSet)) return undefined;
   const redacted = redactOutOfScopeOperatorMetadata(event, targetRepoSet);
-  if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(redacted.status), targetRepoSet)) {
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.status), targetRepoSet)) {
     delete redacted.status;
   }
   return redacted;
