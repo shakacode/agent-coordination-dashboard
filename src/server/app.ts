@@ -13,7 +13,7 @@ import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboa
 import { applyAnnotations, createAnnotationStore } from "./annotations";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
-import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
+import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeBatchEvent, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
@@ -147,7 +147,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         target,
         claims: captured.state.claims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet)),
         heartbeats: captured.state.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet)),
-        events: captured.state.events.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet)),
+        events: captured.state.events.flatMap((event) => {
+          const redacted = redactOutOfScopeBatchEvent(event, targetRepoSet);
+          return redacted ? [redacted] : [];
+        }),
         now: captured.now
       }),
       item,

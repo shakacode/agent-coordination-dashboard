@@ -134,6 +134,7 @@ function WorkCard({
 }) {
   const reason = item.attention;
   const { claim, heartbeat, heartbeatConflict } = effectiveCustody(item);
+  const canResumeIfPrIsFenced = reason?.action === "Open PR" && heartbeatConflict && Boolean(claim);
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
   const machine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, claim?.threadHandle]);
@@ -178,6 +179,7 @@ function WorkCard({
           onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
           onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
           resumeAvailable={showResumeAction}
+          resumeFallbackWhenPrUnavailable={canResumeIfPrIsFenced}
           takeoverAvailable={reason?.kind === "dead_holder" && heartbeat?.liveness === "dead"}
         />
       </div>

@@ -32,6 +32,7 @@ export function OperatorActions({
   item,
   takeoverAvailable = false,
   resumeAvailable = true,
+  resumeFallbackWhenPrUnavailable = false,
   now = () => new Date(),
   onAnnotate,
   onClearAnnotation
@@ -39,6 +40,7 @@ export function OperatorActions({
   item: WorkItem;
   takeoverAvailable?: boolean;
   resumeAvailable?: boolean;
+  resumeFallbackWhenPrUnavailable?: boolean;
   now?: () => Date;
   onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: () => Promise<void> | void;
@@ -46,6 +48,7 @@ export function OperatorActions({
   const [confirmation, setConfirmation] = useState("");
   const [annotationChoice, setAnnotationChoice] = useState("");
   const pr = pullRequestUrl(item);
+  const showResume = resumeAvailable || (resumeFallbackWhenPrUnavailable && !pr);
   const branch = branchUrl(item);
   const batch = batchId(item);
 
@@ -88,7 +91,7 @@ export function OperatorActions({
   }
 
   return <div className="operator-actions">
-    {resumeAvailable ? <button onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button> : null}
+    {showResume ? <button onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button> : null}
     {takeoverAvailable ? <button onClick={() => void copy(takeoverCommand(item), "Takeover command")} type="button">Copy takeover command</button> : null}
     {pr ? <a href={pr} rel="noreferrer" target="_blank">Open PR</a> : null}
     {branch ? <a href={branch} rel="noreferrer" target="_blank">Open branch</a> : null}

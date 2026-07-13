@@ -222,6 +222,18 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-url-phase", type: "phase", phase: "blocked", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:04:00Z", message: "See https://github.com/other/private_repo/pull/99"
+        },
+        {
+          event_id: "foreign-type", type: "phase other/private_repo#12", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:05:00Z"
+        },
+        {
+          event_id: "foreign-status", type: "phase", phase: "blocked on other/private_repo#12", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:06:00Z"
+        },
+        {
+          event_id: "saved-repo-status", type: "phase", phase: "reviewing shakacode/react_on_rails#46", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:07:00Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -231,8 +243,8 @@ describe("dashboard app import endpoint", () => {
     const timeline = await response.json() as {
       claims: Array<{ prUrl?: string }>;
       liveness: Array<{ branch?: string }>;
-      events: Array<{ eventId: string; operator?: string; message?: string }>;
-      phases: Array<{ eventId: string; message?: string }>;
+      events: Array<{ eventId: string; operator?: string; status?: string; message?: string }>;
+      phases: Array<{ eventId: string; phase?: string; message?: string }>;
       branches: string[];
       prUrls: string[];
     };
@@ -248,6 +260,12 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.phases.find((phase) => phase.eventId === "safe-read-write")?.message).toBe("Read/write checks passed");
     expect(timeline.events.find((event) => event.eventId === "foreign-url-phase")?.message).toBeUndefined();
     expect(timeline.phases.find((phase) => phase.eventId === "foreign-url-phase")?.message).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-type")).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-type")).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-status")?.phase).toBe("phase");
+    expect(timeline.events.find((event) => event.eventId === "saved-repo-status")?.status).toBe("reviewing shakacode/react_on_rails#46");
+    expect(timeline.phases.find((phase) => phase.eventId === "saved-repo-status")?.phase).toBe("reviewing shakacode/react_on_rails#46");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

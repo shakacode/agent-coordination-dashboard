@@ -384,6 +384,21 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
   return redacted;
 }
 
+/**
+ * Free-form event type/status values are rendered as raw telemetry and phase
+ * labels. Drop a contaminated type (which is the event's required identity)
+ * and redact a contaminated optional status before either surface can expose
+ * another saved repository's state.
+ */
+export function redactOutOfScopeBatchEvent(event: BatchEvent, targetRepoSet: Set<string>): BatchEvent | undefined {
+  if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(event.type), targetRepoSet)) return undefined;
+  const redacted = redactOutOfScopeOperatorMetadata(event, targetRepoSet);
+  if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(redacted.status), targetRepoSet)) {
+    delete redacted.status;
+  }
+  return redacted;
+}
+
 function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): boolean {
   const explicitRepos = [
     ...(batch.targets || []).map((target) => target.repo),
@@ -783,7 +798,10 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
   const sanitizedClaims = nonReleasedClaims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet));
   const sanitizedHeartbeats = input.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet));
-  const sanitizedEvents = inputEvents.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet));
+  const sanitizedEvents = inputEvents.flatMap((event) => {
+    const redacted = redactOutOfScopeBatchEvent(event, targetRepoSet);
+    return redacted ? [redacted] : [];
+  });
   const currentClaims = sanitizedClaims.filter((claim) => targetRepoSet.has(claim.repo));
   const repoScopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));
