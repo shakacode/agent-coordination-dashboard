@@ -101,8 +101,9 @@ function withoutNonRepositoryUriTokens(value: string): string {
     let wrapperDepth = 0;
     let quote = "";
     let escaped = false;
-    while (cursor < value.length && !/\s/.test(value[cursor])) {
+    while (cursor < value.length) {
       const character = value[cursor];
+      if (!quote && wrapperDepth === 0 && /\s/.test(character)) break;
       if (quote) {
         if (escaped) {
           escaped = false;
