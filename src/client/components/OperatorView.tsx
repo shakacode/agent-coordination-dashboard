@@ -18,6 +18,7 @@ import {
   type OperatorDeepLink,
   type OperatorRow
 } from "../operatorRows";
+import { canonicalPullRequestUrl } from "../githubUrls";
 import { StatusBadge } from "./StatusBadge";
 
 interface OperatorViewProps {
@@ -95,7 +96,7 @@ function batchDetail(row: OperatorRow): string {
 }
 
 function PrLink({ row }: { row: OperatorRow }) {
-  const prUrl = safeGithubUrl(row.prUrl);
+  const prUrl = row.prUrl ? canonicalPullRequestUrl(row.prUrl) : undefined;
   if (!prUrl) {
     return null;
   }
