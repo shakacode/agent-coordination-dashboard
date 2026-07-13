@@ -74,8 +74,15 @@ function isStructuredSlashVocabulary(ref: string): boolean {
   return STRUCTURED_SLASH_VOCABULARY.some((pattern) => pattern.test(ref));
 }
 
-function isCompleteStructuredSlashToken(value: string, ref: string): boolean {
-  return !value.includes(`${ref}/`);
+function withoutExplicitStructuredPaths(value: string): string {
+  return value.replace(
+    /(^|[\s(])(?:(?:file:\/\/)?(?:\.{1,2}\/|\/))[^\s)]+/gi,
+    "$1"
+  );
+}
+
+function isCompleteStructuredSlashToken(structuredText: string, ref: string): boolean {
+  return !structuredText.includes(`${ref}/`);
 }
 
 function repoRefsFromStructuredText(value: string): string[] {
@@ -83,10 +90,7 @@ function repoRefsFromStructuredText(value: string): string[] {
   // Explicit path syntax is the only reliable signal that a slash-shaped
   // value is local. Scrub those tokens first; bare multi-segment values remain
   // conservative repository candidates.
-  const textWithoutExplicitPaths = value.replace(
-    /(^|[\s(])(?:(?:file:\/\/)?(?:\.{1,2}\/|\/))[^\s)]+/gi,
-    "$1"
-  );
+  const textWithoutExplicitPaths = withoutExplicitStructuredPaths(value);
   for (const match of textWithoutExplicitPaths.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
     const before = textWithoutExplicitPaths[start - 1] || "";
@@ -106,6 +110,7 @@ function repoRefsFromStructuredText(value: string): string[] {
 export function repoRefsFromStructuredEventField(value: string | undefined): string[] {
   if (!value) return [];
   const refs = new Set<string>();
+  const structuredText = withoutExplicitStructuredPaths(value);
   const highConfidence = new Set(highConfidenceRepoRefsFromMessage(value));
   const explicitContext = new Set<string>();
   const contextPattern = /\b(?:phase|repo(?:sitory)?|blocked\s+on|waiting\s+on|depends\s+on)\s*:?[ \t]+(?:repo(?:sitory)?[ \t]+)?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
@@ -117,7 +122,7 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
       refs.add(ref);
       continue;
     }
-    if (isStructuredSlashVocabulary(ref) && isCompleteStructuredSlashToken(value, ref)) continue;
+    if (isStructuredSlashVocabulary(ref) && isCompleteStructuredSlashToken(structuredText, ref)) continue;
     refs.add(ref);
   }
   return Array.from(refs);

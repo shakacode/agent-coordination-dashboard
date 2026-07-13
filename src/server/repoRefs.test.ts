@@ -53,4 +53,13 @@ describe("repoRefsFromStructuredEventField", () => {
   ])("preserves an explicitly local path in structured prose: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
+
+  it.each([
+    "ci/passed checks; updated ./ci/passed/private",
+    "read/write checks; updated ../read/write/private",
+    "deploy/qa checks; updated /deploy/qa/private",
+    "ci/passed checks; updated file:///ci/passed/private"
+  ])("ignores explicit local paths when applying operational vocabulary: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
 });
