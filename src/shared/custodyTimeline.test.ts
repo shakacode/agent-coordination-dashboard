@@ -444,6 +444,15 @@ describe("buildCustodyTimeline", () => {
     ["lane cancel type", { type: "lane.cancel" }, true],
     ["normalized lane cancelled type", { type: "lane-cancelled" }, true],
     ["normalized lane canceled type", { type: "lane_canceled" }, true],
+    ["abandoned type", { type: "abandoned" }, true],
+    ["superseded type", { type: "superseded" }, true],
+    ["replaced type", { type: "replaced" }, true],
+    ["normalized lane abandoned type", { type: "lane_abandoned" }, true],
+    ["hyphenated lane superseded type", { type: "lane-superseded" }, true],
+    ["lane replaced type", { type: "lane.replaced" }, true],
+    ["lifecycle completed type", { type: "lifecycle.completed" }, true],
+    ["normalized lifecycle merged type", { type: "lifecycle_merged" }, true],
+    ["hyphenated lifecycle abandoned type", { type: "lifecycle-abandoned" }, true],
     ["lane release type", { type: "lane.release" }, true],
     ["normalized lane release type", { type: "lane_release" }, true],
     ["hyphenated lane release type", { type: "lane-release" }, true],
@@ -471,8 +480,15 @@ describe("buildCustodyTimeline", () => {
     ["cancel lifecycle status", { type: "lifecycle", status: "cancel" }, true],
     ["cancelled lifecycle status", { type: "lifecycle", status: "cancelled" }, true],
     ["canceled lifecycle status", { type: "lifecycle", status: "canceled" }, true],
+    ["abandoned lifecycle status", { type: "lifecycle", status: "abandoned" }, true],
+    ["superseded lifecycle status", { type: "lifecycle", status: "superseded" }, true],
+    ["replaced lifecycle status", { type: "lifecycle", status: "replaced" }, true],
     ["unclosed type", { type: "unclosed" }, false],
-    ["stoppable lifecycle status", { type: "lifecycle", status: "stoppable" }, false]
+    ["stoppable lifecycle status", { type: "lifecycle", status: "stoppable" }, false],
+    ["release notes type", { type: "release-notes" }, false],
+    ["pre-release type", { type: "pre-release" }, false],
+    ["handoff notes type", { type: "handoff-notes" }, false],
+    ["final review type", { type: "final-review" }, false]
   ] as const)("handles %s without transferring custody to an inactive reporter", (_description, terminalEvent, terminal) => {
     const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
       eventId: "event",
@@ -507,11 +523,52 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.claims).toEqual(terminal
       ? [
         expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
-        expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:04:00Z" })
+        expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
       ]
       : [expect.objectContaining({ action: "acquired", agentId: "worker-a" })]);
     expect(timeline.claims.some((entry) => entry.agentId === "coordinator")).toBe(false);
-    expect(timeline.liveness.every((span) => span.endedAt <= (terminal ? "2026-07-12T10:04:00.000Z" : "2026-07-12T10:10:00.000Z"))).toBe(true);
+    expect(timeline.liveness.every((span) => span.endedAt <= (terminal ? "2026-07-12T10:05:00.000Z" : "2026-07-12T10:10:00.000Z"))).toBe(true);
+  });
+
+  it("ignores a delayed holder-scoped release from the previous owner", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [heartbeat({ agentId: "worker-b", updatedAt: "2026-07-12T10:02:00Z", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        { eventId: "start-a", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "takeover-b", type: "continued", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:02:00Z", path: "events/custody.jsonl:2" },
+        { eventId: "stale-release-a", type: "claim.release", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:03:00Z", path: "events/custody.jsonl:3" },
+        { eventId: "release-b", type: "claim.release", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:4" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "taken_over", agentId: "worker-b", previousAgentId: "worker-a" }),
+      expect.objectContaining({ action: "released", agentId: "worker-b", timestamp: "2026-07-12T10:05:00Z", sourceEventId: "release-b" })
+    ]);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
+  });
+
+  it("lets an unattributed item-terminal event release the active holder", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      claims: [],
+      heartbeats: [],
+      events: [
+        { eventId: "start", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "terminal", type: "lifecycle.completed", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:04:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:04:00Z" })
+    ]);
   });
 
   it.each(["done", "lane.done"])("treats canonical %s as terminal while releasing custody only for the active holder", (doneType) => {
@@ -543,10 +600,10 @@ describe("buildCustodyTimeline", () => {
     ]);
     expect(timeline.claims).toEqual([
       expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
-      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:04:00Z" })
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
     ]);
     expect(timeline.claims.some((entry) => entry.agentId === "coordinator")).toBe(false);
-    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:04:00.000Z")).toBe(true);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
   });
 
   it.each(["lane_closed", "lane_stopped"])("releases active custody for an unattributed canonical %s terminal event", (terminalType) => {

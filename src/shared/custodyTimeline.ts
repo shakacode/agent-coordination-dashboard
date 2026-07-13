@@ -76,7 +76,11 @@ export interface BuildCustodyTimelineInput {
   now?: Date;
 }
 
-const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|release(?:d)?|closed|stopped|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
+const TERMINAL_LIFECYCLE_STATES = new Set([
+  "done", "final", "merged", "complete", "completed", "release", "released", "closed", "stopped",
+  "cancel", "cancelled", "canceled", "handoff", "abandoned", "superseded", "replaced"
+]);
+const TERMINAL_LIFECYCLE_PREFIXES = new Set(["lane", "claim", "custody", "lifecycle"]);
 const OWNERSHIP_EVENT_TYPES = new Set([
   "claim", "claimed", "acquire", "acquired", "takeover", "renew", "renewed", "continued", "resumed", "heartbeat", "handoff", "release", "released", "lane.started", "lane.handoff"
 ]);
@@ -237,10 +241,20 @@ function phaseName(event: BatchEvent): string {
   return event.status || event.type;
 }
 
+function normalizedTelemetryType(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, ".");
+}
+
+function terminalLifecycleState(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const parts = normalizedTelemetryType(value).split(".");
+  if (parts.length === 1 && TERMINAL_LIFECYCLE_STATES.has(parts[0])) return parts[0];
+  if (parts.length === 2 && TERMINAL_LIFECYCLE_PREFIXES.has(parts[0]) && TERMINAL_LIFECYCLE_STATES.has(parts[1])) return parts[1];
+  return undefined;
+}
+
 function isTerminalLifecycleEvent(event: BatchEvent): boolean {
-  return TERMINAL_LIFECYCLE_PATTERN.test(event.type)
-    || TERMINAL_LIFECYCLE_PATTERN.test(event.status || "")
-    || /(?:^|[._\s-])handoff(?:$|[._\s-])/i.test(event.type);
+  return Boolean(terminalLifecycleState(event.type) || terminalLifecycleState(event.status));
 }
 
 function isRenewalEvidence(event: BatchEvent): boolean {
@@ -255,18 +269,17 @@ function isRenewalEvidence(event: BatchEvent): boolean {
  * evidence, but their agent attribution is not an ownership assertion.
  */
 function isOwnershipBearingEvent(event: BatchEvent): boolean {
-  const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
+  const type = normalizedTelemetryType(event.type);
   if (isTerminalOwnershipType(type)) return true;
   if (OWNERSHIP_EVENT_TYPES.has(type)) return true;
   if (/^(?:claim|custody)\.(?:acquired|takeover|renewed|continued|resumed|released)$/.test(type)) return true;
   return /^(?:claim|custody|lifecycle)$/i.test(event.type)
     && (/^(?:acquired|takeover|renewed|continued|resumed)$/i.test(event.status || "")
-      || TERMINAL_LIFECYCLE_PATTERN.test(event.status || ""));
+      || Boolean(terminalLifecycleState(event.status)));
 }
 
 function isTerminalOwnershipType(type: string): boolean {
-  return /^(?:lane\.)?(?:done|final|merged|complete|completed|released|closed|stopped|cancel|cancelled|canceled)$/.test(type)
-    || /^(?:(?:lane|claim|custody)\.)?(?:release|released|handoff)$/.test(type);
+  return Boolean(terminalLifecycleState(type));
 }
 
 function isRenewalOnlyEvent(event: BatchEvent): boolean {
@@ -278,10 +291,9 @@ function isRenewalOnlyEvent(event: BatchEvent): boolean {
 
 function isCustodyTerminalEvent(event: BatchEvent): boolean {
   if (!isOwnershipBearingEvent(event)) return false;
-  const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
+  const type = normalizedTelemetryType(event.type);
   return isTerminalOwnershipType(type)
-    || /(?:^|[._\s-])(handoff|release(?:d)?)(?:$|[._\s-])/i.test(event.type)
-    || (/^(?:claim|custody|lifecycle)$/i.test(event.type) && TERMINAL_LIFECYCLE_PATTERN.test(event.status || ""));
+    || (/^(?:claim|custody|lifecycle)$/i.test(event.type) && Boolean(terminalLifecycleState(event.status)));
 }
 
 function isHistoricalSnapshot(claim: ClaimRecord): boolean {
@@ -311,6 +323,7 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
     if (!event.timestamp || time(event.timestamp) === undefined) continue;
     if (isCustodyTerminalEvent(event)) {
       if (activeAgent) {
+        if (event.agentId && event.agentId !== activeAgent) continue;
         custody.push({
           action: "released",
           agentId: activeAgent,
@@ -322,6 +335,7 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
         });
         activeAgent = undefined;
       } else if (!currentSnapshotReleased && currentClaim?.status === "active") {
+        if (event.agentId && event.agentId !== currentClaim.agentId) continue;
         const snapshotTimestamp = validClaimTimestamp(currentClaim);
         const snapshotMs = time(snapshotTimestamp || "");
         const terminalMs = time(event.timestamp);

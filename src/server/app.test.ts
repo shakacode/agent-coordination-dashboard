@@ -132,10 +132,20 @@ describe("dashboard app import endpoint", () => {
         repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "implementing",
         updated_at: "2026-07-12T10:00:00Z", expires_at: "2026-07-12T10:05:00Z", branch: "feature/in-scope"
       })),
-      writeFile(join(root, "history", "timeline.jsonl"), JSON.stringify({
-        event_id: "started", type: "lane.started", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a",
-        at: "2026-07-12T10:00:00Z", operator: "other/private_repo operator"
-      }) + "\n")
+      writeFile(join(root, "history", "timeline.jsonl"), [
+        {
+          event_id: "started", type: "lane.started", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a",
+          at: "2026-07-12T10:00:00Z", operator: "other/private_repo operator"
+        },
+        {
+          event_id: "foreign-phase", type: "phase", phase: "implementing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:01:00Z", message: "Waiting on other/private_repo#12"
+        },
+        {
+          event_id: "safe-status", type: "phase", phase: "verifying", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:02:00Z", message: "Working in shakacode/react_on_rails"
+        }
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
 
     const baseUrl = await listen(root);
@@ -143,7 +153,8 @@ describe("dashboard app import endpoint", () => {
     const timeline = await response.json() as {
       claims: Array<{ prUrl?: string }>;
       liveness: Array<{ branch?: string }>;
-      events: Array<{ operator?: string }>;
+      events: Array<{ eventId: string; operator?: string; message?: string }>;
+      phases: Array<{ eventId: string; message?: string }>;
       branches: string[];
       prUrls: string[];
     };
@@ -151,6 +162,10 @@ describe("dashboard app import endpoint", () => {
     expect(response.ok).toBe(true);
     expect(timeline.claims.at(-1)?.prUrl).toBeUndefined();
     expect(timeline.events[0]?.operator).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-phase")?.message).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-phase")?.message).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "safe-status")?.message).toBe("Working in shakacode/react_on_rails");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-status")?.message).toBe("Working in shakacode/react_on_rails");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

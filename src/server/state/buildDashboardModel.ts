@@ -343,6 +343,7 @@ interface OperatorMetadata {
   operator?: string;
   branch?: string;
   prUrl?: string;
+  message?: string;
 }
 
 function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
@@ -351,7 +352,8 @@ function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
     ...repoRefsFromText(metadata.host),
     ...repoRefsFromText(metadata.operator),
     ...repoRefsFromBranch(metadata.branch),
-    ...repoRefsFromText(metadata.prUrl)
+    ...repoRefsFromText(metadata.prUrl),
+    ...repoRefsFromText(metadata.message)
   ];
 }
 
@@ -375,6 +377,9 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
   }
   if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.prUrl), targetRepoSet)) {
     delete redacted.prUrl;
+  }
+  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.message), targetRepoSet)) {
+    delete redacted.message;
   }
   return redacted;
 }
