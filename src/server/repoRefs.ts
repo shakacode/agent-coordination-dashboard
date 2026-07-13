@@ -40,7 +40,11 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
   const refs = new Set<string>();
   for (const line of value.split(/\r?\n/)) {
     const repository = line.trim().match(/^Repository:\s*(.+)$/i)?.[1] || "";
-    for (const match of repository.matchAll(OWNER_REPO_REF_PATTERN)) {
+    for (const match of repository.matchAll(GITHUB_REPO_REF_PATTERN)) {
+      refs.add(match[1]);
+    }
+    const repositoryWithoutGithubUrls = repository.replace(/https:\/\/github\.com\/[^\s)]+/gi, "");
+    for (const match of repositoryWithoutGithubUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
       refs.add(match[1]);
     }
   }

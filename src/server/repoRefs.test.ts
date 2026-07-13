@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { repoRefsFromStructuredEventField } from "./repoRefs";
 
 describe("repoRefsFromStructuredEventField", () => {
+  it("does not derive a spurious com/owner ref from a Repository GitHub URL", () => {
+    expect(repoRefsFromStructuredEventField("Repository: https://github.com/other/private")).toEqual(["other/private"]);
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],

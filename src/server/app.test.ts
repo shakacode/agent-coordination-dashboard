@@ -362,6 +362,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "safe-spaced-directory-path", type: "phase", phase: "updated \"/Users/Jane/My Project/src/components\"", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:28:15Z"
+        },
+        {
+          event_id: "saved-repo-url-header", type: "phase", phase: "Repository: https://github.com/shakacode/react_on_rails", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:20Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -442,6 +446,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "safe-after-rejected-opener")?.status).toBe(String.raw`ci/passed checks; updated \"./junk"./Program Files/ci/passed/private"`);
     expect(timeline.events.find((event) => event.eventId === "safe-adjacent-quoted-paths")?.status).toBe("ci/passed checks; updated \"./junk\"\"./Program Files/ci/passed/private\"");
     expect(timeline.events.find((event) => event.eventId === "safe-spaced-directory-path")?.status).toBe("updated \"/Users/Jane/My Project/src/components\"");
+    expect(timeline.events.find((event) => event.eventId === "saved-repo-url-header")?.status).toBe("Repository: https://github.com/shakacode/react_on_rails");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
