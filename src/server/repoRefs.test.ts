@@ -266,6 +266,8 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://[[bad;github.com/other/private",
     "https://[bad:github.com/other/private",
     "https://[bad:other/private/path",
+    "https://[bad:@other/private/path",
+    "https://[bad:user@other/private/path",
     "https://[bad)other/private/path",
     "https://[::1:github.com/other/private",
     "https://[::1:https://github.com/other/private",
