@@ -12,6 +12,7 @@ describe("repoRefsFromStructuredEventField", () => {
     "Repository: https://github.com/other/private.",
     "Repository: https://github.com/other/private,",
     "Repository: <https://github.com/other/private>",
+    "Repository: {https://github.com/other/private}",
     "Repository: https://github.com/other/private.git",
     "Repository: https://github.com/other/private.git.",
     "Repository: http://github.com/other/private",
@@ -65,6 +66,12 @@ describe("repoRefsFromStructuredEventField", () => {
       expect(repoRefsFromStructuredEventField(`https://github.com/saved/repo${delimiter}other/private/path`)).toEqual(
         expect.arrayContaining(["saved/repo", "other/private"])
       );
+    }
+  });
+
+  it("parses a delimiter-adjacent canonical GitHub URL after another HTTP URL", () => {
+    for (const delimiter of ["|", ";", "=", ",", ":", "!", "?", "#", "&"]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com/docs${delimiter}https://github.com/other/private`)).toContain("other/private");
     }
   });
 

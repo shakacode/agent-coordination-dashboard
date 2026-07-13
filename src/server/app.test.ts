@@ -390,6 +390,14 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-after-http-url-colon", type: "phase", phase: "See https://example.com/docs:other/private/path", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:28:45Z"
+        },
+        {
+          event_id: "foreign-braced-github-url", type: "phase", phase: "See {https://github.com/other/private}", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:50Z"
+        },
+        {
+          event_id: "foreign-second-http-url", type: "phase", phase: "See https://example.com/docs|https://github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:55Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -477,6 +485,8 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "safe-pseudo-scheme-github-url")?.status).toBe("See javascript:https://github.com/other/private");
     expect(timeline.events.find((event) => event.eventId === "foreign-after-http-url")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-after-http-url-colon")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-braced-github-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-second-http-url")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

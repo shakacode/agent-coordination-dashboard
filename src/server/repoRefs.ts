@@ -1,5 +1,6 @@
 const HTTP_URL_SCAN_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[^\s)]+/gim;
 const HTTP_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?/gim;
+const HTTP_URL_CANDIDATE_PATTERN = /(^|[|;=,!?&#:])(https?:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?)/gim;
 const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
 const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
@@ -17,20 +18,22 @@ function normalizeGithubRepoRef(ref: string): string {
 function githubRepoRefsFromText(value: string): string[] {
   const refs = new Set<string>();
   for (const match of value.matchAll(HTTP_URL_SCAN_PATTERN)) {
-    const rawUrl = match[0].slice(match[1].length).replace(/[>\],.'"`]+$/, "");
-    try {
-      const url = new URL(rawUrl);
-      const hostname = url.hostname.toLowerCase();
-      if (hostname !== "github.com" && hostname !== "www.github.com") continue;
-      if (url.protocol === "https:" && url.port && url.port !== "443") continue;
-      if (url.protocol === "http:" && url.port && url.port !== "80") continue;
-      if (url.protocol !== "https:" && url.protocol !== "http:") continue;
-      const [owner, rawRepository] = url.pathname.split("/").filter(Boolean);
-      const repository = rawRepository?.split(/[|;=&#?,:!]/, 1)[0];
-      if (!owner || !repository || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repository)) continue;
-      refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
-    } catch {
-      // Ignore malformed URLs and continue with explicit schemeless refs.
+    const httpToken = match[0].slice(match[1].length);
+    for (const candidate of httpToken.matchAll(HTTP_URL_CANDIDATE_PATTERN)) {
+      const rawUrl = candidate[2].replace(/[>}\],.'"`]+$/, "");
+      try {
+        const url = new URL(rawUrl);
+        const hostname = url.hostname.toLowerCase();
+        if (hostname !== "github.com" && hostname !== "www.github.com") continue;
+        if (url.protocol === "https:" && url.port && url.port !== "443") continue;
+        if (url.protocol === "http:" && url.port && url.port !== "80") continue;
+        if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+        const [owner, repository] = url.pathname.split("/").filter(Boolean);
+        if (!owner || !repository || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repository)) continue;
+        refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+      } catch {
+        // Ignore malformed URLs and continue with later candidates.
+      }
     }
   }
   const withoutHttpUrls = value.replace(HTTP_URL_TEXT_PATTERN, "$1");
