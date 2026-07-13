@@ -12,6 +12,22 @@ function normalizeGithubRepoRef(ref: string): string {
   return ref.replace(/\.+$/, "").replace(/\.git$/i, "").replace(/\.+$/, "");
 }
 
+function addGithubRepoRef(refs: Set<string>, rawUrl: string): void {
+  try {
+    const url = new URL(rawUrl.replace(/\.+$/, ""));
+    const hostname = url.hostname.toLowerCase();
+    const validHost = hostname === "github.com" || hostname === "www.github.com";
+    const validPort = (url.protocol === "https:" && (!url.port || url.port === "443")) ||
+      (url.protocol === "http:" && (!url.port || url.port === "80"));
+    const [owner, repository] = url.pathname.split("/").filter(Boolean);
+    if (validHost && validPort && owner && repository && /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) && /^[A-Za-z0-9._-]+$/.test(repository)) {
+      refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+    }
+  } catch {
+    // Ignore malformed URLs; their structured suffix remains visible.
+  }
+}
+
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   const refs = new Set<string>();
   const output: string[] = [];
@@ -36,32 +52,33 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     const schemeEnd = index + (isHttps ? 8 : 7);
     let coarseAuthorityEnd = schemeEnd;
     let lastAt = -1;
+    let authorityDelimiter = -1;
+    let bracketDepth = 0;
     while (coarseAuthorityEnd < value.length && !/\s/.test(value[coarseAuthorityEnd]) && !"/?#".includes(value[coarseAuthorityEnd])) {
-      if (value[coarseAuthorityEnd] === "@") lastAt = coarseAuthorityEnd;
-      coarseAuthorityEnd += 1;
-    }
-    let cursor = schemeEnd;
-    let delimiterIndex = -1;
-
-    while (cursor < value.length && !/\s/.test(value[cursor]) && !"/?#".includes(value[cursor])) {
-      const character = value[cursor];
-      const authorityPrefix = value.slice(schemeEnd, cursor);
-      const completeHostPrefix = /^(?:localhost|(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+|(?:\d{1,3}\.){3}\d{1,3})$/i.test(authorityPrefix);
-      if ((structuralDelimiters + closingDelimiters).includes(character) && (cursor > lastAt || completeHostPrefix)) {
+      const character = value[coarseAuthorityEnd];
+      if (character === "[") bracketDepth += 1;
+      if (character === "]" && bracketDepth > 0) {
+        bracketDepth -= 1;
+        coarseAuthorityEnd += 1;
+        continue;
+      }
+      if (character === "@" && bracketDepth === 0) lastAt = coarseAuthorityEnd;
+      if (authorityDelimiter < 0 && bracketDepth === 0 && (structuralDelimiters + closingDelimiters).includes(character)) {
         if (character === ":") {
-          let portEnd = cursor + 1;
+          let portEnd = coarseAuthorityEnd + 1;
           while (/\d/.test(value[portEnd] || "")) portEnd += 1;
           const portBoundary = value[portEnd] || "";
-          if (portEnd > cursor + 1 && (!portBoundary || portBoundary === "/" || /\s/.test(portBoundary) || structuralDelimiters.includes(portBoundary) || closingDelimiters.includes(portBoundary))) {
-            cursor = portEnd;
+          if (portEnd > coarseAuthorityEnd + 1 && (!portBoundary || portBoundary === "/" || /\s/.test(portBoundary) || structuralDelimiters.includes(portBoundary) || closingDelimiters.includes(portBoundary))) {
+            coarseAuthorityEnd = portEnd;
             continue;
           }
         }
-        if (structuralDelimiters.includes(character)) delimiterIndex = cursor;
-        break;
+        authorityDelimiter = coarseAuthorityEnd;
       }
-      cursor += 1;
+      coarseAuthorityEnd += 1;
     }
+    let cursor = authorityDelimiter >= 0 ? authorityDelimiter : coarseAuthorityEnd;
+    let delimiterIndex = authorityDelimiter >= 0 && structuralDelimiters.includes(value[authorityDelimiter]) ? authorityDelimiter : -1;
 
     let urlEnd = delimiterIndex >= 0 ? delimiterIndex : cursor;
     if (delimiterIndex < 0 && value[cursor] === "/") {
@@ -92,21 +109,16 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       }
     }
 
-    const rawUrl = value.slice(index, urlEnd).replace(/\.+$/, "");
-    if (rawUrl.length > (isHttps ? 8 : 7)) {
-      try {
-        const url = new URL(rawUrl);
-        const hostname = url.hostname.toLowerCase();
-        const validHost = hostname === "github.com" || hostname === "www.github.com";
-        const validPort = (url.protocol === "https:" && (!url.port || url.port === "443")) ||
-          (url.protocol === "http:" && (!url.port || url.port === "80"));
-        const [owner, repository] = url.pathname.split("/").filter(Boolean);
-        if (validHost && validPort && owner && repository && /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) && /^[A-Za-z0-9._-]+$/.test(repository)) {
-          refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+    addGithubRepoRef(refs, value.slice(index, urlEnd));
+    if (authorityDelimiter >= 0 && authorityDelimiter < lastAt) {
+      let alternateEnd = coarseAuthorityEnd;
+      if (value[alternateEnd] === "/") {
+        alternateEnd += 1;
+        while (alternateEnd < value.length && !/\s/.test(value[alternateEnd]) && !structuralDelimiters.includes(value[alternateEnd]) && !"?#".includes(value[alternateEnd]) && !closingDelimiters.includes(value[alternateEnd])) {
+          alternateEnd += 1;
         }
-      } catch {
-        // Ignore malformed URLs; their structured suffix remains visible.
       }
+      addGithubRepoRef(refs, value.slice(index, alternateEnd));
     }
 
     output.push(" ");

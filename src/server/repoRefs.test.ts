@@ -144,6 +144,30 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it.each([
+    "https://example.com:443|@other/private/path",
+    "http://example.com:80|user@other/private/path",
+    "http://localhost:4319|@other/private/path",
+    "http://127.0.0.1:4319|@other/private/path",
+    "http://[::1]|@other/private/path"
+  ])("preserves host-only suffixes after ports or IPv6 authorities: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it.each([
+    "https://first.last:pass@github.com/other/private",
+    "https://first.last|pass@github.com/other/private",
+    "https://user.name,pass@github.com/other/private",
+    "https://user-name.example:pass@github.com/other/private"
+  ])("retains a canonical ref from hostname-shaped userinfo: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it("handles a long userinfo authority with forward-only work", () => {
+    const value = `https://${"a".repeat(25_000)}@github.com/other/private`;
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
     ["blocked on ci/passed", "ci/passed"],
