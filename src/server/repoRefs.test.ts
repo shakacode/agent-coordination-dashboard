@@ -37,7 +37,10 @@ describe("repoRefsFromStructuredEventField", () => {
     ["updated bin/setup.sh", "bin/setup.sh"],
     ["updated fixtures/data.json", "fixtures/data.json"],
     ["updated workspace/private/file.js", "workspace/private"],
-    ["reviewing other/private/path", "other/private"]
+    ["reviewing other/private/path", "other/private"],
+    ["reviewing ci/passed/private", "ci/passed"],
+    ["reviewing read/write/private", "read/write"],
+    ["reviewing deploy/qa/private", "deploy/qa"]
   ])("conservatively treats a non-allowlisted embedded slash ref as a repository: %s", (value, ref) => {
     expect(repoRefsFromStructuredEventField(value)).toContain(ref);
   });

@@ -74,6 +74,10 @@ function isStructuredSlashVocabulary(ref: string): boolean {
   return STRUCTURED_SLASH_VOCABULARY.some((pattern) => pattern.test(ref));
 }
 
+function isCompleteStructuredSlashToken(value: string, ref: string): boolean {
+  return !value.includes(`${ref}/`);
+}
+
 function repoRefsFromStructuredText(value: string): string[] {
   const refs = new Set<string>();
   // Explicit path syntax is the only reliable signal that a slash-shaped
@@ -113,7 +117,7 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
       refs.add(ref);
       continue;
     }
-    if (isStructuredSlashVocabulary(ref)) continue;
+    if (isStructuredSlashVocabulary(ref) && isCompleteStructuredSlashToken(value, ref)) continue;
     refs.add(ref);
   }
   return Array.from(refs);
