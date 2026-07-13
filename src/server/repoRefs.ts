@@ -125,12 +125,12 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
   if (!value) return [];
   const refs = new Set<string>();
   const structuredText = withoutExplicitStructuredPaths(value);
-  const highConfidence = new Set(highConfidenceRepoRefsFromMessage(value));
+  const highConfidence = new Set(highConfidenceRepoRefsFromMessage(structuredText));
   const explicitContext = new Set<string>();
   const contextPattern = /\b(?:phase|repo(?:sitory)?|blocked\s+on|waiting\s+on|depends\s+on)\s*:?[ \t]+(?:repo(?:sitory)?[ \t]+)?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
-  for (const match of value.matchAll(contextPattern)) explicitContext.add(match[1]);
+  for (const match of structuredText.matchAll(contextPattern)) explicitContext.add(match[1]);
 
-  const candidates = new Set([...repoRefsFromText(value), ...repoRefsFromStructuredText(value), ...highConfidence, ...explicitContext]);
+  const candidates = new Set([...repoRefsFromText(structuredText), ...repoRefsFromStructuredText(structuredText), ...highConfidence, ...explicitContext]);
   for (const ref of candidates) {
     if (highConfidence.has(ref) || explicitContext.has(ref)) {
       refs.add(ref);

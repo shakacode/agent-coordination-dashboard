@@ -158,4 +158,12 @@ describe("repoRefsFromStructuredEventField", () => {
   ])("handles adjacent quoted paths that share a delimiter boundary: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
+
+  it.each([
+    'updated "/Users/Jane/My Project/src/components"',
+    'updated "/Users/Jane/My Project/other/private"',
+    'updated "C:/Program Files/src/components"'
+  ])("does not reintroduce repository candidates from a scrubbed structured path: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
 });
