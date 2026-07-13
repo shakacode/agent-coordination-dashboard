@@ -316,6 +316,10 @@ describe("dashboard app import endpoint", () => {
           at: "2026-07-12T10:25:45Z"
         },
         {
+          event_id: "safe-vocabulary-with-symbol-path", type: "phase", phase: "ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:50Z"
+        },
+        {
           event_id: "foreign-after-explicit-local-path", type: "phase", phase: "ci/passed; updated ./x/y; other/private/path", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:26:00Z"
         },
@@ -390,6 +394,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-wrapped-local-path")?.status).toBe("ci/passed checks; updated [./ci/passed/private]");
     expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-drive-path")?.status).toBe("ci/passed checks; updated C:/ci/passed/private");
     expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-spaced-path")?.status).toBe("ci/passed checks; updated \"C:/Program Files/ci/passed/private\"");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-symbol-path")?.status).toBe("ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private");
     expect(timeline.events.find((event) => event.eventId === "foreign-after-explicit-local-path")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-after-pipe-local-path")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);

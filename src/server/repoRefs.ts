@@ -80,11 +80,11 @@ function withoutExplicitStructuredPaths(value: string): string {
     ""
   );
   const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(
-    /(^|[^\p{L}\p{N}._/-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{N}@%+~._/-]+/giu,
+    /(^|[^\p{L}\p{M}\p{N}\p{So}._/@%+~-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{M}\p{N}\p{So}@%+~._/-]+/giu,
     "$1"
   );
   return withoutRelativeDriveOrFilePaths.replace(
-    /(^|[^\p{L}\p{N}._/:-])\/[\p{L}\p{N}@%+~._/-]+/gu,
+    /(^|[^\p{L}\p{M}\p{N}\p{So}._/@%+~:-])\/[\p{L}\p{M}\p{N}\p{So}@%+~._/-]+/gu,
     "$1"
   );
 }
