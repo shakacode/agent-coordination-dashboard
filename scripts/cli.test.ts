@@ -73,6 +73,34 @@ async function runCli(args: string[]): Promise<{ status: number | null; stdout: 
 }
 
 describe("agent-coordination-dashboard CLI", () => {
+  it("preserves legacy server-mode invalid-argument exit 1", async () => {
+    const result = await runCli(["--bogus"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Unknown option: --bogus");
+  });
+
+  it.each([
+    { label: "missing --stack-json", args: ["doctor"], message: "doctor requires --stack-json" },
+    {
+      label: "repeated doctor flag",
+      args: ["doctor", "--stack-json", "--stack-json"],
+      message: "Unknown or repeated doctor option: --stack-json"
+    },
+    {
+      label: "invalid doctor flag",
+      args: ["doctor", "--stack-json", "--bogus"],
+      message: "Unknown or repeated doctor option: --bogus"
+    }
+  ])("keeps $label at usage exit 64", async ({ args, message }) => {
+    const result = await runCli(args);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(message);
+  });
+
   it("emits the shallow component contract with exit parity", async () => {
     const { baseUrl, server } = await listenDoctorFixture((req, res) => {
       expect(req.url).toBe("/api/health");
@@ -268,6 +296,60 @@ describe("agent-coordination-dashboard CLI", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("cancels a streaming redirect body and exits within the doctor deadline", async () => {
+    const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
+      res.statusCode = 302;
+      res.setHeader("location", `${baseUrl}/redirected-health`);
+      const stream = setInterval(() => res.write("redirect-body"), 25);
+      res.on("close", () => clearInterval(stream));
+    });
+    const child = spawn(
+      process.execPath,
+      ["bin/agent-coordination-dashboard.js", "doctor", "--stack-json", "--url", baseUrl],
+      { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] }
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    const exit = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const completion = await Promise.race([
+        exit.then(([status]) => ({ timedOut: false, status })),
+        new Promise<{ timedOut: true; status: null }>((resolve) => {
+          timeout = setTimeout(() => resolve({ timedOut: true, status: null }), 13_000);
+        })
+      ]);
+      if (completion.timedOut) {
+        child.kill("SIGKILL");
+        await exit;
+      }
+
+      expect(completion.timedOut).toBe(false);
+      expect(completion.status).toBe(2);
+      expect(stderr).toBe("");
+      const contract = JSON.parse(stdout) as DoctorContract;
+      expect(contract.status).toBe("failed");
+      expect(contract.checks.find((check) => check.id === "dashboard.health")?.summary).toBe(
+        "Dashboard health endpoint returned a redirect"
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await exit;
+      }
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
 
   it.each([
     "https://127.0.0.1:4319",

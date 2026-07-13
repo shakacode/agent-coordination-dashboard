@@ -32,9 +32,9 @@ const DOCTOR_RESOURCE_MODES = new Set(["fs", "api"]);
 const DOCTOR_RESOURCE_STATES = new Set(["ok", "empty", "auth_error", "unreachable"]);
 const CHECK_STATUS_RANK = { skipped: 0, healthy: 0, degraded: 1, failed: 2 };
 
-function usage(message) {
+function usage(message, exitCode = 64) {
   process.stderr.write(`${message}\n\n${HELP}`);
-  process.exitCode = 64;
+  process.exitCode = exitCode;
 }
 
 function doctorCheck(id, status, summary, details = {}, guidance = null) {
@@ -119,6 +119,7 @@ async function fetchDoctorJson(url, path, deadline) {
       headers: { accept: "application/json" }
     });
     if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
       return { response, error: "redirect" };
     }
     let payload;
@@ -366,7 +367,7 @@ if (args[0] === "doctor") {
 } else {
   const unknownArgs = args.filter((arg) => arg !== "--demo");
   if (unknownArgs.length > 0 || args.filter((arg) => arg === "--demo").length > 1) {
-    usage(`Unknown option: ${unknownArgs.join(", ") || "--demo"}`);
+    usage(`Unknown option: ${unknownArgs.join(", ") || "--demo"}`, 1);
   } else {
     const demo = args.includes("--demo");
     const target = demo ? join(packageRoot, "scripts", "demo.ts") : join(packageRoot, "src", "server", "index.ts");
