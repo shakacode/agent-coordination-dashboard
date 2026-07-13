@@ -46,6 +46,21 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it.each([
+    ["ci/passed; see https://example.com/docs|other/private/path", "other/private"],
+    ["ci/passed; see https://example.com/docs;other/private/path", "other/private"],
+    ["ci/passed; see https://example.com/docs=other/private/path", "other/private"],
+    ["ci/passed; see https://example.com/docs,other/private/path", "other/private"]
+  ])("preserves a foreign repository chain after an HTTP URL delimiter: %s", (value, ref) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain(ref);
+  });
+
+  it("preserves both a canonical GitHub ref and a foreign chain after its delimiter", () => {
+    expect(repoRefsFromStructuredEventField("https://github.com/saved/repo|other/private/path")).toEqual(
+      expect.arrayContaining(["saved/repo", "other/private"])
+    );
+  });
+
+  it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
     ["blocked on ci/passed", "ci/passed"],

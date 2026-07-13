@@ -1,6 +1,6 @@
-const GITHUB_REPO_REF_PATTERN = /(?<![\p{L}\p{M}\p{N}._@/:-])(?:https:\/\/(?:www\.)?github\.com(?::443)?|http:\/\/(?:www\.)?github\.com(?::80)?|(?:www\.)?github\.com)\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/giu;
-const GITHUB_URL_TEXT_PATTERN = /(?<![\p{L}\p{M}\p{N}._@/:-])(?:https:\/\/(?:www\.)?github\.com(?::443)?|http:\/\/(?:www\.)?github\.com(?::80)?|(?:www\.)?github\.com)\/[^\s)]+/giu;
-const HTTP_URL_TEXT_PATTERN = /https?:\/\/[^\s)]+/gi;
+const HTTP_URL_TEXT_PATTERN = /https?:\/\/[^\s)\]}>,'"`|;=&#?]+/gi;
+const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`:])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
+const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`:])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?]+/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
@@ -13,15 +13,44 @@ function normalizeGithubRepoRef(ref: string): string {
   return ref.replace(/\.+$/, "").replace(/\.git$/i, "").replace(/\.+$/, "");
 }
 
+function githubRepoRefsFromText(value: string): string[] {
+  const refs = new Set<string>();
+  for (const match of value.matchAll(HTTP_URL_TEXT_PATTERN)) {
+    const rawUrl = match[0].replace(/[>\],.'"`]+$/, "");
+    try {
+      const url = new URL(rawUrl);
+      const hostname = url.hostname.toLowerCase();
+      if (hostname !== "github.com" && hostname !== "www.github.com") continue;
+      if (url.protocol === "https:" && url.port && url.port !== "443") continue;
+      if (url.protocol === "http:" && url.port && url.port !== "80") continue;
+      if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+      const [owner, repository] = url.pathname.split("/").filter(Boolean);
+      if (!owner || !repository || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repository)) continue;
+      refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+    } catch {
+      // Ignore malformed URLs and continue with explicit schemeless refs.
+    }
+  }
+  const withoutHttpUrls = value.replace(HTTP_URL_TEXT_PATTERN, "");
+  for (const match of withoutHttpUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
+    refs.add(normalizeGithubRepoRef(match[2]));
+  }
+  return Array.from(refs);
+}
+
+function withoutRepositoryUrls(value: string): string {
+  return value
+    .replace(HTTP_URL_TEXT_PATTERN, "")
+    .replace(SCHEMELESS_GITHUB_URL_TEXT_PATTERN, "$1");
+}
+
 export function repoRefsFromText(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
   const refs = new Set<string>();
-  for (const match of value.matchAll(GITHUB_REPO_REF_PATTERN)) {
-    refs.add(normalizeGithubRepoRef(match[1]));
-  }
-  const textWithoutGithubUrls = value.replace(HTTP_URL_TEXT_PATTERN, "").replace(GITHUB_URL_TEXT_PATTERN, "");
+  for (const ref of githubRepoRefsFromText(value)) refs.add(ref);
+  const textWithoutGithubUrls = withoutRepositoryUrls(value);
   for (const match of textWithoutGithubUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
     const end = start + match[1].length;
@@ -46,10 +75,8 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
   const refs = new Set<string>();
   for (const line of value.split(/\r?\n/)) {
     const repository = line.trim().match(/^Repository:\s*(.+)$/i)?.[1] || "";
-    for (const match of repository.matchAll(GITHUB_REPO_REF_PATTERN)) {
-      refs.add(normalizeGithubRepoRef(match[1]));
-    }
-    const repositoryWithoutGithubUrls = repository.replace(HTTP_URL_TEXT_PATTERN, "").replace(GITHUB_URL_TEXT_PATTERN, "");
+    for (const ref of githubRepoRefsFromText(repository)) refs.add(ref);
+    const repositoryWithoutGithubUrls = withoutRepositoryUrls(repository);
     for (const match of repositoryWithoutGithubUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
       refs.add(match[1]);
     }
@@ -65,7 +92,7 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
 export function highConfidenceRepoRefsFromMessage(value: string | undefined): string[] {
   if (!value) return [];
   const refs = new Set<string>();
-  for (const match of value.matchAll(GITHUB_REPO_REF_PATTERN)) refs.add(normalizeGithubRepoRef(match[1]));
+  for (const ref of githubRepoRefsFromText(value)) refs.add(ref);
   for (const match of value.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) refs.add(match[1]);
   for (const repo of repoRefsFromPromptHeaders(value)) refs.add(repo);
   const standalone = value.trim().match(/^([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)$/)?.[1];
@@ -114,7 +141,7 @@ function repoRefsFromStructuredText(value: string): string[] {
   // Explicit path syntax is the only reliable signal that a slash-shaped
   // value is local. Scrub those tokens first; bare multi-segment values remain
   // conservative repository candidates.
-  const textWithoutExplicitPaths = withoutExplicitStructuredPaths(value).replace(HTTP_URL_TEXT_PATTERN, "").replace(GITHUB_URL_TEXT_PATTERN, "");
+  const textWithoutExplicitPaths = withoutRepositoryUrls(withoutExplicitStructuredPaths(value));
   for (const match of textWithoutExplicitPaths.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
     const before = textWithoutExplicitPaths[start - 1] || "";
