@@ -3,6 +3,7 @@ const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/
 const OWNER_REPO_REF_AT_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+/y;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
+const REJECTED_URL_SCHEME_PREFIXES = ["javascript:", "data:", "vbscript:", "file:", "ftp:", "mailto:"];
 
 function isClearLocalFileReference(ref: string): boolean {
   return LOCAL_FILE_REF_PATTERN.test(ref);
@@ -57,6 +58,18 @@ function isValidHttpAuthority(value: string, start: number, end: number): boolea
   }
 }
 
+function hasRejectedSchemePrefix(value: string, urlStart: number): boolean {
+  return REJECTED_URL_SCHEME_PREFIXES.some((prefix) => {
+    const prefixStart = urlStart - prefix.length;
+    if (prefixStart < 0 || value.slice(prefixStart, urlStart).toLowerCase() !== prefix) return false;
+    const beforePrefix = value[prefixStart - 1] || "";
+    return prefixStart === 0 || !/[A-Za-z0-9+.-]/.test(beforePrefix);
+  });
+}
+
+// One forward scan handles both HTTP and schemeless GitHub URLs. `index` and
+// every cursor only advance; `forcedBoundary` records a delimiter that was
+// consumed while scrubbing so an adjacent repository token can be reconsidered.
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   const refs = new Set<string>();
   const output: string[] = [];
@@ -71,7 +84,8 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     const isHttps = value.slice(index, index + 8).toLowerCase() === "https://";
     const schemelessMatch = schemelessGithubRepoMatchAt(value, index);
     const previous = value[index - 1] || "";
-    const validBoundary = index === 0 || forcedBoundary || /\s/.test(previous) || openingBoundaries.includes(previous) || "|;=,!&".includes(previous);
+    const validBoundary = index === 0 || forcedBoundary || /\s/.test(previous) || openingBoundaries.includes(previous) || "|;=,!&".includes(previous) ||
+      (previous === ":" && !hasRejectedSchemePrefix(value, index));
     if ((!isHttp && !isHttps && !schemelessMatch) || !validBoundary) {
       output.push(value[index]);
       index += 1;
@@ -248,16 +262,12 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   return { refs: Array.from(refs), withoutUrls: output.join("") };
 }
 
-function withoutHttpUrls(value: string): string {
-  return scanHttpText(value).withoutUrls;
-}
-
 function githubRepoRefsFromText(value: string): string[] {
   return scanHttpText(value).refs;
 }
 
 function withoutRepositoryUrls(value: string): string {
-  return withoutHttpUrls(value);
+  return scanHttpText(value).withoutUrls;
 }
 
 export function repoRefsFromText(value: string | undefined): string[] {
@@ -357,15 +367,15 @@ function isCompleteStructuredSlashToken(structuredText: string, ref: string): bo
   return !structuredText.includes(`${ref}/`);
 }
 
-function repoRefsFromStructuredText(value: string): string[] {
+function repoRefsFromStructuredText(structuredText: string): string[] {
   const refs = new Set<string>();
   // Explicit path syntax is the only reliable signal that a slash-shaped
-  // value is local. Scrub those tokens first; bare multi-segment values remain
-  // conservative repository candidates.
-  const textWithoutExplicitPaths = withoutRepositoryUrls(withoutExplicitStructuredPaths(value));
-  for (const match of textWithoutExplicitPaths.matchAll(OWNER_REPO_REF_PATTERN)) {
+  // value is local. The caller already scrubbed those tokens; bare
+  // multi-segment values remain conservative repository candidates.
+  const textWithoutRepositoryUrls = withoutRepositoryUrls(structuredText);
+  for (const match of textWithoutRepositoryUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
-    const before = textWithoutExplicitPaths[start - 1] || "";
+    const before = textWithoutRepositoryUrls[start - 1] || "";
     if (/[/.]/.test(before)) continue;
     refs.add(match[1]);
   }
@@ -390,6 +400,8 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
 
   const candidates = new Set([...repoRefsFromText(structuredText), ...repoRefsFromStructuredText(structuredText), ...highConfidence, ...explicitContext]);
   for (const ref of candidates) {
+    // Phrases such as "blocked on owner/repo" are explicit repository
+    // evidence and intentionally take precedence over vocabulary exemptions.
     if (highConfidence.has(ref) || explicitContext.has(ref)) {
       refs.add(ref);
       continue;

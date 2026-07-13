@@ -41,13 +41,27 @@ describe("repoRefsFromStructuredEventField", () => {
     "See égithub.com/other/private",
     "See @github.com/other/private",
     "See javascript:github.com/other/private",
+    "See data:github.com/other/private",
+    "See vbscript:github.com/other/private",
+    "See file:github.com/other/private",
     "See https://github.com:80/other/private",
     "See http://github.com:443/other/private",
     "See abchttps://github.com/other/private",
     "See ftphttps://github.com/other/private",
-    "See javascript:https://github.com/other/private"
+    "See javascript:https://github.com/other/private",
+    "See data:https://github.com/other/private",
+    "See vbscript:https://github.com/other/private"
   ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
+
+  it.each([
+    "blocked:https://github.com/other/private",
+    "PR:https://github.com/other/private",
+    "blocked:github.com/other/private",
+    "PR:github.com/other/private"
+  ])("detects a canonical GitHub URL after a label colon: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 
   it.each([
