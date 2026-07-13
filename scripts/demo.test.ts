@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { readCoordinationState } from "../src/server/state/readCoordinationState";
+import { buildCustodyTimeline } from "../src/shared/custodyTimeline";
 import { DEMO_REPO, initializeDemoState, tickDemoState } from "./demo";
 
 const roots: string[] = [];
@@ -81,6 +82,30 @@ describe("demo coordination state", () => {
       expect.arrayContaining(["running", "wedged", "paused", "blocked", "stale", "dead"])
     );
     expect(state.heartbeats.map((heartbeat) => heartbeat.liveness)).toEqual(expect.arrayContaining(["live", "stale", "dead"]));
+    expect(state.claims.filter((claim) => claim.target === "101")).toEqual([
+      expect.objectContaining({ agentId: "demo-api", status: "active", generation: 2 })
+    ]);
+    expect(state.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: "101", type: "lane.started", agentId: "demo-api-initial" }),
+        expect.objectContaining({ target: "101", type: "continued", agentId: "demo-api" }),
+        expect.objectContaining({ target: "101", type: "phase", status: "implementing" })
+      ])
+    );
+    const timeline = buildCustodyTimeline({
+      repo: DEMO_REPO,
+      target: "101",
+      claims: state.claims,
+      heartbeats: state.heartbeats,
+      events: state.events,
+      now
+    });
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "demo-api-initial", generation: 1 }),
+      expect.objectContaining({ action: "renewed", agentId: "demo-api-initial", generation: 1 }),
+      expect.objectContaining({ action: "taken_over", agentId: "demo-api", previousAgentId: "demo-api-initial", generation: 2 }),
+      expect.objectContaining({ action: "renewed", agentId: "demo-api", generation: 2, timestamp: new Date(now.getTime() - 1_000).toISOString() })
+    ]);
     expect(state.warnings).toEqual([]);
   });
 
@@ -99,7 +124,7 @@ describe("demo coordination state", () => {
     expect(after.heartbeats.find((heartbeat) => heartbeat.agentId === "demo-qa")?.updatedAt).toBe(
       before.heartbeats.find((heartbeat) => heartbeat.agentId === "demo-qa")?.updatedAt
     );
-    expect(after.events).toHaveLength(4);
+    expect(after.events).toHaveLength(8);
     expect(after.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

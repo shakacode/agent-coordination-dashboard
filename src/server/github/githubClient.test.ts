@@ -1,8 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGitHubTargetReconciler, githubApiPath, githubTargetReferenceKey, isGitHubHttpNotFound, loadOpenGitHubItems, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
+import { createGitHubTargetReconciler, githubApiPath, githubTargetReferenceKey, isGitHubHttpNotFound, loadOpenGitHubItems, parseCiStatus, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
 
 describe("github list parsers", () => {
   afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ["fails if any check definitively fails", [{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "FAILURE" }], "failing"],
+    ["is pending for queued checks", [{ status: "QUEUED" }, { conclusion: "SUCCESS" }], "pending"],
+    ["passes only recognized completed checks", [{ conclusion: "SUCCESS" }, { state: "NEUTRAL" }, { conclusion: "SKIPPED" }], "passing"],
+    ["is unknown for absent checks", undefined, "unknown"],
+    ["is unknown for unrecognized checks", [{ status: "COMPLETED" }], "unknown"]
+  ])("parses heterogeneous CI rollups conservatively: %s", (_label, rollup, expected) => {
+    expect(parseCiStatus(rollup)).toBe(expected);
+  });
+
+  it("preserves parsed CI status on open PR previews", () => {
+    const preview = parsePrList("repo/app", JSON.stringify([{
+      number: 45, title: "Open", url: "https://github.com/repo/app/pull/45", state: "OPEN", labels: [],
+      statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }]
+    }]))[0];
+    expect(preview.ciStatus).toBe("passing");
+  });
   it("normalizes merged PR and closed issue target responses", () => {
     expect(parseGitHubTarget("repo/app", JSON.stringify({
       number: 43, title: "Merged", html_url: "https://github.com/repo/app/pull/43", state: "closed", closed_at: "2026-07-12T11:00:00Z",
@@ -19,6 +37,7 @@ describe("github list parsers", () => {
       labels: [], pull_request: { merged_at: null }
     }));
     expect(closedPullRequest).toMatchObject({ target: "45", type: "pull_request", state: "CLOSED", loadState: "loaded" });
+    expect(closedPullRequest.ciStatus).toBe("unknown");
     expect(closedPullRequest).not.toHaveProperty("mergedAt");
   });
 
@@ -231,7 +250,7 @@ describe("github list parsers", () => {
       calls.push(args);
       return { stdout: "{}", stderr: "", exitCode: 0 };
     } });
-    const existingTarget = { repo: "repo/app", target: "45", type: "issue" as const, title: "Open issue", url: "https://github.com/repo/app/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const };
+    const existingTarget = { repo: "repo/app", target: "45", type: "issue" as const, title: "Open issue", url: "https://github.com/repo/app/issues/45", state: "OPEN", labels: [], ciStatus: "passing" as const, loadState: "loaded" as const };
     const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work", existingTarget };
     const result = await reconciler.load([reference]);
     const refreshedIdentity = await reconciler.load([{ ...reference, existingTarget: { ...existingTarget, title: "Fresh open title" } }]);
@@ -395,6 +414,8 @@ describe("github list parsers", () => {
     expect(calls).toHaveLength(2);
     expect(calls.every((args) => args.includes("--limit"))).toBe(true);
     expect(calls.every((args) => args[args.indexOf("--limit") + 1] === "1000")).toBe(true);
+    const prArgs = calls.find((args) => args[0] === "pr")!;
+    expect(prArgs[prArgs.indexOf("--json") + 1]).toContain("statusCheckRollup");
   });
 
   it("surfaces GitHub command failures as warnings", async () => {

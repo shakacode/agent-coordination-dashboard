@@ -349,6 +349,17 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+export function finiteNonNegativeDecimalInteger(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Number.isInteger(value) && value >= 0 ? value : undefined;
+  }
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!/^(?:0|[1-9]\d*)$/.test(trimmed)) return undefined;
+  const result = Number(trimmed);
+  return Number.isFinite(result) && Number.isInteger(result) && result >= 0 ? result : undefined;
+}
+
 function machineIdFrom(raw: Record<string, unknown>): string | undefined {
   return (
     stringValue(raw.machine_id) ||
@@ -416,6 +427,7 @@ function normalizeClaim(raw: Record<string, unknown>, path: string): ClaimRecord
     batchId: stringValue(raw.batch_id) || undefined,
     branch: stringValue(raw.branch) || undefined,
     prUrl: prUrlFrom(raw),
+    generation: finiteNonNegativeDecimalInteger(raw.generation ?? raw.claim_generation),
     status: raw.status === "released" ? "released" : raw.status === "active" ? "active" : "unknown",
     claimedAt: stringValue(raw.claimed_at) || undefined,
     updatedAt: stringValue(raw.updated_at) || undefined,
@@ -500,6 +512,7 @@ function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchE
   return {
     eventId: stringValue(raw.event_id) || stringValue(raw.id) || `${path}:${timestamp || idFromPath(path)}`,
     type: stringValue(raw.type) || stringValue(raw.event_type) || stringValue(raw.name, "unknown"),
+    generation: finiteNonNegativeDecimalInteger(raw.generation ?? raw.claim_generation),
     batchId,
     laneName,
     machineId: machineIdFrom(raw),

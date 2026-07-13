@@ -5,7 +5,7 @@ interface HeartbeatLike {
   expiresAt: string;
 }
 
-const DEAD_AFTER_TTL_MULTIPLIER = 4;
+export const DEAD_AFTER_TTL_MULTIPLIER = 4;
 
 export function deriveHeartbeatLiveness(heartbeat: HeartbeatLike, now = new Date()): Liveness {
   const updatedAt = Date.parse(heartbeat.updatedAt);
@@ -31,4 +31,3 @@ export function deriveHeartbeatLiveness(heartbeat: HeartbeatLike, now = new Date
 
   return "dead";
 }
-

@@ -2,12 +2,29 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readCoordinationState } from "./readCoordinationState";
+import { finiteNonNegativeDecimalInteger, readCoordinationState } from "./readCoordinationState";
 
 describe("readCoordinationState", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ["number zero", 0, 0],
+    ["number eight", 8, 8],
+    ["decimal string", "8", 8],
+    ["blank string", "", undefined],
+    ["whitespace string", "   ", undefined],
+    ["negative number", -1, undefined],
+    ["fraction", 1.5, undefined],
+    ["leading zero string", "08", undefined],
+    ["hex string", "0x10", undefined],
+    ["exponent string", "1e2", undefined],
+    ["NaN", Number.NaN, undefined],
+    ["Infinity", Number.POSITIVE_INFINITY, undefined]
+  ])("normalizes generation only for non-negative decimal integers: %s", (_label, value, expected) => {
+    expect(finiteNonNegativeDecimalInteger(value)).toBe(expected);
   });
 
   it("normalizes a missing claim agent id to display-safe unattributed", async () => {
@@ -39,6 +56,7 @@ describe("readCoordinationState", () => {
         branch: "feature/operator-view",
         pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
         status: "active",
+        generation: 7,
         updated_at: "2026-06-17T19:50:00Z",
         expires_at: "2026-06-17T23:50:00Z"
       })
@@ -106,6 +124,7 @@ describe("readCoordinationState", () => {
         target: "4005",
         branch: "feature/operator-view",
         pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
+        generation: "8",
         timestamp: "2026-06-17T19:45:00Z"
       })}\n{\n`
     );
@@ -120,7 +139,8 @@ describe("readCoordinationState", () => {
       host: "codex",
       operator: "justin",
       branch: "feature/operator-view",
-      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005",
+      generation: 7
     });
     expect(state.heartbeats[0].liveness).toBe("live");
     expect(state.heartbeats[0].machineId).toBe("m5");
@@ -157,7 +177,8 @@ describe("readCoordinationState", () => {
       host: "codex",
       operator: "justin",
       branch: "feature/operator-view",
-      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005"
+      prUrl: "https://github.com/shakacode/react_on_rails/pull/4005",
+      generation: 8
     });
     expect(state.warnings.map((warning) => warning.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("events/batch-1.jsonl:2")])

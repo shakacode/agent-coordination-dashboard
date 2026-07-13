@@ -5,10 +5,11 @@ import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
-import { fetchDashboard, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings } from "./api";
+import { fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
 import { HealthTab } from "./components/HealthTab";
+import { ItemPage } from "./components/ItemPage";
 import { MachinesTab } from "./components/MachinesTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { SignalGroupList } from "./components/SignalGroups";
@@ -19,6 +20,7 @@ import {
   type OverviewOperatorFilter
 } from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
+import { resumePrompt } from "./resumePrompt";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -28,6 +30,30 @@ const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
   ...REQUIRED_COORDINATION_RESOURCES,
   "events"
 ];
+
+interface ItemRoute {
+  repo: string;
+  target: string;
+}
+
+function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefined {
+  const item = params.get("item");
+  const match = item?.match(/^([^/#]+\/[^/#]+)\/([^/#]+)$/);
+  return match ? { repo: match[1], target: match[2] } : undefined;
+}
+
+function canonicalGithubItemUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    const pathname = url.pathname.replace(/\/$/, "");
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)
+      ? `${url.origin.toLowerCase()}${pathname.toLowerCase()}`
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, batches: BatchRecord[]): boolean {
   if (operation.batchPath) return operation.batchPath === batch.path;
@@ -45,13 +71,14 @@ function readOperatorDeepLink() {
   const params = new URLSearchParams(window.location.search);
   const parsed = operatorDeepLinkFromSearchParams(params);
   const legacyItem = params.get("item");
+  const itemRoute = itemRouteFromSearchParams(params);
   const canonicalItem = legacyItem?.match(/^([^/#]+\/[^/#]+)#(\d+)$/);
   const deepLink = canonicalItem
     ? { ...parsed, repo: parsed.repo || canonicalItem[1], target: parsed.target || canonicalItem[2] }
     : legacyItem && /^#?\d+$/.test(legacyItem)
       ? { ...parsed, target: parsed.target || legacyItem.replace(/^#/, "") }
     : parsed;
-  const arbitraryLegacyQuery = legacyItem && !canonicalItem && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
+  const arbitraryLegacyQuery = legacyItem && !itemRoute && !canonicalItem && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
   return {
     ...deepLink,
     query: deepLink.query || arbitraryLegacyQuery
@@ -60,7 +87,7 @@ function readOperatorDeepLink() {
 
 function hasLegacyFindLink(): boolean {
   const params = new URLSearchParams(window.location.search);
-  return Boolean(params.get("item") || params.get("q") || params.get("batch") || params.get("lane") || params.get("repo") || params.get("target"));
+  return Boolean((params.get("item") && !itemRouteFromSearchParams(params)) || params.get("q") || params.get("batch") || params.get("lane") || params.get("repo") || params.get("target"));
 }
 
 export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter, query: string): OperatorDeepLink {
@@ -88,6 +115,13 @@ function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: 
   window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
+function writeItemLocation(route: ItemRoute, mode: "push" | "replace") {
+  const url = new URL(window.location.href);
+  for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q", "item"]) url.searchParams.delete(key);
+  url.searchParams.set("item", `${route.repo}/${route.target}`);
+  window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function preserveWorkItemSelections(current: DashboardModel | null, next: DashboardModel): DashboardModel {
   if (!current) {
     return next;
@@ -110,6 +144,10 @@ export function App() {
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
+  const [itemRoute, setItemRoute] = useState<ItemRoute | undefined>(() => itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
+  const itemRouteInScope = Boolean(itemRoute && settings?.targetRepos.includes(itemRoute.repo));
+  const [itemTimeline, setItemTimeline] = useState<ItemTimelineResponse | null>(null);
+  const [itemError, setItemError] = useState<string | null>(null);
   const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
   const [activeSurface, setActiveSurface] = useState<DashboardSurface>(() =>
     operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
@@ -233,7 +271,8 @@ export function App() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).has("item")) {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("item") && !itemRouteFromSearchParams(params)) {
       writeOperatorLocation(operatorDeepLink, operatorQuery, "replace");
     }
   }, []);
@@ -241,6 +280,7 @@ export function App() {
   useEffect(() => {
     function restoreLocation() {
       const nextDeepLink = readOperatorDeepLink();
+      setItemRoute(itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
       setOperatorDeepLink(nextDeepLink);
       setOperatorQuery(nextDeepLink.query || "");
       setActiveSurface(nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) || hasLegacyFindLink() ? "find" : "attention");
@@ -248,6 +288,55 @@ export function App() {
     window.addEventListener("popstate", restoreLocation);
     return () => window.removeEventListener("popstate", restoreLocation);
   }, []);
+
+  useEffect(() => {
+    if (!itemRoute) {
+      setItemTimeline(null);
+      setItemError(null);
+      return;
+    }
+    if (!dashboard || !itemRouteInScope) {
+      setItemTimeline(null);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setItemTimeline((current) =>
+      current?.repo === itemRoute.repo && current.target === itemRoute.target ? current : null
+    );
+    setItemError(null);
+    void fetchItemTimeline(itemRoute.repo, itemRoute.target, { signal: controller.signal }).then(
+      (timeline) => {
+        if (cancelled) return;
+        if (timeline.repo !== itemRoute.repo || timeline.target !== itemRoute.target) {
+          setItemTimeline(null);
+          setItemError("Work item API returned mismatched scope");
+          return;
+        }
+        setItemTimeline(timeline);
+      },
+      (caught: unknown) => {
+        if (!cancelled && !controller.signal.aborted) setItemError(caught instanceof Error ? caught.message : "Work item failed to load");
+      }
+    );
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [dashboard?.generatedAt, itemRoute, itemRouteInScope]);
+
+  useEffect(() => {
+    if (!itemRoute || !settings || settings.targetRepos.includes(itemRoute.repo)) {
+      return;
+    }
+    const nextDeepLink = { query: operatorQuery || undefined };
+    setItemRoute(undefined);
+    setItemTimeline(null);
+    setItemError(null);
+    setOperatorDeepLink(nextDeepLink);
+    setActiveSurface("find");
+    writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
+  }, [itemRoute, operatorQuery, settings]);
 
   useEffect(() => {
     function openFind(event: KeyboardEvent) {
@@ -329,6 +418,22 @@ export function App() {
   }
 
   function updateOperatorQuery(query: string) {
+    const githubUrl = canonicalGithubItemUrl(query);
+    const item = githubUrl && dashboard?.workItems.find((candidate) =>
+      [candidate.github?.url, candidate.claim?.prUrl, candidate.heartbeat?.prUrl]
+        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl)
+    );
+    if (item) {
+      setOperatorQuery(query);
+      const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
+      const nextDeepLink = startingUniversalSearch
+        ? { query: query || undefined }
+        : { ...operatorDeepLink, query: query || undefined };
+      setOperatorDeepLink(nextDeepLink);
+      writeOperatorLocation(nextDeepLink, query, "replace");
+      openItem(item);
+      return;
+    }
     setOperatorQuery(query);
     const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
     const nextDeepLink = startingUniversalSearch
@@ -339,13 +444,36 @@ export function App() {
   }
 
   function openSurface(surface: DashboardSurface) {
-    setHistoryMergedTodayOnly(false);
-    if (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink)) {
-      const nextDeepLink = { query: operatorQuery || undefined };
+    const nextDeepLink = { query: operatorQuery || undefined };
+    if (itemRoute) {
+      setItemRoute(undefined);
+      setItemTimeline(null);
+      setItemError(null);
+    }
+    if (itemRoute || (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink))) {
       setOperatorDeepLink(nextDeepLink);
       writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
     }
+    setHistoryMergedTodayOnly(false);
     setActiveSurface(surface);
+  }
+
+  function openItem(item: WorkItem) {
+    const route = { repo: item.repo, target: item.target };
+    setItemRoute(route);
+    setItemTimeline(null);
+    setItemError(null);
+    writeItemLocation(route, "push");
+  }
+
+  function closeItem() {
+    const nextDeepLink = { query: operatorQuery || undefined };
+    setItemRoute(undefined);
+    setItemTimeline(null);
+    setItemError(null);
+    setActiveSurface("find");
+    setOperatorDeepLink(nextDeepLink);
+    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
   }
 
   function clearOperatorConstraints() {
@@ -397,9 +525,7 @@ export function App() {
   }
 
   function copyResumePrompt(item: WorkItem) {
-    const branch = item.claim?.branch || item.heartbeat?.branch;
-    const prompt = `$pr-batch\nResume ${item.repo}#${item.target}${branch ? ` on ${branch}` : ""}. Verify current coordination state before edits.`;
-    void navigator.clipboard?.writeText(prompt);
+    void navigator.clipboard?.writeText(resumePrompt(item));
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
@@ -495,21 +621,23 @@ export function App() {
             ) : (
               dashboard.stateRoot
             )}{" "}
-            · <button className="inline-count" onClick={showAllWorkItems} type="button">
+            {!itemRoute && <>· <button className="inline-count" onClick={showAllWorkItems} type="button">
               {dashboard.trulyOpenCountStatus === "unknown" || dashboard.trulyOpenCount === undefined ? "UNKNOWN" : dashboard.trulyOpenCount} lanes truly open
-            </button>
+            </button></>}
           </p>
         </div>
         <div className="summary-strip">
-          <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("agents")} title={failedSourceDetails(agentSources) || undefined} type="button">
-            {coordinationCount(dashboard.agents.length, agentSources)} agents
-          </button>
-          <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openBatchDetails("events")} title={failedSourceDetails(eventSources) || undefined} type="button">
-            {coordinationCount(dashboard.events.length, eventSources)} events
-          </button>
-          <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("health")} title={failedSourceDetails(healthSources) || undefined} type="button">
-            {coordinationCount(dashboard.healthItems.length, healthSources)} health
-          </button>
+          {!itemRoute && <>
+            <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("agents")} title={failedSourceDetails(agentSources) || undefined} type="button">
+              {coordinationCount(dashboard.agents.length, agentSources)} agents
+            </button>
+            <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openBatchDetails("events")} title={failedSourceDetails(eventSources) || undefined} type="button">
+              {coordinationCount(dashboard.events.length, eventSources)} events
+            </button>
+            <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("health")} title={failedSourceDetails(healthSources) || undefined} type="button">
+              {coordinationCount(dashboard.healthItems.length, healthSources)} health
+            </button>
+          </>}
           <button className="summary-count" disabled={dashboard.warnings.length === 0} onClick={revealWarnings} type="button">
             {dashboard.warnings.length} {warningLabel}
           </button>
@@ -634,7 +762,14 @@ export function App() {
               </button>
             ))}
           </nav>
-          <AttentionShell
+          {itemRoute && itemRouteInScope ? itemTimeline ? (
+            <>
+              {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
+              <ItemPage onBack={closeItem} timeline={itemTimeline} />
+            </>
+          ) : itemError ? (
+            <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
+          ) : <p className="empty-state">Loading work item timeline…</p> : <AttentionShell
             items={dashboard.workItems}
             deepLink={operatorDeepLink}
             historyMergedTodayOnly={historyMergedTodayOnly}
@@ -643,6 +778,7 @@ export function App() {
             onCopyResume={copyResumePrompt}
             onQueryChange={updateOperatorQuery}
             onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
+            onOpenItem={openItem}
             onClearDeepLink={clearOperatorConstraints}
             onShowMergedToday={showMergedToday}
             onSurfaceChange={openSurface}
@@ -652,12 +788,12 @@ export function App() {
             repairWorkItemIds={repairWorkItemIds}
             selectionDisabled={requiredCoordinationUnavailable}
             surface={activeSurface}
-          />
-          <details className="prompt-drawer-shell">
+          />}
+          {!itemRoute && <details className="prompt-drawer-shell">
             <summary>PR-batch prompt</summary>
             <PromptDrawer disabled={requiredCoordinationUnavailable} prompt={prompt} />
-          </details>
-          <details className="secondary-tools" ref={batchOperationsRef}>
+          </details>}
+          {!itemRoute && <details className="secondary-tools" ref={batchOperationsRef}>
             <summary>{batchDetailScope === "events" ? "Event records" : batchDetailScope === "repairs" ? "Batch repairs" : "Batch operations"}</summary>
             {batchDetailScope === "events" ? (
               <>
@@ -684,12 +820,12 @@ export function App() {
                 {orphanRepairOperations.map((operation) => <article className="event-row" key={`${operation.batchPath || operation.repo || "unscoped"}:${operation.batchId}`}><strong>{operation.controlStatus}</strong><span>{displayAttribution(operation.repo || operation.batchPath)}</span><span>{displayAttribution(operation.batchId)}</span><span>{operation.eventCount} events</span><time>{operation.latestEventAt || "time unavailable"}</time></article>)}
               </section>
             ) : null}
-          </details>
-          <details className="secondary-tools" ref={diagnosticsRef}>
+          </details>}
+          {!itemRoute && <details className="secondary-tools" ref={diagnosticsRef}>
             <summary>{diagnosticScope === "agents" ? "Agents" : diagnosticScope === "health" ? "Health" : "Machines and health"}</summary>
             {diagnosticScope !== "health" ? <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} /> : null}
             {diagnosticScope !== "agents" ? <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} /> : null}
-          </details>
+          </details>}
         </section>
       </div>
     </main>

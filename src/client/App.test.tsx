@@ -36,6 +36,7 @@ const model = {
         repo: "repo/dashboard",
         target: "43",
         status: "wedged",
+        branch: "codex/heartbeat",
         updatedAt: "2026-07-12T11:00:00.000Z",
         expiresAt: "2026-07-12T11:30:00.000Z",
         path: "heartbeats/worker-a.json",
@@ -126,7 +127,9 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("repo/dashboard#43"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "$pr-batch\nResume repo/dashboard#43 on codex/heartbeat. Verify current coordination state before edits."
+    );
     expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
@@ -138,6 +141,37 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
   });
 
+  it("uses the same resume contract with a loaded GitHub branch fallback", async () => {
+    const githubFallbackModel = {
+      ...model,
+      workItems: [{
+        ...model.workItems[0],
+        heartbeat: undefined,
+        github: {
+          repo: "repo/dashboard",
+          target: "43",
+          type: "issue" as const,
+          title: "GitHub branch fallback",
+          url: "https://github.com/repo/dashboard/issues/43",
+          state: "OPEN",
+          branch: "codex/github-fallback",
+          labels: [],
+          loadState: "loaded" as const
+        }
+      }, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input) === "/api/settings" ? settings : githubFallbackModel)
+    })));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Copy resume prompt" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "$pr-batch\nResume repo/dashboard#43 on codex/github-fallback. Verify current coordination state before edits."
+    );
+  });
+
   it("maps legacy query links into Find and retains their query", async () => {
     window.history.pushState({}, "", "/?q=43&batch=batch-a&item=repo/dashboard%2343");
     render(<App />);
@@ -147,6 +181,300 @@ describe("App", () => {
     expect(window.location.search).not.toContain("item=");
     expect(window.location.search).toContain("repo=repo%2Fdashboard");
     expect(window.location.search).toContain("target=43");
+  });
+
+  it("opens the custody timeline when a PR URL is pasted into universal Find", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard",
+      target: "44",
+      claims: [],
+      liveness: [],
+      phases: [],
+      events: [],
+      branches: ["codex/finished"],
+      prUrls: ["https://github.com/repo/dashboard/pull/44"],
+      item: model.workItems[1],
+      sourceStatus: [],
+      warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "https://github.com/repo/dashboard/pull/44");
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    expect(window.location.search).toBe("?item=repo%2Fdashboard%2F44");
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
+    expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("https://github.com/repo/dashboard/pull/44");
+  });
+
+  it("hides unmounted header drill-downs in item mode and restores them after Back", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
+      item: model.workItems[1], sourceStatus: [], warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "2 lanes truly open" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "0 agents" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "0 events" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "0 health" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
+  });
+
+  it("clears structured Find state after returning from an item", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
+      item: model.workItems[1], sourceStatus: [], warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    window.history.pushState({}, "", "/?repo=repo%2Fdashboard&target=44&item=repo%2Fdashboard%2F44");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
+
+    expect(window.location.search).toBe("");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
+  });
+
+  it("clears structured Find constraints when Find exits an item route", async () => {
+    const itemTimeline = {
+      repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
+      item: model.workItems[1], sourceStatus: [], warnings: []
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings };
+      if (url.startsWith("/api/item/")) return { ok: true, json: async () => itemTimeline };
+      return { ok: true, json: async () => model };
+    }));
+    window.history.pushState({}, "", "/?repo=repo%2Fdashboard&target=44&item=repo%2Fdashboard%2F44");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("");
+    expect(screen.queryByText(/Constrained by/)).not.toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 events" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0 health" })).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "45");
+    expect(window.location.search).toBe("?q=45");
+    expect(screen.getByRole("heading", { name: /Ready dashboard work/ })).toBeInTheDocument();
+  });
+
+  it("refreshes an open custody timeline when the dashboard auto-refreshes", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let dashboardCalls = 0;
+    let itemCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: [`codex/refresh-${itemCalls}`], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: `2026-07-12T11:20:0${dashboardCalls}.000Z` }) } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/refresh-1")).toBeInTheDocument();
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
+    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
+    expect(screen.getByText(/Branch: codex\/refresh-(?:[2-9]|[1-9]\d+)/)).toBeInTheDocument();
+  });
+
+  it("keeps the displayed timeline visible while a background refresh fetches newer data", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let dashboardCalls = 0;
+    let itemCalls = 0;
+    const pendingRefresh = new Promise<Response>(() => undefined);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        if (itemCalls > 1) return pendingRefresh;
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: ["codex/current"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: new Date(2026, 6, 12, 11, 20, dashboardCalls).toISOString() }) } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/current")).toBeInTheDocument();
+    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
+    expect(screen.getByText("Branch: codex/current")).toBeInTheDocument();
+    expect(screen.queryByText("Loading work item timeline…")).not.toBeInTheDocument();
+  });
+
+  it("keeps stale timeline data visible and warns when a background refresh fails", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let dashboardCalls = 0;
+    let itemCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        if (itemCalls > 1) throw new Error("refresh failed");
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: ["codex/stale"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: new Date(2026, 6, 12, 11, 30, dashboardCalls).toISOString() }) } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/stale")).toBeInTheDocument();
+    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
+    expect(screen.getByText("Branch: codex/stale")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Coordination data: UNKNOWN");
+    expect(screen.getByRole("alert")).toHaveTextContent("refresh failed");
+  });
+
+  it("closes an open timeline when refresh removes its repository from saved scope", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let settingsCalls = 0;
+    let itemCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") {
+        settingsCalls += 1;
+        return {
+          ok: true,
+          json: async () => settingsCalls === 1 ? settings : { targetRepos: ["other/repo"] }
+        } as Response;
+      }
+      if (url.startsWith("/api/item/")) {
+        itemCalls += 1;
+        if (itemCalls > 1) return { ok: false, status: 404 } as Response;
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [],
+            branches: ["codex/out-of-scope"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => settingsCalls === 1 ? model : { ...model, generatedAt: "2026-07-12T11:21:00.000Z", targetRepos: ["other/repo"], workItems: [] }
+      } as Response;
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("Branch: codex/out-of-scope")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Work item #44" })).not.toBeInTheDocument());
+    expect(itemCalls).toBe(1);
+    expect(screen.queryByText("repo/dashboard")).not.toBeInTheDocument();
+    expect(screen.queryByText("Branch: codex/out-of-scope")).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale timeline refresh failed/)).not.toBeInTheDocument();
+    expect(window.location.search).not.toContain("item=");
+  });
+
+  it("rejects an item response whose repository or target does not match the route", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      if (url.startsWith("/api/item/")) {
+        return { ok: true, json: async () => ({
+          repo: "other/repo", target: "44", claims: [], liveness: [], phases: [], events: [], branches: ["private/branch"], prUrls: [], sourceStatus: [], warnings: []
+        }) } as Response;
+      }
+      return { ok: true, json: async () => model } as Response;
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByText(/mismatched scope/i)).toBeInTheDocument();
+    expect(screen.queryByText("private/branch")).not.toBeInTheDocument();
+  });
+
+  it("aborts superseded item requests so stale route completions cannot win", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: (response: Response) => void = () => undefined;
+    const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings") return Promise.resolve({ ok: true, json: async () => settings } as Response);
+      if (url.endsWith("/44")) {
+        firstSignal = init?.signal || undefined;
+        return firstResponse;
+      }
+      if (url.endsWith("/45")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ repo: "repo/dashboard", target: "45", claims: [], liveness: [], phases: [], events: [], branches: ["codex/current"], prUrls: [], item: model.workItems[2], sourceStatus: [], warnings: [] })
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => model } as Response);
+    }));
+    render(<App />);
+    await waitFor(() => expect(firstSignal).toBeDefined());
+
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F45");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+    expect(await screen.findByRole("heading", { name: "Work item #45" })).toBeInTheDocument();
+
+    resolveFirst({ ok: true, json: async () => ({ repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: ["codex/stale"], prUrls: [], item: model.workItems[1], sourceStatus: [], warnings: [] }) } as Response);
+    expect(screen.queryByText("Branch: codex/stale")).not.toBeInTheDocument();
+    expect(screen.getByText("Branch: codex/current")).toBeInTheDocument();
   });
 
   it("migrates target-only legacy item links without dropping their exact filter", async () => {

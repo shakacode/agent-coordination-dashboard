@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
-import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
+import { buildCustodyTimeline } from "../shared/custodyTimeline";
+import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
 import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
@@ -11,12 +12,17 @@ import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
-import { buildDashboardModel, hasCoordinationEvidence } from "./state/buildDashboardModel";
+import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
 type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
 type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
+type CoordinationSnapshot = { state: Awaited<ReturnType<typeof readCoordinationState>>; now: Date };
+interface BuildScopedDashboardOptions {
+  bypassGitHubCache?: boolean;
+  captured?: CoordinationSnapshot;
+}
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
 
 export function batchLanesFor(item: WorkItem, model: DashboardModel) {
@@ -67,6 +73,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   let latestCacheableDashboardBuild = 0;
   let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
   let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
+  const githubWarningsByDashboard = new WeakMap<DashboardModel, CoordinationWarning[]>();
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -100,6 +107,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return { ...settings, refreshIntervalMs: config.refreshIntervalMs };
   }
 
+  async function captureCoordinationSnapshot(): Promise<CoordinationSnapshot> {
+    const now = new Date();
+    const state = await readCoordinationState(config.stateRoot, now, {
+      apiUrl: coordApiUrl,
+      token: coordApiToken
+    });
+    return { state, now };
+  }
+
   function dashboardCacheKey(settings: DashboardSettings): string {
     return settings.targetRepos.join("\n");
   }
@@ -109,6 +125,38 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     cachedDashboard = undefined;
     dashboardBuildInFlight = undefined;
   }
+
+  app.get("/api/item/:repo/:target", async (req, res) => {
+    const repo = req.params.repo;
+    const target = req.params.target;
+    const settings = await currentSettings();
+    if (!repo || !target || !settings.targetRepos.includes(repo)) {
+      res.status(404).json({ error: "Work item is not in the saved target repositories." });
+      return;
+    }
+
+    const captured = await captureCoordinationSnapshot();
+    const model = await buildItemScopedDashboard(settings, captured);
+    const item = model.workItems.find((candidate) => candidate.repo === repo && candidate.target === target);
+    const targetRepoSet = new Set(settings.targetRepos);
+    res.json({
+      ...buildCustodyTimeline({
+        repo,
+        target,
+        claims: captured.state.claims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet)),
+        heartbeats: captured.state.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet)),
+        events: captured.state.events.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet)),
+        now: captured.now
+      }),
+      item,
+      sourceStatus: captured.state.sourceStatus,
+      // Reuse the dashboard model's target-repository sanitization, then keep
+      // only this item's attributed warnings plus safe, unattributed notices.
+      warnings: model.warnings.filter((warning) =>
+        (!warning.repo || warning.repo === repo) && (!warning.target || warning.target === target)
+      )
+    });
+  });
 
   function nextCacheableDashboardBuild(): number {
     dashboardBuildSequence += 1;
@@ -173,7 +221,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         const reference = githubPullRequestReference(source?.prUrl, item.repo);
         return reference ? [{ ...reference, ...(source?.branch ? { branch: source.branch } : {}) }] : [];
       })[0];
-    if (pullRequest) return pullRequest;
+    if (pullRequest) {
+      const existingTarget = model.workItems.find((candidate) =>
+        candidate.repo === pullRequest.repo
+        && candidate.target === pullRequest.target
+        && candidate.github?.type === "pull_request"
+        && candidate.github.loadState === "loaded"
+      )?.github;
+      return { ...pullRequest, ...(existingTarget ? { existingTarget } : {}) };
+    }
     if (item.terminalState) {
       return item.type === "pull_request"
         ? { repo: item.repo, target: item.target, type: "pull_request", ...(branch ? { branch } : {}) }
@@ -200,12 +256,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
-  async function buildScopedDashboard(settings: DashboardSettings, options: { bypassGitHubCache?: boolean } = {}): Promise<DashboardModel> {
-    const now = new Date();
-    const state = await readCoordinationState(config.stateRoot, now, {
-      apiUrl: coordApiUrl,
-      token: coordApiToken
-    });
+  async function buildScopedDashboard(settings: DashboardSettings, options: BuildScopedDashboardOptions = {}): Promise<DashboardModel> {
+    const captured = options.captured || await captureCoordinationSnapshot();
+    const now = captured.now;
+    const state = captured.state;
     const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
     const openGithubItems = githubResults.flatMap((result) => result.items);
     const openGithubWarnings = githubResults.flatMap((result) => result.warnings);
@@ -264,13 +318,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
-    return {
+    const scopedModel: DashboardModel = {
       ...model,
       ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
       githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
       ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
     };
+    githubWarningsByDashboard.set(scopedModel, [...openGithubWarnings, ...reconciled.warnings]);
+    return scopedModel;
   }
 
   function cacheDashboardModel(key: string, model: DashboardModel, generation: number, sequence: number, expiresAt: number) {
@@ -282,6 +338,31 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       key,
       model
     };
+  }
+
+  async function cachedDashboardForItem(settings: DashboardSettings): Promise<DashboardModel | undefined> {
+    const key = dashboardCacheKey(settings);
+    if (cachedDashboard?.key === key && cachedDashboard.expiresAt > Date.now()) return cachedDashboard.model;
+    return dashboardBuildInFlight?.key === key ? dashboardBuildInFlight.promise : undefined;
+  }
+
+  async function buildItemScopedDashboard(settings: DashboardSettings, captured: CoordinationSnapshot): Promise<DashboardModel> {
+    const cached = await cachedDashboardForItem(settings);
+    if (!cached) return buildScopedDashboard(settings, { captured });
+    // Item refreshes need fresh coordination state, but can safely reuse the
+    // already-loaded GitHub previews from the current dashboard cache.
+    const githubItems = cached.workItems.flatMap((item) => item.github ? [item.github] : []);
+    return buildDashboardModel({
+      stateRoot: displayedStateRoot,
+      targetRepos: settings.targetRepos,
+      claims: captured.state.claims,
+      heartbeats: captured.state.heartbeats,
+      batches: captured.state.batches,
+      events: captured.state.events,
+      githubItems,
+      warnings: [...captured.state.warnings, ...(githubWarningsByDashboard.get(cached) || [])],
+      now: captured.now
+    });
   }
 
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {

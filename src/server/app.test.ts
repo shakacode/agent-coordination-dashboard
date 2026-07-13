@@ -34,11 +34,16 @@ async function listenServer(server: Server): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function listen(stateRoot: string, overrides: Partial<ServerConfig> = {}): Promise<string> {
+async function listen(
+  stateRoot: string,
+  overrides: Partial<ServerConfig> = {},
+  appOptions: NonNullable<Parameters<typeof createDashboardApp>[1]> = {}
+): Promise<string> {
   const app = await createDashboardApp(testConfig(stateRoot, overrides), {
     serveFrontend: false,
     loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
-    loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
+    loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] }),
+    ...appOptions
   });
   const server = app.listen(0, "127.0.0.1");
   return listenServer(server);
@@ -66,6 +71,201 @@ async function listenUnauthorizedCoordinationApi(): Promise<string> {
 describe("dashboard app import endpoint", () => {
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  it("serves a saved-repository target custody timeline with history and liveness spans", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-timeline-"));
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "claims", "other", "private_repo"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "history"), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(root, "claims", "shakacode", "react_on_rails", "46.json"), JSON.stringify({
+        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "active", generation: 4,
+        claimed_at: "2026-07-12T10:04:00Z", branch: "codex/takeover"
+      })),
+      writeFile(join(root, "claims", "other", "private_repo", "broken.json"), "{"),
+      writeFile(join(root, "heartbeats", "worker-b.json"), JSON.stringify({
+        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", status: "implementing",
+        updated_at: "2026-07-12T10:04:00Z", expires_at: "2026-07-12T10:09:00Z"
+      })),
+      writeFile(join(root, "history", "timeline.jsonl"), [
+        { event_id: "started", type: "lane.started", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", generation: 3, at: "2026-07-12T10:00:00Z", thread_handle: "first-chat" },
+        { event_id: "takeover", type: "continued", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-b", at: "2026-07-12T10:04:00Z", branch: "codex/takeover" },
+        { event_id: "phase-1", type: "phase", repo: "shakacode/react_on_rails", target: "46", phase: "implementing", at: "2026-07-12T10:04:00Z" }
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n")
+    ]);
+
+    const baseUrl = await listen(root);
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+
+    expect(response.ok).toBe(true);
+    const timeline = await response.json() as { repo: string; target: string; claims: unknown[]; liveness: unknown[]; phases: unknown[]; branches: string[]; warnings: Array<{ message: string }> };
+    expect(timeline.repo).toBe("shakacode/react_on_rails");
+    expect(timeline.target).toBe("46");
+    expect(timeline.claims).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a", generation: 3 }),
+      expect.objectContaining({ action: "taken_over", agentId: "worker-b" }),
+      expect.objectContaining({ action: "renewed", agentId: "worker-b", generation: 4 })
+    ]));
+    expect(timeline.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ liveness: "live" })]));
+    expect(timeline.phases).toEqual(expect.arrayContaining([expect.objectContaining({ phase: "implementing" })]));
+    expect(timeline.branches).toEqual(["codex/takeover"]);
+    expect(timeline.warnings.map((warning) => warning.message).join("\n")).not.toContain("other/private_repo");
+  });
+
+  it("redacts foreign repository metadata from an otherwise in-scope item timeline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-timeline-redaction-"));
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "history"), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(root, "claims", "shakacode", "react_on_rails", "46.json"), JSON.stringify({
+        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "active",
+        updated_at: "2026-07-12T10:00:00Z", pr_url: "https://github.com/other/private_repo/pull/46"
+      })),
+      writeFile(join(root, "heartbeats", "worker-a.json"), JSON.stringify({
+        repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "implementing",
+        updated_at: "2026-07-12T10:00:00Z", expires_at: "2026-07-12T10:05:00Z", branch: "feature/in-scope"
+      })),
+      writeFile(join(root, "history", "timeline.jsonl"), [
+        {
+          event_id: "started", type: "lane.started", repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a",
+          at: "2026-07-12T10:00:00Z", operator: "other/private_repo operator"
+        },
+        {
+          event_id: "foreign-phase", type: "phase", phase: "implementing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:01:00Z", message: "Waiting on other/private_repo#12"
+        },
+        {
+          event_id: "safe-status", type: "phase", phase: "verifying", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:02:00Z", message: "Desktop/narrow browser QA passed"
+        },
+        {
+          event_id: "safe-read-write", type: "phase", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:03:00Z", message: "Read/write checks passed"
+        },
+        {
+          event_id: "foreign-url-phase", type: "phase", phase: "blocked", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:04:00Z", message: "See https://github.com/other/private_repo/pull/99"
+        }
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n")
+    ]);
+
+    const baseUrl = await listen(root);
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    const timeline = await response.json() as {
+      claims: Array<{ prUrl?: string }>;
+      liveness: Array<{ branch?: string }>;
+      events: Array<{ eventId: string; operator?: string; message?: string }>;
+      phases: Array<{ eventId: string; message?: string }>;
+      branches: string[];
+      prUrls: string[];
+    };
+
+    expect(response.ok).toBe(true);
+    expect(timeline.claims.at(-1)?.prUrl).toBeUndefined();
+    expect(timeline.events[0]?.operator).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-phase")?.message).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-phase")?.message).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "safe-status")?.message).toBe("Desktop/narrow browser QA passed");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-status")?.message).toBe("Desktop/narrow browser QA passed");
+    expect(timeline.events.find((event) => event.eventId === "safe-read-write")?.message).toBe("Read/write checks passed");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-read-write")?.message).toBe("Read/write checks passed");
+    expect(timeline.events.find((event) => event.eventId === "foreign-url-phase")?.message).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-url-phase")?.message).toBeUndefined();
+    expect(timeline.prUrls).toEqual([]);
+    expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
+    expect(timeline.branches).toEqual(["feature/in-scope"]);
+  });
+
+  it("builds item timeline and header state from one fresh snapshot instead of dashboard cache", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-snapshot-"));
+    const claimPath = join(root, "claims", "shakacode", "react_on_rails", "46.json");
+    const heartbeatPath = join(root, "heartbeats", "worker.json");
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "batches"), { recursive: true })
+    ]);
+    const writeCurrentState = async (agentId: string, status: string) => {
+      const updatedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      await Promise.all([
+        writeFile(claimPath, JSON.stringify({
+          repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "active", updated_at: updatedAt
+        })),
+        writeFile(heartbeatPath, JSON.stringify({
+          repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status, updated_at: updatedAt, expires_at: expiresAt
+        }))
+      ]);
+    };
+    await writeCurrentState("worker-a", "planning");
+
+    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 });
+    await fetch(`${baseUrl}/api/dashboard`);
+    await writeCurrentState("worker-b", "implementing");
+
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    const item = await response.json() as {
+      claims: Array<{ agentId: string }>;
+      liveness: Array<{ agentId: string; status: string }>;
+      item?: { claim?: { agentId: string }; heartbeat?: { agentId: string; status: string } };
+    };
+
+    expect(response.ok).toBe(true);
+    expect(item.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(item.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ agentId: "worker-b", status: "implementing" })]));
+    expect(item.item?.claim).toMatchObject({ agentId: "worker-b" });
+    expect(item.item?.heartbeat).toMatchObject({ agentId: "worker-b", status: "implementing" });
+  });
+
+  it("refreshes item state from a captured snapshot without repeating cached dashboard GitHub work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-cached-github-"));
+    const claimPath = join(root, "claims", "shakacode", "react_on_rails", "46.json");
+    const heartbeatPath = join(root, "heartbeats", "worker.json");
+    await Promise.all([
+      mkdir(join(root, "claims", "shakacode", "react_on_rails"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true }),
+      mkdir(join(root, "batches"), { recursive: true })
+    ]);
+    const writeCurrentState = async (agentId: string) => {
+      const updatedAt = new Date().toISOString();
+      await Promise.all([
+        writeFile(claimPath, JSON.stringify({ repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "active", updated_at: updatedAt })),
+        writeFile(heartbeatPath, JSON.stringify({ repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "implementing", updated_at: updatedAt, expires_at: new Date(Date.now() + 60_000).toISOString() }))
+      ]);
+    };
+    let openListCalls = 0;
+    let reconciliationCalls = 0;
+    await writeCurrentState("worker-a");
+    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 }, {
+      loadOpenGitHubItems: async () => {
+        openListCalls += 1;
+        return { items: [], warnings: [{ severity: "warning" as const, repo: "shakacode/react_on_rails", target: "46", message: "GitHub item lookup is partial" }] };
+      },
+      loadGitHubTargets: async (references) => {
+        reconciliationCalls += 1;
+        return { items: [], warnings: [], references };
+      }
+    });
+    await fetch(`${baseUrl}/api/dashboard`);
+    await writeCurrentState("worker-b");
+
+    const first = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { claim?: { agentId: string } }; claims: Array<{ agentId: string }>; warnings: Array<{ message: string }> };
+    const second = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { heartbeat?: { agentId: string } }; claims: Array<{ agentId: string }> };
+
+    expect(first.item?.claim).toMatchObject({ agentId: "worker-b" });
+    expect(first.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(first.warnings.filter((warning) => warning.message === "GitHub item lookup is partial")).toHaveLength(1);
+    expect(second.item?.heartbeat).toMatchObject({ agentId: "worker-b" });
+    expect(second.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(openListCalls).toBe(1);
+    expect(reconciliationCalls).toBe(1);
   });
 
   it("returns runtime refresh settings with target repositories", async () => {
@@ -488,6 +688,35 @@ describe("dashboard app import endpoint", () => {
     expect(body.githubMergeTimeStatus).toBe("available");
     expect(body.trulyOpenCount).toBe(0);
     expect(body.trulyOpenCountStatus).toBe("available");
+  });
+
+  it("preserves rich open PR preview data when an issue links to another PR target", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-linked-open-pr-"));
+    const directory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "45.json"), JSON.stringify({
+      schema_version: 1, repo: "shakacode/react_on_rails", target: "45", agent_id: "worker", status: "active",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54"
+    }));
+    const linkedPreview = {
+      repo: "shakacode/react_on_rails", target: "54", type: "pull_request" as const, title: "Linked open PR",
+      url: "https://github.com/shakacode/react_on_rails/pull/54", state: "OPEN", reviewDecision: "APPROVED", ciStatus: "passing" as const, labels: [], loadState: "loaded" as const
+    };
+    let receivedExistingTarget: typeof linkedPreview | undefined;
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [linkedPreview], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        receivedExistingTarget = references[0]?.existingTarget as typeof linkedPreview | undefined;
+        return { items: references.map((reference) => ({ ...reference.existingTarget!, branchState: "present" as const })), warnings: [] };
+      }
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; github?: { reviewDecision?: string; ciStatus?: string; url: string } }> };
+    expect(receivedExistingTarget).toMatchObject({ target: "54", reviewDecision: "APPROVED", ciStatus: "passing" });
+    expect(body.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "shakacode/react_on_rails#45", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54", reviewDecision: "APPROVED", ciStatus: "passing" }) })
+    ]));
   });
 
   it.each([

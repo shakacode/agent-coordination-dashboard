@@ -113,8 +113,9 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
   const heartbeatsDirectory = join(root, "heartbeats");
   const batchesDirectory = join(root, "batches");
   const eventsDirectory = join(root, "events");
+  const historyDirectory = join(root, "history");
   await Promise.all(
-    [claimsDirectory, heartbeatsDirectory, batchesDirectory, eventsDirectory].map((directory) =>
+    [claimsDirectory, heartbeatsDirectory, batchesDirectory, eventsDirectory, historyDirectory].map((directory) =>
       mkdir(directory, { recursive: true })
     )
   );
@@ -133,6 +134,7 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
         batch_id: lane.batchId,
         branch: `demo/${lane.batchLane}`,
         status: "active",
+        ...(lane.target === "101" ? { generation: 2 } : {}),
         claimed_at: isoAt(now, -300_000),
         updated_at: isoAt(now, -1_000),
         expires_at: isoAt(now, 3_600_000)
@@ -153,6 +155,84 @@ export async function initializeDemoState(root: string, now = new Date()): Promi
       })
     ])
   );
+
+  await Promise.all([
+    writeFile(join(historyDirectory, "demo-custody.jsonl"), [
+      {
+        schema_version: 1,
+        event_id: "demo-api-initial-start",
+        type: "lane.started",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api-initial",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api-first-chat",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api-initial",
+        generation: 1,
+        at: isoAt(now, -720_000),
+        message: "Initial API custody started."
+      },
+      {
+        schema_version: 1,
+        event_id: "demo-api-initial-heartbeat",
+        type: "heartbeat",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api-initial",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api-first-chat",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api-initial",
+        generation: 1,
+        at: isoAt(now, -600_000),
+        message: "Initial API holder reported progress."
+      },
+      {
+        schema_version: 1,
+        event_id: "demo-api-takeover",
+        type: "continued",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api",
+        generation: 2,
+        at: isoAt(now, -300_000),
+        message: "API custody continued with a new holder."
+      },
+      {
+        schema_version: 1,
+        event_id: "demo-api-takeover-phase",
+        type: "phase",
+        batch_id: "demo-platform",
+        lane: "api",
+        agent_id: "demo-api",
+        machine_id: "demo-m1",
+        thread_handle: "demo-api",
+        host: "codex",
+        operator: "demo-operator",
+        repo: DEMO_REPO,
+        target: "101",
+        branch: "demo/api",
+        generation: 2,
+        phase: "implementing",
+        at: isoAt(now, -290_000),
+        message: "Demo custody takeover is implementing."
+      }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8")
+  ]);
 
   const batches = [
     {

@@ -23,7 +23,7 @@ import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../sha
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { isOperationalWorkItem } from "../../shared/workItemSelection";
-import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
@@ -343,6 +343,7 @@ interface OperatorMetadata {
   operator?: string;
   branch?: string;
   prUrl?: string;
+  message?: string;
 }
 
 function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
@@ -351,7 +352,8 @@ function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
     ...repoRefsFromText(metadata.host),
     ...repoRefsFromText(metadata.operator),
     ...repoRefsFromBranch(metadata.branch),
-    ...repoRefsFromText(metadata.prUrl)
+    ...repoRefsFromText(metadata.prUrl),
+    ...highConfidenceRepoRefsFromMessage(metadata.message)
   ];
 }
 
@@ -359,7 +361,7 @@ function hasOutOfScopeRepoRef(refs: string[], targetRepoSet: Set<string>): boole
   return refs.some((repo) => !targetRepoSet.has(repo));
 }
 
-function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: T, targetRepoSet: Set<string>): T {
+export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: T, targetRepoSet: Set<string>): T {
   const redacted = { ...metadata };
   if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.threadHandle), targetRepoSet)) {
     delete redacted.threadHandle;
@@ -375,6 +377,9 @@ function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(metadata: 
   }
   if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.prUrl), targetRepoSet)) {
     delete redacted.prUrl;
+  }
+  if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(redacted.message), targetRepoSet)) {
+    delete redacted.message;
   }
   return redacted;
 }
