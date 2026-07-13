@@ -44,14 +44,16 @@ describe("AttentionShell", () => {
   afterEach(() => vi.useRealTimers());
 
   it("shows the attention queue first and offers its safe resume action", async () => {
-    const onCopyResume = vi.fn();
-    render(<AttentionShell items={ITEMS} onCopyResume={onCopyResume} onQueryChange={vi.fn()} query="" surface="attention" />);
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(navigator, { clipboard });
+    render(<AttentionShell items={ITEMS} onQueryChange={vi.fn()} query="" surface="attention" />);
 
     expect(screen.getByRole("heading", { name: "Attention" })).toBeInTheDocument();
     expect(screen.getByText("No progress for over 15 minutes")).toBeInTheDocument();
     expect(screen.getByText("Phase: wedged")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
-    expect(onCopyResume).toHaveBeenCalledWith(ITEMS[0]);
+    expect(clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("Resume the existing lane for repo/dashboard#43."));
+    expect(screen.getByRole("status")).toHaveTextContent("Resume prompt copied");
   });
 
   it("does not expose an enabled timeline action when no open handler is supplied", () => {

@@ -2,6 +2,7 @@ import type { WorkItem } from "../../shared/types";
 import { isOperationalWorkItem, isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
+import { OperatorActions, type AnnotationAction } from "./OperatorActions";
 
 export type DashboardSurface = "attention" | "now" | "find" | "history";
 
@@ -95,11 +96,6 @@ function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined,
   return matchesOverviewFilter(item, deepLink.overviewFilter, repairWorkItemIds);
 }
 
-function pullRequestUrl(item: WorkItem): string | undefined {
-  const candidates = [item.github?.type === "pull_request" ? item.github.url : undefined, item.claim?.prUrl, item.heartbeat?.prUrl];
-  return candidates.find((candidate) => candidate && /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+(?:[/?#]|$)/i.test(candidate));
-}
-
 function elapsedSince(value: string | undefined): string {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   if (!Number.isFinite(timestamp)) return "unattributed";
@@ -116,18 +112,22 @@ function activityTime(item: WorkItem): number {
 
 function WorkCard({
   item,
-  onCopyResume,
   onToggle,
   selectionDisabled = false,
   onOpenBatchOperations,
-  onOpenItem
+  onOpenItem,
+  onAnnotate,
+  onClearAnnotation,
+  now
 }: {
   item: WorkItem;
-  onCopyResume?: (item: WorkItem) => void;
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
   onOpenBatchOperations?: () => void;
   onOpenItem?: (item: WorkItem) => void;
+  onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
+  onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
+  now: Date | string;
 }) {
   const reason = item.attention;
   const heartbeat = item.heartbeat;
@@ -135,7 +135,6 @@ function WorkCard({
   const machine = firstDisplayAttribution([heartbeat?.machineId, item.claim?.machineId]);
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
   const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
-  const prUrl = pullRequestUrl(item);
   const githubUrl = canonicalGithubItemUrl(item.github?.url) ? item.github?.url : undefined;
   return (
     <article className="attention-card">
@@ -143,6 +142,8 @@ function WorkCard({
         <p className="attention-card-kicker">{displayAttribution(item.repo)}</p>
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
+        {item.annotation?.kind === "dismiss" ? <p className="attention-card-meta">Dismissed by operator</p> : null}
+        {item.annotation?.kind === "snooze" ? <p className="attention-card-meta">Snoozed until {item.annotation.until}</p> : null}
         {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
         {item.github?.loadState === "unknown" ? <p className="attention-card-meta">GitHub state: UNKNOWN</p> : null}
         {item.github?.branchState === "deleted" ? <p className="attention-card-meta">Branch deleted (supporting signal)</p> : null}
@@ -164,14 +165,17 @@ function WorkCard({
             <span>Batch</span>
           </label>
         ) : null}
-        {reason?.action === "Copy resume prompt" ? (
-          <button onClick={() => onCopyResume?.(item)} type="button">Copy resume prompt</button>
-        ) : null}
-        {reason?.action === "Open PR" && prUrl ? <a href={prUrl} rel="noreferrer" target="_blank">Open PR</a> : null}
         {reason?.action === "Open batch operations" ? (
           <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
         ) : null}
         {githubUrl ? <a href={githubUrl} rel="noreferrer" target="_blank">{item.github?.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
+        <OperatorActions
+          item={item}
+          now={new Date(now)}
+          onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
+          onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
+          takeoverAvailable={reason?.kind === "dead_holder"}
+        />
       </div>
     </article>
   );
@@ -182,7 +186,6 @@ export function AttentionShell({
   surface,
   query,
   onQueryChange,
-  onCopyResume,
   onToggle,
   selectionDisabled = false,
   now = new Date(),
@@ -194,6 +197,8 @@ export function AttentionShell({
   mergeTimeStatus = "unavailable",
   historyMergedTodayOnly = false,
   onShowMergedToday,
+  onAnnotate,
+  onClearAnnotation,
   repairWorkItemIds = new Set<string>(),
   repairBatchCount = 0
 }: {
@@ -201,7 +206,6 @@ export function AttentionShell({
   surface: DashboardSurface;
   query: string;
   onQueryChange: (query: string) => void;
-  onCopyResume?: (item: WorkItem) => void;
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
   now?: Date | string;
@@ -213,6 +217,8 @@ export function AttentionShell({
   mergeTimeStatus?: "available" | "unavailable";
   historyMergedTodayOnly?: boolean;
   onShowMergedToday?: () => void;
+  onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
+  onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
   repairWorkItemIds?: ReadonlySet<string>;
   repairBatchCount?: number;
 }) {
@@ -234,11 +240,13 @@ export function AttentionShell({
     <WorkCard
       item={item}
       key={item.id}
-      onCopyResume={allowResume ? onCopyResume : undefined}
       onToggle={onToggle}
       selectionDisabled={selectionDisabled}
       onOpenBatchOperations={onOpenBatchOperations}
       onOpenItem={onOpenItem}
+      onAnnotate={allowResume ? onAnnotate : undefined}
+      onClearAnnotation={onClearAnnotation}
+      now={now}
     />
   );
 

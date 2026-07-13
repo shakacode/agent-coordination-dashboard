@@ -128,7 +128,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "$pr-batch\nResume repo/dashboard#43 on codex/heartbeat. Verify current coordination state before edits."
+      "$pr-batch\nResume the existing lane for repo/dashboard#43.\nThread handle: UNKNOWN\nBatch: UNKNOWN\nBranch: codex/heartbeat\nLast phase: wedged\nVerify current coordination state and custody before edits. Continue in the owning task when available."
     );
     expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
@@ -139,6 +139,18 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 events" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "0 health" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
+  });
+
+  it("persists a card snooze through the dashboard annotation API", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
+
+    expect(fetch).toHaveBeenCalledWith("/api/annotations", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ repo: "repo/dashboard", target: "43", kind: "snooze", until: "2026-07-12T12:20:00.000Z" })
+    }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Presentation preference saved");
   });
 
   it("uses the same resume contract with a loaded GitHub branch fallback", async () => {
@@ -168,7 +180,7 @@ describe("App", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "$pr-batch\nResume repo/dashboard#43 on codex/github-fallback. Verify current coordination state before edits."
+      "$pr-batch\nResume the existing lane for repo/dashboard#43.\nThread handle: UNKNOWN\nBatch: UNKNOWN\nBranch: codex/github-fallback\nLast phase: UNKNOWN\nVerify current coordination state and custody before edits. Continue in the owning task when available."
     );
   });
 

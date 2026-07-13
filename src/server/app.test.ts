@@ -73,6 +73,50 @@ describe("dashboard app import endpoint", () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
   });
 
+  it("persists only saved-repository dashboard annotations and supports removal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-annotation-route-"));
+    const baseUrl = await listen(root);
+    const saved = await fetch(`${baseUrl}/api/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "shakacode/react_on_rails", target: "47", kind: "snooze", until: "2099-07-12T11:00:00Z" })
+    });
+    expect(saved.status).toBe(201);
+    await expect(saved.json()).resolves.toMatchObject({ key: "shakacode/react_on_rails/47", kind: "snooze" });
+    await expect(readFile(join(root, "annotations.json"), "utf8")).resolves.toContain("shakacode/react_on_rails/47");
+
+    const outsideScope = await fetch(`${baseUrl}/api/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "other/private", target: "47", kind: "dismiss" })
+    });
+    expect(outsideScope.status).toBe(400);
+
+    const removed = await fetch(`${baseUrl}/api/annotations`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "shakacode/react_on_rails", target: "47" })
+    });
+    expect(removed.status).toBe(204);
+    await expect(readFile(join(root, "annotations.json"), "utf8")).resolves.not.toContain("shakacode/react_on_rails/47");
+  });
+
+  it("rejects annotation writes from remote viewers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-annotation-remote-"));
+    const app = await createDashboardApp(testConfig(root), { serveFrontend: false });
+    const baseUrl = await listenServer(createServer((req, res) => {
+      Object.defineProperty(req.socket, "remoteAddress", { value: "203.0.113.8" });
+      app(req, res);
+    }).listen(0, "127.0.0.1"));
+    const response = await fetch(`${baseUrl}/api/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "shakacode/react_on_rails", target: "47", kind: "dismiss" })
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "Annotations can only be changed from the machine running the dashboard. Remote viewers have read-only access." });
+  });
+
   it("serves a saved-repository target custody timeline with history and liveness spans", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-item-timeline-"));
     await Promise.all([

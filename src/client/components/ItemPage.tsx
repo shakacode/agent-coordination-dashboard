@@ -2,7 +2,7 @@ import type { ClaimCustodyEvent, LivenessSpan, PhaseSpan } from "../../shared/cu
 import type { BatchEvent } from "../../shared/types";
 import { firstDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
-import { resumePrompt } from "../resumePrompt";
+import { OperatorActions, type AnnotationAction } from "./OperatorActions";
 
 function duration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
@@ -63,10 +63,6 @@ function TimelineWarnings({ timeline }: { timeline: ItemTimelineResponse }) {
 
 function copy(value: string) {
   void navigator.clipboard?.writeText(value);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function claimedHolderIsDead(timeline: ItemTimelineResponse, agentId: string): boolean {
@@ -151,7 +147,7 @@ function timelineTimestamp(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
-export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
+export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { timeline: ItemTimelineResponse; onBack: () => void; onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void; onClearAnnotation?: () => Promise<void> | void }) {
   const heartbeat = timeline.item?.heartbeat;
   const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
   const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
@@ -164,9 +160,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
   const holder = firstDisplayAttribution([activeClaim?.agentId, heartbeatHolder], "UNKNOWN");
   const state = timeline.item?.operatorState || "UNKNOWN";
   const holderDead = Boolean(activeClaim && claimedHolderIsDead(timeline, activeClaim.agentId));
-  const primary = holderDead
-    ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
-    : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
+  const actionItem = timeline.item || { id: `${timeline.repo}#${timeline.target}`, repo: timeline.repo, target: timeline.target, type: "unknown" as const, schedulingState: "started_not_processing" as const, provenance: { classification: "unknown" as const, evidence: [] }, warnings: [], selected: false };
   const branches = unique([...timeline.branches, loadedGitHub?.branch]);
   const prUrls = uniquePullRequestUrls([...timeline.prUrls, loadedGitHub?.url]);
   const custodySourceEvents = new Set(timeline.claims.flatMap((claim) => {
@@ -205,7 +199,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
           <p>Holder: {holder}</p>
           <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: ${(timeline.item.github.ciStatus || "unknown").toUpperCase()}` : "UNKNOWN"}</p>
         </div>
-        <button onClick={() => copy(primary.value)} type="button">{primary.label}</button>
+        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} takeoverAvailable={holderDead} />
       </header>
       {sourceIsUnknown(timeline) ? <p className="item-timeline-warning">Coordination data: UNKNOWN</p> : null}
       <TimelineWarnings timeline={timeline} />

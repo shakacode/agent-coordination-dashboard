@@ -121,7 +121,7 @@ describe("ItemPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "agent-coord claim --repo 'shakacode/dashboard' --target '46' --agent-id REPLACE_WITH_YOUR_AGENT_ID"
+      "agent-coord claim --agent-id REPLACE_WITH_YOUR_AGENT_ID --repo 'shakacode/dashboard' --target '46'"
     );
   });
 
@@ -139,7 +139,7 @@ describe("ItemPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "$pr-batch\nResume shakacode/dashboard#46 on codex/claim. Verify current coordination state before edits."
+      "$pr-batch\nResume the existing lane for shakacode/dashboard#46.\nThread handle: takeover-chat\nBatch: UNKNOWN\nBranch: codex/claim\nLast phase: implementing\nVerify current coordination state and custody before edits. Continue in the owning task when available."
     );
   });
 
@@ -165,7 +165,8 @@ describe("ItemPage", () => {
 
       await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
       const command = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
-      expect(command).toContain("--repo 'owner/o'\"'\"'brien; : #'");
+      expect(command).toContain("--repo REPLACE_WITH_OWNER_REPO");
+      expect(command).not.toContain("touch");
       nodeChildProcess.execFileSync("sh", ["-c", `set -- ${command.replace("agent-coord claim ", "")}`]);
       expect(nodeFs.existsSync(marker)).toBe(false);
     } finally {
@@ -184,7 +185,7 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
   });
 
   it("does not present terminal work as held or eligible for takeover", () => {
@@ -284,7 +285,7 @@ describe("ItemPage", () => {
 
     expect(screen.getByText("Holder: worker-a")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
   });
 
   it("keeps historical heartbeat telemetry visible without turning it into liveness", () => {

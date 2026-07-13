@@ -5,11 +5,12 @@ import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
-import { fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
+import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
 import { HealthTab } from "./components/HealthTab";
 import { ItemPage } from "./components/ItemPage";
+import type { AnnotationAction } from "./components/OperatorActions";
 import { MachinesTab } from "./components/MachinesTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { SignalGroupList } from "./components/SignalGroups";
@@ -20,7 +21,6 @@ import {
   type OverviewOperatorFilter
 } from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
-import { resumePrompt } from "./resumePrompt";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -524,8 +524,20 @@ export function App() {
     warningsRef.current.scrollIntoView?.({ block: "start" });
   }
 
-  function copyResumePrompt(item: WorkItem) {
-    void navigator.clipboard?.writeText(resumePrompt(item));
+  async function mutateAnnotation(item: WorkItem, action?: AnnotationAction) {
+    return enqueueUserAction(async () => {
+      const requestVersion = ++dashboardRequestVersion.current;
+      if (action) await saveAnnotation({ repo: item.repo, target: item.target, ...action });
+      else await deleteAnnotation({ repo: item.repo, target: item.target });
+      const [loadedDashboard, loadedTimeline] = await Promise.all([
+        fetchDashboard({ fresh: true }),
+        itemRoute?.repo === item.repo && itemRoute.target === item.target ? fetchItemTimeline(item.repo, item.target) : undefined
+      ]);
+      if (requestVersion === dashboardRequestVersion.current) {
+        setDashboard(loadedDashboard);
+        if (loadedTimeline) setItemTimeline(loadedTimeline);
+      }
+    });
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
@@ -765,7 +777,12 @@ export function App() {
           {itemRoute && itemRouteInScope ? itemTimeline ? (
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
-              <ItemPage onBack={closeItem} timeline={itemTimeline} />
+              <ItemPage
+                onAnnotate={(annotation) => mutateAnnotation(itemTimeline.item || { id: `${itemTimeline.repo}#${itemTimeline.target}`, repo: itemTimeline.repo, target: itemTimeline.target, type: "unknown", schedulingState: "started_not_processing", provenance: { classification: "unknown", evidence: [] }, warnings: [], selected: false }, annotation)}
+                onBack={closeItem}
+                onClearAnnotation={() => mutateAnnotation(itemTimeline.item || { id: `${itemTimeline.repo}#${itemTimeline.target}`, repo: itemTimeline.repo, target: itemTimeline.target, type: "unknown", schedulingState: "started_not_processing", provenance: { classification: "unknown", evidence: [] }, warnings: [], selected: false })}
+                timeline={itemTimeline}
+              />
             </>
           ) : itemError ? (
             <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
@@ -775,7 +792,8 @@ export function App() {
             historyMergedTodayOnly={historyMergedTodayOnly}
             mergeTimeStatus={dashboard.githubMergeTimeStatus || "unavailable"}
             now={dashboard.generatedAt}
-            onCopyResume={copyResumePrompt}
+            onAnnotate={mutateAnnotation}
+            onClearAnnotation={(item) => mutateAnnotation(item)}
             onQueryChange={updateOperatorQuery}
             onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
             onOpenItem={openItem}
