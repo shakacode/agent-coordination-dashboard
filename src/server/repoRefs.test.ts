@@ -197,6 +197,21 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   });
 
+  it("replays a schemeless canonical ref after a named canonical-userinfo query reset", () => {
+    for (const delimiter of ["?", "#"]) {
+      expect(repoRefsFromStructuredEventField(`https://first.last:pass@github.com/saved/repo${delimiter}next=x|github.com/other/private`)).toEqual(
+        expect.arrayContaining(["saved/repo", "other/private"])
+      );
+    }
+  });
+
+  it("does not expose query or fragment refs from a schemeless canonical URL", () => {
+    for (const delimiter of ["?", "#"]) {
+      expect(repoRefsFromStructuredEventField(`github.com/other/private${delimiter}next=third/repo`)).toEqual(["other/private"]);
+      expect(repoRefsFromStructuredEventField(`https://example.com|github.com/other/private${delimiter}next=third/repo`)).toEqual(["other/private"]);
+    }
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],

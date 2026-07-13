@@ -1,5 +1,5 @@
-const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
-const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+/gimu;
+const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`|;=,!&])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
+const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`|;=,!&])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+(?:[?#][^\s)\]}>,'"`|;,:!]+)?/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
@@ -140,6 +140,11 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
             while (canonicalAlternateResume < value.length && !/\s/.test(value[canonicalAlternateResume]) && !closingDelimiters.includes(value[canonicalAlternateResume])) {
               if ("|;,:!".includes(value[canonicalAlternateResume])) break;
               canonicalAlternateResume += 1;
+            }
+            if ("|;,:!".includes(value[canonicalAlternateResume] || "")) {
+              canonicalAlternateReplay += `${value[canonicalAlternateResume]} `;
+              canonicalAlternateResume += 1;
+              canonicalAlternateForcesBoundary = true;
             }
           }
         }
