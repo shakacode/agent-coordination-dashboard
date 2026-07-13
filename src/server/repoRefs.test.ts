@@ -6,7 +6,10 @@ describe("repoRefsFromStructuredEventField", () => {
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
     ["blocked on ci/passed", "ci/passed"],
-    ["ci/passed", "ci/passed"]
+    ["ci/passed", "ci/passed"],
+    ["Repository: other/private.js", "other/private.js"],
+    ["other/private.js#12", "other/private.js"],
+    ["blocked on repo other/private.js review", "other/private.js"]
   ])("lets high-confidence or explicit repository context win for %s", (value, ref) => {
     expect(repoRefsFromStructuredEventField(value)).toContain(ref);
   });

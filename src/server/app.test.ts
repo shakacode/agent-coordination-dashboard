@@ -262,6 +262,18 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "slash-type-deploy", type: "deploy/staging rollout", status: "complete", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:14:00Z"
+        },
+        {
+          event_id: "foreign-dotted-type", type: "Repository: other/private.js", status: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:15:00Z"
+        },
+        {
+          event_id: "foreign-dotted-status", type: "phase", phase: "blocked on repo other/private.js review", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:16:00Z"
+        },
+        {
+          event_id: "foreign-dotted-issue-status", type: "phase", phase: "other/private.js#12", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:17:00Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -310,6 +322,12 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "slash-status-ci")?.status).toBe("ci/passed checks");
     expect(timeline.phases.find((phase) => phase.eventId === "slash-status-ci")?.phase).toBe("ci/passed checks");
     expect(timeline.events.find((event) => event.eventId === "slash-type-deploy")).toMatchObject({ type: "deploy/staging rollout", status: "complete" });
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-type")).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-dotted-type")).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-dotted-status")?.phase).toBe("phase");
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-issue-status")?.status).toBeUndefined();
+    expect(JSON.stringify(timeline.phases)).not.toContain("other/private.js");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
