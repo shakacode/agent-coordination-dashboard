@@ -28,6 +28,14 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it.each([
+    "blocked-on:https://github.com/other/private",
+    "depends_on:https://github.com/other/private",
+    "depends_on:github.com/other/private"
+  ])("detects repository evidence after a compact coordination label: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual(["other/private"]);
+  });
+
+  it.each([
     "See https://docs.github.com/en/repositories",
     "See https://gist.github.com/user/abcdef",
     "See https://api.github.com/repos/other/private",
