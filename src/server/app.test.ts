@@ -143,7 +143,15 @@ describe("dashboard app import endpoint", () => {
         },
         {
           event_id: "safe-status", type: "phase", phase: "verifying", repo: "shakacode/react_on_rails", target: "46",
-          at: "2026-07-12T10:02:00Z", message: "Working in shakacode/react_on_rails"
+          at: "2026-07-12T10:02:00Z", message: "Desktop/narrow browser QA passed"
+        },
+        {
+          event_id: "safe-read-write", type: "phase", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:03:00Z", message: "Read/write checks passed"
+        },
+        {
+          event_id: "foreign-url-phase", type: "phase", phase: "blocked", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:04:00Z", message: "See https://github.com/other/private_repo/pull/99"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -164,8 +172,12 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events[0]?.operator).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-phase")?.message).toBeUndefined();
     expect(timeline.phases.find((phase) => phase.eventId === "foreign-phase")?.message).toBeUndefined();
-    expect(timeline.events.find((event) => event.eventId === "safe-status")?.message).toBe("Working in shakacode/react_on_rails");
-    expect(timeline.phases.find((phase) => phase.eventId === "safe-status")?.message).toBe("Working in shakacode/react_on_rails");
+    expect(timeline.events.find((event) => event.eventId === "safe-status")?.message).toBe("Desktop/narrow browser QA passed");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-status")?.message).toBe("Desktop/narrow browser QA passed");
+    expect(timeline.events.find((event) => event.eventId === "safe-read-write")?.message).toBe("Read/write checks passed");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-read-write")?.message).toBe("Read/write checks passed");
+    expect(timeline.events.find((event) => event.eventId === "foreign-url-phase")?.message).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-url-phase")?.message).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

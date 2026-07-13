@@ -23,7 +23,7 @@ import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../sha
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { isOperationalWorkItem } from "../../shared/workItemSelection";
-import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
@@ -353,7 +353,7 @@ function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
     ...repoRefsFromText(metadata.operator),
     ...repoRefsFromBranch(metadata.branch),
     ...repoRefsFromText(metadata.prUrl),
-    ...repoRefsFromText(metadata.message)
+    ...highConfidenceRepoRefsFromMessage(metadata.message)
   ];
 }
 
@@ -378,7 +378,7 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
   if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.prUrl), targetRepoSet)) {
     delete redacted.prUrl;
   }
-  if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.message), targetRepoSet)) {
+  if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(redacted.message), targetRepoSet)) {
     delete redacted.message;
   }
   return redacted;
