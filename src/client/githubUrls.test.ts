@@ -27,5 +27,8 @@ describe("canonicalGithubItemUrl", () => {
 
   it("keeps the PR-only wrapper strict", () => {
     expect(canonicalPullRequestUrl("https://github.com/Owner/Repo/issues/47")).toBeUndefined();
+    expect(canonicalPullRequestUrl("https://github.com/pull/Repo/issues/47")).toBeUndefined();
+    expect(canonicalPullRequestUrl("https://github.com/Owner/pull/issues/47")).toBeUndefined();
+    expect(canonicalPullRequestUrl("https://github.com/pull/pull/pull/47")).toBe("https://github.com/pull/pull/pull/47");
   });
 });

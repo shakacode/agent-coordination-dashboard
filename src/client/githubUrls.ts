@@ -23,5 +23,6 @@ export function safePullRequestUrl(value: string): string | undefined {
 /** Strip safe PR subpages, query parameters, and fragments for action links. */
 export function canonicalPullRequestUrl(value: string): string | undefined {
   const canonical = canonicalGithubItemUrl(value);
-  return canonical?.includes("/pull/") ? canonical : undefined;
+  if (!canonical) return undefined;
+  return new URL(canonical).pathname.split("/").filter(Boolean)[2] === "pull" ? canonical : undefined;
 }

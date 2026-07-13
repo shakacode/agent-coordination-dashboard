@@ -443,4 +443,32 @@ describe("OperatorView", () => {
     expect(screen.getByText("PR #123").closest("a")).toBeNull();
     expect(Array.from(container.querySelectorAll("a")).map((link) => link.textContent)).not.toContain("PR");
   });
+
+  it("renders only canonical GitHub item links from supported subpages", () => {
+    const subpageDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) => index === 0 && item.github
+        ? { ...item, github: { ...item.github, url: "https://github.com/repo/app/pull/123/files?diff=split#file-1" } }
+        : item)
+    };
+    render(<OperatorView dashboard={subpageDashboard} />);
+    expect(screen.getByText("PR #123").closest("a")).toHaveAttribute("href", "https://github.com/repo/app/pull/123");
+  });
+
+  it("rejects credentials and explicit default ports in rendered operator links", () => {
+    const unsafeDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) => index === 0
+        ? {
+            ...item,
+            claim: item.claim ? { ...item.claim, prUrl: "https://user@github.com/repo/app/pull/123" } : undefined,
+            heartbeat: undefined,
+            github: item.github ? { ...item.github, url: "https://github.com:443/repo/app/pull/123" } : undefined
+          }
+        : item)
+    };
+    const { container } = render(<OperatorView dashboard={unsafeDashboard} />);
+    expect(screen.getByText("PR #123").closest("a")).toBeNull();
+    expect(container.querySelector(".operator-pr-link")).toBeNull();
+  });
 });
