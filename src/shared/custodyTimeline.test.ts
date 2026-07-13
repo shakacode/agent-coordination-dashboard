@@ -61,6 +61,25 @@ describe("buildLivenessSpans", () => {
 });
 
 describe("buildCustodyTimeline", () => {
+  it("preserves source paths for phase spans with caller-supplied duplicate IDs", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [],
+      events: [
+        { eventId: "caller-supplied-id", type: "phase", status: "planning", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:00:00Z", path: "events/one.jsonl:1" },
+        { eventId: "caller-supplied-id", type: "phase", status: "implementing", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", path: "history/two.jsonl:1" }
+      ]
+    });
+
+    expect(timeline.phases.map((span) => [span.eventId, span.eventPath])).toEqual([
+      ["caller-supplied-id", "events/one.jsonl:1"],
+      ["caller-supplied-id", "history/two.jsonl:1"]
+    ]);
+  });
+
   it("keeps the claim custody chain, phase durations, and anchors for one target", () => {
     const claim = (overrides: Partial<ClaimRecord>): ClaimRecord => ({
       schemaVersion: 1,

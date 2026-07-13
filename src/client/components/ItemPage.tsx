@@ -125,11 +125,31 @@ function eventProvenanceKey(path: string | undefined, eventId: string | undefine
   return path && eventId ? `${path}\u0000${eventId}` : undefined;
 }
 
+function claimKey(event: ClaimCustodyEvent, index: number): string {
+  return eventProvenanceKey(event.sourceEventPath, event.sourceEventId)
+    || `${event.timestamp || "UNKNOWN"}\u0000${event.agentId}\u0000${event.generation ?? "UNKNOWN"}\u0000${index}`;
+}
+
+function livenessKey(span: LivenessSpan, index: number): string {
+  return `${span.agentId}\u0000${span.startedAt}\u0000${span.endedAt}\u0000${index}`;
+}
+
+function phaseKey(span: PhaseSpan, index: number): string {
+  return eventProvenanceKey(span.eventPath, span.eventId)
+    || `${span.eventId}\u0000${span.startedAt}\u0000${index}`;
+}
+
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
+  const heartbeat = timeline.item?.heartbeat;
   const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
   const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
+  const heartbeatHolder = !terminal
+    && !timeline.item?.claim
+    && ["live", "stale"].includes(heartbeat?.liveness || "")
+    ? heartbeat?.agentId
+    : undefined;
   const loadedGitHub = timeline.item?.github?.loadState === "loaded" ? timeline.item.github : undefined;
-  const holder = firstDisplayAttribution([activeClaim?.agentId], "UNKNOWN");
+  const holder = firstDisplayAttribution([activeClaim?.agentId, heartbeatHolder], "UNKNOWN");
   const state = timeline.item?.operatorState || "UNKNOWN";
   const holderDead = Boolean(activeClaim && claimedHolderIsDead(timeline, activeClaim.agentId));
   const primary = holderDead
@@ -145,7 +165,12 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
     ...timeline.events
-      .filter((event) => !timeline.phases.some((span) => span.eventId === event.eventId))
+      .filter((event) => !timeline.phases.some((span) => {
+        const phaseProvenance = eventProvenanceKey(span.eventPath, span.eventId);
+        return phaseProvenance
+          ? phaseProvenance === eventProvenanceKey(event.path, event.eventId)
+          : span.eventId === event.eventId;
+      }))
       .filter((event) => {
         const provenance = eventProvenanceKey(event.path, event.eventId);
         return !provenance || !custodySourceEvents.has(provenance);
@@ -179,10 +204,10 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
         <h2>Full custody chain</h2>
         <ol className="custody-timeline">
           {custodyEntries.map((entry) => {
-            if (entry.kind === "claim") return <Claim event={entry.event} key={`claim-${entry.event.timestamp || entry.index}-${entry.event.agentId}`} />;
-            if (entry.kind === "liveness") return <Liveness span={entry.span} key={`liveness-${entry.span.startedAt}-${entry.span.agentId}-${entry.index}`} />;
-            if (entry.kind === "event") return <Telemetry event={entry.event} key={`event-${entry.event.eventId}`} />;
-            return <Phase span={entry.span} key={`phase-${entry.span.eventId}`} />;
+            if (entry.kind === "claim") return <Claim event={entry.event} key={`claim-${claimKey(entry.event, entry.index)}`} />;
+            if (entry.kind === "liveness") return <Liveness span={entry.span} key={`liveness-${livenessKey(entry.span, entry.index)}`} />;
+            if (entry.kind === "event") return <Telemetry event={entry.event} key={`event-${entry.event.path}\u0000${entry.event.eventId}`} />;
+            return <Phase span={entry.span} key={`phase-${phaseKey(entry.span, entry.index)}`} />;
           })}
         </ol>
       </section>

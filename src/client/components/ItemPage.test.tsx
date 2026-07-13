@@ -162,7 +162,7 @@ describe("ItemPage", () => {
         operatorState: "terminal",
         terminalState: "done",
         claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "active", path: "claims/46.json" },
-        heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+        heartbeat: { ...timeline.item.heartbeat!, liveness: "live" }
       }
     }} />);
 
@@ -171,20 +171,53 @@ describe("ItemPage", () => {
     expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
   });
 
-  it("does not present released custody with a dead historical heartbeat as held or eligible for takeover", () => {
+  it("does not present released custody with a live heartbeat as held or eligible for takeover", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
       item: {
         ...timeline.item,
         operatorState: "ready",
         claim: { schemaVersion: 1, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", status: "released", path: "claims/46.json" },
-        heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" }
+        heartbeat: { ...timeline.item.heartbeat!, liveness: "live" }
       }
     }} />);
 
     expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
+  });
+
+  it("shows the live heartbeat agent as holder when nonterminal work has no claim", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={timeline} />);
+
+    expect(screen.getByText("Holder: worker-b")).toBeInTheDocument();
+  });
+
+  it("shows the stale heartbeat agent as holder when nonterminal work has no claim", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, heartbeat: { ...timeline.item.heartbeat!, liveness: "stale" } }
+    }} />);
+
+    expect(screen.getByText("Holder: worker-b")).toBeInTheDocument();
+  });
+
+  it("keeps a heartbeat-only dead holder UNKNOWN", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, heartbeat: { ...timeline.item.heartbeat!, liveness: "dead" } }
+    }} />);
+
+    expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
+  });
+
+  it("keeps a heartbeat-only terminal holder UNKNOWN", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, operatorState: "terminal", terminalState: "done" }
+    }} />);
+
+    expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
   });
 
   it("keeps an active claim as holder when an older heartbeat is dead", () => {
@@ -291,6 +324,58 @@ describe("ItemPage", () => {
       expect.stringContaining("acquired by worker-a"),
       expect.stringContaining("status.updateUnrelated telemetry")
     ]);
+  });
+
+  it("renders same-ID telemetry from separate paths without duplicate React keys", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [],
+      phases: [],
+      events: [
+        { eventId: "caller-supplied-id", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:00:00Z", message: "First event", path: "events/one.jsonl:1" },
+        { eventId: "caller-supplied-id", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", message: "Second event", path: "history/two.jsonl:1" }
+      ]
+    }} />);
+
+    expect(screen.getAllByText("status.update")).toHaveLength(2);
+    expect(consoleError).not.toHaveBeenCalledWith(expect.stringContaining("same key"), expect.anything());
+  });
+
+  it("renders same-ID phase spans from separate source paths without duplicate React keys", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [],
+      phases: [
+        { eventId: "caller-supplied-id", eventPath: "events/one.jsonl:1", phase: "planning", startedAt: "2026-07-12T10:00:00Z", endedAt: "2026-07-12T10:01:00Z", durationMs: 60_000 },
+        { eventId: "caller-supplied-id", eventPath: "history/two.jsonl:1", phase: "implementing", startedAt: "2026-07-12T10:01:00Z", endedAt: "2026-07-12T10:02:00Z", durationMs: 60_000 }
+      ],
+      events: []
+    }} />);
+
+    expect(screen.getByText("planning · 1m")).toBeInTheDocument();
+    expect(screen.getByText("implementing · 1m")).toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalledWith(expect.stringContaining("same key"), expect.anything());
+  });
+
+  it("retains unrelated telemetry that shares a phase ID from another path", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [],
+      phases: [{ eventId: "caller-supplied-id", eventPath: "events/phase.jsonl:1", phase: "planning", startedAt: "2026-07-12T10:00:00Z", endedAt: "2026-07-12T10:01:00Z", durationMs: 60_000 }],
+      events: [
+        { eventId: "caller-supplied-id", type: "phase", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:00:00Z", path: "events/phase.jsonl:1" },
+        { eventId: "caller-supplied-id", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", message: "Unrelated telemetry", path: "history/other.jsonl:1" }
+      ]
+    }} />);
+
+    expect(screen.getByText("planning · 1m")).toBeInTheDocument();
+    expect(screen.getByText("status.update")).toBeInTheDocument();
+    expect(screen.getByText("Unrelated telemetry")).toBeInTheDocument();
   });
 
   it("renders both durable and newer current-snapshot custody evidence", () => {

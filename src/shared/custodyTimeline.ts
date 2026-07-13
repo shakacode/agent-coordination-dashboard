@@ -39,6 +39,8 @@ export interface ClaimCustodyEvent {
 
 export interface PhaseSpan {
   eventId: string;
+  /** The append-only event path, paired with eventId for stable provenance. */
+  eventPath?: string;
   phase: string;
   startedAt: string;
   endedAt: string;
@@ -356,6 +358,7 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     const endedMs = Math.max(startedMs, Math.min(nextPhaseMs, terminalMs || now.getTime(), now.getTime()));
     return {
       eventId: event.eventId,
+      ...(event.path ? { eventPath: event.path } : {}),
       phase: phaseName(event),
       startedAt,
       endedAt: iso(endedMs),
