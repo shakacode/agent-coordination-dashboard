@@ -105,8 +105,20 @@ describe("repoRefsFromStructuredEventField", () => {
     "PR:github.com/other/private",
     "status:https://github.com/other/private",
     "phase:github.com/other/private",
-    "waiting:https://github.com/other/private"
-  ])("detects a canonical GitHub URL after a label colon: %s", (value) => {
+    "waiting:https://github.com/other/private",
+    "target:other/private",
+    "holder:other/private",
+    "branch:other/private",
+    "source:other/private",
+    "upstream:other/private",
+    "owner:other/private",
+    "machine:other/private",
+    "url:github.com/other/private",
+    "url:https://github.com/other/private",
+    "host:other/private",
+    "operator:other/private",
+    "thread-handle:other/private"
+  ])("detects repository evidence after a known label colon: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 

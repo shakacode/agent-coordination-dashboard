@@ -3,7 +3,11 @@ const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/
 const OWNER_REPO_REF_AT_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+/y;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
-const URL_LABEL_PREFIXES = ["blocked", "pr", "status", "phase", "repo", "repository", "waiting", "depends"];
+const URL_LABEL_PREFIXES = [
+  "blocked", "pr", "status", "phase", "repo", "repository", "waiting", "depends",
+  "target", "holder", "branch", "source", "upstream", "owner", "machine", "url",
+  "host", "operator", "thread", "thread-handle"
+];
 const URI_SCHEMES_TO_KEEP = new Set(["http", "https", ...URL_LABEL_PREFIXES]);
 
 function isClearLocalFileReference(ref: string): boolean {
