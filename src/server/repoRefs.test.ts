@@ -145,4 +145,9 @@ describe("repoRefsFromStructuredEventField", () => {
   ])("reconsiders the next quote after rejecting an escaped opener: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
+
+  it("handles many rejected escaped openers without losing a trailing repository chain", () => {
+    const value = `ci/passed; ${String.raw`\"./x/`.repeat(10_000)} other/private/path`;
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
 });
