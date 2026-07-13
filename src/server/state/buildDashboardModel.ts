@@ -23,7 +23,7 @@ import { batchSignalIdentity, repoLessBatchLaneMatchesWorkItem } from "../../sha
 import { displayAttribution } from "../../shared/attribution";
 import { isQaEventType } from "../../shared/qaEvents";
 import { isOperationalWorkItem } from "../../shared/workItemSelection";
-import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "../repoRefs";
+import { highConfidenceRepoRefsFromMessage, repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromStructuredEventField, repoRefsFromText } from "../repoRefs";
 import { deriveWorkItems } from "./deriveWorkItems";
 
 const TERMINAL_STATUSES = new Set(["complete", "completed", "done", "merged", "ready"]);
@@ -380,6 +380,21 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
   }
   if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(redacted.message), targetRepoSet)) {
     delete redacted.message;
+  }
+  return redacted;
+}
+
+/**
+ * Free-form event type/status values are rendered as raw telemetry and phase
+ * labels. Drop a contaminated type (which is the event's required identity)
+ * and redact a contaminated optional status before either surface can expose
+ * another saved repository's state.
+ */
+export function redactOutOfScopeBatchEvent(event: BatchEvent, targetRepoSet: Set<string>): BatchEvent | undefined {
+  if (hasOutOfScopeRepoRef(repoRefsFromStructuredEventField(event.type), targetRepoSet)) return undefined;
+  const redacted = redactOutOfScopeOperatorMetadata(event, targetRepoSet);
+  if (hasOutOfScopeRepoRef(repoRefsFromStructuredEventField(redacted.status), targetRepoSet)) {
+    delete redacted.status;
   }
   return redacted;
 }
@@ -783,7 +798,10 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
   const nonReleasedClaims = input.claims.filter((claim) => claim.status !== "released");
   const sanitizedClaims = nonReleasedClaims.map((claim) => redactOutOfScopeOperatorMetadata(claim, targetRepoSet));
   const sanitizedHeartbeats = input.heartbeats.map((heartbeat) => redactOutOfScopeOperatorMetadata(heartbeat, targetRepoSet));
-  const sanitizedEvents = inputEvents.map((event) => redactOutOfScopeOperatorMetadata(event, targetRepoSet));
+  const sanitizedEvents = inputEvents.flatMap((event) => {
+    const redacted = redactOutOfScopeBatchEvent(event, targetRepoSet);
+    return redacted ? [redacted] : [];
+  });
   const currentClaims = sanitizedClaims.filter((claim) => targetRepoSet.has(claim.repo));
   const repoScopedHeartbeats = sanitizedHeartbeats.filter((heartbeat) => Boolean(heartbeat.repo && targetRepoSet.has(heartbeat.repo)));
   const scopedGithubItems = input.githubItems.filter((item) => targetRepoSet.has(item.repo));

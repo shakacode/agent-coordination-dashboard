@@ -48,6 +48,12 @@ describe("OperatorActions", () => {
     expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute("href", "/?batch=batch-a&repo=shakacode%2Fdashboard");
   });
 
+  it("does not show a resume fallback when a safe PR action is available", () => {
+    render(<OperatorActions item={item} resumeAvailable={false} resumeFallbackWhenPrUnavailable />);
+    expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
   it.each([
     "https://github.com/shakacode/dashboard/pull/56/files?diff=unified#file-1",
     "https://github.com/shakacode/dashboard/pull/56/checks?check_run_id=12",

@@ -40,8 +40,14 @@ const ITEMS: WorkItem[] = [
   }
 ];
 
+const initialClipboard = navigator.clipboard;
+
 describe("AttentionShell", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    Object.assign(navigator, { clipboard: initialClipboard });
+  });
 
   it("shows the attention queue first and offers its safe resume action", async () => {
     const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
@@ -445,5 +451,39 @@ describe("AttentionShell", () => {
     expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open batch operations" }));
     expect(onOpenBatchOperations).toHaveBeenCalled();
+  });
+
+  it("offers a safe resume fallback when a conflicting heartbeat's PR action is fenced", async () => {
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(navigator, { clipboard });
+    const qaWithConflictingHeartbeat: WorkItem = {
+      ...ITEMS[0],
+      attention: { kind: "qa_missing", label: "QA evidence is missing or failing", action: "Open PR" },
+      claim: {
+        schemaVersion: 1,
+        agentId: "holder-a",
+        repo: "repo/dashboard",
+        target: "43",
+        status: "active",
+        threadHandle: "owner-chat",
+        path: "claims/43.json"
+      },
+      heartbeat: {
+        ...ITEMS[0].heartbeat!,
+        agentId: "holder-b",
+        threadHandle: "intruder-chat",
+        branch: "intruder-branch",
+        prUrl: "https://github.com/repo/dashboard/pull/99"
+      }
+    };
+
+    render(<AttentionShell items={[qaWithConflictingHeartbeat]} onQueryChange={vi.fn()} query="" surface="attention" />);
+
+    expect(screen.queryByRole("link", { name: "Open PR" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
+    expect(clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("Thread handle: owner-chat"));
+    expect(clipboard.writeText).toHaveBeenCalledWith(expect.not.stringContaining("intruder-chat"));
+    expect(clipboard.writeText).toHaveBeenCalledWith(expect.not.stringContaining("intruder-branch"));
+    expect(clipboard.writeText).toHaveBeenCalledWith(expect.not.stringContaining("pull/99"));
   });
 });

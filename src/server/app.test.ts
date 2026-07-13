@@ -222,6 +222,194 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-url-phase", type: "phase", phase: "blocked", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:04:00Z", message: "See https://github.com/other/private_repo/pull/99"
+        },
+        {
+          event_id: "foreign-type", type: "phase other/private_repo", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:05:00Z"
+        },
+        {
+          event_id: "foreign-status", type: "phase", phase: "blocked on other/private_repo review", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:06:00Z"
+        },
+        {
+          event_id: "saved-repo-status", type: "phase", phase: "reviewing shakacode/react_on_rails", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:07:00Z"
+        },
+        {
+          event_id: "saved-repo-type", type: "telemetry shakacode/react_on_rails", status: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:08:00Z"
+        },
+        {
+          event_id: "canonical-phase", type: "phase.reviewing", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:09:00Z"
+        },
+        {
+          event_id: "foreign-context-status", type: "phase", phase: "blocked on repo other/private review", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:10:00Z"
+        },
+        {
+          event_id: "slash-status-read-write", type: "phase", phase: "read/write checks", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:11:00Z"
+        },
+        {
+          event_id: "slash-type-frontend-backend", type: "frontend/backend review", status: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:12:00Z"
+        },
+        {
+          event_id: "slash-status-ci", type: "phase", phase: "ci/passed checks", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:13:00Z"
+        },
+        {
+          event_id: "slash-type-deploy", type: "deploy/staging rollout", status: "complete", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:14:00Z"
+        },
+        {
+          event_id: "foreign-dotted-type", type: "Repository: other/private.js", status: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:15:00Z"
+        },
+        {
+          event_id: "foreign-dotted-status", type: "phase", phase: "blocked on repo other/private.js review", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:16:00Z"
+        },
+        {
+          event_id: "foreign-dotted-issue-status", type: "phase", phase: "other/private.js#12", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:17:00Z"
+        },
+        {
+          event_id: "foreign-dotted-prose-status", type: "phase", phase: "reviewing other/private.js changes", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:18:00Z"
+        },
+        {
+          event_id: "safe-dotted-message", type: "phase", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:19:00Z", message: "reviewing other/private.js changes"
+        },
+        {
+          event_id: "ambiguous-local-looking-status", type: "phase", phase: "updated src/client.ts", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:20:00Z"
+        },
+        {
+          event_id: "safe-explicit-local-path-status", type: "phase", phase: "updated ./src/client.ts", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:21:00Z"
+        },
+        {
+          event_id: "foreign-bare-multisegment-status", type: "phase", phase: "reviewing other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:22:00Z"
+        },
+        {
+          event_id: "foreign-vocabulary-prefix-status", type: "phase", phase: "reviewing ci/passed/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:23:00Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-local-path", type: "phase", phase: "ci/passed checks; updated ./ci/passed/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:24:00Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-wrapped-local-path", type: "phase", phase: "ci/passed checks; updated [./ci/passed/private]", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:00Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-drive-path", type: "phase", phase: "ci/passed checks; updated C:/ci/passed/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:30Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-spaced-path", type: "phase", phase: "ci/passed checks; updated \"C:/Program Files/ci/passed/private\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:45Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-symbol-path", type: "phase", phase: "ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:50Z"
+        },
+        {
+          event_id: "safe-vocabulary-with-escaped-quote-path", type: "phase", phase: "ci/passed checks; updated \"C:/release/\\\"candidate/ci/passed/private\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:25:55Z"
+        },
+        {
+          event_id: "foreign-after-explicit-local-path", type: "phase", phase: "ci/passed; updated ./x/y; other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:26:00Z"
+        },
+        {
+          event_id: "foreign-after-pipe-local-path", type: "phase", phase: "ci/passed|updated ./x/y|other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:27:00Z"
+        },
+        {
+          event_id: "foreign-after-unicode-space-path", type: "phase", phase: "ci/passed; updated ./x/y other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:27:30Z"
+        },
+        {
+          event_id: "foreign-after-quoted-line-boundary", type: "phase", phase: "ci/passed; updated \"./x/y other/private/path\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:27:45Z"
+        },
+        {
+          event_id: "foreign-adjacent-to-quoted-path", type: "phase", phase: "ci/passed; updated ./safe\"./x/y\"other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:27:50Z"
+        },
+        {
+          event_id: "foreign-after-escaped-control", type: "phase", phase: "ci/passed; updated \"./x/y\\​other/private/path\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:27:55Z"
+        },
+        {
+          event_id: "foreign-after-escaped-opener", type: "phase", phase: String.raw`ci/passed; updated \"./x/y other/private/path"`, repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:00Z"
+        },
+        {
+          event_id: "safe-after-rejected-opener", type: "phase", phase: String.raw`ci/passed checks; updated \"./junk"./Program Files/ci/passed/private"`, repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:05Z"
+        },
+        {
+          event_id: "safe-adjacent-quoted-paths", type: "phase", phase: "ci/passed checks; updated \"./junk\"\"./Program Files/ci/passed/private\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:10Z"
+        },
+        {
+          event_id: "safe-spaced-directory-path", type: "phase", phase: "updated \"/Users/Jane/My Project/src/components\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:15Z"
+        },
+        {
+          event_id: "saved-repo-url-header", type: "phase", phase: "Repository: https://github.com/shakacode/react_on_rails", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:20Z"
+        },
+        {
+          event_id: "saved-repo-url-header-query", type: "phase", phase: "Repository: https://github.com/shakacode/react_on_rails?tab=readme", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:25Z"
+        },
+        {
+          event_id: "safe-github-docs-url", type: "phase", phase: "See https://docs.github.com/en/repositories", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:30Z"
+        },
+        {
+          event_id: "safe-nested-github-looking-url", type: "phase", phase: "See https://example.com/github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:35Z"
+        },
+        {
+          event_id: "safe-pseudo-scheme-github-url", type: "phase", phase: "See javascript:https://github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:37Z"
+        },
+        {
+          event_id: "foreign-after-http-url", type: "phase", phase: "See https://example.com/docs|other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:40Z"
+        },
+        {
+          event_id: "foreign-after-http-url-colon", type: "phase", phase: "See https://example.com/docs:other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:45Z"
+        },
+        {
+          event_id: "foreign-braced-github-url", type: "phase", phase: "See {https://github.com/other/private}", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:50Z"
+        },
+        {
+          event_id: "foreign-second-http-url", type: "phase", phase: "See https://example.com/docs|https://github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:55Z"
+        },
+        {
+          event_id: "foreign-userinfo-github-url", type: "phase", phase: "See https://user@github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:29:00Z"
+        },
+        {
+          event_id: "foreign-after-query-reset", type: "phase", phase: "See https://example.com/?x=1|https://github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:29:05Z"
+        },
+        {
+          event_id: "foreign-after-host-only-url", type: "phase", phase: "See https://example.com|other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:29:10Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -231,8 +419,8 @@ describe("dashboard app import endpoint", () => {
     const timeline = await response.json() as {
       claims: Array<{ prUrl?: string }>;
       liveness: Array<{ branch?: string }>;
-      events: Array<{ eventId: string; operator?: string; message?: string }>;
-      phases: Array<{ eventId: string; message?: string }>;
+      events: Array<{ eventId: string; operator?: string; status?: string; message?: string }>;
+      phases: Array<{ eventId: string; phase?: string; message?: string }>;
       branches: string[];
       prUrls: string[];
     };
@@ -248,6 +436,72 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.phases.find((phase) => phase.eventId === "safe-read-write")?.message).toBe("Read/write checks passed");
     expect(timeline.events.find((event) => event.eventId === "foreign-url-phase")?.message).toBeUndefined();
     expect(timeline.phases.find((phase) => phase.eventId === "foreign-url-phase")?.message).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-type")).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-type")).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-status")?.phase).toBe("phase");
+    expect(timeline.events.find((event) => event.eventId === "saved-repo-status")).toMatchObject({
+      type: "phase",
+      status: "reviewing shakacode/react_on_rails"
+    });
+    expect(timeline.phases.find((phase) => phase.eventId === "saved-repo-status")?.phase).toBe("reviewing shakacode/react_on_rails");
+    expect(timeline.events.find((event) => event.eventId === "saved-repo-type")).toMatchObject({
+      type: "telemetry shakacode/react_on_rails",
+      status: "reviewing"
+    });
+    expect(timeline.events.find((event) => event.eventId === "canonical-phase")).toMatchObject({ type: "phase.reviewing", status: "reviewing" });
+    expect(timeline.phases.find((phase) => phase.eventId === "canonical-phase")?.phase).toBe("reviewing");
+    expect(timeline.events.find((event) => event.eventId === "foreign-context-status")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "slash-status-read-write")?.status).toBe("read/write checks");
+    expect(timeline.phases.find((phase) => phase.eventId === "slash-status-read-write")?.phase).toBe("read/write checks");
+    expect(timeline.events.find((event) => event.eventId === "slash-type-frontend-backend")).toMatchObject({ type: "frontend/backend review", status: "reviewing" });
+    expect(timeline.events.find((event) => event.eventId === "slash-status-ci")?.status).toBe("ci/passed checks");
+    expect(timeline.phases.find((phase) => phase.eventId === "slash-status-ci")?.phase).toBe("ci/passed checks");
+    expect(timeline.events.find((event) => event.eventId === "slash-type-deploy")).toMatchObject({ type: "deploy/staging rollout", status: "complete" });
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-type")).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-dotted-type")).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-dotted-status")?.phase).toBe("phase");
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-issue-status")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-prose-status")?.status).toBeUndefined();
+    expect(JSON.stringify(timeline.phases.map((phase) => phase.phase))).not.toContain("other/private.js");
+    expect(timeline.events.find((event) => event.eventId === "safe-dotted-message")?.message).toBe("reviewing other/private.js changes");
+    expect(timeline.events.find((event) => event.eventId === "ambiguous-local-looking-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "ambiguous-local-looking-status")?.phase).toBe("phase");
+    expect(timeline.events.find((event) => event.eventId === "safe-explicit-local-path-status")?.status).toBe("updated ./src/client.ts");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-explicit-local-path-status")?.phase).toBe("updated ./src/client.ts");
+    expect(timeline.events.find((event) => event.eventId === "foreign-bare-multisegment-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-bare-multisegment-status")?.phase).toBe("phase");
+    expect(timeline.events.find((event) => event.eventId === "foreign-vocabulary-prefix-status")?.status).toBeUndefined();
+    expect(JSON.stringify(timeline.phases.find((phase) => phase.eventId === "foreign-vocabulary-prefix-status") ?? {})).not.toContain("ci/passed/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-local-path")?.status).toBe("ci/passed checks; updated ./ci/passed/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-wrapped-local-path")?.status).toBe("ci/passed checks; updated [./ci/passed/private]");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-drive-path")?.status).toBe("ci/passed checks; updated C:/ci/passed/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-spaced-path")?.status).toBe("ci/passed checks; updated \"C:/Program Files/ci/passed/private\"");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-symbol-path")?.status).toBe("ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-vocabulary-with-escaped-quote-path")?.status).toBe("ci/passed checks; updated \"C:/release/\\\"candidate/ci/passed/private\"");
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-explicit-local-path")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-pipe-local-path")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-unicode-space-path")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-quoted-line-boundary")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-adjacent-to-quoted-path")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-escaped-control")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-escaped-opener")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "safe-after-rejected-opener")?.status).toBe(String.raw`ci/passed checks; updated \"./junk"./Program Files/ci/passed/private"`);
+    expect(timeline.events.find((event) => event.eventId === "safe-adjacent-quoted-paths")?.status).toBe("ci/passed checks; updated \"./junk\"\"./Program Files/ci/passed/private\"");
+    expect(timeline.events.find((event) => event.eventId === "safe-spaced-directory-path")?.status).toBe("updated \"/Users/Jane/My Project/src/components\"");
+    expect(timeline.events.find((event) => event.eventId === "saved-repo-url-header")?.status).toBe("Repository: https://github.com/shakacode/react_on_rails");
+    expect(timeline.events.find((event) => event.eventId === "saved-repo-url-header-query")?.status).toBe("Repository: https://github.com/shakacode/react_on_rails?tab=readme");
+    expect(timeline.events.find((event) => event.eventId === "safe-github-docs-url")?.status).toBe("See https://docs.github.com/en/repositories");
+    expect(timeline.events.find((event) => event.eventId === "safe-nested-github-looking-url")?.status).toBe("See https://example.com/github.com/other/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-pseudo-scheme-github-url")?.status).toBe("See javascript:https://github.com/other/private");
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-http-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-http-url-colon")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-braced-github-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-second-http-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-userinfo-github-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-query-reset")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-host-only-url")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
