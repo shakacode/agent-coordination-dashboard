@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { buildCustodyTimeline } from "../shared/custodyTimeline";
-import type { BatchRecord, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
+import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
 import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
@@ -73,6 +73,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   let latestCacheableDashboardBuild = 0;
   let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
   let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
+  const githubWarningsByDashboard = new WeakMap<DashboardModel, CoordinationWarning[]>();
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -317,13 +318,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
-    return {
+    const scopedModel: DashboardModel = {
       ...model,
       ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
       githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
       ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
     };
+    githubWarningsByDashboard.set(scopedModel, [...openGithubWarnings, ...reconciled.warnings]);
+    return scopedModel;
   }
 
   function cacheDashboardModel(key: string, model: DashboardModel, generation: number, sequence: number, expiresAt: number) {
@@ -357,7 +360,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       batches: captured.state.batches,
       events: captured.state.events,
       githubItems,
-      warnings: captured.state.warnings,
+      warnings: [...captured.state.warnings, ...(githubWarningsByDashboard.get(cached) || [])],
       now: captured.now
     });
   }

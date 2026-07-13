@@ -378,6 +378,22 @@ describe("ItemPage", () => {
     expect(screen.getByText("Unrelated telemetry")).toBeInTheDocument();
   });
 
+  it("retains all same-ID telemetry when a phase has no source provenance", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [],
+      phases: [{ eventId: "ambiguous-id", phase: "planning", startedAt: "2026-07-12T10:00:00Z", endedAt: "2026-07-12T10:01:00Z", durationMs: 60_000 }],
+      events: [
+        { eventId: "ambiguous-id", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:00:00Z", message: "First source", path: "events/one.jsonl:1" },
+        { eventId: "ambiguous-id", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", message: "Second source", path: "history/two.jsonl:1" }
+      ]
+    }} />);
+
+    expect(screen.getByText("First source")).toBeInTheDocument();
+    expect(screen.getByText("Second source")).toBeInTheDocument();
+  });
+
   it("renders both durable and newer current-snapshot custody evidence", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,

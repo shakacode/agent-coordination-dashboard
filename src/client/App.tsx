@@ -145,6 +145,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
   const [itemRoute, setItemRoute] = useState<ItemRoute | undefined>(() => itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
+  const itemRouteInScope = Boolean(itemRoute && settings?.targetRepos.includes(itemRoute.repo));
   const [itemTimeline, setItemTimeline] = useState<ItemTimelineResponse | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
   const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
@@ -294,7 +295,8 @@ export function App() {
       setItemError(null);
       return;
     }
-    if (!dashboard) {
+    if (!dashboard || !itemRouteInScope) {
+      setItemTimeline(null);
       return;
     }
     let cancelled = false;
@@ -305,7 +307,13 @@ export function App() {
     setItemError(null);
     void fetchItemTimeline(itemRoute.repo, itemRoute.target, { signal: controller.signal }).then(
       (timeline) => {
-        if (!cancelled) setItemTimeline(timeline);
+        if (cancelled) return;
+        if (timeline.repo !== itemRoute.repo || timeline.target !== itemRoute.target) {
+          setItemTimeline(null);
+          setItemError("Work item API returned mismatched scope");
+          return;
+        }
+        setItemTimeline(timeline);
       },
       (caught: unknown) => {
         if (!cancelled && !controller.signal.aborted) setItemError(caught instanceof Error ? caught.message : "Work item failed to load");
@@ -315,7 +323,7 @@ export function App() {
       cancelled = true;
       controller.abort();
     };
-  }, [dashboard?.generatedAt, itemRoute]);
+  }, [dashboard?.generatedAt, itemRoute, itemRouteInScope]);
 
   useEffect(() => {
     if (!itemRoute || !settings || settings.targetRepos.includes(itemRoute.repo)) {
@@ -416,6 +424,13 @@ export function App() {
         .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl)
     );
     if (item) {
+      setOperatorQuery(query);
+      const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
+      const nextDeepLink = startingUniversalSearch
+        ? { query: query || undefined }
+        : { ...operatorDeepLink, query: query || undefined };
+      setOperatorDeepLink(nextDeepLink);
+      writeOperatorLocation(nextDeepLink, query, "replace");
       openItem(item);
       return;
     }
@@ -747,7 +762,7 @@ export function App() {
               </button>
             ))}
           </nav>
-          {itemRoute ? itemTimeline ? (
+          {itemRoute && itemRouteInScope ? itemTimeline ? (
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
               <ItemPage onBack={closeItem} timeline={itemTimeline} />

@@ -161,15 +161,19 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
     const provenance = eventProvenanceKey(claim.sourceEventPath, claim.sourceEventId);
     return provenance ? [provenance] : [];
   }));
+  const eventIdCounts = new Map<string, number>();
+  for (const event of timeline.events) {
+    eventIdCounts.set(event.eventId, (eventIdCounts.get(event.eventId) || 0) + 1);
+  }
   const custodyEntries = [
     ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
     ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
     ...timeline.events
       .filter((event) => !timeline.phases.some((span) => {
         const phaseProvenance = eventProvenanceKey(span.eventPath, span.eventId);
-        return phaseProvenance
-          ? phaseProvenance === eventProvenanceKey(event.path, event.eventId)
-          : span.eventId === event.eventId;
+          return phaseProvenance
+            ? phaseProvenance === eventProvenanceKey(event.path, event.eventId)
+            : span.eventId === event.eventId && eventIdCounts.get(event.eventId) === 1;
       }))
       .filter((event) => {
         const provenance = eventProvenanceKey(event.path, event.eventId);

@@ -83,6 +83,7 @@ const TERMINAL_OWNERSHIP_EVENT_TYPES = new Set([
 const OWNERSHIP_EVENT_TYPES = new Set([
   "claim", "claimed", "acquire", "acquired", "takeover", "renew", "renewed", "continued", "resumed", "heartbeat", "handoff", "release", "released", "lane.started", "lane.handoff"
 ]);
+const RENEWAL_ONLY_EVENT_TYPES = new Set(["heartbeat", "renew", "renewed"]);
 
 function time(value: string): number | undefined {
   const result = Date.parse(value);
@@ -261,6 +262,12 @@ function isOwnershipBearingEvent(event: BatchEvent): boolean {
     && /^(?:acquired|takeover|renewed|continued|resumed|released|handoff|done|closed|stopped)$/i.test(event.status || "");
 }
 
+function isRenewalOnlyEvent(event: BatchEvent): boolean {
+  const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
+  return RENEWAL_ONLY_EVENT_TYPES.has(type)
+    || /^(?:claim|custody|lifecycle)$/i.test(event.type) && /^(?:renewed|renewal)$/i.test(event.status || "");
+}
+
 function isCustodyTerminalEvent(event: BatchEvent): boolean {
   if (!isOwnershipBearingEvent(event)) return false;
   const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
@@ -270,7 +277,21 @@ function isCustodyTerminalEvent(event: BatchEvent): boolean {
 }
 
 function isHistoricalSnapshot(claim: ClaimRecord): boolean {
-  return /(?:^|\/)(?:history|events)(?:\/|$)/i.test(claim.path);
+  const claimRoot = `claims/${claim.repo}/`;
+  const rootIndex = claim.path.indexOf(claimRoot);
+  const repositoryRelativePath = rootIndex >= 0
+    ? claim.path.slice(rootIndex + claimRoot.length)
+    : claim.path;
+  return /(?:^|\/)(?:history|events)(?:\/|$)/i.test(repositoryRelativePath);
+}
+
+function chronologicalCustody(events: ClaimCustodyEvent[]): ClaimCustodyEvent[] {
+  return events
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => (time(left.event.timestamp || "") ?? Number.MAX_SAFE_INTEGER)
+      - (time(right.event.timestamp || "") ?? Number.MAX_SAFE_INTEGER)
+      || left.index - right.index)
+    .map(({ event }) => event);
 }
 
 function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimCustodyEvent[] {
@@ -295,6 +316,12 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
       continue;
     }
     if (!event.agentId || !isOwnershipBearingEvent(event)) continue;
+    if (isRenewalOnlyEvent(event)) {
+      if (activeAgent === event.agentId) {
+        custody.push({ action: "renewed", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
+      }
+      continue;
+    }
     if (!activeAgent) {
       custody.push({ action: "acquired", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
       activeAgent = event.agentId;
@@ -310,26 +337,26 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
     }
   }
 
-  if (!currentClaim) return custody;
+  if (!currentClaim) return chronologicalCustody(custody);
   const last = custody.at(-1);
   if (currentClaim.status === "released") {
     if (!matchesCurrentSnapshot(last, currentClaim) || last?.action !== "released") {
       custody.push(snapshotCustodyEvent(currentClaim, "released"));
     }
-    return custody;
+    return chronologicalCustody(custody);
   }
-  if (currentClaim.status !== "active") return custody;
+  if (currentClaim.status !== "active") return chronologicalCustody(custody);
   if (last?.agentId === currentClaim.agentId && last.action !== "released") {
     if (!matchesCurrentSnapshot(last, currentClaim)) {
       custody.push(snapshotCustodyEvent(currentClaim, "renewed"));
     }
-    return custody;
+    return chronologicalCustody(custody);
   }
 
   // A current snapshot proves only its present holder. Without an attributed
   // append-only event, it cannot honestly establish when or how custody began.
   custody.push(snapshotCustodyEvent(currentClaim, "unknown"));
-  return custody;
+  return chronologicalCustody(custody);
 }
 
 function unique(values: Array<string | undefined>): string[] {
@@ -350,10 +377,17 @@ export function buildCustodyTimeline(input: BuildCustodyTimelineInput): CustodyT
     .filter((event) => event.repo === input.repo && event.target === input.target)
     .sort((left, right) => (time(left.timestamp || "") || 0) - (time(right.timestamp || "") || 0));
   const claims = custodyEvents(events, currentClaim);
-  const phaseEvents = events
-    .filter(isPhaseEvent)
-    .filter((event) => time(event.timestamp || "") !== undefined)
-    .filter((event, index, candidates) => index === 0 || phaseName(candidates[index - 1]).toLowerCase() !== phaseName(event).toLowerCase());
+  const phaseEvents: BatchEvent[] = [];
+  let previousPhase: string | undefined;
+  for (const event of events) {
+    if (isPhaseEvent(event) && time(event.timestamp || "") !== undefined) {
+      const nextPhase = phaseName(event).toLowerCase();
+      if (nextPhase !== previousPhase) phaseEvents.push(event);
+      previousPhase = nextPhase;
+    } else if (isTerminalLifecycleEvent(event) || (isOwnershipBearingEvent(event) && !isRenewalOnlyEvent(event))) {
+      previousPhase = undefined;
+    }
+  }
   const phases = phaseEvents.map((event, index) => {
     const startedAt = event.timestamp!;
     const startedMs = time(startedAt)!;

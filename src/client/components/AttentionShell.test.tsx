@@ -54,6 +54,12 @@ describe("AttentionShell", () => {
     expect(onCopyResume).toHaveBeenCalledWith(ITEMS[0]);
   });
 
+  it("does not expose an enabled timeline action when no open handler is supplied", () => {
+    render(<AttentionShell items={ITEMS} onQueryChange={vi.fn()} query="" surface="attention" />);
+
+    expect(screen.queryByRole("button", { name: "Open timeline" })).not.toBeInTheDocument();
+  });
+
   it("normalizes legacy UNKNOWN attribution sentinels on default-visible cards", () => {
     const unknownItem = {
       ...ITEMS[0],

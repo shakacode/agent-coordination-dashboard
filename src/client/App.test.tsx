@@ -210,6 +210,9 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Work item #44" })).toBeInTheDocument();
     expect(window.location.search).toBe("?item=repo%2Fdashboard%2F44");
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
+    expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("https://github.com/repo/dashboard/pull/44");
   });
 
   it("hides unmounted header drill-downs in item mode and restores them after Back", async () => {
@@ -317,7 +320,7 @@ describe("App", () => {
     expect(await screen.findByText("Branch: codex/refresh-1")).toBeInTheDocument();
     await waitFor(() => expect(dashboardCalls).toBeGreaterThan(1));
     await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
-    expect(screen.getByText(/Branch: codex\/refresh-[2-9]/)).toBeInTheDocument();
+    expect(screen.getByText(/Branch: codex\/refresh-(?:[2-9]|[1-9]\d+)/)).toBeInTheDocument();
   });
 
   it("keeps the displayed timeline visible while a background refresh fetches newer data", async () => {
@@ -414,12 +417,31 @@ describe("App", () => {
     expect(await screen.findByText("Branch: codex/out-of-scope")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
 
-    await waitFor(() => expect(itemCalls).toBeGreaterThan(1));
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Work item #44" })).not.toBeInTheDocument());
+    expect(itemCalls).toBe(1);
     expect(screen.queryByText("repo/dashboard")).not.toBeInTheDocument();
     expect(screen.queryByText("Branch: codex/out-of-scope")).not.toBeInTheDocument();
     expect(screen.queryByText(/stale timeline refresh failed/)).not.toBeInTheDocument();
     expect(window.location.search).not.toContain("item=");
+  });
+
+  it("rejects an item response whose repository or target does not match the route", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F44");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      if (url.startsWith("/api/item/")) {
+        return { ok: true, json: async () => ({
+          repo: "other/repo", target: "44", claims: [], liveness: [], phases: [], events: [], branches: ["private/branch"], prUrls: [], sourceStatus: [], warnings: []
+        }) } as Response;
+      }
+      return { ok: true, json: async () => model } as Response;
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByText(/mismatched scope/i)).toBeInTheDocument();
+    expect(screen.queryByText("private/branch")).not.toBeInTheDocument();
   });
 
   it("aborts superseded item requests so stale route completions cannot win", async () => {

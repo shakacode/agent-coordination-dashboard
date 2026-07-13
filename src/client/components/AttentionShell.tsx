@@ -151,7 +151,7 @@ function WorkCard({
         <p className="attention-card-meta"><span>Phase: {phase}</span> · {elapsed} ago · {machine} · {thread}</p>
       </div>
       <div className="attention-card-actions">
-        <button onClick={() => onOpenItem?.(item)} type="button">Open timeline</button>
+        {onOpenItem ? <button onClick={() => onOpenItem(item)} type="button">Open timeline</button> : null}
         {isSelectableWorkItem(item) ? (
           <label className="attention-card-select">
             <input

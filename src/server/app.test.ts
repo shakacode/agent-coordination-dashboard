@@ -219,7 +219,7 @@ describe("dashboard app import endpoint", () => {
     const baseUrl = await listen(root, { refreshIntervalMs: 5_000 }, {
       loadOpenGitHubItems: async () => {
         openListCalls += 1;
-        return { items: [], warnings: [] };
+        return { items: [], warnings: [{ severity: "warning" as const, repo: "shakacode/react_on_rails", target: "46", message: "GitHub item lookup is partial" }] };
       },
       loadGitHubTargets: async (references) => {
         reconciliationCalls += 1;
@@ -229,11 +229,12 @@ describe("dashboard app import endpoint", () => {
     await fetch(`${baseUrl}/api/dashboard`);
     await writeCurrentState("worker-b");
 
-    const first = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { claim?: { agentId: string } }; claims: Array<{ agentId: string }> };
+    const first = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { claim?: { agentId: string } }; claims: Array<{ agentId: string }>; warnings: Array<{ message: string }> };
     const second = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { heartbeat?: { agentId: string } }; claims: Array<{ agentId: string }> };
 
     expect(first.item?.claim).toMatchObject({ agentId: "worker-b" });
     expect(first.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
+    expect(first.warnings.filter((warning) => warning.message === "GitHub item lookup is partial")).toHaveLength(1);
     expect(second.item?.heartbeat).toMatchObject({ agentId: "worker-b" });
     expect(second.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
     expect(openListCalls).toBe(1);

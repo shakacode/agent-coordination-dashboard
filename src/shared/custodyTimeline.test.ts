@@ -196,6 +196,35 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:04:00.000Z")).toBe(true);
   });
 
+  it("places an older released snapshot before newer durable custody telemetry", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:20:00Z"),
+      claims: [{
+        schemaVersion: 1,
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "worker-a",
+        status: "released",
+        updatedAt: "2026-07-12T10:05:00Z",
+        path: "claims/shakacode/dashboard/46.json"
+      }],
+      heartbeats: [heartbeat({ agentId: "worker-a", expiresAt: "2026-07-12T10:30:00Z" })],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "takeover", type: "continued", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:10:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims.map((claim) => [claim.action, claim.agentId, claim.timestamp])).toEqual([
+      ["acquired", "worker-a", "2026-07-12T10:00:00Z"],
+      ["released", "worker-a", "2026-07-12T10:05:00Z"],
+      ["taken_over", "worker-b", "2026-07-12T10:10:00Z"]
+    ]);
+    expect(timeline.liveness.filter((span) => span.agentId === "worker-a").every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
+  });
+
   it("ends phases at a released current-claim snapshot without terminal telemetry", () => {
     const timeline = buildCustodyTimeline({
       repo: "shakacode/dashboard",
@@ -493,6 +522,41 @@ describe("buildCustodyTimeline", () => {
     ]);
   });
 
+  it.each(["heartbeat", "renew", "renewed"])("ignores %s telemetry from a non-holder", (type) => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      claims: [],
+      heartbeats: [],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "late-renewal", type, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([expect.objectContaining({ action: "acquired", agentId: "worker-a" })]);
+  });
+
+  it("keeps a current claim for a repository whose name is history", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "acme/history",
+      target: "46",
+      claims: [{
+        schemaVersion: 1,
+        repo: "acme/history",
+        target: "46",
+        agentId: "worker-a",
+        status: "active",
+        updatedAt: "2026-07-12T10:00:00Z",
+        path: "claims/acme/history/46.json"
+      }],
+      heartbeats: [],
+      events: []
+    });
+
+    expect(timeline.claims).toEqual([expect.objectContaining({ action: "unknown", agentId: "worker-a" })]);
+  });
+
   it("uses only explicit phase-bearing telemetry and collapses repeated phase names", () => {
     const event = (overrides: Partial<BatchEvent>): BatchEvent => ({
       eventId: "event",
@@ -525,6 +589,25 @@ describe("buildCustodyTimeline", () => {
       expect.objectContaining({ eventId: "review", phase: "reviewing", endedAt: "2026-07-12T10:10:00.000Z", durationMs: 300_000 })
     ]);
     expect(timeline.events.filter((item) => item.type === "heartbeat")).toHaveLength(2);
+  });
+
+  it("retains a repeated phase after a custody boundary", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [],
+      events: [
+        { eventId: "started-a", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "phase-a", type: "phase", status: "implementing", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:01:00Z", path: "events/custody.jsonl:2" },
+        { eventId: "handoff", type: "lane.handoff", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:03:00Z", path: "events/custody.jsonl:3" },
+        { eventId: "started-b", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:04:00Z", path: "events/custody.jsonl:4" },
+        { eventId: "phase-b", type: "phase", status: "implementing", repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:5" }
+      ]
+    });
+
+    expect(timeline.phases.map((phase) => phase.eventId)).toEqual(["phase-a", "phase-b"]);
   });
 
   it("clips old-holder liveness at telemetry transfer and release boundaries", () => {
