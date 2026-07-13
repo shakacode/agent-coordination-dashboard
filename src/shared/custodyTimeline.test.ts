@@ -368,11 +368,11 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.claims).toEqual(terminal
       ? [
         expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
-        expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+        expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:04:00Z" })
       ]
       : [expect.objectContaining({ action: "acquired", agentId: "worker-a" })]);
     expect(timeline.claims.some((entry) => entry.agentId === "coordinator")).toBe(false);
-    expect(timeline.liveness.every((span) => span.endedAt <= (terminal ? "2026-07-12T10:05:00.000Z" : "2026-07-12T10:10:00.000Z"))).toBe(true);
+    expect(timeline.liveness.every((span) => span.endedAt <= (terminal ? "2026-07-12T10:04:00.000Z" : "2026-07-12T10:10:00.000Z"))).toBe(true);
   });
 
   it.each(["done", "lane.done"])("treats canonical %s as terminal while releasing custody only for the active holder", (doneType) => {
@@ -404,10 +404,55 @@ describe("buildCustodyTimeline", () => {
     ]);
     expect(timeline.claims).toEqual([
       expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
-      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:04:00Z" })
     ]);
     expect(timeline.claims.some((entry) => entry.agentId === "coordinator")).toBe(false);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:04:00.000Z")).toBe(true);
+  });
+
+  it.each(["lane_closed", "lane_stopped"])("releases active custody for an unattributed canonical %s terminal event", (terminalType) => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [heartbeat({ agentId: "worker-a", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "phase", type: "phase", status: "implementing", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:01:00Z", path: "events/custody.jsonl:2" },
+        { eventId: "terminal", type: terminalType, repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:3" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([
+      expect.objectContaining({ action: "acquired", agentId: "worker-a" }),
+      expect.objectContaining({ action: "released", agentId: "worker-a", timestamp: "2026-07-12T10:05:00Z" })
+    ]);
     expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:05:00.000Z", durationMs: 240_000 })
+    ]);
+  });
+
+  it("does not release custody for a similar unattributed but nonterminal event", () => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [],
+      heartbeats: [heartbeat({ agentId: "worker-a", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "phase", type: "phase", status: "implementing", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:01:00Z", path: "events/custody.jsonl:2" },
+        { eventId: "not-terminal", type: "lane_closing", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:3" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([expect.objectContaining({ action: "acquired", agentId: "worker-a" })]);
+    expect(timeline.liveness.every((span) => span.endedAt <= "2026-07-12T10:10:00.000Z")).toBe(true);
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:10:00.000Z", durationMs: 540_000 })
+    ]);
   });
 
   it("releases the active holder for a generic lifecycle handoff", () => {

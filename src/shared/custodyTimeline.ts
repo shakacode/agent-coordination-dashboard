@@ -278,15 +278,23 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
   let activeAgent: string | undefined;
 
   for (const event of events) {
-    if (!event.agentId || !event.timestamp || time(event.timestamp) === undefined) continue;
-    if (!isOwnershipBearingEvent(event)) continue;
+    if (!event.timestamp || time(event.timestamp) === undefined) continue;
     if (isCustodyTerminalEvent(event)) {
-      if (activeAgent === event.agentId) {
-        custody.push({ action: "released", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
+      if (activeAgent) {
+        custody.push({
+          action: "released",
+          agentId: activeAgent,
+          timestamp: event.timestamp,
+          ...(activeAgent === event.agentId ? optionalEventFields(event) : {
+            ...(event.eventId ? { sourceEventId: event.eventId } : {}),
+            ...(event.path ? { sourceEventPath: event.path } : {})
+          })
+        });
         activeAgent = undefined;
       }
       continue;
     }
+    if (!event.agentId || !isOwnershipBearingEvent(event)) continue;
     if (!activeAgent) {
       custody.push({ action: "acquired", agentId: event.agentId, timestamp: event.timestamp, ...optionalEventFields(event) });
       activeAgent = event.agentId;
