@@ -4,6 +4,7 @@ const OWNER_REPO_REF_AT_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+/y;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
 const URL_LABEL_PREFIXES = ["blocked", "pr", "status", "phase", "repo", "repository", "waiting", "depends"];
+const URI_SCHEMES_TO_KEEP = new Set(["http", "https", ...URL_LABEL_PREFIXES]);
 
 function isClearLocalFileReference(ref: string): boolean {
   return LOCAL_FILE_REF_PATTERN.test(ref);
@@ -65,6 +66,51 @@ function hasExplicitUrlLabel(value: string, urlStart: number): boolean {
     const beforeLabel = value[labelStart - 1] || "";
     return labelStart === 0 || /\s/.test(beforeLabel) || "(<[{'\"`|;=,!&".includes(beforeLabel);
   });
+}
+
+function withoutNonRepositoryUriTokens(value: string): string {
+  const output: string[] = [];
+  const tokenBoundaries = "(<[{'\"`|";
+  let index = 0;
+  while (index < value.length) {
+    const previous = value[index - 1] || "";
+    const tokenBoundary = index === 0 || /\s/.test(previous) || tokenBoundaries.includes(previous);
+    if (!tokenBoundary || !/[A-Za-z]/.test(value[index])) {
+      output.push(value[index]);
+      index += 1;
+      continue;
+    }
+
+    let schemeEnd = index + 1;
+    while (/[A-Za-z0-9+.-]/.test(value[schemeEnd] || "")) schemeEnd += 1;
+    const scheme = value.slice(index, schemeEnd).toLowerCase();
+    if (value[schemeEnd] !== ":" || URI_SCHEMES_TO_KEEP.has(scheme)) {
+      if (value[schemeEnd] === ":" && (scheme === "http" || scheme === "https")) {
+        let urlTokenEnd = schemeEnd + 1;
+        while (urlTokenEnd < value.length && !/\s/.test(value[urlTokenEnd])) urlTokenEnd += 1;
+        output.push(value.slice(index, urlTokenEnd));
+        index = urlTokenEnd;
+        continue;
+      }
+      output.push(value[index]);
+      index += 1;
+      continue;
+    }
+
+    let cursor = schemeEnd + 1;
+    let wrapperDepth = 0;
+    while (cursor < value.length && !/\s/.test(value[cursor])) {
+      const character = value[cursor];
+      if ("([{<".includes(character)) wrapperDepth += 1;
+      if (")]}>".includes(character) && wrapperDepth > 0) wrapperDepth -= 1;
+      if (character === "|" && wrapperDepth === 0) break;
+      cursor += 1;
+    }
+    output.push(" ");
+    if (value[cursor] === "|") output.push("| ");
+    index = value[cursor] === "|" ? cursor + 1 : cursor;
+  }
+  return output.join("");
 }
 
 // One forward scan handles both HTTP and schemeless GitHub URLs. `index` and
@@ -268,11 +314,11 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
 }
 
 function githubRepoRefsFromText(value: string): string[] {
-  return scanHttpText(value).refs;
+  return scanHttpText(withoutNonRepositoryUriTokens(value)).refs;
 }
 
 function withoutRepositoryUrls(value: string): string {
-  return scanHttpText(value).withoutUrls;
+  return scanHttpText(withoutNonRepositoryUriTokens(value)).withoutUrls;
 }
 
 export function repoRefsFromText(value: string | undefined): string[] {
@@ -327,11 +373,12 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
  */
 export function highConfidenceRepoRefsFromMessage(value: string | undefined): string[] {
   if (!value) return [];
+  const textWithoutNonRepositoryUris = withoutNonRepositoryUriTokens(value);
   const refs = new Set<string>();
-  for (const ref of githubRepoRefsFromText(value)) refs.add(ref);
-  for (const match of value.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) refs.add(match[1]);
-  for (const repo of repoRefsFromPromptHeaders(value)) refs.add(repo);
-  const standalone = value.trim().match(/^([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)$/)?.[1];
+  for (const ref of githubRepoRefsFromText(textWithoutNonRepositoryUris)) refs.add(ref);
+  for (const match of textWithoutNonRepositoryUris.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) refs.add(match[1]);
+  for (const repo of repoRefsFromPromptHeaders(textWithoutNonRepositoryUris)) refs.add(repo);
+  const standalone = textWithoutNonRepositoryUris.trim().match(/^([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)$/)?.[1];
   if (standalone) refs.add(standalone);
   return Array.from(refs);
 }
@@ -397,7 +444,7 @@ function repoRefsFromStructuredText(structuredText: string): string[] {
 export function repoRefsFromStructuredEventField(value: string | undefined): string[] {
   if (!value) return [];
   const refs = new Set<string>();
-  const structuredText = withoutExplicitStructuredPaths(value);
+  const structuredText = withoutNonRepositoryUriTokens(withoutExplicitStructuredPaths(value));
   const highConfidence = new Set(highConfidenceRepoRefsFromMessage(structuredText));
   const explicitContext = new Set<string>();
   const contextPattern = /\b(?:phase|repo(?:sitory)?|blocked\s+on|waiting\s+on|depends\s+on)\s*:?[ \t]+(?:repo(?:sitory)?[ \t]+)?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;

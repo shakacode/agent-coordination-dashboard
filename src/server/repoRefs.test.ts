@@ -61,7 +61,13 @@ describe("repoRefsFromStructuredEventField", () => {
     "See blob:https://github.com/other/private",
     "See about:github.com/other/private",
     "See custom:https://github.com/other/private",
-    "See javascript:blocked:https://github.com/other/private"
+    "See javascript:blocked:https://github.com/other/private",
+    "See javascript:(blocked:https://github.com/other/private)",
+    "See javascript:[PR:github.com/other/private]",
+    "See data:text/plain,blocked:github.com/other/private",
+    "See vbscript:(status:github.com/other/private)",
+    "See custom:{repo:https://github.com/other/private}",
+    "See ssh:(waiting:github.com/other/private)"
   ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
@@ -76,6 +82,11 @@ describe("repoRefsFromStructuredEventField", () => {
     "waiting:https://github.com/other/private"
   ])("detects a canonical GitHub URL after a label colon: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it("resumes repository detection after a top-level pseudo-URI pipe reset", () => {
+    expect(repoRefsFromStructuredEventField("javascript:x|github.com/other/private")).toContain("other/private");
+    expect(repoRefsFromStructuredEventField("data:text/plain,ignored|https://github.com/other/private")).toContain("other/private");
   });
 
   it.each([
