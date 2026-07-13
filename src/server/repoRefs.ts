@@ -74,12 +74,6 @@ function isStructuredSlashVocabulary(ref: string): boolean {
   return STRUCTURED_SLASH_VOCABULARY.some((pattern) => pattern.test(ref));
 }
 
-const LOCAL_STRUCTURED_PATH_ROOT = /^(?:app|client|config|docs|lib|packages|public|scripts|server|spec|src|test|tests)\//i;
-
-function isLikelyLocalStructuredPath(ref: string): boolean {
-  return LOCAL_STRUCTURED_PATH_ROOT.test(ref) && LOCAL_FILE_REF_PATTERN.test(`/${ref}`);
-}
-
 function repoRefsFromStructuredText(value: string): string[] {
   const refs = new Set<string>();
   for (const match of value.matchAll(OWNER_REPO_REF_PATTERN)) {
@@ -115,7 +109,6 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
       continue;
     }
     if (isStructuredSlashVocabulary(ref)) continue;
-    if (isLikelyLocalStructuredPath(ref)) continue;
     refs.add(ref);
   }
   return Array.from(refs);
