@@ -68,6 +68,12 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       refs.add(normalizeGithubRepoRef(schemelessMatch[1]));
       let cursor = index + schemelessMatch[0].length;
       output.push(" ");
+      if (value[cursor] === "/") {
+        cursor += 1;
+        while (cursor < value.length && !/\s/.test(value[cursor]) && !structuralDelimiters.includes(value[cursor]) && !"?#".includes(value[cursor]) && !closingDelimiters.includes(value[cursor])) {
+          cursor += 1;
+        }
+      }
       if ("?#".includes(value[cursor] || "")) {
         const queryDelimiter = value[cursor];
         const queryValueStart = cursor + 1;
@@ -108,8 +114,8 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         coarseAuthorityEnd += 1;
         continue;
       }
-      if (character === "@" && bracketDepth === 0) lastAt = coarseAuthorityEnd;
-      if (bracketFallbackDelimiter < 0 && "|;=,!&".includes(character)) bracketFallbackDelimiter = coarseAuthorityEnd;
+      if (character === "@") lastAt = coarseAuthorityEnd;
+      if (bracketFallbackDelimiter < 0 && (structuralDelimiters + closingDelimiters).includes(character)) bracketFallbackDelimiter = coarseAuthorityEnd;
       if (authorityDelimiter < 0 && bracketDepth === 0 && (structuralDelimiters + closingDelimiters).includes(character)) {
         if (character === ":") {
           let portEnd = coarseAuthorityEnd + 1;

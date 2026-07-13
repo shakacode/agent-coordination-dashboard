@@ -228,11 +228,31 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   });
 
+  it("scrubs schemeless GitHub subpaths before applying query state", () => {
+    expect(repoRefsFromStructuredEventField("github.com/other/private/issues/1?next=third/repo")).toEqual(["other/private"]);
+    expect(repoRefsFromStructuredEventField("github.com/other/private/pull/1#third/repo")).toEqual(["other/private"]);
+    expect(repoRefsFromStructuredEventField("github.com/saved/repo/issues/1?https://github.com/other/private")).toEqual(
+      expect.arrayContaining(["saved/repo", "other/private"])
+    );
+    expect(repoRefsFromStructuredEventField("github.com/saved/repo/issues/1?next=https://github.com/other/private")).toEqual(["saved/repo"]);
+  });
+
+  it.each([
+    "https://[user|name@github.com/other/private",
+    "https://[user=name@github.com/other/private",
+    "https://[user;name@github.com/other/private"
+  ])("retains a canonical ref from unmatched-bracket userinfo: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
   it.each([
     "https://[::1|github.com/other/private",
     "https://[::1|other/private/path",
     "https://[::1|https://github.com/other/private",
-    "https://[[bad;github.com/other/private"
+    "https://[[bad;github.com/other/private",
+    "https://[bad:github.com/other/private",
+    "https://[bad:other/private/path",
+    "https://[bad)other/private/path"
   ])("replays structural delimiters after an unmatched authority bracket: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
