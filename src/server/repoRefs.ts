@@ -157,6 +157,7 @@ function consumeNamedUrlState(value: string, start: number, structuralDelimiters
   const wrapperClosers: string[] = [];
   let quote = "";
   let escaped = false;
+  let nestedUri = false;
   let cursor = start;
   while (cursor < value.length) {
     const character = value[cursor];
@@ -192,6 +193,12 @@ function consumeNamedUrlState(value: string, start: number, structuralDelimiters
       continue;
     }
     if (wrapperClosers.length === 0 && character === ":" && isNestedUriSchemeColon(value, cursor, start)) {
+      nestedUri = true;
+      cursor += 1;
+      continue;
+    }
+    if (wrapperClosers.length === 0 && nestedUri) {
+      if (/\s/.test(character) || character === "|" || closingDelimiters.includes(character)) break;
       cursor += 1;
       continue;
     }
@@ -450,7 +457,11 @@ export function highConfidenceRepoRefsFromMessage(value: string | undefined): st
   const textWithoutRepositoryUrls = withoutRepositoryUrls(textWithoutNonRepositoryUris);
   const refs = new Set<string>();
   for (const ref of githubRepoRefsFromText(textWithoutNonRepositoryUris)) refs.add(ref);
-  for (const match of textWithoutRepositoryUrls.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) refs.add(match[1]);
+  for (const match of textWithoutRepositoryUrls.matchAll(OWNER_REPO_ISSUE_REF_PATTERN)) {
+    const before = textWithoutRepositoryUrls[(match.index || 0) - 1] || "";
+    if (/[/.]/.test(before)) continue;
+    refs.add(match[1]);
+  }
   for (const repo of repoRefsFromPromptHeaders(textWithoutNonRepositoryUris)) refs.add(repo);
   const standalone = textWithoutNonRepositoryUris.trim().match(/^([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)$/)?.[1];
   if (standalone) refs.add(standalone);

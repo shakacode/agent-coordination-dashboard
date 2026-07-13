@@ -36,6 +36,12 @@ describe("repoRefsFromStructuredEventField", () => {
     "See https://example.com/docs/other/private#12",
     "See https://evil.example/other/private#123",
     "See https://example.com/?next=https://evil.example/other/private#12",
+    "See example.com/other/private#12",
+    "See www.example.com/docs/other/private#12",
+    "See github.com.evil.example/other/private#12",
+    "See _github.com/other/private#12",
+    "See égithub.com/other/private#12",
+    "See @github.com/other/private#12",
     "Repository: https://docs.github.com/en/repositories",
     "Repository: https://notgithub.com/other/private"
   ])("does not extract repository refs from a non-GitHub-repository host: %s", (value) => {
@@ -109,7 +115,11 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://example.com/?next=javascript:(x|github.com/other/private)",
     "https://example.com/#next=javascript:\"x|github.com/other/private\"",
     "https://example.com/?next=data:text/plain,(x|github.com/other/private)",
-    "https://example.com/#next=custom:{x|github.com/other/private}"
+    "https://example.com/#next=custom:{x|github.com/other/private}",
+    "https://example.com/?next=https://evil.example/docs:other/private",
+    "https://example.com/?next=https://evil.example/docs:other/private#12",
+    "https://example.com/?next=https://evil.example/?x=1,other/private",
+    "https://example.com/?next=https://evil.example:444/docs/other/private"
   ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
