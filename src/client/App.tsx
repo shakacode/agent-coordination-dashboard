@@ -23,6 +23,7 @@ import {
   type OverviewOperatorFilter
 } from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
+import { canonicalGithubItemUrl } from "./githubUrls";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -44,19 +45,6 @@ function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefin
   return match ? { repo: match[1], target: match[2] } : undefined;
 }
 
-function canonicalGithubItemUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    const url = new URL(value);
-    const pathname = url.pathname.replace(/\/$/, "");
-    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)
-      ? `${url.origin.toLowerCase()}${pathname.toLowerCase()}`
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, batches: BatchRecord[]): boolean {
   if (operation.batchPath) return operation.batchPath === batch.path;
   if (operation.batchId !== batch.batchId) return false;
@@ -67,6 +55,14 @@ function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, ba
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
   return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
+}
+
+export function nextActiveSnoozeDelayMs(workItems: WorkItem[], nowMs = Date.now()): number | undefined {
+  const expiries = workItems.flatMap((item) => {
+    const until = item.annotation?.kind === "snooze" ? Date.parse(item.annotation.until || "") : Number.NaN;
+    return Number.isFinite(until) && until > nowMs ? [until] : [];
+  });
+  return expiries.length > 0 ? Math.max(0, Math.min(...expiries) - nowMs) : undefined;
 }
 
 function readOperatorDeepLink() {
@@ -364,6 +360,14 @@ export function App() {
     return () => window.clearInterval(intervalId);
   }, [loadDashboard, settings?.refreshIntervalMs]);
 
+  useEffect(() => {
+    if (!dashboard || (settings?.refreshIntervalMs || 0) > 0) return undefined;
+    const delay = nextActiveSnoozeDelayMs(dashboard.workItems);
+    if (delay === undefined) return undefined;
+    const timeoutId = window.setTimeout(() => void loadDashboard(), Math.min(delay, 2_147_483_647));
+    return () => window.clearTimeout(timeoutId);
+  }, [dashboard, loadDashboard, settings?.refreshIntervalMs]);
+
   async function persistRepos(nextRepos: string[]) {
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
@@ -424,7 +428,7 @@ export function App() {
     const item = githubUrl && dashboard?.workItems.find((candidate) => {
       const { claim, heartbeat } = effectiveCustody(candidate);
       return [candidate.github?.url, claim?.prUrl, heartbeat?.prUrl]
-        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl);
+        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl)?.toLowerCase() === githubUrl.toLowerCase());
     });
     if (item) {
       setOperatorQuery(query);

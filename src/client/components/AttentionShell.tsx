@@ -4,6 +4,7 @@ import { displayAttribution, firstDisplayAttribution } from "../../shared/attrib
 import { effectiveCustody } from "../../shared/effectiveCustody";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
+import { canonicalGithubItemUrl } from "../githubUrls";
 
 export type DashboardSurface = "attention" | "now" | "find" | "history";
 
@@ -22,19 +23,6 @@ function holder(item: WorkItem): string {
   return firstDisplayAttribution([claim?.agentId, heartbeat?.agentId]);
 }
 
-function canonicalGithubItemUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") return undefined;
-    const pathname = url.pathname.replace(/\/$/, "");
-    if (!/^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)) return undefined;
-    return `${url.origin.toLowerCase()}${pathname.toLowerCase()}`;
-  } catch {
-    return undefined;
-  }
-}
-
 function matches(item: WorkItem, query: string): boolean {
   const { claim, heartbeat } = effectiveCustody(item);
   const value = query.trim().toLowerCase();
@@ -43,7 +31,7 @@ function matches(item: WorkItem, query: string): boolean {
   const githubItemUrl = canonicalGithubItemUrl(query.trim());
   if (githubItemUrl) {
     return [item.github?.url, claim?.prUrl, heartbeat?.prUrl]
-      .some((candidate) => canonicalGithubItemUrl(candidate) === githubItemUrl);
+      .some((candidate) => canonicalGithubItemUrl(candidate)?.toLowerCase() === githubItemUrl.toLowerCase());
   }
   if (/^[^/#\s]+\/[^/#\s]+#\d+$/.test(value)) return item.id.toLowerCase() === value;
   return [
@@ -150,7 +138,7 @@ function WorkCard({
   const machine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, claim?.threadHandle]);
   const elapsed = elapsedSince(heartbeat?.updatedAt || claim?.updatedAt || item.lastActivityAt);
-  const githubUrl = canonicalGithubItemUrl(item.github?.url) ? item.github?.url : undefined;
+  const githubUrl = canonicalGithubItemUrl(item.github?.url);
   return (
     <article className="attention-card">
       <div>
@@ -286,7 +274,7 @@ export function AttentionShell({
             ) : <span title="GitHub merge timestamps are not available">merged today unavailable</span>}.
           </p>
         ) : (
-          <div className="attention-card-list">{attentionItems.map((item) => card(item, { showResumeAction: true }))}</div>
+          <div className="attention-card-list">{attentionItems.map((item) => card(item, { showResumeAction: item.attention?.action === "Copy resume prompt" }))}</div>
         )}
       </section>
     );

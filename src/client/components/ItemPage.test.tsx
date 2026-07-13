@@ -489,7 +489,7 @@ describe("ItemPage", () => {
       prUrls: [safeUrl, "https://github.com/shakacode/dashboard/issues/47", "https://example.test/shakacode/dashboard/pull/47"]
     }} />);
 
-    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", safeUrl);
+    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/47");
     expect(screen.queryByText("PR UNKNOWN")).not.toBeInTheDocument();
   });
 

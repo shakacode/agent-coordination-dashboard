@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 // @ts-expect-error App tests inspect the checked-in CSS, while the browser tsconfig intentionally excludes Node types.
 import { readFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../shared/types";
-import { App } from "./App";
+import { App, nextActiveSnoozeDelayMs } from "./App";
 
 const model = {
   generatedAt: "2026-07-12T11:20:00.000Z",
@@ -104,6 +104,14 @@ describe("App", () => {
     Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
   });
 
+  it("computes the earliest future snooze expiry exactly", () => {
+    const workItems = model.workItems.map((item, index) => ({
+      ...item,
+      ...(index < 2 ? { annotation: { key: item.id, kind: "snooze" as const, until: index === 0 ? "2026-07-12T10:01:00Z" : "2026-07-12T10:02:00Z", createdAt: "2026-07-12T09:00:00Z", active: true as const } } : {})
+    }));
+    expect(nextActiveSnoozeDelayMs(workItems, Date.parse("2026-07-12T10:00:00Z"))).toBe(60_000);
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -156,6 +164,58 @@ describe("App", () => {
     expect(Date.parse(body.until)).toBeGreaterThan(Date.now());
     expect(Date.parse(body.until) - Date.now()).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
     expect(await screen.findByRole("status")).toHaveTextContent("Presentation preference saved");
+  });
+
+  it("reloads once at the earliest active snooze expiry when polling is disabled", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-12T10:00:00.000Z"));
+    let dashboardCalls = 0;
+    const snoozedModel: DashboardModel = {
+      ...model,
+      workItems: model.workItems.map((item, index) => index === 0 ? {
+        ...item,
+        operatorState: "ready",
+        attention: undefined,
+        annotation: { key: "repo/dashboard/43", kind: "snooze", until: "2026-07-12T10:01:00.000Z", createdAt: "2026-07-12T09:00:00.000Z", active: true }
+      } : item)
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 0 }) } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => dashboardCalls === 1 ? snoozedModel : model } as Response;
+    }));
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    expect(dashboardCalls).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(58_000));
+    expect(dashboardCalls).toBe(1);
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    expect(fetch).toHaveBeenCalledWith("/api/dashboard", expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } }));
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith("/api/annotations"))).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dashboardCalls).toBe(2);
+  });
+
+  it("cancels the snooze-expiry reload when the dashboard unmounts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-12T10:00:00.000Z"));
+    let dashboardCalls = 0;
+    const snoozedModel: DashboardModel = {
+      ...model,
+      workItems: [{ ...model.workItems[0], operatorState: "ready", attention: undefined, annotation: { key: "repo/dashboard/43", kind: "snooze", until: "2026-07-12T10:01:00.000Z", createdAt: "2026-07-12T09:00:00.000Z", active: true } }, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 0 }) } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => snoozedModel } as Response;
+    }));
+    const view = render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    view.unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dashboardCalls).toBe(1);
   });
 
   it("uses the same resume contract with a loaded GitHub branch fallback", async () => {
@@ -912,5 +972,8 @@ describe("App", () => {
     expect(stylesheet).toMatch(/@media \(max-width: 980px\)[\s\S]*\.attention-card[\s\S]*flex-direction: column/);
     expect(stylesheet).toMatch(/\.attention-card h2,[\s\S]*overflow-wrap: anywhere/);
     expect(stylesheet).toMatch(/\.surface-nav,[\s\S]*overflow-x: auto/);
+    const srOnlyRule = stylesheet.match(/\.sr-only\s*\{[^}]+\}/)?.[0] || "";
+    expect(srOnlyRule).toContain("clip-path: inset(50%)");
+    expect(srOnlyRule).not.toMatch(/\n\s*clip:/);
   });
 });

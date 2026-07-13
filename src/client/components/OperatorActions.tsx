@@ -50,7 +50,10 @@ export function OperatorActions({
   const batch = batchId(item);
 
   async function copy(value: string, label: string) {
-    if (!navigator.clipboard) return;
+    if (!navigator.clipboard) {
+      setConfirmation(`Could not copy ${label.toLowerCase()}`);
+      return;
+    }
     try {
       await navigator.clipboard.writeText(value);
       setConfirmation(`${label} copied`);
@@ -89,7 +92,7 @@ export function OperatorActions({
     {takeoverAvailable ? <button onClick={() => void copy(takeoverCommand(item), "Takeover command")} type="button">Copy takeover command</button> : null}
     {pr ? <a href={pr} rel="noreferrer" target="_blank">Open PR</a> : null}
     {branch ? <a href={branch} rel="noreferrer" target="_blank">Open branch</a> : null}
-    {batch ? <a href={`/?batch=${encodeURIComponent(batch)}`}>Open batch</a> : null}
+    {batch ? <a href={`/?batch=${encodeURIComponent(batch)}&repo=${encodeURIComponent(item.repo)}`}>Open batch</a> : null}
     {onAnnotate ? <label className="annotation-choice">
       <span className="sr-only">Dismiss or snooze</span>
       <select aria-label="Dismiss or snooze" onChange={(event) => void chooseAnnotation(event.target.value)} value={annotationChoice}>

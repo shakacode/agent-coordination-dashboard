@@ -227,6 +227,14 @@ describe("AttentionShell", () => {
     expect(screen.queryByText("repo/lane")).not.toBeInTheDocument();
   });
 
+  it("scopes duplicate batch ids to the repository in a batch deep link", () => {
+    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "shared-batch", status: "running", blockedOn: [] }] };
+    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "shared-batch", status: "running", blockedOn: [] }] };
+    render(<AttentionShell deepLink={{ batchId: "shared-batch", repo: "repo/a" }} items={[repoA, repoB]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("repo/a")).toBeInTheDocument();
+    expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
+  });
+
   it("keeps terminal items out of Now even when their heartbeat TTL is still live", () => {
     const terminalWithLiveHeartbeat = { ...ITEMS[0], operatorState: "terminal" as const, terminalState: "done" as const, attention: undefined };
     render(<AttentionShell items={[terminalWithLiveHeartbeat]} onQueryChange={vi.fn()} query="" surface="now" />);
@@ -434,6 +442,7 @@ describe("AttentionShell", () => {
     render(<AttentionShell items={[qa, stop]} onOpenBatchOperations={onOpenBatchOperations} onQueryChange={vi.fn()} query="" surface="attention" />);
 
     expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/43");
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open batch operations" }));
     expect(onOpenBatchOperations).toHaveBeenCalled();
   });

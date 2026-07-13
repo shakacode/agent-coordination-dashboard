@@ -258,6 +258,20 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
+  async function applyStoredAnnotations(model: DashboardModel, now: Date): Promise<DashboardModel> {
+    try {
+      return { ...model, workItems: applyAnnotations(model.workItems, await annotationStore.read(), now) };
+    } catch {
+      return {
+        ...model,
+        warnings: [...model.warnings, {
+          severity: "warning",
+          message: "Dashboard annotations: UNKNOWN — persisted dismiss and snooze state could not be read."
+        }]
+      };
+    }
+  }
+
   async function buildScopedDashboard(settings: DashboardSettings, options: BuildScopedDashboardOptions = {}): Promise<DashboardModel> {
     const captured = options.captured || await captureCoordinationSnapshot();
     const now = captured.now;
@@ -320,9 +334,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
+    const annotatedModel = await applyStoredAnnotations(model, now);
     const scopedModel: DashboardModel = {
-      ...model,
-      workItems: applyAnnotations(model.workItems, await annotationStore.read(), now),
+      ...annotatedModel,
       ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
       githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
@@ -366,7 +380,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       warnings: [...captured.state.warnings, ...(githubWarningsByDashboard.get(cached) || [])],
       now: captured.now
     });
-    return { ...model, workItems: applyAnnotations(model.workItems, await annotationStore.read(), captured.now) };
+    return applyStoredAnnotations(model, captured.now);
   }
 
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {

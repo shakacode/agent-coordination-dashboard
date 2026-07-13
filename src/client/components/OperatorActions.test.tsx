@@ -34,11 +34,18 @@ describe("OperatorActions", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Takeover command copied");
   });
 
+  it("shows a visible failure when the clipboard API is unavailable", async () => {
+    Object.assign(navigator, { clipboard: undefined });
+    render(<OperatorActions item={item} />);
+    await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Could not copy resume prompt");
+  });
+
   it("offers safe PR, branch, and batch links", () => {
     render(<OperatorActions item={item} />);
     expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
     expect(screen.getByRole("link", { name: "Open branch" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/tree/codex%2Factions");
-    expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute("href", "/?batch=batch-a");
+    expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute("href", "/?batch=batch-a&repo=shakacode%2Fdashboard");
   });
 
   it.each([
