@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ItemTimelineResponse } from "../api";
-import { ItemPage } from "./ItemPage";
+import { ItemPage, uniquePullRequestUrls } from "./ItemPage";
 
 interface NodeFs {
   existsSync(path: string): boolean;
@@ -49,6 +49,16 @@ const timeline = {
 } satisfies ItemTimelineResponse;
 
 describe("ItemPage", () => {
+  it("filters malformed and unsafe values while deduplicating pull request URLs", () => {
+    expect(uniquePullRequestUrls([
+      "not a URL",
+      "https://example.test/shakacode/dashboard/pull/47",
+      "https://github.com/shakacode/dashboard/issues/47",
+      "https://github.com/shakacode/dashboard/pull/47",
+      "https://github.com/shakacode/dashboard/pull/47/files"
+    ])).toEqual(["https://github.com/shakacode/dashboard/pull/47"]);
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("shows the complete custody chain and copies ownership handles locally", async () => {

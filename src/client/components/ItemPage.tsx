@@ -30,15 +30,17 @@ function unique(values: Array<string | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value?.trim()))));
 }
 
-function uniquePullRequestUrls(values: Array<string | undefined>): string[] {
+export function uniquePullRequestUrls(values: Array<string | undefined>): string[] {
   const seen = new Set<string>();
-  return values.filter((value): value is string => {
-    if (!value?.trim()) return false;
-    const url = new URL(value);
+  return values.flatMap((value) => {
+    if (!value?.trim()) return [];
+    const safeValue = safePullRequestUrl(value);
+    if (!safeValue) return [];
+    const url = new URL(safeValue);
     const identity = `${url.hostname.toLowerCase()}${url.pathname.match(/^\/[^/]+\/[^/]+\/pull\/\d+/)?.[0] || url.pathname}`;
-    if (seen.has(identity)) return false;
+    if (seen.has(identity)) return [];
     seen.add(identity);
-    return true;
+    return [safeValue];
   });
 }
 
@@ -156,7 +158,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
     ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
     : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
   const branches = unique([...timeline.branches, loadedGitHub?.branch]);
-  const prUrls = uniquePullRequestUrls([...timeline.prUrls.map(safePullRequestUrl), loadedGitHub?.url ? safePullRequestUrl(loadedGitHub.url) : undefined]);
+  const prUrls = uniquePullRequestUrls([...timeline.prUrls, loadedGitHub?.url]);
   const custodySourceEvents = new Set(timeline.claims.flatMap((claim) => {
     const provenance = eventProvenanceKey(claim.sourceEventPath, claim.sourceEventId);
     return provenance ? [provenance] : [];

@@ -346,7 +346,6 @@ describe("buildCustodyTimeline", () => {
         event({ eventId: "phase", type: "phase", agentId: "phase-agent", timestamp: "2026-07-12T10:03:00Z" }),
         event({ eventId: "blocked", type: "blocked", agentId: "coordinator", timestamp: "2026-07-12T10:04:00Z" }),
         event({ eventId: "review", type: "review", agentId: "reviewer", timestamp: "2026-07-12T10:05:00Z" }),
-        event({ eventId: "final", type: "final", agentId: "coordinator", timestamp: "2026-07-12T10:06:00Z" }),
         event({ eventId: "continued", type: "continued", agentId: "worker-b", timestamp: "2026-07-12T10:07:00Z" })
       ]
     });
@@ -389,8 +388,29 @@ describe("buildCustodyTimeline", () => {
   it.each([
     ["closed type", { type: "closed" }, true],
     ["stopped type", { type: "stopped" }, true],
+    ["final type", { type: "final" }, true],
+    ["merged type", { type: "merged" }, true],
+    ["complete type", { type: "complete" }, true],
+    ["completed type", { type: "completed" }, true],
+    ["cancel type", { type: "cancel" }, true],
+    ["cancelled type", { type: "cancelled" }, true],
+    ["canceled type", { type: "canceled" }, true],
+    ["lane final type", { type: "lane.final" }, true],
+    ["normalized lane merged type", { type: "lane_merged" }, true],
+    ["normalized lane complete type", { type: "lane-complete" }, true],
+    ["lane completed type", { type: "lane.completed" }, true],
+    ["lane cancel type", { type: "lane.cancel" }, true],
+    ["normalized lane cancelled type", { type: "lane-cancelled" }, true],
+    ["normalized lane canceled type", { type: "lane_canceled" }, true],
     ["closed lifecycle status", { type: "lifecycle", status: "closed" }, true],
     ["stopped lifecycle status", { type: "lifecycle", status: "stopped" }, true],
+    ["final lifecycle status", { type: "lifecycle", status: "final" }, true],
+    ["merged lifecycle status", { type: "lifecycle", status: "merged" }, true],
+    ["complete lifecycle status", { type: "lifecycle", status: "complete" }, true],
+    ["completed lifecycle status", { type: "lifecycle", status: "completed" }, true],
+    ["cancel lifecycle status", { type: "lifecycle", status: "cancel" }, true],
+    ["cancelled lifecycle status", { type: "lifecycle", status: "cancelled" }, true],
+    ["canceled lifecycle status", { type: "lifecycle", status: "canceled" }, true],
     ["unclosed type", { type: "unclosed" }, false],
     ["stoppable lifecycle status", { type: "lifecycle", status: "stoppable" }, false]
   ] as const)("handles %s without transferring custody to an inactive reporter", (_description, terminalEvent, terminal) => {
