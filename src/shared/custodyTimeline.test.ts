@@ -255,6 +255,48 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.liveness.filter((span) => span.agentId === "worker-a").every((span) => span.endedAt <= "2026-07-12T10:05:00.000Z")).toBe(true);
   });
 
+  it.each([
+    ["before", "2026-07-12T10:04:00Z", { type: "merged" }, true],
+    ["equal", "2026-07-12T10:05:00Z", { type: "lane.release" }, true],
+    ["after", "2026-07-12T10:06:00Z", { type: "lifecycle", status: "completed" }, false]
+  ] as const)("handles a current active snapshot timestamp %s a terminal event", (_relationship, snapshotAt, terminal, shouldRelease) => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      now: new Date("2026-07-12T10:10:00Z"),
+      claims: [{
+        schemaVersion: 1,
+        repo: "shakacode/dashboard",
+        target: "46",
+        agentId: "snapshot-holder",
+        status: "active",
+        updatedAt: snapshotAt,
+        path: "claims/shakacode/dashboard/46.json"
+      }],
+      heartbeats: [heartbeat({ agentId: "snapshot-holder", expiresAt: "2026-07-12T10:20:00Z" })],
+      events: [
+        { eventId: "phase", type: "phase", status: "implementing", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "terminal", ...terminal, repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual(shouldRelease
+      ? [
+        expect.objectContaining({ action: "unknown", agentId: "snapshot-holder", timestamp: snapshotAt }),
+        expect.objectContaining({ action: "released", agentId: "snapshot-holder", timestamp: "2026-07-12T10:05:00Z", sourceEventId: "terminal", sourceEventPath: "events/custody.jsonl:2" })
+      ]
+      : [expect.objectContaining({ action: "unknown", agentId: "snapshot-holder", timestamp: snapshotAt })]);
+    expect(timeline.phases).toEqual([
+      expect.objectContaining({ phase: "implementing", endedAt: "2026-07-12T10:05:00.000Z" })
+    ]);
+    expect(timeline.liveness.filter((span) => span.agentId === "snapshot-holder").every((span) =>
+      span.endedAt <= (shouldRelease ? "2026-07-12T10:05:00.000Z" : "2026-07-12T10:10:00.000Z")
+    )).toBe(true);
+    if (!shouldRelease) {
+      expect(timeline.liveness.some((span) => span.agentId === "snapshot-holder" && span.endedAt === "2026-07-12T10:10:00.000Z")).toBe(true);
+    }
+  });
+
   it("ends phases at a released current-claim snapshot without terminal telemetry", () => {
     const timeline = buildCustodyTimeline({
       repo: "shakacode/dashboard",

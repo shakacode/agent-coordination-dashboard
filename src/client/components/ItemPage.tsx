@@ -146,6 +146,11 @@ function phaseKey(span: PhaseSpan, index: number): string {
     || `${span.eventId}\u0000${span.startedAt}\u0000${index}`;
 }
 
+function timelineTimestamp(value: string | undefined): number {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+}
+
 export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
   const heartbeat = timeline.item?.heartbeat;
   const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
@@ -173,8 +178,8 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
     eventIdCounts.set(event.eventId, (eventIdCounts.get(event.eventId) || 0) + 1);
   }
   const custodyEntries = [
-    ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
-    ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER })),
+    ...timeline.claims.map((event, index) => ({ kind: "claim" as const, event, index, tie: 0, at: timelineTimestamp(event.timestamp) })),
+    ...timeline.liveness.map((span, index) => ({ kind: "liveness" as const, span, index, tie: 1, at: timelineTimestamp(span.startedAt) })),
     ...timeline.events
       .filter((event) => !timeline.phases.some((span) => {
         const phaseProvenance = eventProvenanceKey(span.eventPath, span.eventId);
@@ -186,8 +191,8 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
         const provenance = eventProvenanceKey(event.path, event.eventId);
         return !provenance || !custodySourceEvents.has(provenance);
       })
-      .map((event, index) => ({ kind: "event" as const, event, index, tie: 2, at: Date.parse(event.timestamp || "") || Number.MAX_SAFE_INTEGER })),
-    ...timeline.phases.map((span, index) => ({ kind: "phase" as const, span, index, tie: 3, at: Date.parse(span.startedAt) || Number.MAX_SAFE_INTEGER }))
+      .map((event, index) => ({ kind: "event" as const, event, index, tie: 2, at: timelineTimestamp(event.timestamp) })),
+    ...timeline.phases.map((span, index) => ({ kind: "phase" as const, span, index, tie: 3, at: timelineTimestamp(span.startedAt) }))
   ].sort((left, right) => left.at - right.at || left.tie - right.tie || left.index - right.index);
   return (
     <section aria-label="Work item timeline" className="item-page">

@@ -62,6 +62,26 @@ describe("ItemPage", () => {
     ])).toEqual(["https://github.com/shakacode/dashboard/pull/47"]);
   });
 
+  it("sorts epoch-zero evidence first and invalid timestamps last", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [],
+      phases: [],
+      events: [
+        { eventId: "invalid", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "not-a-date", message: "Invalid date", path: "events/order.jsonl:3" },
+        { eventId: "later", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "1970-01-01T00:00:01.000Z", message: "Later date", path: "events/order.jsonl:2" },
+        { eventId: "epoch", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "1970-01-01T00:00:00.000Z", message: "Epoch date", path: "events/order.jsonl:1" }
+      ]
+    }} />);
+
+    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Epoch date"),
+      expect.stringContaining("Later date"),
+      expect.stringContaining("Invalid date")
+    ]);
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("shows the complete custody chain and copies ownership handles locally", async () => {

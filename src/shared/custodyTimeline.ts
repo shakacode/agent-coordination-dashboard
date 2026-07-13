@@ -305,6 +305,7 @@ function chronologicalCustody(events: ClaimCustodyEvent[]): ClaimCustodyEvent[] 
 function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimCustodyEvent[] {
   const custody: ClaimCustodyEvent[] = [];
   let activeAgent: string | undefined;
+  let currentSnapshotReleased = false;
 
   for (const event of events) {
     if (!event.timestamp || time(event.timestamp) === undefined) continue;
@@ -320,6 +321,23 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
           })
         });
         activeAgent = undefined;
+      } else if (!currentSnapshotReleased && currentClaim?.status === "active") {
+        const snapshotTimestamp = validClaimTimestamp(currentClaim);
+        const snapshotMs = time(snapshotTimestamp || "");
+        const terminalMs = time(event.timestamp);
+        if (snapshotTimestamp && snapshotMs !== undefined && terminalMs !== undefined && snapshotMs <= terminalMs) {
+          custody.push(snapshotCustodyEvent(currentClaim, "unknown"));
+          custody.push({
+            action: "released",
+            agentId: currentClaim.agentId,
+            timestamp: event.timestamp,
+            ...(currentClaim.agentId === event.agentId ? optionalEventFields(event) : {
+              ...(event.eventId ? { sourceEventId: event.eventId } : {}),
+              ...(event.path ? { sourceEventPath: event.path } : {})
+            })
+          });
+          currentSnapshotReleased = true;
+        }
       }
       continue;
     }
@@ -345,7 +363,7 @@ function custodyEvents(events: BatchEvent[], currentClaim?: ClaimRecord): ClaimC
     }
   }
 
-  if (!currentClaim) return chronologicalCustody(custody);
+  if (!currentClaim || currentSnapshotReleased) return chronologicalCustody(custody);
   const last = custody.at(-1);
   if (currentClaim.status === "released") {
     if (!matchesCurrentSnapshot(last, currentClaim) || last?.action !== "released") {
