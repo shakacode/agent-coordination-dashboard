@@ -67,7 +67,22 @@ describe("repoRefsFromStructuredEventField", () => {
     "See data:text/plain,blocked:github.com/other/private",
     "See vbscript:(status:github.com/other/private)",
     "See custom:{repo:https://github.com/other/private}",
-    "See ssh:(waiting:github.com/other/private)"
+    "See ssh:(waiting:github.com/other/private)",
+    "See javascript:\"x|github.com/other/private\"",
+    "See javascript:'x|github.com/other/private'",
+    "See javascript:`x|github.com/other/private`",
+    ")data:text/plain",
+    "]data:text/plain",
+    "}data:text/plain",
+    ">data:text/plain",
+    ",data:text/plain",
+    ";data:text/plain",
+    "=data:text/plain",
+    "!data:text/plain",
+    "&data:text/plain",
+    ":data:text/plain",
+    "x,data:text/plain",
+    "x)data:text/plain"
   ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });

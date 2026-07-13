@@ -70,7 +70,7 @@ function hasExplicitUrlLabel(value: string, urlStart: number): boolean {
 
 function withoutNonRepositoryUriTokens(value: string): string {
   const output: string[] = [];
-  const tokenBoundaries = "(<[{'\"`|";
+  const tokenBoundaries = "(<[{'\"`|)]}>,;=!&:";
   let index = 0;
   while (index < value.length) {
     const previous = value[index - 1] || "";
@@ -99,8 +99,26 @@ function withoutNonRepositoryUriTokens(value: string): string {
 
     let cursor = schemeEnd + 1;
     let wrapperDepth = 0;
+    let quote = "";
+    let escaped = false;
     while (cursor < value.length && !/\s/.test(value[cursor])) {
       const character = value[cursor];
+      if (quote) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === quote) {
+          quote = "";
+        }
+        cursor += 1;
+        continue;
+      }
+      if ("'\"`".includes(character)) {
+        quote = character;
+        cursor += 1;
+        continue;
+      }
       if ("([{<".includes(character)) wrapperDepth += 1;
       if (")]}>".includes(character) && wrapperDepth > 0) wrapperDepth -= 1;
       if (character === "|" && wrapperDepth === 0) break;
