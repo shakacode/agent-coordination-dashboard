@@ -6,7 +6,7 @@ const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
 const URL_LABEL_PREFIXES = [
   "blocked", "pr", "status", "phase", "repo", "repository", "waiting", "depends",
   "target", "holder", "branch", "source", "upstream", "owner", "machine", "url",
-  "host", "operator", "thread", "thread-handle"
+  "host", "operator", "thread", "thread-handle", "section"
 ];
 const URI_SCHEMES_TO_KEEP = new Set(["http", "https", ...URL_LABEL_PREFIXES]);
 
@@ -68,13 +68,13 @@ function hasExplicitUrlLabel(value: string, urlStart: number): boolean {
     const labelStart = urlStart - label.length - 1;
     if (labelStart < 0 || value.slice(labelStart, urlStart).toLowerCase() !== `${label}:`) return false;
     const beforeLabel = value[labelStart - 1] || "";
-    return labelStart === 0 || /\s/.test(beforeLabel) || "(<[{'\"`|;=,!&".includes(beforeLabel);
+    return labelStart === 0 || /\s/.test(beforeLabel) || "(<[{'\"`|)]}>,;=!&:?#".includes(beforeLabel);
   });
 }
 
 function withoutNonRepositoryUriTokens(value: string): string {
   const output: string[] = [];
-  const tokenBoundaries = "(<[{'\"`|)]}>,;=!&:";
+  const tokenBoundaries = "(<[{'\"`|)]}>,;=!&:?#";
   let index = 0;
   while (index < value.length) {
     const previous = value[index - 1] || "";
@@ -92,8 +92,15 @@ function withoutNonRepositoryUriTokens(value: string): string {
       if (value[schemeEnd] === ":" && (scheme === "http" || scheme === "https")) {
         let urlTokenEnd = schemeEnd + 1;
         while (urlTokenEnd < value.length && !/\s/.test(value[urlTokenEnd])) urlTokenEnd += 1;
-        output.push(value.slice(index, urlTokenEnd));
-        index = urlTokenEnd;
+        const queryIndex = value.slice(index, urlTokenEnd).search(/[?#]/);
+        if (queryIndex >= 0) {
+          const queryStart = index + queryIndex + 1;
+          output.push(value.slice(index, queryStart));
+          index = queryStart;
+        } else {
+          output.push(value.slice(index, urlTokenEnd));
+          index = urlTokenEnd;
+        }
         continue;
       }
       output.push(value[index]);
@@ -135,6 +142,50 @@ function withoutNonRepositoryUriTokens(value: string): string {
     index = value[cursor] === "|" ? cursor + 1 : cursor;
   }
   return output.join("");
+}
+
+function consumeNamedUrlState(value: string, start: number, structuralDelimiters: string, closingDelimiters: string): number {
+  const wrapperClosers: string[] = [];
+  let quote = "";
+  let escaped = false;
+  let cursor = start;
+  while (cursor < value.length) {
+    const character = value[cursor];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = "";
+      }
+      cursor += 1;
+      continue;
+    }
+    if ("'\"`".includes(character)) {
+      const beforeQuote = value[cursor - 1] || "";
+      if (cursor === start || "=([{<,:".includes(beforeQuote)) {
+        quote = character;
+        cursor += 1;
+        continue;
+      }
+      if (wrapperClosers.length === 0) break;
+    }
+    const openingIndex = "([{<".indexOf(character);
+    if (openingIndex >= 0) {
+      wrapperClosers.push(")]}>"[openingIndex]);
+      cursor += 1;
+      continue;
+    }
+    if (character === wrapperClosers.at(-1)) {
+      wrapperClosers.pop();
+      cursor += 1;
+      continue;
+    }
+    if (wrapperClosers.length === 0 && (/\s/.test(character) || structuralDelimiters.includes(character) || closingDelimiters.includes(character))) break;
+    cursor += 1;
+  }
+  return cursor;
 }
 
 // One forward scan handles both HTTP and schemeless GitHub URLs. `index` and
@@ -182,11 +233,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
           forcedBoundary = true;
           continue;
         }
-        cursor = queryValueStart;
-        while (cursor < value.length && !/\s/.test(value[cursor]) && !closingDelimiters.includes(value[cursor])) {
-          if ("|;,:!".includes(value[cursor])) break;
-          cursor += 1;
-        }
+        cursor = consumeNamedUrlState(value, queryValueStart, "|;,:!", closingDelimiters);
       }
       if ((structuralDelimiters + closingDelimiters).includes(value[cursor] || "")) {
         output.push(value[cursor], " ");
@@ -262,15 +309,8 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       if (isRepositoryUrlAt(value, queryValueStart)) {
         delimiterIndex = queryDelimiter;
       } else {
-        cursor = queryValueStart;
-        while (cursor < value.length && !/\s/.test(value[cursor]) && !closingDelimiters.includes(value[cursor])) {
-          if ("|;,:!".includes(value[cursor])) {
-            delimiterIndex = cursor;
-            break;
-          }
-          cursor += 1;
-        }
-        if (closingDelimiters.includes(value[cursor] || "")) delimiterIndex = cursor;
+        cursor = consumeNamedUrlState(value, queryValueStart, "|;,:!", closingDelimiters);
+        if (("|;,:!" + closingDelimiters).includes(value[cursor] || "")) delimiterIndex = cursor;
       }
     }
 
@@ -297,11 +337,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
             canonicalAlternateResume = queryValueStart;
             canonicalAlternateForcesBoundary = true;
           } else {
-            canonicalAlternateResume = queryValueStart;
-            while (canonicalAlternateResume < value.length && !/\s/.test(value[canonicalAlternateResume]) && !closingDelimiters.includes(value[canonicalAlternateResume])) {
-              if ("|;,:!".includes(value[canonicalAlternateResume])) break;
-              canonicalAlternateResume += 1;
-            }
+            canonicalAlternateResume = consumeNamedUrlState(value, queryValueStart, "|;,:!", closingDelimiters);
             if ("|;,:!".includes(value[canonicalAlternateResume] || "")) {
               canonicalAlternateReplay += `${value[canonicalAlternateResume]} `;
               canonicalAlternateResume += 1;

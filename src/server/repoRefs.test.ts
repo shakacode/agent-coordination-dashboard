@@ -93,7 +93,15 @@ describe("repoRefsFromStructuredEventField", () => {
     "&data:text/plain",
     ":data:text/plain",
     "x,data:text/plain",
-    "x)data:text/plain"
+    "x)data:text/plain",
+    "?javascript:(x|github.com/other/private)",
+    "#javascript:(x|github.com/other/private)",
+    "?data:text/plain",
+    "#data:text/plain",
+    "https://example.com/?next=javascript:(x|github.com/other/private)",
+    "https://example.com/#next=javascript:\"x|github.com/other/private\"",
+    "https://example.com/?next=data:text/plain,(x|github.com/other/private)",
+    "https://example.com/#next=custom:{x|github.com/other/private}"
   ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
@@ -117,7 +125,10 @@ describe("repoRefsFromStructuredEventField", () => {
     "url:https://github.com/other/private",
     "host:other/private",
     "operator:other/private",
-    "thread-handle:other/private"
+    "thread-handle:other/private",
+    ")target:https://github.com/other/private",
+    "]holder:github.com/other/private",
+    "#section:other/private"
   ])("detects repository evidence after a known label colon: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
