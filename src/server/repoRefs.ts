@@ -98,12 +98,12 @@ function withoutNonRepositoryUriTokens(value: string): string {
     }
 
     let cursor = schemeEnd + 1;
-    let wrapperDepth = 0;
+    const wrapperClosers: string[] = [];
     let quote = "";
     let escaped = false;
     while (cursor < value.length) {
       const character = value[cursor];
-      if (!quote && wrapperDepth === 0 && /\s/.test(character)) break;
+      if (!quote && wrapperClosers.length === 0 && /\s/.test(character)) break;
       if (quote) {
         if (escaped) {
           escaped = false;
@@ -120,9 +120,10 @@ function withoutNonRepositoryUriTokens(value: string): string {
         cursor += 1;
         continue;
       }
-      if ("([{<".includes(character)) wrapperDepth += 1;
-      if (")]}>".includes(character) && wrapperDepth > 0) wrapperDepth -= 1;
-      if (character === "|" && wrapperDepth === 0) break;
+      const openingIndex = "([{<".indexOf(character);
+      if (openingIndex >= 0) wrapperClosers.push(")]}>"[openingIndex]);
+      if (character === wrapperClosers.at(-1)) wrapperClosers.pop();
+      if (character === "|" && wrapperClosers.length === 0) break;
       cursor += 1;
     }
     output.push(" ");
