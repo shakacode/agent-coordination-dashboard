@@ -150,4 +150,12 @@ describe("repoRefsFromStructuredEventField", () => {
     const value = `ci/passed; ${String.raw`\"./x/`.repeat(10_000)} other/private/path`;
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
+
+  it.each([
+    'ci/passed checks; updated "./junk""./Program Files/ci/passed/private"',
+    "ci/passed checks; updated './junk''./Program Files/ci/passed/private'",
+    "ci/passed checks; updated `./junk``./Program Files/ci/passed/private`"
+  ])("handles adjacent quoted paths that share a delimiter boundary: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
 });

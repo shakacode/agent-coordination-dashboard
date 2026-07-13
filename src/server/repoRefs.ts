@@ -77,12 +77,12 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 function withoutExplicitStructuredPaths(value: string): string {
   const explicitPathPrefix = String.raw`(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/)|\/)`;
   const quotedPathPatterns = [
-    new RegExp(`(^|[^\\\\])((?:\\\\\\\\)*)"${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^"\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*"`, "gi"),
-    new RegExp(`(^|[^\\\\])((?:\\\\\\\\)*)'${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^'\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*'`, "gi"),
-    new RegExp(`(^|[^\\\\])((?:\\\\\\\\)*)\`${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^\`\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*\``, "gi")
+    new RegExp(`(?<!\\\\)((?:\\\\\\\\)*)"${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^"\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*"`, "gi"),
+    new RegExp(`(?<!\\\\)((?:\\\\\\\\)*)'${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^'\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*'`, "gi"),
+    new RegExp(`(?<!\\\\)((?:\\\\\\\\)*)\`${explicitPathPrefix}(?:\\\\[^\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029]|[^\`\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*\``, "gi")
   ];
   const withoutQuotedPaths = quotedPathPatterns.reduce(
-    (text, pattern) => text.replace(pattern, (_match, boundary: string, evenBackslashes: string) => `${boundary}${evenBackslashes} `),
+    (text, pattern) => text.replace(pattern, (_match, evenBackslashes: string) => `${evenBackslashes} `),
     value
   );
   const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(

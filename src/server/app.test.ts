@@ -354,6 +354,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "safe-after-rejected-opener", type: "phase", phase: String.raw`ci/passed checks; updated \"./junk"./Program Files/ci/passed/private"`, repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:28:05Z"
+        },
+        {
+          event_id: "safe-adjacent-quoted-paths", type: "phase", phase: "ci/passed checks; updated \"./junk\"\"./Program Files/ci/passed/private\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:10Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -432,6 +436,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "foreign-after-escaped-control")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-after-escaped-opener")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "safe-after-rejected-opener")?.status).toBe(String.raw`ci/passed checks; updated \"./junk"./Program Files/ci/passed/private"`);
+    expect(timeline.events.find((event) => event.eventId === "safe-adjacent-quoted-paths")?.status).toBe("ci/passed checks; updated \"./junk\"\"./Program Files/ci/passed/private\"");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
