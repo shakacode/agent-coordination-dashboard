@@ -83,11 +83,11 @@ function withoutExplicitStructuredPaths(value: string): string {
   ];
   const withoutQuotedPaths = quotedPathPatterns.reduce((text, pattern) => text.replace(pattern, ""), value);
   const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(
-    /(^|[^A-Za-z0-9._/@%+~\-\u0080-\u{10FFFF}])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[A-Za-z0-9@%+~._/\-\u0080-\u{10FFFF}]+/giu,
+    /(^|[^\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D._/@%+~-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D@%+~._/-]+/giu,
     "$1"
   );
   return withoutRelativeDriveOrFilePaths.replace(
-    /(^|[^A-Za-z0-9._/@%+~:\-\u0080-\u{10FFFF}])\/[A-Za-z0-9@%+~._/\-\u0080-\u{10FFFF}]+/gu,
+    /(^|[^\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D._/@%+~:-])\/[\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D@%+~._/-]+/gu,
     "$1"
   );
 }

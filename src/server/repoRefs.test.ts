@@ -76,7 +76,9 @@ describe("repoRefsFromStructuredEventField", () => {
     "ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private",
     "ci/passed checks; updated /Users/Team👍🏽Folder/ci/passed/private",
     "ci/passed checks; updated /Users/Team👩‍💻Folder/ci/passed/private",
-    "ci/passed checks; updated /Users/Team–Folder/ci/passed/private",
+    "ci/passed checks; updated \"/Users/Team–Folder/ci/passed/private\"",
+    "ci/passed checks ./ci/passed/private",
+    "ci/passed checks ./ci/passed/private",
     "ci/passed checks; updated \"C:/release/\\\"candidate/ci/passed/private\""
   ])("ignores explicit local paths when applying operational vocabulary: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
@@ -90,6 +92,9 @@ describe("repoRefsFromStructuredEventField", () => {
     ["ci/passed!updated ./x/y!other/private/path", "other/private"],
     ["ci/passed?updated ./x/y?other/private/path", "other/private"],
     ["ci/passed=updated ./x/y=other/private/path", "other/private"],
+    ["ci/passed; updated ./x/y other/private/path", "other/private"],
+    ["ci/passed; updated ./x/y other/private/path", "other/private"],
+    ["ci/passed; updated ./x/y—other/private/path", "other/private"],
     ["ci/passed checks; fetched https://ci/passed/private", "ci/passed"]
   ])("does not let explicit paths consume punctuation-adjacent repository chains: %s", (value, ref) => {
     expect(repoRefsFromStructuredEventField(value)).toContain(ref);
