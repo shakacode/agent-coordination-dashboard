@@ -16,6 +16,7 @@ import type {
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
 import { isOperationalWorkItem } from "../shared/workItemSelection";
+import { canonicalGithubItemUrl } from "./githubUrls";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -31,22 +32,7 @@ export function operatorActivityLabel(status: string): string {
 }
 
 export function safeGithubUrl(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "github.com") {
-      return undefined;
-    }
-    const pathParts = url.pathname.split("/").filter(Boolean);
-    if (pathParts.length !== 4 || !["pull", "issues"].includes(pathParts[2]) || !/^\d+$/.test(pathParts[3])) {
-      return undefined;
-    }
-    return url.toString();
-  } catch {
-    return undefined;
-  }
+  return canonicalGithubItemUrl(value);
 }
 
 export type OperatorState = "running" | "wedged" | "paused" | "blocked" | "stale" | "dead" | "ready" | "done" | "archived" | "unknown";
@@ -495,7 +481,7 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.type === "pull_request" && row.target ? `pr #${row.target}` : "",
       row.type === "issue" && row.target ? `issue #${row.target}` : "",
       row.title,
-      row.url,
+      safeGithubUrl(row.url),
       row.operatorState,
       row.liveness,
       row.activityStatus,
@@ -511,7 +497,7 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.host,
       row.operator,
       row.branch,
-      row.prUrl,
+      safeGithubUrl(row.prUrl),
       row.warnings.join(" ")
     ]
       .filter(Boolean)
@@ -1198,13 +1184,13 @@ export function isTerminalRowEligibleForAgeOut(row: OperatorRow): boolean {
 }
 
 export function filterOperatorRows(rows: OperatorRow[], query: string, targetRepos = Array.from(new Set(rows.map((row) => row.repo)))): OperatorRow[] {
-  const normalized = normalizeSearch(query);
+  const normalized = normalizeSearch(safeGithubUrl(query) || query);
   if (!normalized) {
     return rows;
   }
   const exactTarget = searchTarget(query);
   const filtered = exactTarget
-    ? rows.filter((row) => row.target === exactTarget || Boolean(row.prUrl?.endsWith(`/pull/${exactTarget}`)))
+    ? rows.filter((row) => row.target === exactTarget || Boolean(safeGithubUrl(row.prUrl)?.endsWith(`/pull/${exactTarget}`)))
     : rows.filter((row) => row.searchText.includes(normalized));
   return sortRows(filtered, targetRepos);
 }

@@ -44,14 +44,70 @@ describe("AttentionShell", () => {
   afterEach(() => vi.useRealTimers());
 
   it("shows the attention queue first and offers its safe resume action", async () => {
-    const onCopyResume = vi.fn();
-    render(<AttentionShell items={ITEMS} onCopyResume={onCopyResume} onQueryChange={vi.fn()} query="" surface="attention" />);
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(navigator, { clipboard });
+    render(<AttentionShell items={ITEMS} onQueryChange={vi.fn()} query="" surface="attention" />);
 
     expect(screen.getByRole("heading", { name: "Attention" })).toBeInTheDocument();
     expect(screen.getByText("No progress for over 15 minutes")).toBeInTheDocument();
     expect(screen.getByText("Phase: wedged")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
-    expect(onCopyResume).toHaveBeenCalledWith(ITEMS[0]);
+    expect(clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("Resume the existing lane for repo/dashboard#43."));
+    expect(screen.getByRole("status")).toHaveTextContent("Resume prompt copied");
+  });
+
+  it("humanizes an active snooze timestamp while preserving its machine-readable value", () => {
+    const snoozed: WorkItem = {
+      ...ITEMS[0],
+      operatorState: "ready",
+      attention: undefined,
+      annotation: { key: "repo/dashboard/43", kind: "snooze", until: "2026-07-12T11:00:00.000Z", createdAt: "2026-07-12T10:00:00.000Z", active: true }
+    };
+    render(<AttentionShell items={[snoozed]} onQueryChange={vi.fn()} query="" surface="find" />);
+    const time = screen.getByText((content, element) => element?.tagName === "TIME" && content.includes("2026"));
+    expect(time).toHaveAttribute("datetime", "2026-07-12T11:00:00.000Z");
+    expect(time).not.toHaveTextContent("2026-07-12T11:00:00.000Z");
+  });
+
+  it("fences mismatched heartbeat provenance from card display and search", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
+    const splitHolder: WorkItem = {
+      ...ITEMS[0],
+      claim: { schemaVersion: 1, repo: "repo/dashboard", target: "43", agentId: "holder-a", machineId: "machine-a", threadHandle: "owner-chat", status: "active", updatedAt: "2026-07-12T11:00:00Z", prUrl: "https://github.com/repo/dashboard/pull/43", path: "claims/43.json" },
+      heartbeat: { ...ITEMS[0].heartbeat!, agentId: "holder-b", machineId: "machine-b", threadHandle: "intruder-chat", status: "reviewing", updatedAt: "2026-07-12T11:59:00Z", prUrl: "https://github.com/repo/dashboard/pull/99" }
+    };
+    const { rerender } = render(<AttentionShell items={[splitHolder]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText(/Holder: holder-a/)).toBeInTheDocument();
+    expect(screen.getByText(/Phase: unattributed/).closest("p")).toHaveTextContent("1h ago · machine-a · owner-chat");
+    expect(screen.queryByText(/holder-b|machine-b|intruder-chat|reviewing/)).not.toBeInTheDocument();
+
+    rerender(<AttentionShell items={[splitHolder]} onQueryChange={vi.fn()} query="intruder-chat" surface="find" />);
+    expect(screen.queryByRole("heading", { name: /Issue #43/ })).not.toBeInTheDocument();
+    rerender(<AttentionShell items={[splitHolder]} onQueryChange={vi.fn()} query="https://github.com/repo/dashboard/pull/99" surface="find" />);
+    expect(screen.queryByRole("heading", { name: /Issue #43/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a conflicting live heartbeat row visible in Now without exposing its attribution", () => {
+    const conflict: WorkItem = {
+      ...ITEMS[0],
+      operatorState: "running",
+      attention: undefined,
+      claim: { schemaVersion: 1, repo: "repo/dashboard", target: "43", agentId: "holder-a", machineId: "machine-a", threadHandle: "owner-chat", status: "active", path: "claims/43.json" },
+      heartbeat: { ...ITEMS[0].heartbeat!, agentId: "holder-b", machineId: "machine-b", threadHandle: "intruder-chat", status: "reviewing", liveness: "live" }
+    };
+    render(<AttentionShell items={[conflict]} onQueryChange={vi.fn()} query="" surface="now" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    expect(screen.getByText(/Holder: holder-a/)).toBeInTheDocument();
+    expect(screen.getByText("Heartbeat holder conflicts with the active claim; heartbeat attribution is hidden.")).toBeInTheDocument();
+    expect(screen.queryByText(/holder-b|machine-b|intruder-chat|reviewing/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
+  it("does not advertise resume on completed History cards", () => {
+    render(<AttentionShell items={[ITEMS[1]]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("heading", { name: /Issue #44/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
   });
 
   it("does not expose an enabled timeline action when no open handler is supplied", () => {
@@ -75,11 +131,22 @@ describe("AttentionShell", () => {
 
   it("offers eligible items for batch selection and keeps the prompt selection controlled by App", async () => {
     const onToggle = vi.fn();
+    const onAnnotate = vi.fn();
+    const onOpenItem = vi.fn();
     const readyItem: WorkItem = { ...ITEMS[0], id: "repo/dashboard#45", target: "45", schedulingState: "ready_for_batch", operatorState: "ready" };
-    render(<AttentionShell items={[readyItem]} onQueryChange={vi.fn()} onToggle={onToggle} query="" surface="find" />);
+    render(<AttentionShell items={[readyItem]} onAnnotate={onAnnotate} onOpenItem={onOpenItem} onQueryChange={vi.fn()} onToggle={onToggle} query="" surface="find" />);
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" }));
     expect(onToggle).toHaveBeenCalledWith(readyItem.id);
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Dismiss or snooze" })).toBeInTheDocument();
+  });
+
+  it("does not expose resume on a running Find result", () => {
+    render(<AttentionShell items={[{ ...ITEMS[0], operatorState: "running", attention: undefined }]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
   });
 
   it("matches canonical ids so structured repo and target searches do not collide", () => {
@@ -118,8 +185,8 @@ describe("AttentionShell", () => {
   });
 
   it("matches hash targets while preserving exact structured repo, batch, lane, and operator filters", async () => {
-    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
-    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
+    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", heartbeat: { ...ITEMS[0].heartbeat!, repo: "repo/a" }, batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
+    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", heartbeat: { ...ITEMS[0].heartbeat!, repo: "repo/b" }, batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
     const onClearDeepLink = vi.fn();
     const { rerender } = render(<AttentionShell deepLink={{ repo: "repo/a", target: "43", batchId: "batch-a", laneName: "lane-a", query: "worker" }} items={[repoA, repoB]} onClearDeepLink={onClearDeepLink} onQueryChange={vi.fn()} query="#43" surface="find" />);
     expect(screen.getByText("repo/a")).toBeInTheDocument();
@@ -158,6 +225,14 @@ describe("AttentionShell", () => {
     expect(screen.getByText("repo/paired")).toBeInTheDocument();
     expect(screen.queryByText("repo/batch")).not.toBeInTheDocument();
     expect(screen.queryByText("repo/lane")).not.toBeInTheDocument();
+  });
+
+  it("scopes duplicate batch ids to the repository in a batch deep link", () => {
+    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "shared-batch", status: "running", blockedOn: [] }] };
+    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "shared-batch", status: "running", blockedOn: [] }] };
+    render(<AttentionShell deepLink={{ batchId: "shared-batch", repo: "repo/a" }} items={[repoA, repoB]} onQueryChange={vi.fn()} query="" surface="find" />);
+    expect(screen.getByText("repo/a")).toBeInTheDocument();
+    expect(screen.queryByText("repo/b")).not.toBeInTheDocument();
   });
 
   it("keeps terminal items out of Now even when their heartbeat TTL is still live", () => {
@@ -367,6 +442,7 @@ describe("AttentionShell", () => {
     render(<AttentionShell items={[qa, stop]} onOpenBatchOperations={onOpenBatchOperations} onQueryChange={vi.fn()} query="" surface="attention" />);
 
     expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/43");
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open batch operations" }));
     expect(onOpenBatchOperations).toHaveBeenCalled();
   });

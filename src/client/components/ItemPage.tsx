@@ -2,7 +2,9 @@ import type { ClaimCustodyEvent, LivenessSpan, PhaseSpan } from "../../shared/cu
 import type { BatchEvent } from "../../shared/types";
 import { firstDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
-import { resumePrompt } from "../resumePrompt";
+import { OperatorActions, type AnnotationAction } from "./OperatorActions";
+import { safePullRequestUrl } from "../githubUrls";
+import { fallbackTimelineWorkItem } from "../../shared/fallbackWorkItem";
 
 function duration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
@@ -13,22 +15,6 @@ function duration(durationMs: number): string {
 
 function sourceIsUnknown(timeline: ItemTimelineResponse): boolean {
   return timeline.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
-}
-
-function safePullRequestUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:"
-      && url.hostname.toLowerCase() === "github.com"
-      && !url.username
-      && !url.password
-      && !url.port
-      && /^\/[^/]+\/[^/]+\/pull\/\d+(?:\/(?:files|commits|checks)(?:\/[^/]*)?)?\/?$/.test(url.pathname)
-      ? url.toString()
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function unique(values: Array<string | undefined>): string[] {
@@ -63,10 +49,6 @@ function TimelineWarnings({ timeline }: { timeline: ItemTimelineResponse }) {
 
 function copy(value: string) {
   void navigator.clipboard?.writeText(value);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function claimedHolderIsDead(timeline: ItemTimelineResponse, agentId: string): boolean {
@@ -151,9 +133,9 @@ function timelineTimestamp(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
-export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse; onBack: () => void }) {
+export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { timeline: ItemTimelineResponse; onBack: () => void; onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void; onClearAnnotation?: () => Promise<void> | void }) {
   const heartbeat = timeline.item?.heartbeat;
-  const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
+  const terminal = ["terminal", "archived_view"].includes(timeline.item?.operatorState || "") || timeline.item?.terminalState !== undefined;
   const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
   const heartbeatHolder = !terminal
     && !timeline.item?.claim
@@ -164,9 +146,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
   const holder = firstDisplayAttribution([activeClaim?.agentId, heartbeatHolder], "UNKNOWN");
   const state = timeline.item?.operatorState || "UNKNOWN";
   const holderDead = Boolean(activeClaim && claimedHolderIsDead(timeline, activeClaim.agentId));
-  const primary = holderDead
-    ? { label: "Copy takeover command", value: `agent-coord claim --repo ${shellQuote(timeline.repo)} --target ${shellQuote(timeline.target)} --agent-id REPLACE_WITH_YOUR_AGENT_ID` }
-    : { label: "Copy resume prompt", value: resumePrompt(timeline.item || { repo: timeline.repo, target: timeline.target }) };
+  const actionItem = timeline.item || fallbackTimelineWorkItem(timeline.repo, timeline.target);
   const branches = unique([...timeline.branches, loadedGitHub?.branch]);
   const prUrls = uniquePullRequestUrls([...timeline.prUrls, loadedGitHub?.url]);
   const custodySourceEvents = new Set(timeline.claims.flatMap((claim) => {
@@ -205,7 +185,7 @@ export function ItemPage({ timeline, onBack }: { timeline: ItemTimelineResponse;
           <p>Holder: {holder}</p>
           <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: ${(timeline.item.github.ciStatus || "unknown").toUpperCase()}` : "UNKNOWN"}</p>
         </div>
-        <button onClick={() => copy(primary.value)} type="button">{primary.label}</button>
+        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} resumeAvailable={Boolean(timeline.item) && !terminal} takeoverAvailable={holderDead} />
       </header>
       {sourceIsUnknown(timeline) ? <p className="item-timeline-warning">Coordination data: UNKNOWN</p> : null}
       <TimelineWarnings timeline={timeline} />

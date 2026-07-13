@@ -4,12 +4,15 @@ import { generatePrBatchPrompt } from "../shared/prompt";
 import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
+import { effectiveCustody } from "../shared/effectiveCustody";
+import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
-import { fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
+import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
 import { HealthTab } from "./components/HealthTab";
 import { ItemPage } from "./components/ItemPage";
+import type { AnnotationAction } from "./components/OperatorActions";
 import { MachinesTab } from "./components/MachinesTab";
 import { PromptDrawer } from "./components/PromptDrawer";
 import { SignalGroupList } from "./components/SignalGroups";
@@ -20,7 +23,7 @@ import {
   type OverviewOperatorFilter
 } from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
-import { resumePrompt } from "./resumePrompt";
+import { canonicalGithubItemUrl } from "./githubUrls";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -42,19 +45,6 @@ function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefin
   return match ? { repo: match[1], target: match[2] } : undefined;
 }
 
-function canonicalGithubItemUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    const url = new URL(value);
-    const pathname = url.pathname.replace(/\/$/, "");
-    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && /^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)
-      ? `${url.origin.toLowerCase()}${pathname.toLowerCase()}`
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, batches: BatchRecord[]): boolean {
   if (operation.batchPath) return operation.batchPath === batch.path;
   if (operation.batchId !== batch.batchId) return false;
@@ -65,6 +55,14 @@ function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, ba
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
   return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
+}
+
+export function nextActiveSnoozeDelayMs(workItems: WorkItem[], nowMs = Date.now()): number | undefined {
+  const expiries = workItems.flatMap((item) => {
+    const until = item.annotation?.kind === "snooze" ? Date.parse(item.annotation.until || "") : Number.NaN;
+    return Number.isFinite(until) && until > nowMs ? [until] : [];
+  });
+  return expiries.length > 0 ? Math.max(0, Math.min(...expiries) - nowMs) : undefined;
 }
 
 function readOperatorDeepLink() {
@@ -362,6 +360,14 @@ export function App() {
     return () => window.clearInterval(intervalId);
   }, [loadDashboard, settings?.refreshIntervalMs]);
 
+  useEffect(() => {
+    if (!dashboard || (settings?.refreshIntervalMs || 0) > 0) return undefined;
+    const delay = nextActiveSnoozeDelayMs(dashboard.workItems);
+    if (delay === undefined) return undefined;
+    const timeoutId = window.setTimeout(() => void loadDashboard(), Math.min(delay, 2_147_483_647));
+    return () => window.clearTimeout(timeoutId);
+  }, [dashboard, loadDashboard, settings?.refreshIntervalMs]);
+
   async function persistRepos(nextRepos: string[]) {
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
@@ -419,10 +425,11 @@ export function App() {
 
   function updateOperatorQuery(query: string) {
     const githubUrl = canonicalGithubItemUrl(query);
-    const item = githubUrl && dashboard?.workItems.find((candidate) =>
-      [candidate.github?.url, candidate.claim?.prUrl, candidate.heartbeat?.prUrl]
-        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl)
-    );
+    const item = githubUrl && dashboard?.workItems.find((candidate) => {
+      const { claim, heartbeat } = effectiveCustody(candidate);
+      return [candidate.github?.url, claim?.prUrl, heartbeat?.prUrl]
+        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl)?.toLowerCase() === githubUrl.toLowerCase());
+    });
     if (item) {
       setOperatorQuery(query);
       const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
@@ -524,8 +531,20 @@ export function App() {
     warningsRef.current.scrollIntoView?.({ block: "start" });
   }
 
-  function copyResumePrompt(item: WorkItem) {
-    void navigator.clipboard?.writeText(resumePrompt(item));
+  async function mutateAnnotation(item: WorkItem, action?: AnnotationAction) {
+    return enqueueUserAction(async () => {
+      const requestVersion = ++dashboardRequestVersion.current;
+      if (action) await saveAnnotation({ repo: item.repo, target: item.target, ...action });
+      else await deleteAnnotation({ repo: item.repo, target: item.target });
+      const [loadedDashboard, loadedTimeline] = await Promise.all([
+        fetchDashboard({ fresh: true }),
+        itemRoute?.repo === item.repo && itemRoute.target === item.target ? fetchItemTimeline(item.repo, item.target) : undefined
+      ]);
+      if (requestVersion === dashboardRequestVersion.current) {
+        setDashboard(loadedDashboard);
+        if (loadedTimeline) setItemTimeline(loadedTimeline);
+      }
+    });
   }
 
   async function importBatchManifest(manifest: Partial<BatchRecord>) {
@@ -609,6 +628,7 @@ export function App() {
       </>
     );
   };
+  const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline.repo, itemTimeline.target) : undefined;
 
   return (
     <main className="app-shell">
@@ -765,7 +785,12 @@ export function App() {
           {itemRoute && itemRouteInScope ? itemTimeline ? (
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
-              <ItemPage onBack={closeItem} timeline={itemTimeline} />
+              <ItemPage
+                onAnnotate={(annotation) => mutateAnnotation(timelineWorkItem!, annotation)}
+                onBack={closeItem}
+                onClearAnnotation={() => mutateAnnotation(timelineWorkItem!)}
+                timeline={itemTimeline}
+              />
             </>
           ) : itemError ? (
             <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
@@ -775,7 +800,8 @@ export function App() {
             historyMergedTodayOnly={historyMergedTodayOnly}
             mergeTimeStatus={dashboard.githubMergeTimeStatus || "unavailable"}
             now={dashboard.generatedAt}
-            onCopyResume={copyResumePrompt}
+            onAnnotate={mutateAnnotation}
+            onClearAnnotation={(item) => mutateAnnotation(item)}
             onQueryChange={updateOperatorQuery}
             onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
             onOpenItem={openItem}

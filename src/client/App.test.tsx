@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 // @ts-expect-error App tests inspect the checked-in CSS, while the browser tsconfig intentionally excludes Node types.
 import { readFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../shared/types";
-import { App } from "./App";
+import { App, nextActiveSnoozeDelayMs } from "./App";
 
 const model = {
   generatedAt: "2026-07-12T11:20:00.000Z",
@@ -104,7 +104,16 @@ describe("App", () => {
     Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
   });
 
+  it("computes the earliest future snooze expiry exactly", () => {
+    const workItems = model.workItems.map((item, index) => ({
+      ...item,
+      ...(index < 2 ? { annotation: { key: item.id, kind: "snooze" as const, until: index === 0 ? "2026-07-12T10:01:00Z" : "2026-07-12T10:02:00Z", createdAt: "2026-07-12T09:00:00Z", active: true as const } } : {})
+    }));
+    expect(nextActiveSnoozeDelayMs(workItems, Date.parse("2026-07-12T10:00:00Z"))).toBe(60_000);
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -128,7 +137,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "$pr-batch\nResume repo/dashboard#43 on codex/heartbeat. Verify current coordination state before edits."
+      "$pr-batch\nResume the existing lane for repo/dashboard#43.\nThread handle: UNKNOWN\nBatch: UNKNOWN\nBranch: codex/heartbeat\nLast phase: wedged\nVerify current coordination state and custody before edits. Continue in the owning task when available."
     );
     expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 agents" })).toBeInTheDocument();
@@ -139,6 +148,74 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 events" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "0 health" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
+  });
+
+  it("persists a card snooze through the dashboard annotation API", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-12T11:20:00.000Z"));
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
+
+    const annotationRequest = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/annotations")?.[1];
+    const body = JSON.parse(String(annotationRequest?.body)) as { repo: string; target: string; kind: string; until: string };
+    expect(annotationRequest).toMatchObject({ method: "POST" });
+    expect(body).toMatchObject({ repo: "repo/dashboard", target: "43", kind: "snooze" });
+    expect(Date.parse(body.until)).toBeGreaterThan(Date.now());
+    expect(Date.parse(body.until) - Date.now()).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
+    expect(await screen.findByRole("status")).toHaveTextContent("Presentation preference saved");
+  });
+
+  it("reloads once at the earliest active snooze expiry when polling is disabled", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-12T10:00:00.000Z"));
+    let dashboardCalls = 0;
+    const snoozedModel: DashboardModel = {
+      ...model,
+      workItems: model.workItems.map((item, index) => index === 0 ? {
+        ...item,
+        operatorState: "ready",
+        attention: undefined,
+        annotation: { key: "repo/dashboard/43", kind: "snooze", until: "2026-07-12T10:01:00.000Z", createdAt: "2026-07-12T09:00:00.000Z", active: true }
+      } : item)
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 0 }) } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => dashboardCalls === 1 ? snoozedModel : model } as Response;
+    }));
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    expect(dashboardCalls).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(58_000));
+    expect(dashboardCalls).toBe(1);
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    expect(fetch).toHaveBeenCalledWith("/api/dashboard", expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } }));
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith("/api/annotations"))).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dashboardCalls).toBe(2);
+  });
+
+  it("cancels the snooze-expiry reload when the dashboard unmounts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-12T10:00:00.000Z"));
+    let dashboardCalls = 0;
+    const snoozedModel: DashboardModel = {
+      ...model,
+      workItems: [{ ...model.workItems[0], operatorState: "ready", attention: undefined, annotation: { key: "repo/dashboard/43", kind: "snooze", until: "2026-07-12T10:01:00.000Z", createdAt: "2026-07-12T09:00:00.000Z", active: true } }, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 0 }) } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => snoozedModel } as Response;
+    }));
+    const view = render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    view.unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dashboardCalls).toBe(1);
   });
 
   it("uses the same resume contract with a loaded GitHub branch fallback", async () => {
@@ -168,7 +245,7 @@ describe("App", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "$pr-batch\nResume repo/dashboard#43 on codex/github-fallback. Verify current coordination state before edits."
+      "$pr-batch\nResume the existing lane for repo/dashboard#43.\nThread handle: UNKNOWN\nBatch: UNKNOWN\nBranch: codex/github-fallback\nLast phase: UNKNOWN\nVerify current coordination state and custody before edits. Continue in the owning task when available."
     );
   });
 
@@ -215,6 +292,26 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("https://github.com/repo/dashboard/pull/44");
   });
 
+  it("does not open a pasted PR URL sourced from another holder's heartbeat", async () => {
+    const splitHolderModel: DashboardModel = {
+      ...model,
+      workItems: [{
+        ...model.workItems[0],
+        claim: { schemaVersion: 1, repo: "repo/dashboard", target: "43", agentId: "holder-a", status: "active", prUrl: "https://github.com/repo/dashboard/pull/43", path: "claims/43.json" },
+        heartbeat: { ...model.workItems[0].heartbeat!, agentId: "holder-b", prUrl: "https://github.com/repo/dashboard/pull/99" }
+      }, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input) === "/api/settings" ? settings : splitHolderModel })));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "https://github.com/repo/dashboard/pull/99");
+
+    expect(screen.getByRole("heading", { name: "Find" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Work item #43" })).not.toBeInTheDocument();
+    expect(window.location.search).not.toContain("item=");
+  });
+
   it("hides unmounted header drill-downs in item mode and restores them after Back", async () => {
     const itemTimeline = {
       repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],
@@ -235,7 +332,7 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "0 events" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "0 health" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
     expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();
@@ -875,5 +972,8 @@ describe("App", () => {
     expect(stylesheet).toMatch(/@media \(max-width: 980px\)[\s\S]*\.attention-card[\s\S]*flex-direction: column/);
     expect(stylesheet).toMatch(/\.attention-card h2,[\s\S]*overflow-wrap: anywhere/);
     expect(stylesheet).toMatch(/\.surface-nav,[\s\S]*overflow-x: auto/);
+    const srOnlyRule = stylesheet.match(/\.sr-only\s*\{[^}]+\}/)?.[0] || "";
+    expect(srOnlyRule).toContain("clip-path: inset(50%)");
+    expect(srOnlyRule).not.toMatch(/\n\s*clip:/);
   });
 });

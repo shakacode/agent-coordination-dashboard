@@ -59,6 +59,17 @@ const dashboard: DashboardModel = {
 };
 
 describe("OverviewTab", () => {
+  it("canonicalizes supported GitHub subpages in overview links", () => {
+    const subpageDashboard: DashboardModel = {
+      ...dashboard,
+      workItems: dashboard.workItems.map((item, index) => index === 0 && item.github
+        ? { ...item, github: { ...item.github, url: "https://github.com/repo/app/issues/123?tab=activity#comment" } }
+        : item)
+    };
+    render(<OverviewTab dashboard={subpageDashboard} onOpenOperatorFilter={vi.fn()} />);
+    expect(screen.getByText("Issue #123: Observed issue").closest("a")).toHaveAttribute("href", "https://github.com/repo/app/issues/123");
+  });
+
   it("distinguishes healthy empty panels from unavailable coordination data", () => {
     const emptyDashboard: DashboardModel = {
       ...dashboard,

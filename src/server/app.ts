@@ -1,5 +1,5 @@
 import express from "express";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
@@ -10,6 +10,7 @@ import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubI
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
+import { applyAnnotations, createAnnotationStore } from "./annotations";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
 import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
@@ -61,6 +62,7 @@ interface CreateDashboardAppOptions {
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
+  const annotationStore = createAnnotationStore(join(dirname(persistedSettingsPath), "annotations.json"));
   const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
   const defaultTargetReconciler = createGitHubTargetReconciler();
   const loadGitHubTargets = options.loadGitHubTargets || defaultTargetReconciler.load;
@@ -256,6 +258,20 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
   }
 
+  async function applyStoredAnnotations(model: DashboardModel, now: Date): Promise<DashboardModel> {
+    try {
+      return { ...model, workItems: applyAnnotations(model.workItems, await annotationStore.read(), now) };
+    } catch {
+      return {
+        ...model,
+        warnings: [...model.warnings, {
+          severity: "warning",
+          message: "Dashboard annotations: UNKNOWN — persisted dismiss and snooze state could not be read."
+        }]
+      };
+    }
+  }
+
   async function buildScopedDashboard(settings: DashboardSettings, options: BuildScopedDashboardOptions = {}): Promise<DashboardModel> {
     const captured = options.captured || await captureCoordinationSnapshot();
     const now = captured.now;
@@ -318,8 +334,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
+    const annotatedModel = await applyStoredAnnotations(model, now);
     const scopedModel: DashboardModel = {
-      ...model,
+      ...annotatedModel,
       ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
       githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
       sourceStatus: state.sourceStatus,
@@ -352,7 +369,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     // Item refreshes need fresh coordination state, but can safely reuse the
     // already-loaded GitHub previews from the current dashboard cache.
     const githubItems = cached.workItems.flatMap((item) => item.github ? [item.github] : []);
-    return buildDashboardModel({
+    const model = buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
       claims: captured.state.claims,
@@ -363,6 +380,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       warnings: [...captured.state.warnings, ...(githubWarningsByDashboard.get(cached) || [])],
       now: captured.now
     });
+    return applyStoredAnnotations(model, captured.now);
   }
 
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
@@ -489,6 +507,42 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     invalidateDashboardCache();
     res.json({ ...saved, refreshIntervalMs: config.refreshIntervalMs });
   });
+
+  async function writeAnnotation(req: express.Request, res: express.Response, remove = false) {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.status(403).json({
+        error: "Annotations can only be changed from the machine running the dashboard. Remote viewers have read-only access."
+      });
+      return;
+    }
+    try {
+      const settings = await currentSettings();
+      const repo = typeof req.body?.repo === "string" ? req.body.repo.trim() : "";
+      const target = typeof req.body?.target === "string" ? req.body.target.trim() : "";
+      if (!settings.targetRepos.includes(repo)) throw new Error(`Annotation repo is outside saved target repositories: ${repo || "UNKNOWN"}.`);
+      if (remove) {
+        await annotationStore.remove(repo, target);
+        invalidateDashboardCache();
+        res.status(204).end();
+        return;
+      }
+      const annotation = await annotationStore.save({
+        repo,
+        target,
+        kind: req.body?.kind,
+        until: req.body?.until,
+        note: req.body?.note,
+        operator: req.body?.operator
+      });
+      invalidateDashboardCache();
+      res.status(201).json(annotation);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : "Annotation write failed." });
+    }
+  }
+
+  app.post("/api/annotations", (req, res) => void writeAnnotation(req, res));
+  app.delete("/api/annotations", (req, res) => void writeAnnotation(req, res, true));
 
   app.post("/api/batches/import", async (req, res) => {
     if (!isLoopbackAddress(req.socket.remoteAddress)) {

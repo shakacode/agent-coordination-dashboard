@@ -137,6 +137,11 @@ to explicit loopback-only actions:
 A stop request is a coordination/audit signal so a batch can be restarted
 cleanly; it does not kill processes or release claims by itself.
 
+Dismiss and snooze actions never write coordination state. They are
+presentation-only annotations, accepted from loopback clients and persisted in
+`annotations.json` beside the dashboard settings file. Active snoozes expire
+automatically; dismissals remain until an operator clears them.
+
 ## Configuration
 
 | Variable | Default |

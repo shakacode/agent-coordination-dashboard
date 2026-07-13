@@ -1,7 +1,10 @@
 import type { WorkItem } from "../../shared/types";
 import { isOperationalWorkItem, isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
+import { effectiveCustody } from "../../shared/effectiveCustody";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
+import { OperatorActions, type AnnotationAction } from "./OperatorActions";
+import { canonicalGithubItemUrl } from "../githubUrls";
 
 export type DashboardSurface = "attention" | "now" | "find" | "history";
 
@@ -16,30 +19,19 @@ function itemTitle(item: WorkItem): string {
 }
 
 function holder(item: WorkItem): string {
-  return firstDisplayAttribution([item.claim?.agentId, item.heartbeat?.agentId]);
-}
-
-function canonicalGithubItemUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") return undefined;
-    const pathname = url.pathname.replace(/\/$/, "");
-    if (!/^\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+$/.test(pathname)) return undefined;
-    return `${url.origin.toLowerCase()}${pathname.toLowerCase()}`;
-  } catch {
-    return undefined;
-  }
+  const { claim, heartbeat } = effectiveCustody(item);
+  return firstDisplayAttribution([claim?.agentId, heartbeat?.agentId]);
 }
 
 function matches(item: WorkItem, query: string): boolean {
+  const { claim, heartbeat } = effectiveCustody(item);
   const value = query.trim().toLowerCase();
   if (!value) return true;
   if (/^#?\d+$/.test(value)) return item.target === value.replace(/^#/, "");
   const githubItemUrl = canonicalGithubItemUrl(query.trim());
   if (githubItemUrl) {
-    return [item.github?.url, item.claim?.prUrl, item.heartbeat?.prUrl]
-      .some((candidate) => canonicalGithubItemUrl(candidate) === githubItemUrl);
+    return [item.github?.url, claim?.prUrl, heartbeat?.prUrl]
+      .some((candidate) => canonicalGithubItemUrl(candidate)?.toLowerCase() === githubItemUrl.toLowerCase());
   }
   if (/^[^/#\s]+\/[^/#\s]+#\d+$/.test(value)) return item.id.toLowerCase() === value;
   return [
@@ -48,12 +40,12 @@ function matches(item: WorkItem, query: string): boolean {
     item.target,
     item.github?.title,
     item.github?.url,
-    item.claim?.branch,
-    item.heartbeat?.branch,
-    item.claim?.threadHandle,
-    item.heartbeat?.threadHandle,
-    item.claim?.machineId,
-    item.heartbeat?.machineId,
+    claim?.branch,
+    heartbeat?.branch,
+    claim?.threadHandle,
+    heartbeat?.threadHandle,
+    claim?.machineId,
+    heartbeat?.machineId,
     ...item.batchSignals?.flatMap((signal) => [signal.batchId, signal.laneName]) || []
   ]
     .filter(Boolean)
@@ -61,9 +53,14 @@ function matches(item: WorkItem, query: string): boolean {
 }
 
 function isNowItem(item: WorkItem): boolean {
+  // Now is a visibility surface: keep live/stale conflict rows visible while
+  // WorkCard fences their attribution through effectiveCustody.
+  const heartbeat = item.heartbeat;
   return Boolean(
-    item.heartbeat
-    && ["live", "stale"].includes(item.heartbeat.liveness)
+    heartbeat
+    && (!heartbeat.repo || heartbeat.repo === item.repo)
+    && (!heartbeat.target || heartbeat.target === item.target)
+    && ["live", "stale"].includes(heartbeat.liveness)
     && isOperationalWorkItem(item)
   );
 }
@@ -95,11 +92,6 @@ function matchesDeepLink(item: WorkItem, deepLink: OperatorDeepLink | undefined,
   return matchesOverviewFilter(item, deepLink.overviewFilter, repairWorkItemIds);
 }
 
-function pullRequestUrl(item: WorkItem): string | undefined {
-  const candidates = [item.github?.type === "pull_request" ? item.github.url : undefined, item.claim?.prUrl, item.heartbeat?.prUrl];
-  return candidates.find((candidate) => candidate && /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+(?:[/?#]|$)/i.test(candidate));
-}
-
 function elapsedSince(value: string | undefined): string {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   if (!Number.isFinite(timestamp)) return "unattributed";
@@ -114,35 +106,48 @@ function activityTime(item: WorkItem): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+function humanTimestamp(value: string): string {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(parsed)
+    : "UNKNOWN";
+}
+
 function WorkCard({
   item,
-  onCopyResume,
   onToggle,
   selectionDisabled = false,
   onOpenBatchOperations,
-  onOpenItem
+  onOpenItem,
+  onAnnotate,
+  onClearAnnotation,
+  showResumeAction
 }: {
   item: WorkItem;
-  onCopyResume?: (item: WorkItem) => void;
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
   onOpenBatchOperations?: () => void;
   onOpenItem?: (item: WorkItem) => void;
+  onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
+  onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
+  showResumeAction: boolean;
 }) {
   const reason = item.attention;
-  const heartbeat = item.heartbeat;
+  const { claim, heartbeat, heartbeatConflict } = effectiveCustody(item);
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
-  const machine = firstDisplayAttribution([heartbeat?.machineId, item.claim?.machineId]);
-  const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
-  const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
-  const prUrl = pullRequestUrl(item);
-  const githubUrl = canonicalGithubItemUrl(item.github?.url) ? item.github?.url : undefined;
+  const machine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
+  const thread = firstDisplayAttribution([heartbeat?.threadHandle, claim?.threadHandle]);
+  const elapsed = elapsedSince(heartbeat?.updatedAt || claim?.updatedAt || item.lastActivityAt);
+  const githubUrl = canonicalGithubItemUrl(item.github?.url);
   return (
     <article className="attention-card">
       <div>
         <p className="attention-card-kicker">{displayAttribution(item.repo)}</p>
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
+        {heartbeatConflict ? <p className="attention-card-meta">Heartbeat holder conflicts with the active claim; heartbeat attribution is hidden.</p> : null}
+        {item.annotation?.kind === "dismiss" ? <p className="attention-card-meta">Dismissed by operator</p> : null}
+        {item.annotation?.kind === "snooze" && item.annotation.until ? <p className="attention-card-meta">Snoozed until <time dateTime={item.annotation.until}>{humanTimestamp(item.annotation.until)}</time></p> : null}
         {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
         {item.github?.loadState === "unknown" ? <p className="attention-card-meta">GitHub state: UNKNOWN</p> : null}
         {item.github?.branchState === "deleted" ? <p className="attention-card-meta">Branch deleted (supporting signal)</p> : null}
@@ -164,14 +169,17 @@ function WorkCard({
             <span>Batch</span>
           </label>
         ) : null}
-        {reason?.action === "Copy resume prompt" ? (
-          <button onClick={() => onCopyResume?.(item)} type="button">Copy resume prompt</button>
-        ) : null}
-        {reason?.action === "Open PR" && prUrl ? <a href={prUrl} rel="noreferrer" target="_blank">Open PR</a> : null}
         {reason?.action === "Open batch operations" ? (
           <button onClick={onOpenBatchOperations} type="button">Open batch operations</button>
         ) : null}
         {githubUrl ? <a href={githubUrl} rel="noreferrer" target="_blank">{item.github?.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
+        <OperatorActions
+          item={item}
+          onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
+          onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
+          resumeAvailable={showResumeAction}
+          takeoverAvailable={reason?.kind === "dead_holder" && heartbeat?.liveness === "dead"}
+        />
       </div>
     </article>
   );
@@ -182,7 +190,6 @@ export function AttentionShell({
   surface,
   query,
   onQueryChange,
-  onCopyResume,
   onToggle,
   selectionDisabled = false,
   now = new Date(),
@@ -194,6 +201,8 @@ export function AttentionShell({
   mergeTimeStatus = "unavailable",
   historyMergedTodayOnly = false,
   onShowMergedToday,
+  onAnnotate,
+  onClearAnnotation,
   repairWorkItemIds = new Set<string>(),
   repairBatchCount = 0
 }: {
@@ -201,7 +210,6 @@ export function AttentionShell({
   surface: DashboardSurface;
   query: string;
   onQueryChange: (query: string) => void;
-  onCopyResume?: (item: WorkItem) => void;
   onToggle?: (id: string) => void;
   selectionDisabled?: boolean;
   now?: Date | string;
@@ -213,6 +221,8 @@ export function AttentionShell({
   mergeTimeStatus?: "available" | "unavailable";
   historyMergedTodayOnly?: boolean;
   onShowMergedToday?: () => void;
+  onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
+  onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
   repairWorkItemIds?: ReadonlySet<string>;
   repairBatchCount?: number;
 }) {
@@ -230,15 +240,17 @@ export function AttentionShell({
     && new Date(item.github.mergedAt).toDateString() === currentDay
   );
   const mergedToday = mergedTodayItems.length;
-  const card = (item: WorkItem, allowResume = true) => (
+  const card = (item: WorkItem, options: { annotationsAvailable?: boolean; showResumeAction?: boolean } = {}) => (
     <WorkCard
       item={item}
       key={item.id}
-      onCopyResume={allowResume ? onCopyResume : undefined}
       onToggle={onToggle}
       selectionDisabled={selectionDisabled}
       onOpenBatchOperations={onOpenBatchOperations}
       onOpenItem={onOpenItem}
+      onAnnotate={options.annotationsAvailable === false ? undefined : onAnnotate}
+      onClearAnnotation={onClearAnnotation}
+      showResumeAction={options.showResumeAction === true}
     />
   );
 
@@ -262,7 +274,7 @@ export function AttentionShell({
             ) : <span title="GitHub merge timestamps are not available">merged today unavailable</span>}.
           </p>
         ) : (
-          <div className="attention-card-list">{attentionItems.map((item) => card(item))}</div>
+          <div className="attention-card-list">{attentionItems.map((item) => card(item, { showResumeAction: item.attention?.action === "Copy resume prompt" }))}</div>
         )}
       </section>
     );
@@ -278,7 +290,7 @@ export function AttentionShell({
       <section aria-label="Now" className="attention-surface">
         <header className="attention-surface-header"><div><p className="eyebrow">Live work only</p><h1>Now</h1></div><button className="status-strip" onClick={() => onSurfaceChange?.("now")} type="button">{runningItems.length} live or stale</button></header>
         {byBatch.size === 0 ? <p className="empty-state">No live lanes right now.</p> : Array.from(byBatch).map(([batch, batchItems]) => (
-          <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => card(item, false))}</section>
+          <section className="now-batch" key={batch}><h2>{batch}</h2>{batchItems.map((item) => card(item, { annotationsAvailable: false }))}</section>
         ))}
       </section>
     );
@@ -292,7 +304,7 @@ export function AttentionShell({
         <header className="attention-surface-header"><div><p className="eyebrow">Terminal and archived work</p><h1>History</h1></div><button aria-label={`Show all ${historyItems.length} history items`} className="status-strip" onClick={() => { onQueryChange(""); onSurfaceChange?.("history"); }} type="button">{historyScope.length} items</button></header>
         {historyMergedTodayOnly ? <p className="active-filter">Showing proven merges from today. <button onClick={() => onSurfaceChange?.("history")} type="button">Clear</button></p> : null}
         <label className="search-field"><span>Filter</span><input aria-label="Filter history" onChange={(event) => onQueryChange(event.target.value)} placeholder="Filter history" value={query} /></label>
-        {filteredHistory.length === 0 ? <p className="empty-state">No terminal or aged-out work matches this filter.</p> : <div className="attention-card-list">{filteredHistory.map((item) => card(item, false))}</div>}
+        {filteredHistory.length === 0 ? <p className="empty-state">No terminal or aged-out work matches this filter.</p> : <div className="attention-card-list">{filteredHistory.map((item) => card(item, { annotationsAvailable: false }))}</div>}
       </section>
     );
   }

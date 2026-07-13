@@ -49,6 +49,11 @@ const timeline = {
 } satisfies ItemTimelineResponse;
 
 describe("ItemPage", () => {
+  it("does not offer resume when no current item was resolved for the timeline", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{ ...timeline, item: undefined }} />);
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
   it("filters malformed and unsafe values while deduplicating pull request URLs", () => {
     expect(uniquePullRequestUrls([
       "not a URL",
@@ -121,7 +126,7 @@ describe("ItemPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "agent-coord claim --repo 'shakacode/dashboard' --target '46' --agent-id REPLACE_WITH_YOUR_AGENT_ID"
+      "agent-coord claim --agent-id \"${AGENT_COORD_AGENT_ID:?Set AGENT_COORD_AGENT_ID}\" --repo 'shakacode/dashboard' --target '46'"
     );
   });
 
@@ -139,7 +144,7 @@ describe("ItemPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "$pr-batch\nResume shakacode/dashboard#46 on codex/claim. Verify current coordination state before edits."
+      "$pr-batch\nResume the existing lane for shakacode/dashboard#46.\nThread handle: takeover-chat\nBatch: UNKNOWN\nBranch: codex/claim\nLast phase: implementing\nVerify current coordination state and custody before edits. Continue in the owning task when available."
     );
   });
 
@@ -165,8 +170,10 @@ describe("ItemPage", () => {
 
       await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
       const command = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
-      expect(command).toContain("--repo 'owner/o'\"'\"'brien; : #'");
-      nodeChildProcess.execFileSync("sh", ["-c", `set -- ${command.replace("agent-coord claim ", "")}`]);
+      expect(command).toContain("--repo REPLACE_WITH_OWNER_REPO");
+      expect(command).not.toContain("touch");
+      expect(command).not.toContain("REPLACE_WITH_YOUR_AGENT_ID");
+      expect(() => nodeChildProcess.execFileSync("sh", ["-c", `unset AGENT_COORD_AGENT_ID; set -- ${command.replace("agent-coord claim ", "")}`])).toThrow();
       expect(nodeFs.existsSync(marker)).toBe(false);
     } finally {
       nodeFs.rmSync(directory, { force: true, recursive: true });
@@ -184,7 +191,7 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
   });
 
   it("does not present terminal work as held or eligible for takeover", () => {
@@ -200,8 +207,20 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
+  });
+
+  it("does not advertise resume for a dashboard-archived dismissed item", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        operatorState: "archived_view",
+        annotation: { key: "shakacode/dashboard/46", kind: "dismiss", createdAt: "2026-07-12T10:00:00Z", active: true }
+      }
+    }} />);
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
   });
 
   it("does not present released custody with a live heartbeat as held or eligible for takeover", () => {
@@ -284,7 +303,7 @@ describe("ItemPage", () => {
 
     expect(screen.getByText("Holder: worker-a")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
   });
 
   it("keeps historical heartbeat telemetry visible without turning it into liveness", () => {
@@ -470,7 +489,7 @@ describe("ItemPage", () => {
       prUrls: [safeUrl, "https://github.com/shakacode/dashboard/issues/47", "https://example.test/shakacode/dashboard/pull/47"]
     }} />);
 
-    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", safeUrl);
+    expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/47");
     expect(screen.queryByText("PR UNKNOWN")).not.toBeInTheDocument();
   });
 

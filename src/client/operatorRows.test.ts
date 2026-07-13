@@ -1303,11 +1303,17 @@ describe("operatorRows", () => {
   it("allows only exact HTTPS GitHub issue and pull-request URLs", () => {
     expect(safeGithubUrl("https://github.com/repo/app/pull/123")).toBe("https://github.com/repo/app/pull/123");
     expect(safeGithubUrl("https://github.com/repo/app/issues/456?tab=activity#comment")).toBe(
-      "https://github.com/repo/app/issues/456?tab=activity#comment"
+      "https://github.com/repo/app/issues/456"
     );
+    expect(safeGithubUrl("https://github.com/repo/app/pull/123/files?diff=split#file-1")).toBe("https://github.com/repo/app/pull/123");
     for (const value of [
       undefined,
       "http://github.com/repo/app/pull/123",
+      "https://user@github.com/repo/app/pull/123",
+      "https://user:secret@github.com/repo/app/pull/123",
+      "https://github.com:443/repo/app/pull/123",
+      "https://github.com:0443/repo/app/pull/123",
+      "https://github.com:444/repo/app/pull/123",
       "https://example.com/repo/app/pull/123",
       "https://github.com/repo/app/actions/123",
       "https://github.com/repo/app/pull/not-a-number",
@@ -2897,6 +2903,12 @@ describe("operatorRows", () => {
     expect(filterOperatorRows(rows, "justin").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "codex").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "github.com/repo/app/pull/123").map((row) => row.repo)).toEqual(["repo/app"]);
+    expect(filterOperatorRows(rows, "https://github.com/repo/app/pull/123/files?diff=split#file-1").map((row) => row.repo)).toEqual(["repo/app"]);
+
+    const unsafeRows = buildOperatorRows(dashboard({
+      workItems: [workItem({ claim: { ...claim, prUrl: "https://user:secret@github.com/repo/app/pull/123" }, heartbeat: undefined })]
+    }));
+    expect(filterOperatorRows(unsafeRows, "user:secret@github.com")).toEqual([]);
   });
 
   it("maps every overview filter to rows from explicit dashboard state", () => {

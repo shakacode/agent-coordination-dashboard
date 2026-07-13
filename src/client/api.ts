@@ -1,5 +1,5 @@
 import type { CustodyTimeline } from "../shared/custodyTimeline";
-import type { BatchRecord, CoordinationSourceStatus, CoordinationWarning, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
+import type { BatchRecord, CoordinationSourceStatus, CoordinationWarning, DashboardAnnotation, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 
 export interface ItemTimelineResponse extends CustodyTimeline {
   item?: WorkItem;
@@ -73,4 +73,23 @@ export async function requestBatchStop(input: { batchId: string; repo?: string; 
     throw new Error(`Batch stop request failed with ${response.status}`);
   }
   return (await response.json()) as { path: string };
+}
+
+export async function saveAnnotation(input: { repo: string; target: string; kind: "dismiss" | "snooze"; until?: string }): Promise<DashboardAnnotation> {
+  const response = await fetch("/api/annotations", {
+    body: JSON.stringify(input),
+    headers: { "Content-Type": "application/json" },
+    method: "POST"
+  });
+  if (!response.ok) throw new Error(`Annotation save failed with ${response.status}`);
+  return (await response.json()) as DashboardAnnotation;
+}
+
+export async function deleteAnnotation(input: { repo: string; target: string }): Promise<void> {
+  const response = await fetch("/api/annotations", {
+    body: JSON.stringify(input),
+    headers: { "Content-Type": "application/json" },
+    method: "DELETE"
+  });
+  if (!response.ok) throw new Error(`Annotation removal failed with ${response.status}`);
 }

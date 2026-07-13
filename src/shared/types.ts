@@ -4,6 +4,7 @@ export type SchedulingState = "in_process" | "started_not_processing" | "ready_f
 export type WorkItemOperatorState = "needs_attention" | "running" | "ready" | "terminal" | "archived_view";
 export type WorkItemTerminalState = "done" | "closed" | "abandoned" | "superseded";
 export type AttentionReasonKind = "wedged" | "blocked_user_input" | "dead_holder" | "qa_missing" | "batch_stopped" | "batch_stop_requested";
+export type DashboardAnnotationKind = "dismiss" | "snooze";
 export type WorkItemType = "issue" | "pull_request" | "unknown";
 export type GitHubCiStatus = "passing" | "failing" | "pending" | "unknown";
 export type WarningSeverity = "info" | "warning" | "critical";
@@ -37,6 +38,15 @@ export type MetadataProvenance =
 export interface DashboardSettings {
   targetRepos: string[];
   refreshIntervalMs?: number;
+}
+
+export interface DashboardAnnotation {
+  key: string;
+  kind: DashboardAnnotationKind;
+  until?: string;
+  note?: string;
+  createdAt: string;
+  operator?: string;
 }
 
 export interface ClaimRecord {
@@ -251,6 +261,7 @@ export interface WorkItem {
     label: string;
     action: "Copy resume prompt" | "Open PR" | "Open batch operations";
   };
+  annotation?: DashboardAnnotation & { active: true };
   lastActivityAt?: string;
   warnings: CoordinationWarning[];
   selected: boolean;
