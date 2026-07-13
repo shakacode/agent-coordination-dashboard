@@ -370,6 +370,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "saved-repo-url-header-query", type: "phase", phase: "Repository: https://github.com/shakacode/react_on_rails?tab=readme", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:28:25Z"
+        },
+        {
+          event_id: "safe-github-docs-url", type: "phase", phase: "See https://docs.github.com/en/repositories", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:30Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -452,6 +456,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "safe-spaced-directory-path")?.status).toBe("updated \"/Users/Jane/My Project/src/components\"");
     expect(timeline.events.find((event) => event.eventId === "saved-repo-url-header")?.status).toBe("Repository: https://github.com/shakacode/react_on_rails");
     expect(timeline.events.find((event) => event.eventId === "saved-repo-url-header-query")?.status).toBe("Repository: https://github.com/shakacode/react_on_rails?tab=readme");
+    expect(timeline.events.find((event) => event.eventId === "safe-github-docs-url")?.status).toBe("See https://docs.github.com/en/repositories");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

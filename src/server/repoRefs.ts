@@ -1,5 +1,6 @@
-const GITHUB_REPO_REF_PATTERN = /github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
-const GITHUB_URL_TEXT_PATTERN = /(?:https?:\/\/)?github\.com\/[^\s)]+/gi;
+const GITHUB_REPO_REF_PATTERN = /(?<![A-Za-z0-9.-])(?:https?:\/\/)?(?:www\.)?github\.com(?::(?:80|443))?\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
+const GITHUB_URL_TEXT_PATTERN = /(?<![A-Za-z0-9.-])(?:https?:\/\/)?(?:www\.)?github\.com(?::(?:80|443))?\/[^\s)]+/gi;
+const HTTP_URL_TEXT_PATTERN = /https?:\/\/[^\s)]+/gi;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
@@ -9,7 +10,7 @@ function isClearLocalFileReference(ref: string): boolean {
 }
 
 function normalizeGithubRepoRef(ref: string): string {
-  return ref.replace(/\.git$/i, "").replace(/\.+$/, "");
+  return ref.replace(/\.+$/, "").replace(/\.git$/i, "").replace(/\.+$/, "");
 }
 
 export function repoRefsFromText(value: string | undefined): string[] {
@@ -48,7 +49,7 @@ export function repoRefsFromPromptHeaders(value: string | undefined): string[] {
     for (const match of repository.matchAll(GITHUB_REPO_REF_PATTERN)) {
       refs.add(normalizeGithubRepoRef(match[1]));
     }
-    const repositoryWithoutGithubUrls = repository.replace(GITHUB_URL_TEXT_PATTERN, "");
+    const repositoryWithoutGithubUrls = repository.replace(HTTP_URL_TEXT_PATTERN, "").replace(GITHUB_URL_TEXT_PATTERN, "");
     for (const match of repositoryWithoutGithubUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
       refs.add(match[1]);
     }
@@ -113,7 +114,7 @@ function repoRefsFromStructuredText(value: string): string[] {
   // Explicit path syntax is the only reliable signal that a slash-shaped
   // value is local. Scrub those tokens first; bare multi-segment values remain
   // conservative repository candidates.
-  const textWithoutExplicitPaths = withoutExplicitStructuredPaths(value);
+  const textWithoutExplicitPaths = withoutExplicitStructuredPaths(value).replace(GITHUB_URL_TEXT_PATTERN, "");
   for (const match of textWithoutExplicitPaths.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
     const before = textWithoutExplicitPaths[start - 1] || "";

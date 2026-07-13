@@ -13,10 +13,24 @@ describe("repoRefsFromStructuredEventField", () => {
     "Repository: https://github.com/other/private,",
     "Repository: <https://github.com/other/private>",
     "Repository: https://github.com/other/private.git",
+    "Repository: https://github.com/other/private.git.",
     "Repository: http://github.com/other/private",
-    "Repository: github.com/other/private"
+    "Repository: github.com/other/private",
+    "Repository: https://github.com:443/other/private",
+    "Repository: http://github.com:80/other/private"
   ])("canonicalizes a Repository GitHub URL: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual(["other/private"]);
+  });
+
+  it.each([
+    "See https://docs.github.com/en/repositories",
+    "See https://gist.github.com/user/abcdef",
+    "See https://api.github.com/repos/other/private",
+    "See https://notgithub.com/other/private",
+    "Repository: https://docs.github.com/en/repositories",
+    "Repository: https://notgithub.com/other/private"
+  ])("does not extract repository refs from a non-GitHub-repository host: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
 
   it.each([
