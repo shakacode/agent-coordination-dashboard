@@ -136,6 +136,13 @@ describe("repoRefsFromStructuredEventField", () => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 
+  it("does not let an @ in a host-only structural suffix become userinfo", () => {
+    for (const delimiter of ["|", ":", "&", "="]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com${delimiter}@other/private/path`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`https://github.com${delimiter}user@other/private/path`)).toContain("other/private");
+    }
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],

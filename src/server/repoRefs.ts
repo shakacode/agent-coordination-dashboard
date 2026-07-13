@@ -45,7 +45,9 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
 
     while (cursor < value.length && !/\s/.test(value[cursor]) && !"/?#".includes(value[cursor])) {
       const character = value[cursor];
-      if ((structuralDelimiters + closingDelimiters).includes(character) && cursor > lastAt) {
+      const authorityPrefix = value.slice(schemeEnd, cursor);
+      const completeHostPrefix = /^(?:localhost|(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+|(?:\d{1,3}\.){3}\d{1,3})$/i.test(authorityPrefix);
+      if ((structuralDelimiters + closingDelimiters).includes(character) && (cursor > lastAt || completeHostPrefix)) {
         if (character === ":") {
           let portEnd = cursor + 1;
           while (/\d/.test(value[portEnd] || "")) portEnd += 1;
