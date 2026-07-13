@@ -12,7 +12,7 @@ function normalizeGithubRepoRef(ref: string): string {
   return ref.replace(/\.+$/, "").replace(/\.git$/i, "").replace(/\.+$/, "");
 }
 
-function addGithubRepoRef(refs: Set<string>, rawUrl: string): void {
+function addGithubRepoRef(refs: Set<string>, rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl.replace(/\.+$/, ""));
     const hostname = url.hostname.toLowerCase();
@@ -22,10 +22,12 @@ function addGithubRepoRef(refs: Set<string>, rawUrl: string): void {
     const [owner, repository] = url.pathname.split("/").filter(Boolean);
     if (validHost && validPort && owner && repository && /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) && /^[A-Za-z0-9._-]+$/.test(repository)) {
       refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
+      return true;
     }
   } catch {
     // Ignore malformed URLs; their structured suffix remains visible.
   }
+  return false;
 }
 
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
@@ -110,6 +112,8 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     }
 
     addGithubRepoRef(refs, value.slice(index, urlEnd));
+    let canonicalAlternateReplay: string | undefined;
+    let canonicalAlternateResume = -1;
     if (authorityDelimiter >= 0 && authorityDelimiter < lastAt) {
       let alternateEnd = coarseAuthorityEnd;
       if (value[alternateEnd] === "/") {
@@ -118,10 +122,26 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
           alternateEnd += 1;
         }
       }
-      addGithubRepoRef(refs, value.slice(index, alternateEnd));
+      if (addGithubRepoRef(refs, value.slice(index, alternateEnd))) {
+        canonicalAlternateReplay = value.slice(authorityDelimiter, alternateEnd);
+        canonicalAlternateResume = alternateEnd;
+        if ("?#".includes(value[canonicalAlternateResume] || "")) {
+          canonicalAlternateResume += 1;
+          while (canonicalAlternateResume < value.length && !/\s/.test(value[canonicalAlternateResume]) && !closingDelimiters.includes(value[canonicalAlternateResume])) {
+            if ("|;,:!".includes(value[canonicalAlternateResume])) break;
+            canonicalAlternateResume += 1;
+          }
+        }
+      }
     }
 
     output.push(" ");
+    if (canonicalAlternateReplay !== undefined) {
+      output.push(canonicalAlternateReplay);
+      index = canonicalAlternateResume;
+      forcedBoundary = false;
+      continue;
+    }
     if (delimiterIndex >= 0) {
       output.push(value[delimiterIndex]);
       index = delimiterIndex + 1;

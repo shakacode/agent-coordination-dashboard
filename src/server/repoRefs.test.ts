@@ -167,6 +167,13 @@ describe("repoRefsFromStructuredEventField", () => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 
+  it("does not expose query or fragment refs from a canonical userinfo URL", () => {
+    for (const userinfo of ["first.last:pass", "first.last|pass", "user,name", "user'name", "user)name", "user;name", "user=name", "user&name", "user!name"]) {
+      expect(repoRefsFromStructuredEventField(`https://${userinfo}@github.com/other/private?next=third/repo`)).toEqual(["other/private"]);
+      expect(repoRefsFromStructuredEventField(`https://${userinfo}@github.com/other/private#third/repo`)).toEqual(["other/private"]);
+    }
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
