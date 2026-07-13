@@ -73,7 +73,11 @@ describe("repoRefsFromStructuredEventField", () => {
     "ci/passed checks; updated `/Users/ジャスティン/ci/passed/private`",
     "ci/passed checks; updated /Users/ジャスティン/ci/passed/private",
     "ci/passed checks; updated /Users/JoséFolder/ci/passed/private",
-    "ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private"
+    "ci/passed checks; updated /Users/Team🚀Folder/ci/passed/private",
+    "ci/passed checks; updated /Users/Team👍🏽Folder/ci/passed/private",
+    "ci/passed checks; updated /Users/Team👩‍💻Folder/ci/passed/private",
+    "ci/passed checks; updated /Users/Team–Folder/ci/passed/private",
+    "ci/passed checks; updated \"C:/release/\\\"candidate/ci/passed/private\""
   ])("ignores explicit local paths when applying operational vocabulary: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });

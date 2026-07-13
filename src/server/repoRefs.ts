@@ -75,16 +75,19 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 }
 
 function withoutExplicitStructuredPaths(value: string): string {
-  const withoutQuotedPaths = value.replace(
-    /(["'`])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/)|\/)[^\r\n]*?\1/gi,
-    ""
-  );
+  const explicitPathPrefix = String.raw`(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/)|\/)`;
+  const quotedPathPatterns = [
+    new RegExp(`"${explicitPathPrefix}(?:\\\\.|[^"\\\\\\r\\n])*"`, "gi"),
+    new RegExp(`'${explicitPathPrefix}(?:\\\\.|[^'\\\\\\r\\n])*'`, "gi"),
+    new RegExp(`\`${explicitPathPrefix}(?:\\\\.|[^\`\\\\\\r\\n])*\``, "gi")
+  ];
+  const withoutQuotedPaths = quotedPathPatterns.reduce((text, pattern) => text.replace(pattern, ""), value);
   const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(
-    /(^|[^\p{L}\p{M}\p{N}\p{So}._/@%+~-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{M}\p{N}\p{So}@%+~._/-]+/giu,
+    /(^|[^A-Za-z0-9._/@%+~\-\u0080-\u{10FFFF}])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[A-Za-z0-9@%+~._/\-\u0080-\u{10FFFF}]+/giu,
     "$1"
   );
   return withoutRelativeDriveOrFilePaths.replace(
-    /(^|[^\p{L}\p{M}\p{N}\p{So}._/@%+~:-])\/[\p{L}\p{M}\p{N}\p{So}@%+~._/-]+/gu,
+    /(^|[^A-Za-z0-9._/@%+~:\-\u0080-\u{10FFFF}])\/[A-Za-z0-9@%+~._/\-\u0080-\u{10FFFF}]+/gu,
     "$1"
   );
 }
