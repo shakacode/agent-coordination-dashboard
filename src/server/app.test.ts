@@ -517,8 +517,9 @@ describe("dashboard app import endpoint", () => {
       mkdir(join(root, "batches"), { recursive: true })
     ]);
     const writeCurrentState = async (agentId: string, status: string) => {
-      const updatedAt = new Date().toISOString();
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const capturedAt = Date.now();
+      const updatedAt = new Date(capturedAt - 1_000).toISOString();
+      const expiresAt = new Date(capturedAt + 60_000).toISOString();
       await Promise.all([
         writeFile(claimPath, JSON.stringify({
           repo: "shakacode/react_on_rails", target: "46", agent_id: agentId, status: "active", updated_at: updatedAt
@@ -669,6 +670,9 @@ describe("dashboard app import endpoint", () => {
   });
 
   it("uses a claim PR URL as the canonical GitHub target and maps its terminal result onto the issue WorkItem", async () => {
+    const capturedAt = Date.now();
+    const archiveAfterMs = 24 * 60 * 60 * 1000;
+    const recentlyMergedAt = new Date(capturedAt - (archiveAfterMs / 2)).toISOString();
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-reconcile-"));
     const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
     await mkdir(claimDirectory, { recursive: true });
@@ -682,7 +686,7 @@ describe("dashboard app import endpoint", () => {
       loadGitHubTargets: async (references) => ({
         items: references.map((reference) => {
           reconciledTarget = reference.target;
-          return { ...reference, type: "pull_request" as const, title: "Merged work", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const };
+          return { ...reference, type: "pull_request" as const, title: "Merged work", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: recentlyMergedAt, labels: [], loadState: "loaded" as const };
         }),
         warnings: []
       })

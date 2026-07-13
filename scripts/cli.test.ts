@@ -6,6 +6,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createDashboardApp } from "../src/server/app";
 
 async function unusedPort(): Promise<number> {
   const server = createNetServer();
@@ -81,17 +82,30 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(result.stderr).toContain("Unknown option: --bogus");
   });
 
+  it("reports a repeated demo option distinctly", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["bin/agent-coordination-dashboard.js", "--demo", "--demo"],
+      { cwd: process.cwd(), encoding: "utf8" }
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Repeated option: --demo");
+    expect(result.stderr).not.toContain("Unknown option");
+  });
+
   it.each([
     { label: "missing --stack-json", args: ["doctor"], message: "doctor requires --stack-json" },
     {
       label: "repeated doctor flag",
       args: ["doctor", "--stack-json", "--stack-json"],
-      message: "Unknown or repeated doctor option: --stack-json"
+      message: "Unknown or repeated doctor option"
     },
     {
       label: "invalid doctor flag",
       args: ["doctor", "--stack-json", "--bogus"],
-      message: "Unknown or repeated doctor option: --bogus"
+      message: "Unknown or repeated doctor option"
     }
   ])("keeps $label at usage exit 64", async ({ args, message }) => {
     const result = await runCli(args);
@@ -99,6 +113,37 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(result.status).toBe(64);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain(message);
+  });
+
+  it.each([
+    {
+      label: "positional URL",
+      rejected: "http://user:sentinel-positional@localhost:4319/?token=sentinel-query"
+    },
+    {
+      label: "attached URL option",
+      rejected: "--url=http://user:sentinel-attached@localhost:4319/?token=sentinel-query"
+    }
+  ])("does not echo secrets from a rejected $label", async ({ rejected }) => {
+    const result = await runCli(["doctor", "--stack-json", rejected]);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Unknown or repeated doctor option");
+    expect(result.stderr).not.toContain(rejected);
+    expect(result.stderr).not.toContain("sentinel-");
+  });
+
+  it.each([
+    { label: "omitted value", args: ["doctor", "--stack-json", "--url"] },
+    { label: "empty value", args: ["doctor", "--stack-json", "--url", ""] }
+  ])("reports a missing URL value for $label", async ({ args }) => {
+    const result = await runCli(args);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("--url requires a value");
+    expect(result.stderr).not.toContain("Unknown or repeated doctor option");
   });
 
   it("emits the shallow component contract with exit parity", async () => {
@@ -145,6 +190,42 @@ describe("agent-coordination-dashboard CLI", () => {
       expect(result.stdout).not.toContain("endpoint-only");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("probes a wildcard-bound dashboard over loopback when ALLOWED_HOSTS is external", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-wildcard-doctor-test-"));
+    const app = await createDashboardApp({
+      port: 0,
+      host: "0.0.0.0",
+      allowedHosts: ["dashboard.local"],
+      stateRoot: root,
+      refreshIntervalMs: 0,
+      targetRepos: [],
+      settingsPath: join(root, "settings.json"),
+      nodeEnv: "test"
+    }, {
+      serveFrontend: false
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected a TCP address for the wildcard dashboard fixture.");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const result = await runCli(["doctor", "--stack-json", "--url", baseUrl]);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const contract = JSON.parse(result.stdout) as DoctorContract;
+      expect(contract.checks.find((check) => check.id === "dashboard.health")?.status).toBe("healthy");
+      expect(contract.checks.find((check) => check.id === "dashboard.health")?.details).toEqual({ url: baseUrl });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { force: true, recursive: true });
     }
   });
 
@@ -268,6 +349,44 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
+  it("classifies a non-200 health response without waiting for its streaming body", async () => {
+    let markResponseClosed: (() => void) | undefined;
+    const responseClosed = new Promise<void>((resolve) => {
+      markResponseClosed = resolve;
+    });
+    const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
+      res.statusCode = 503;
+      res.setHeader("content-type", "text/plain");
+      res.write("unavailable");
+      const stream = setInterval(() => res.write("still-unavailable"), 25);
+      res.on("close", () => {
+        clearInterval(stream);
+        markResponseClosed?.();
+      });
+    });
+    const startedAt = Date.now();
+
+    try {
+      const result = await runCli(["doctor", "--stack-json", "--url", baseUrl]);
+
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toBe("");
+      const contract = JSON.parse(result.stdout) as DoctorContract;
+      expect(contract.checks.find((check) => check.id === "dashboard.health")?.summary).toBe(
+        "Dashboard health endpoint returned HTTP 503"
+      );
+      const closedPromptly = await Promise.race([
+        responseClosed.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_000))
+      ]);
+      expect(closedPromptly).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
+
   it("does not follow health redirects", async () => {
     let redirectedRequests = 0;
     const { baseUrl, server } = await listenDoctorFixture((req, res) => {
@@ -340,6 +459,74 @@ describe("agent-coordination-dashboard CLI", () => {
       expect(contract.checks.find((check) => check.id === "dashboard.health")?.summary).toBe(
         "Dashboard health endpoint returned a redirect"
       );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await exit;
+      }
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
+
+  it("cancels a streaming body with an oversized advertised content length", async () => {
+    let markResponseClosed: (() => void) | undefined;
+    const responseClosed = new Promise<void>((resolve) => {
+      markResponseClosed = resolve;
+    });
+    const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("content-length", String((256 * 1024) + 1));
+      res.flushHeaders();
+      const stream = setInterval(() => res.write("oversized-body"), 25);
+      res.on("close", () => {
+        clearInterval(stream);
+        markResponseClosed?.();
+      });
+    });
+    const child = spawn(
+      process.execPath,
+      ["bin/agent-coordination-dashboard.js", "doctor", "--stack-json", "--url", baseUrl],
+      { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] }
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    const exit = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const completion = await Promise.race([
+        exit.then(([status]) => ({ timedOut: false, status })),
+        new Promise<{ timedOut: true; status: null }>((resolve) => {
+          timeout = setTimeout(() => resolve({ timedOut: true, status: null }), 13_000);
+        })
+      ]);
+      if (completion.timedOut) {
+        child.kill("SIGKILL");
+        await exit;
+      }
+
+      expect(completion.timedOut).toBe(false);
+      expect(completion.status).toBe(2);
+      expect(stderr).toBe("");
+      const contract = JSON.parse(stdout) as DoctorContract;
+      expect(contract.status).toBe("failed");
+      expect(contract.checks.find((check) => check.id === "dashboard.health")?.summary).toBe(
+        "Dashboard health payload exceeded the size limit"
+      );
+      const closedPromptly = await Promise.race([
+        responseClosed.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_000))
+      ]);
+      expect(closedPromptly).toBe(true);
     } finally {
       if (timeout) clearTimeout(timeout);
       if (child.exitCode === null && child.signalCode === null) {
@@ -512,6 +699,47 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
+  it("marks contradictory API success evidence degraded in malformed details", async () => {
+    const { baseUrl, server } = await listenDoctorFixture((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/health") {
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      res.end(JSON.stringify({
+        perResource: [
+          { resource: "claims", mode: "api", status: "ok", httpStatus: 503 },
+          { resource: "heartbeats", mode: "api", status: "ok", httpStatus: 200 },
+          { resource: "batches", mode: "api", status: "empty", httpStatus: 200 },
+          { resource: "events", mode: "api", status: "ok", httpStatus: 200 }
+        ]
+      }));
+    });
+
+    try {
+      const result = await runCli(["doctor", "--stack-json", "--deep", "--url", baseUrl]);
+
+      expect(result.status).toBe(1);
+      const contract = JSON.parse(result.stdout) as DoctorContract;
+      expect(contract.checks.find((check) => check.id === "dashboard.resources")).toEqual({
+        id: "dashboard.resources",
+        status: "degraded",
+        summary: "Dashboard resource payload is incomplete or malformed",
+        details: {
+          resources: [
+            { id: "claims", status: "degraded", mode: "api", http_status: 503 },
+            { id: "heartbeats", status: "healthy", mode: "api" },
+            { id: "batches", status: "healthy", mode: "api" },
+            { id: "events", status: "healthy", mode: "api" }
+          ]
+        },
+        guidance: "Upgrade the dashboard to a compatible diagnostic contract, then rerun with --deep."
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("degrades when a resource list contains an unsafe non-record entry", async () => {
     const { baseUrl, server } = await listenDoctorFixture((req, res) => {
       res.setHeader("content-type", "application/json");
@@ -564,11 +792,13 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
-  it("shares one near-ten-second deadline across deep probes", async () => {
+  it("preserves timeout classification for a stalled body at the shared deep-probe deadline", async () => {
     let requests = 0;
-    const { baseUrl, server } = await listenDoctorFixture(() => {
+    const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
       requests += 1;
-      // Intentionally leave the response open until the CLI deadline aborts it.
+      res.setHeader("content-type", "application/json");
+      res.write('{"ok":');
+      // Intentionally leave the partial body open until the CLI deadline aborts it.
     });
     const startedAt = Date.now();
 

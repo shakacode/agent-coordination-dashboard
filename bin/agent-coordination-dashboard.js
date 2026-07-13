@@ -52,6 +52,9 @@ function exitForStatus(status) {
 
 function parseDashboardUrl(rawUrl) {
   const exactLoopbackUrl = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?\/?$/i;
+  // Check the raw spelling before URL parsing because WHATWG URL normalizes
+  // decimal and shorthand IPv4 forms such as 2130706433 and 127.1 to loopback.
+  // The parsed checks below then validate the constrained URL's semantic fields.
   if (typeof rawUrl !== "string" || !exactLoopbackUrl.test(rawUrl)) {
     throw new Error("--url must be a loopback HTTP URL without credentials, query, fragment, or endpoint path.");
   }
@@ -79,6 +82,7 @@ function parseDashboardUrl(rawUrl) {
 async function readBoundedJson(response) {
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_DOCTOR_BODY_BYTES) {
+    await response.body?.cancel();
     throw new Error("oversized");
   }
   if (!response.body) {
@@ -122,10 +126,17 @@ async function fetchDoctorJson(url, path, deadline) {
       await response.body?.cancel();
       return { response, error: "redirect" };
     }
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      return { response };
+    }
     let payload;
     try {
       payload = await readBoundedJson(response);
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw error;
+      }
       return { response, error: error instanceof Error ? error.message : "malformed" };
     }
     return { response, payload };
@@ -188,11 +199,11 @@ async function serviceHealthCheck(url, deadline) {
   }
   const summary = result.error === "redirect"
     ? "Dashboard health endpoint returned a redirect"
-    : result.error === "oversized"
-      ? "Dashboard health payload exceeded the size limit"
-      : result.error === "malformed" || (result.response.ok && !validPayload)
-        ? "Dashboard health payload is malformed"
-        : `Dashboard health endpoint returned HTTP ${result.response.status}`;
+    : result.response.status !== 200
+      ? `Dashboard health endpoint returned HTTP ${result.response.status}`
+      : result.error === "oversized"
+        ? "Dashboard health payload exceeded the size limit"
+        : "Dashboard health payload is malformed";
   return doctorCheck(
     "dashboard.health",
     "failed",
@@ -229,10 +240,12 @@ function normalizeResourceEvidence(payload) {
       malformed = true;
       continue;
     }
-    const healthy = entry.status === "ok" || entry.status === "empty";
-    if (healthy && entry.mode === "api" && entry.httpStatus !== 200) {
+    const reportsHealthy = entry.status === "ok" || entry.status === "empty";
+    const contradictoryApiStatus = reportsHealthy && entry.mode === "api" && entry.httpStatus !== 200;
+    if (contradictoryApiStatus) {
       malformed = true;
     }
+    const healthy = reportsHealthy && !contradictoryApiStatus;
     resources.push({
       id,
       status: healthy ? "healthy" : "degraded",
@@ -344,12 +357,16 @@ function parseDoctorArgs(doctorArgs) {
       stackJson = true;
     } else if (arg === "--deep" && !deep) {
       deep = true;
-    } else if (arg === "--url" && !urlSeen && doctorArgs[index + 1]) {
-      url = doctorArgs[index + 1];
+    } else if (arg === "--url" && !urlSeen) {
+      const value = doctorArgs[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--url requires a value.");
+      }
+      url = value;
       urlSeen = true;
       index += 1;
     } else {
-      throw new Error(`Unknown or repeated doctor option: ${arg}`);
+      throw new Error("Unknown or repeated doctor option.");
     }
   }
   if (!stackJson) {
@@ -366,8 +383,11 @@ if (args[0] === "doctor") {
   }
 } else {
   const unknownArgs = args.filter((arg) => arg !== "--demo");
-  if (unknownArgs.length > 0 || args.filter((arg) => arg === "--demo").length > 1) {
-    usage(`Unknown option: ${unknownArgs.join(", ") || "--demo"}`, 1);
+  const demoCount = args.filter((arg) => arg === "--demo").length;
+  if (unknownArgs.length > 0) {
+    usage(`Unknown option: ${unknownArgs.join(", ")}`, 1);
+  } else if (demoCount > 1) {
+    usage("Repeated option: --demo.", 1);
   } else {
     const demo = args.includes("--demo");
     const target = demo ? join(packageRoot, "scripts", "demo.ts") : join(packageRoot, "src", "server", "index.ts");
