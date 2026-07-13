@@ -117,8 +117,7 @@ function WorkCard({
   onOpenBatchOperations,
   onOpenItem,
   onAnnotate,
-  onClearAnnotation,
-  now
+  onClearAnnotation
 }: {
   item: WorkItem;
   onToggle?: (id: string) => void;
@@ -127,7 +126,6 @@ function WorkCard({
   onOpenItem?: (item: WorkItem) => void;
   onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
-  now: Date | string;
 }) {
   const reason = item.attention;
   const heartbeat = item.heartbeat;
@@ -171,7 +169,6 @@ function WorkCard({
         {githubUrl ? <a href={githubUrl} rel="noreferrer" target="_blank">{item.github?.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
         <OperatorActions
           item={item}
-          now={new Date(now)}
           onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
           onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
           takeoverAvailable={reason?.kind === "dead_holder"}
@@ -246,7 +243,6 @@ export function AttentionShell({
       onOpenItem={onOpenItem}
       onAnnotate={allowResume ? onAnnotate : undefined}
       onClearAnnotation={onClearAnnotation}
-      now={now}
     />
   );
 

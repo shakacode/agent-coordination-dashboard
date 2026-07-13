@@ -33,13 +33,13 @@ function batchId(item: WorkItem): string | undefined {
 export function OperatorActions({
   item,
   takeoverAvailable = false,
-  now = new Date(),
+  now = () => new Date(),
   onAnnotate,
   onClearAnnotation
 }: {
   item: WorkItem;
   takeoverAvailable?: boolean;
-  now?: Date;
+  now?: () => Date;
   onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: () => Promise<void> | void;
 }) {
@@ -65,7 +65,7 @@ export function OperatorActions({
       if (value === "dismiss") await onAnnotate?.({ kind: "dismiss" });
       if (value === "snooze-1h" || value === "snooze-1d") {
         const duration = value === "snooze-1h" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-        await onAnnotate?.({ kind: "snooze", until: new Date(now.getTime() + duration).toISOString() });
+        await onAnnotate?.({ kind: "snooze", until: new Date(now().getTime() + duration).toISOString() });
       }
       if (value) setConfirmation("Presentation preference saved");
     } catch {
@@ -99,7 +99,7 @@ export function OperatorActions({
         <option value="dismiss">Dismiss forever</option>
       </select>
     </label> : null}
-    {item.annotation && onClearAnnotation ? <button onClick={() => void clearAnnotation()} type="button">Clear dismissal</button> : null}
+    {item.annotation && onClearAnnotation ? <button onClick={() => void clearAnnotation()} type="button">Clear {item.annotation.kind === "snooze" ? "snooze" : "dismissal"}</button> : null}
     {confirmation ? <span aria-live="polite" className="action-confirmation" role="status">{confirmation}</span> : null}
   </div>;
 }

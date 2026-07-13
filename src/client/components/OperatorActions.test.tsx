@@ -30,6 +30,7 @@ describe("OperatorActions", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Resume prompt copied");
     await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
     expect(clipboard.writeText).toHaveBeenLastCalledWith(expect.stringContaining("agent-coord claim"));
+    expect(clipboard.writeText).toHaveBeenLastCalledWith(expect.not.stringContaining("REPLACE_WITH_YOUR_AGENT_ID"));
     expect(screen.getByRole("status")).toHaveTextContent("Takeover command copied");
   });
 
@@ -42,10 +43,20 @@ describe("OperatorActions", () => {
 
   it("sends dismiss and fixed snooze annotations", async () => {
     const onAnnotate = vi.fn().mockResolvedValue(undefined);
-    render(<OperatorActions item={item} now={new Date("2026-07-12T10:00:00Z")} onAnnotate={onAnnotate} />);
+    let clickedAt = new Date("2026-07-12T10:00:00Z");
+    render(<OperatorActions item={item} now={() => clickedAt} onAnnotate={onAnnotate} />);
+    clickedAt = new Date("2026-07-12T12:00:00Z");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
-    expect(onAnnotate).toHaveBeenCalledWith({ kind: "snooze", until: "2026-07-12T11:00:00.000Z" });
+    expect(onAnnotate).toHaveBeenCalledWith({ kind: "snooze", until: "2026-07-12T13:00:00.000Z" });
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "dismiss");
     expect(onAnnotate).toHaveBeenLastCalledWith({ kind: "dismiss" });
+  });
+
+  it.each([
+    ["dismiss", "Clear dismissal"],
+    ["snooze", "Clear snooze"]
+  ] as const)("labels the %s clear action precisely", (kind, label) => {
+    render(<OperatorActions item={{ ...item, annotation: { key: "shakacode/dashboard/47", kind, createdAt: "2026-07-12T10:00:00Z", ...(kind === "snooze" ? { until: "2099-07-12T11:00:00Z" } : {}), active: true } }} onClearAnnotation={vi.fn()} />);
+    expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
   });
 });

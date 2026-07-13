@@ -16,13 +16,14 @@ function quote(value: string): string {
 
 function context(item: OperatorCommandItem) {
   const claim = item.claim?.status === "active" ? item.claim : undefined;
+  const heartbeatMatchesClaim = !claim || item.heartbeat?.agentId === claim.agentId;
   return {
     repo: safe(item.repo, REPO),
     target: safe(item.target, TARGET),
     thread: safe(claim?.threadHandle || item.heartbeat?.threadHandle),
     batch: safe(claim?.batchId || item.heartbeat?.batchId || item.batchSignals?.[0]?.batchId),
     branch: safe(claim?.branch || item.heartbeat?.branch || (item.github?.loadState === "loaded" ? item.github.branch : undefined)),
-    phase: safe(item.heartbeat?.status || item.batchSignals?.[0]?.status)
+    phase: safe((heartbeatMatchesClaim ? item.heartbeat?.status : undefined) || item.batchSignals?.[0]?.status)
   };
 }
 
@@ -44,10 +45,11 @@ export function resumeCommandPrompt(item: OperatorCommandItem): string {
 /** agent-coord performs a dead-holder takeover when a new claimant uses claim. */
 export function takeoverCommand(item: OperatorCommandItem): string {
   const { repo, target, batch, branch } = context(item);
-  if (!repo || !target) return "agent-coord claim --agent-id REPLACE_WITH_YOUR_AGENT_ID --repo REPLACE_WITH_OWNER_REPO --target REPLACE_WITH_TARGET";
+  const requiredAgentId = '"${AGENT_COORD_AGENT_ID:?Set AGENT_COORD_AGENT_ID}"';
+  if (!repo || !target) return `agent-coord claim --agent-id ${requiredAgentId} --repo REPLACE_WITH_OWNER_REPO --target REPLACE_WITH_TARGET`;
   return [
     "agent-coord claim",
-    "--agent-id REPLACE_WITH_YOUR_AGENT_ID",
+    `--agent-id ${requiredAgentId}`,
     `--repo ${quote(repo)}`,
     `--target ${quote(target)}`,
     batch ? `--batch-id ${quote(batch)}` : undefined,

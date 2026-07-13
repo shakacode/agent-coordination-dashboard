@@ -105,6 +105,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -142,14 +143,18 @@ describe("App", () => {
   });
 
   it("persists a card snooze through the dashboard annotation API", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-12T11:20:00.000Z"));
     render(<App />);
     await screen.findByRole("heading", { name: "Attention" });
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
 
-    expect(fetch).toHaveBeenCalledWith("/api/annotations", expect.objectContaining({
-      method: "POST",
-      body: JSON.stringify({ repo: "repo/dashboard", target: "43", kind: "snooze", until: "2026-07-12T12:20:00.000Z" })
-    }));
+    const annotationRequest = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/annotations")?.[1];
+    const body = JSON.parse(String(annotationRequest?.body)) as { repo: string; target: string; kind: string; until: string };
+    expect(annotationRequest).toMatchObject({ method: "POST" });
+    expect(body).toMatchObject({ repo: "repo/dashboard", target: "43", kind: "snooze" });
+    expect(Date.parse(body.until)).toBeGreaterThan(Date.now());
+    expect(Date.parse(body.until) - Date.now()).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
     expect(await screen.findByRole("status")).toHaveTextContent("Presentation preference saved");
   });
 

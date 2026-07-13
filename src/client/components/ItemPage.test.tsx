@@ -121,7 +121,7 @@ describe("ItemPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "agent-coord claim --agent-id REPLACE_WITH_YOUR_AGENT_ID --repo 'shakacode/dashboard' --target '46'"
+      "agent-coord claim --agent-id \"${AGENT_COORD_AGENT_ID:?Set AGENT_COORD_AGENT_ID}\" --repo 'shakacode/dashboard' --target '46'"
     );
   });
 
@@ -167,7 +167,8 @@ describe("ItemPage", () => {
       const command = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
       expect(command).toContain("--repo REPLACE_WITH_OWNER_REPO");
       expect(command).not.toContain("touch");
-      nodeChildProcess.execFileSync("sh", ["-c", `set -- ${command.replace("agent-coord claim ", "")}`]);
+      expect(command).not.toContain("REPLACE_WITH_YOUR_AGENT_ID");
+      expect(() => nodeChildProcess.execFileSync("sh", ["-c", `unset AGENT_COORD_AGENT_ID; set -- ${command.replace("agent-coord claim ", "")}`])).toThrow();
       expect(nodeFs.existsSync(marker)).toBe(false);
     } finally {
       nodeFs.rmSync(directory, { force: true, recursive: true });

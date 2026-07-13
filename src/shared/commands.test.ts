@@ -41,8 +41,14 @@ describe("operator commands", () => {
 
   it("builds an executable dead-holder takeover claim using current CLI fields", () => {
     expect(takeoverCommand(workItem)).toBe(
-      "agent-coord claim --agent-id REPLACE_WITH_YOUR_AGENT_ID --repo 'shakacode/dashboard' --target '47' --batch-id 'acd-c' --branch 'codex/issue-47'"
+      "agent-coord claim --agent-id \"${AGENT_COORD_AGENT_ID:?Set AGENT_COORD_AGENT_ID}\" --repo 'shakacode/dashboard' --target '47' --batch-id 'acd-c' --branch 'codex/issue-47'"
     );
+    expect(takeoverCommand(workItem)).not.toContain("REPLACE_WITH_YOUR_AGENT_ID");
+  });
+
+  it("does not borrow a phase from a heartbeat owned by a different agent", () => {
+    expect(resumeCommandPrompt({ ...workItem, heartbeat: { ...workItem.heartbeat, agentId: "worker-other", status: "reviewing" } }))
+      .toContain("Last phase: UNKNOWN");
   });
 
   it("does not interpolate untrusted control characters", () => {
