@@ -75,12 +75,16 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 }
 
 function withoutExplicitStructuredPaths(value: string): string {
-  const withoutRelativeDriveOrFilePaths = value.replace(
-    /(^|[^A-Za-z0-9._/-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[A-Za-z0-9@%+~._/-]+/gi,
+  const withoutQuotedPaths = value.replace(
+    /(["'`])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/)|\/)[^\r\n]*?\1/gi,
+    ""
+  );
+  const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(
+    /(^|[^\p{L}\p{N}._/-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{N}@%+~._/-]+/giu,
     "$1"
   );
   return withoutRelativeDriveOrFilePaths.replace(
-    /(^|[^A-Za-z0-9._/:-])\/[A-Za-z0-9@%+~._/-]+/g,
+    /(^|[^\p{L}\p{N}._/:-])\/[\p{L}\p{N}@%+~._/-]+/gu,
     "$1"
   );
 }
