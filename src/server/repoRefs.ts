@@ -81,7 +81,7 @@ function withoutExplicitStructuredPaths(value: string): string {
     new RegExp(`'${explicitPathPrefix}(?:\\\\.|[^'\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*'`, "gi"),
     new RegExp(`\`${explicitPathPrefix}(?:\\\\.|[^\`\\\\\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u2028\\u2029])*\``, "gi")
   ];
-  const withoutQuotedPaths = quotedPathPatterns.reduce((text, pattern) => text.replace(pattern, ""), value);
+  const withoutQuotedPaths = quotedPathPatterns.reduce((text, pattern) => text.replace(pattern, " "), value);
   const withoutRelativeDriveOrFilePaths = withoutQuotedPaths.replace(
     /(^|[^\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D._/@%+~-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[\p{L}\p{M}\p{N}\p{So}\p{Sk}\u200D@%+~._/-]+/giu,
     "$1"
