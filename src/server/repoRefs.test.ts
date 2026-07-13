@@ -71,7 +71,12 @@ describe("repoRefsFromStructuredEventField", () => {
   it.each([
     ["ci/passed; updated ./x/y; deploy/qa/private", "deploy/qa"],
     ["ci/passed, updated ./x/y, other/private/path", "other/private"],
-    ["ci/passed: updated ./x/y: other/private/path", "other/private"]
+    ["ci/passed: updated ./x/y: other/private/path", "other/private"],
+    ["ci/passed|updated ./x/y|other/private/path", "other/private"],
+    ["ci/passed!updated ./x/y!other/private/path", "other/private"],
+    ["ci/passed?updated ./x/y?other/private/path", "other/private"],
+    ["ci/passed=updated ./x/y=other/private/path", "other/private"],
+    ["ci/passed checks; fetched https://ci/passed/private", "ci/passed"]
   ])("does not let explicit paths consume punctuation-adjacent repository chains: %s", (value, ref) => {
     expect(repoRefsFromStructuredEventField(value)).toContain(ref);
   });
