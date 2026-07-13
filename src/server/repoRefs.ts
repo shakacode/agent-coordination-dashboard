@@ -74,6 +74,25 @@ function isStructuredSlashVocabulary(ref: string): boolean {
   return STRUCTURED_SLASH_VOCABULARY.some((pattern) => pattern.test(ref));
 }
 
+const LOCAL_STRUCTURED_PATH_ROOT = /^(?:app|client|config|docs|lib|packages|public|scripts|server|spec|src|test|tests)\//i;
+
+function isLikelyLocalStructuredPath(ref: string): boolean {
+  return LOCAL_STRUCTURED_PATH_ROOT.test(ref) && LOCAL_FILE_REF_PATTERN.test(`/${ref}`);
+}
+
+function repoRefsFromStructuredText(value: string): string[] {
+  const refs = new Set<string>();
+  for (const match of value.matchAll(OWNER_REPO_REF_PATTERN)) {
+    const start = match.index || 0;
+    const end = start + match[1].length;
+    const before = value[start - 1] || "";
+    const after = value[end] || "";
+    if (/[/.]/.test(before) || after === "/") continue;
+    refs.add(match[1]);
+  }
+  return Array.from(refs);
+}
+
 /**
  * Event type/status fields are structured enough to recognize embedded repo
  * references, but they also use conventional slash vocabulary. High-confidence
@@ -89,13 +108,14 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
   const contextPattern = /\b(?:phase|repo(?:sitory)?|blocked\s+on|waiting\s+on|depends\s+on)\s*:?[ \t]+(?:repo(?:sitory)?[ \t]+)?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
   for (const match of value.matchAll(contextPattern)) explicitContext.add(match[1]);
 
-  const candidates = new Set([...repoRefsFromText(value), ...highConfidence, ...explicitContext]);
+  const candidates = new Set([...repoRefsFromText(value), ...repoRefsFromStructuredText(value), ...highConfidence, ...explicitContext]);
   for (const ref of candidates) {
     if (highConfidence.has(ref) || explicitContext.has(ref)) {
       refs.add(ref);
       continue;
     }
     if (isStructuredSlashVocabulary(ref)) continue;
+    if (isLikelyLocalStructuredPath(ref)) continue;
     refs.add(ref);
   }
   return Array.from(refs);

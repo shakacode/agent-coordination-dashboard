@@ -274,6 +274,18 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-dotted-issue-status", type: "phase", phase: "other/private.js#12", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:17:00Z"
+        },
+        {
+          event_id: "foreign-dotted-prose-status", type: "phase", phase: "reviewing other/private.js changes", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:18:00Z"
+        },
+        {
+          event_id: "safe-dotted-message", type: "phase", phase: "reviewing", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:19:00Z", message: "reviewing other/private.js changes"
+        },
+        {
+          event_id: "safe-local-path-status", type: "phase", phase: "updated src/client.ts", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:20:00Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -327,7 +339,11 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "foreign-dotted-status")?.status).toBeUndefined();
     expect(timeline.phases.find((phase) => phase.eventId === "foreign-dotted-status")?.phase).toBe("phase");
     expect(timeline.events.find((event) => event.eventId === "foreign-dotted-issue-status")?.status).toBeUndefined();
-    expect(JSON.stringify(timeline.phases)).not.toContain("other/private.js");
+    expect(timeline.events.find((event) => event.eventId === "foreign-dotted-prose-status")?.status).toBeUndefined();
+    expect(JSON.stringify(timeline.phases.map((phase) => phase.phase))).not.toContain("other/private.js");
+    expect(timeline.events.find((event) => event.eventId === "safe-dotted-message")?.message).toBe("reviewing other/private.js changes");
+    expect(timeline.events.find((event) => event.eventId === "safe-local-path-status")?.status).toBe("updated src/client.ts");
+    expect(timeline.phases.find((phase) => phase.eventId === "safe-local-path-status")?.phase).toBe("updated src/client.ts");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

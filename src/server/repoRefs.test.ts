@@ -30,8 +30,17 @@ describe("repoRefsFromStructuredEventField", () => {
 
   it.each([
     ["reviewing other/private changes", "other/private"],
-    ["(other/private) blocked", "other/private"]
+    ["(other/private) blocked", "other/private"],
+    ["reviewing other/private.js changes", "other/private.js"]
   ])("conservatively treats a non-allowlisted embedded slash ref as a repository: %s", (value, ref) => {
     expect(repoRefsFromStructuredEventField(value)).toContain(ref);
+  });
+
+  it.each([
+    "updated src/client.ts",
+    "updated ./other/private.js",
+    "updated /workspace/private/file.js"
+  ])("preserves an explicitly local path in structured prose: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });
 });
