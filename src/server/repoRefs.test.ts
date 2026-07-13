@@ -132,7 +132,7 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it("handles thousands of URL segments without recursion or lost suffix refs", () => {
-    const value = `${"https://example.com/x|".repeat(2_500)}other/private/path`;
+    const value = `${"https://example.com/x|".repeat(10_000)}other/private/path`;
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
 

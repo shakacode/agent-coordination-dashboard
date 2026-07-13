@@ -35,10 +35,11 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
 
     const schemeEnd = index + (isHttps ? 8 : 7);
     let coarseAuthorityEnd = schemeEnd;
+    let lastAt = -1;
     while (coarseAuthorityEnd < value.length && !/\s/.test(value[coarseAuthorityEnd]) && !"/?#".includes(value[coarseAuthorityEnd])) {
+      if (value[coarseAuthorityEnd] === "@") lastAt = coarseAuthorityEnd;
       coarseAuthorityEnd += 1;
     }
-    const lastAt = value.lastIndexOf("@", coarseAuthorityEnd - 1);
     let cursor = schemeEnd;
     let delimiterIndex = -1;
 
