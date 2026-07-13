@@ -75,9 +75,13 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 }
 
 function withoutExplicitStructuredPaths(value: string): string {
-  return value.replace(
-    /(^|[^A-Za-z0-9._/-])((?:file:\/\/)?(?:\.{1,2}\/|\/))[A-Za-z0-9@%+~._/-]+/gi,
-    (match, boundary: string, prefix: string) => prefix === "/" && boundary === ":" ? match : boundary
+  const withoutRelativeDriveOrFilePaths = value.replace(
+    /(^|[^A-Za-z0-9._/-])(?:\.{1,2}\/|[A-Za-z]:\/|file:(?:\/\/(?:localhost)?\/|\/))[A-Za-z0-9@%+~._/-]+/gi,
+    "$1"
+  );
+  return withoutRelativeDriveOrFilePaths.replace(
+    /(^|[^A-Za-z0-9._/:-])\/[A-Za-z0-9@%+~._/-]+/g,
+    "$1"
   );
 }
 
