@@ -252,7 +252,11 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://[[bad;github.com/other/private",
     "https://[bad:github.com/other/private",
     "https://[bad:other/private/path",
-    "https://[bad)other/private/path"
+    "https://[bad)other/private/path",
+    "https://[::1:github.com/other/private",
+    "https://[::1:https://github.com/other/private",
+    "https://[bad)github.com/other/private",
+    "https://[bad)https://github.com/other/private"
   ])("replays structural delimiters after an unmatched authority bracket: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });

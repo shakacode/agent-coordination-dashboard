@@ -1,5 +1,6 @@
 const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/iy;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
+const OWNER_REPO_REF_AT_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+/y;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
 
@@ -40,6 +41,11 @@ function isHttpUrlAt(value: string, index: number): boolean {
 
 function isRepositoryUrlAt(value: string, index: number): boolean {
   return isHttpUrlAt(value, index) || Boolean(schemelessGithubRepoMatchAt(value, index));
+}
+
+function isOwnerRepoRefAt(value: string, index: number): boolean {
+  OWNER_REPO_REF_AT_PATTERN.lastIndex = index;
+  return Boolean(OWNER_REPO_REF_AT_PATTERN.exec(value));
 }
 
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
@@ -115,7 +121,11 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         continue;
       }
       if (character === "@") lastAt = coarseAuthorityEnd;
-      if (bracketFallbackDelimiter < 0 && (structuralDelimiters + closingDelimiters).includes(character)) bracketFallbackDelimiter = coarseAuthorityEnd;
+      if (character === ":" && (isRepositoryUrlAt(value, coarseAuthorityEnd + 1) || isOwnerRepoRefAt(value, coarseAuthorityEnd + 1))) {
+        bracketFallbackDelimiter = coarseAuthorityEnd;
+      } else if (bracketFallbackDelimiter < 0 && (structuralDelimiters + closingDelimiters).replace(":", "").includes(character)) {
+        bracketFallbackDelimiter = coarseAuthorityEnd;
+      }
       if (authorityDelimiter < 0 && bracketDepth === 0 && (structuralDelimiters + closingDelimiters).includes(character)) {
         if (character === ":") {
           let portEnd = coarseAuthorityEnd + 1;
@@ -132,7 +142,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     }
     if (bracketDepth > 0 && authorityDelimiter < 0) authorityDelimiter = bracketFallbackDelimiter;
     let cursor = authorityDelimiter >= 0 ? authorityDelimiter : coarseAuthorityEnd;
-    let delimiterIndex = authorityDelimiter >= 0 && structuralDelimiters.includes(value[authorityDelimiter]) ? authorityDelimiter : -1;
+    let delimiterIndex = authorityDelimiter >= 0 && (structuralDelimiters + closingDelimiters).includes(value[authorityDelimiter]) ? authorityDelimiter : -1;
 
     let urlEnd = delimiterIndex >= 0 ? delimiterIndex : cursor;
     if (delimiterIndex < 0 && value[cursor] === "/") {
