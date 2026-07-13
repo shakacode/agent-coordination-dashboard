@@ -110,6 +110,13 @@ function activityTime(item: WorkItem): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+function humanTimestamp(value: string): string {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(parsed)
+    : "UNKNOWN";
+}
+
 function WorkCard({
   item,
   onToggle,
@@ -141,7 +148,7 @@ function WorkCard({
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
         {item.annotation?.kind === "dismiss" ? <p className="attention-card-meta">Dismissed by operator</p> : null}
-        {item.annotation?.kind === "snooze" ? <p className="attention-card-meta">Snoozed until {item.annotation.until}</p> : null}
+        {item.annotation?.kind === "snooze" && item.annotation.until ? <p className="attention-card-meta">Snoozed until <time dateTime={item.annotation.until}>{humanTimestamp(item.annotation.until)}</time></p> : null}
         {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
         {item.github?.loadState === "unknown" ? <p className="attention-card-meta">GitHub state: UNKNOWN</p> : null}
         {item.github?.branchState === "deleted" ? <p className="attention-card-meta">Branch deleted (supporting signal)</p> : null}

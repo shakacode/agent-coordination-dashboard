@@ -3,6 +3,7 @@ import type { BatchEvent } from "../../shared/types";
 import { firstDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
+import { safePullRequestUrl } from "../githubUrls";
 
 function duration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
@@ -13,22 +14,6 @@ function duration(durationMs: number): string {
 
 function sourceIsUnknown(timeline: ItemTimelineResponse): boolean {
   return timeline.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
-}
-
-function safePullRequestUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:"
-      && url.hostname.toLowerCase() === "github.com"
-      && !url.username
-      && !url.password
-      && !url.port
-      && /^\/[^/]+\/[^/]+\/pull\/\d+(?:\/(?:files|commits|checks)(?:\/[^/]*)?)?\/?$/.test(url.pathname)
-      ? url.toString()
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function unique(values: Array<string | undefined>): string[] {

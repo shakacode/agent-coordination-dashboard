@@ -36,6 +36,19 @@ interface ItemRoute {
   target: string;
 }
 
+function fallbackTimelineWorkItem(timeline: Pick<ItemTimelineResponse, "repo" | "target">): WorkItem {
+  return {
+    id: `${timeline.repo}#${timeline.target}`,
+    repo: timeline.repo,
+    target: timeline.target,
+    type: "unknown",
+    schedulingState: "started_not_processing",
+    provenance: { classification: "unknown", evidence: [] },
+    warnings: [],
+    selected: false
+  };
+}
+
 function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefined {
   const item = params.get("item");
   const match = item?.match(/^([^/#]+\/[^/#]+)\/([^/#]+)$/);
@@ -621,6 +634,7 @@ export function App() {
       </>
     );
   };
+  const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline) : undefined;
 
   return (
     <main className="app-shell">
@@ -778,9 +792,9 @@ export function App() {
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
               <ItemPage
-                onAnnotate={(annotation) => mutateAnnotation(itemTimeline.item || { id: `${itemTimeline.repo}#${itemTimeline.target}`, repo: itemTimeline.repo, target: itemTimeline.target, type: "unknown", schedulingState: "started_not_processing", provenance: { classification: "unknown", evidence: [] }, warnings: [], selected: false }, annotation)}
+                onAnnotate={(annotation) => mutateAnnotation(timelineWorkItem!, annotation)}
                 onBack={closeItem}
-                onClearAnnotation={() => mutateAnnotation(itemTimeline.item || { id: `${itemTimeline.repo}#${itemTimeline.target}`, repo: itemTimeline.repo, target: itemTimeline.target, type: "unknown", schedulingState: "started_not_processing", provenance: { classification: "unknown", evidence: [] }, warnings: [], selected: false })}
+                onClearAnnotation={() => mutateAnnotation(timelineWorkItem!)}
                 timeline={itemTimeline}
               />
             </>

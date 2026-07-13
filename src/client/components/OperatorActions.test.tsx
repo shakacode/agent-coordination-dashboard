@@ -41,6 +41,37 @@ describe("OperatorActions", () => {
     expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute("href", "/?batch=batch-a");
   });
 
+  it.each([
+    "https://github.com/shakacode/dashboard/pull/56/files?diff=unified#file-1",
+    "https://github.com/shakacode/dashboard/pull/56/checks?check_run_id=12",
+    "https://github.com/shakacode/dashboard/pull/56/commits/abc123#diff"
+  ])("canonicalizes a safe PR subpage action link: %s", (prUrl) => {
+    render(<OperatorActions item={{ ...item, claim: { ...item.claim!, prUrl } }} />);
+    expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
+  });
+
+  it.each([
+    "http://github.com/shakacode/dashboard/pull/56",
+    "https://user@github.com/shakacode/dashboard/pull/56",
+    "https://github.com:444/shakacode/dashboard/pull/56",
+    "https://example.test/shakacode/dashboard/pull/56",
+    "https://github.com/shakacode/dashboard/issues/56"
+  ])("rejects an unsafe PR action link: %s", (prUrl) => {
+    render(<OperatorActions item={{ ...item, claim: { ...item.claim!, prUrl } }} />);
+    expect(screen.queryByRole("link", { name: "Open PR" })).not.toBeInTheDocument();
+  });
+
+  it("does not open links from a different holder's heartbeat when an active claim exists", () => {
+    render(<OperatorActions item={{
+      ...item,
+      claim: { ...item.claim!, batchId: undefined, branch: undefined, prUrl: undefined },
+      heartbeat: { ...item.heartbeat!, agentId: "worker-other", batchId: "other-batch", branch: "other-branch", prUrl: "https://github.com/shakacode/dashboard/pull/99" }
+    }} />);
+    expect(screen.queryByRole("link", { name: "Open PR" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open branch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open batch" })).not.toBeInTheDocument();
+  });
+
   it("sends dismiss and fixed snooze annotations", async () => {
     const onAnnotate = vi.fn().mockResolvedValue(undefined);
     let clickedAt = new Date("2026-07-12T10:00:00Z");

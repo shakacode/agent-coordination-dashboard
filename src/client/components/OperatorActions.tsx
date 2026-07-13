@@ -1,32 +1,35 @@
 import { useState } from "react";
 import { resumeCommandPrompt, takeoverCommand } from "../../shared/commands";
 import type { WorkItem } from "../../shared/types";
+import { canonicalPullRequestUrl } from "../githubUrls";
 
 export interface AnnotationAction {
   kind: "dismiss" | "snooze";
   until?: string;
 }
 
+function actionCustody(item: WorkItem) {
+  const claim = item.claim?.status === "active" ? item.claim : undefined;
+  const heartbeat = !claim || item.heartbeat?.agentId === claim.agentId ? item.heartbeat : undefined;
+  return { claim, heartbeat };
+}
+
 function pullRequestUrl(item: WorkItem): string | undefined {
-  const values = [item.github?.type === "pull_request" ? item.github.url : undefined, item.claim?.prUrl, item.heartbeat?.prUrl];
-  return values.find((value) => {
-    if (!value) return false;
-    try {
-      const url = new URL(value);
-      return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && !url.username && !url.password && !url.port
-        && /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname) && !url.search && !url.hash;
-    } catch { return false; }
-  });
+  const { claim, heartbeat } = actionCustody(item);
+  const values = [item.github?.type === "pull_request" ? item.github.url : undefined, claim?.prUrl, heartbeat?.prUrl];
+  return values.flatMap((value) => value ? [canonicalPullRequestUrl(value)] : []).find(Boolean);
 }
 
 function branchUrl(item: WorkItem): string | undefined {
-  const branch = (item.claim?.status === "active" ? item.claim.branch : undefined) || item.heartbeat?.branch || (item.github?.loadState === "loaded" ? item.github.branch : undefined);
+  const { claim, heartbeat } = actionCustody(item);
+  const branch = claim?.branch || heartbeat?.branch || (item.github?.loadState === "loaded" ? item.github.branch : undefined);
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch || "") || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(item.repo)) return undefined;
   return `https://github.com/${item.repo}/tree/${encodeURIComponent(branch!)}`;
 }
 
 function batchId(item: WorkItem): string | undefined {
-  const value = (item.claim?.status === "active" ? item.claim.batchId : undefined) || item.heartbeat?.batchId || item.batchSignals?.[0]?.batchId;
+  const { claim, heartbeat } = actionCustody(item);
+  const value = claim?.batchId || heartbeat?.batchId || item.batchSignals?.[0]?.batchId;
   return /^[A-Za-z0-9][A-Za-z0-9._:@+-]*$/.test(value || "") ? value : undefined;
 }
 

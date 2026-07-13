@@ -56,6 +56,19 @@ describe("AttentionShell", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Resume prompt copied");
   });
 
+  it("humanizes an active snooze timestamp while preserving its machine-readable value", () => {
+    const snoozed: WorkItem = {
+      ...ITEMS[0],
+      operatorState: "ready",
+      attention: undefined,
+      annotation: { key: "repo/dashboard/43", kind: "snooze", until: "2026-07-12T11:00:00.000Z", createdAt: "2026-07-12T10:00:00.000Z", active: true }
+    };
+    render(<AttentionShell items={[snoozed]} onQueryChange={vi.fn()} query="" surface="find" />);
+    const time = screen.getByText((content, element) => element?.tagName === "TIME" && content.includes("2026"));
+    expect(time).toHaveAttribute("datetime", "2026-07-12T11:00:00.000Z");
+    expect(time).not.toHaveTextContent("2026-07-12T11:00:00.000Z");
+  });
+
   it("does not expose an enabled timeline action when no open handler is supplied", () => {
     render(<AttentionShell items={ITEMS} onQueryChange={vi.fn()} query="" surface="attention" />);
 

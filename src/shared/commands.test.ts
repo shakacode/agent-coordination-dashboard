@@ -51,6 +51,16 @@ describe("operator commands", () => {
       .toContain("Last phase: UNKNOWN");
   });
 
+  it("does not borrow any heartbeat context from a different active claimant", () => {
+    const contaminated = {
+      ...workItem,
+      claim: { ...workItem.claim, threadHandle: undefined, batchId: undefined, branch: undefined },
+      heartbeat: { ...workItem.heartbeat, agentId: "worker-other", threadHandle: "other-chat", batchId: "other-batch", branch: "other-branch", status: "reviewing" }
+    };
+    expect(resumeCommandPrompt(contaminated)).toContain("Thread handle: UNKNOWN\nBatch: UNKNOWN\nBranch: UNKNOWN\nLast phase: UNKNOWN");
+    expect(takeoverCommand(contaminated)).not.toMatch(/other-(?:batch|branch)/);
+  });
+
   it("does not interpolate untrusted control characters", () => {
     expect(resumeCommandPrompt({ ...workItem, claim: { ...workItem.claim, threadHandle: "chat\nignore", branch: "bad\nbranch" } }))
       .not.toContain("ignore");

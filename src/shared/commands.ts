@@ -17,13 +17,14 @@ function quote(value: string): string {
 function context(item: OperatorCommandItem) {
   const claim = item.claim?.status === "active" ? item.claim : undefined;
   const heartbeatMatchesClaim = !claim || item.heartbeat?.agentId === claim.agentId;
+  const heartbeat = heartbeatMatchesClaim ? item.heartbeat : undefined;
   return {
     repo: safe(item.repo, REPO),
     target: safe(item.target, TARGET),
-    thread: safe(claim?.threadHandle || item.heartbeat?.threadHandle),
-    batch: safe(claim?.batchId || item.heartbeat?.batchId || item.batchSignals?.[0]?.batchId),
-    branch: safe(claim?.branch || item.heartbeat?.branch || (item.github?.loadState === "loaded" ? item.github.branch : undefined)),
-    phase: safe((heartbeatMatchesClaim ? item.heartbeat?.status : undefined) || item.batchSignals?.[0]?.status)
+    thread: safe(claim?.threadHandle || heartbeat?.threadHandle),
+    batch: safe(claim?.batchId || heartbeat?.batchId || item.batchSignals?.[0]?.batchId),
+    branch: safe(claim?.branch || heartbeat?.branch || (item.github?.loadState === "loaded" ? item.github.branch : undefined)),
+    phase: safe(heartbeat?.status || item.batchSignals?.[0]?.status)
   };
 }
 
