@@ -31,12 +31,14 @@ function batchId(item: WorkItem): string | undefined {
 export function OperatorActions({
   item,
   takeoverAvailable = false,
+  resumeAvailable = true,
   now = () => new Date(),
   onAnnotate,
   onClearAnnotation
 }: {
   item: WorkItem;
   takeoverAvailable?: boolean;
+  resumeAvailable?: boolean;
   now?: () => Date;
   onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: () => Promise<void> | void;
@@ -83,7 +85,7 @@ export function OperatorActions({
   }
 
   return <div className="operator-actions">
-    <button onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button>
+    {resumeAvailable ? <button onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button> : null}
     {takeoverAvailable ? <button onClick={() => void copy(takeoverCommand(item), "Takeover command")} type="button">Copy takeover command</button> : null}
     {pr ? <a href={pr} rel="noreferrer" target="_blank">Open PR</a> : null}
     {branch ? <a href={branch} rel="noreferrer" target="_blank">Open branch</a> : null}

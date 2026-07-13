@@ -65,9 +65,13 @@ function matches(item: WorkItem, query: string): boolean {
 }
 
 function isNowItem(item: WorkItem): boolean {
-  const { heartbeat } = effectiveCustody(item);
+  // Now is a visibility surface: keep live/stale conflict rows visible while
+  // WorkCard fences their attribution through effectiveCustody.
+  const heartbeat = item.heartbeat;
   return Boolean(
     heartbeat
+    && (!heartbeat.repo || heartbeat.repo === item.repo)
+    && (!heartbeat.target || heartbeat.target === item.target)
     && ["live", "stale"].includes(heartbeat.liveness)
     && isOperationalWorkItem(item)
   );
@@ -128,7 +132,8 @@ function WorkCard({
   onOpenBatchOperations,
   onOpenItem,
   onAnnotate,
-  onClearAnnotation
+  onClearAnnotation,
+  resumeAvailable
 }: {
   item: WorkItem;
   onToggle?: (id: string) => void;
@@ -137,9 +142,10 @@ function WorkCard({
   onOpenItem?: (item: WorkItem) => void;
   onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
+  resumeAvailable: boolean;
 }) {
   const reason = item.attention;
-  const { claim, heartbeat } = effectiveCustody(item);
+  const { claim, heartbeat, heartbeatConflict } = effectiveCustody(item);
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
   const machine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, claim?.threadHandle]);
@@ -151,6 +157,7 @@ function WorkCard({
         <p className="attention-card-kicker">{displayAttribution(item.repo)}</p>
         <h2>{workLabel(item)}: {itemTitle(item)}</h2>
         {reason ? <p>{reason.label}</p> : null}
+        {heartbeatConflict ? <p className="attention-card-meta">Heartbeat holder conflicts with the active claim; heartbeat attribution is hidden.</p> : null}
         {item.annotation?.kind === "dismiss" ? <p className="attention-card-meta">Dismissed by operator</p> : null}
         {item.annotation?.kind === "snooze" && item.annotation.until ? <p className="attention-card-meta">Snoozed until <time dateTime={item.annotation.until}>{humanTimestamp(item.annotation.until)}</time></p> : null}
         {item.terminalProvenance?.source === "github" ? <p className="attention-card-meta">Derived from GitHub</p> : null}
@@ -182,6 +189,7 @@ function WorkCard({
           item={item}
           onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
           onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
+          resumeAvailable={resumeAvailable}
           takeoverAvailable={reason?.kind === "dead_holder" && heartbeat?.liveness === "dead"}
         />
       </div>
@@ -254,6 +262,7 @@ export function AttentionShell({
       onOpenItem={onOpenItem}
       onAnnotate={allowResume ? onAnnotate : undefined}
       onClearAnnotation={onClearAnnotation}
+      resumeAvailable={allowResume && !["terminal", "archived_view"].includes(item.operatorState || "")}
     />
   );
 

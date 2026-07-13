@@ -8,8 +8,9 @@ type CustodyInput = Pick<WorkItem, "claim" | "heartbeat">;
  */
 export function effectiveCustody(item: CustodyInput) {
   const claim = item.claim?.status === "active" ? item.claim : undefined;
-  const heartbeat = !claim || item.heartbeat?.agentId === claim.agentId
+  const heartbeatConflict = Boolean(claim && item.heartbeat && item.heartbeat.agentId !== claim.agentId);
+  const heartbeat = !heartbeatConflict
     ? item.heartbeat
     : undefined;
-  return { claim, heartbeat };
+  return { claim, heartbeat, heartbeatConflict };
 }

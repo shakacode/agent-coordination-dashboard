@@ -272,7 +272,7 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "0 events" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "0 health" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Back to Find" }));
     expect(screen.getByRole("button", { name: "2 lanes truly open" })).toBeInTheDocument();

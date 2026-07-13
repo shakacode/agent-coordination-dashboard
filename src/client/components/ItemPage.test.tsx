@@ -202,8 +202,20 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getByText("Holder: UNKNOWN")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy takeover command" })).not.toBeInTheDocument();
+  });
+
+  it("does not advertise resume for a dashboard-archived dismissed item", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: {
+        ...timeline.item,
+        operatorState: "archived_view",
+        annotation: { key: "shakacode/dashboard/46", kind: "dismiss", createdAt: "2026-07-12T10:00:00Z", active: true }
+      }
+    }} />);
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
   });
 
   it("does not present released custody with a live heartbeat as held or eligible for takeover", () => {

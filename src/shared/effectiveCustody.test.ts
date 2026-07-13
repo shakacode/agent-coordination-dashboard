@@ -9,15 +9,15 @@ const item = {
 
 describe("effectiveCustody", () => {
   it("fences a heartbeat from a different active claim holder", () => {
-    expect(effectiveCustody(item)).toEqual({ claim: item.claim, heartbeat: undefined });
+    expect(effectiveCustody(item)).toEqual({ claim: item.claim, heartbeat: undefined, heartbeatConflict: true });
   });
 
   it("uses heartbeat evidence when there is no active claim", () => {
-    expect(effectiveCustody({ ...item, claim: { ...item.claim, status: "released" } })).toEqual({ claim: undefined, heartbeat: item.heartbeat });
+    expect(effectiveCustody({ ...item, claim: { ...item.claim, status: "released" } })).toEqual({ claim: undefined, heartbeat: item.heartbeat, heartbeatConflict: false });
   });
 
   it("keeps a same-holder heartbeat alongside the active claim", () => {
     const sameHolder = { ...item.heartbeat, agentId: "holder-a" };
-    expect(effectiveCustody({ ...item, heartbeat: sameHolder })).toEqual({ claim: item.claim, heartbeat: sameHolder });
+    expect(effectiveCustody({ ...item, heartbeat: sameHolder })).toEqual({ claim: item.claim, heartbeat: sameHolder, heartbeatConflict: false });
   });
 });

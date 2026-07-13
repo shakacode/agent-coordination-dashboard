@@ -88,6 +88,28 @@ describe("AttentionShell", () => {
     expect(screen.queryByRole("heading", { name: /Issue #43/ })).not.toBeInTheDocument();
   });
 
+  it("keeps a conflicting live heartbeat row visible in Now without exposing its attribution", () => {
+    const conflict: WorkItem = {
+      ...ITEMS[0],
+      operatorState: "running",
+      attention: undefined,
+      claim: { schemaVersion: 1, repo: "repo/dashboard", target: "43", agentId: "holder-a", machineId: "machine-a", threadHandle: "owner-chat", status: "active", path: "claims/43.json" },
+      heartbeat: { ...ITEMS[0].heartbeat!, agentId: "holder-b", machineId: "machine-b", threadHandle: "intruder-chat", status: "reviewing", liveness: "live" }
+    };
+    render(<AttentionShell items={[conflict]} onQueryChange={vi.fn()} query="" surface="now" />);
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    expect(screen.getByText(/Holder: holder-a/)).toBeInTheDocument();
+    expect(screen.getByText("Heartbeat holder conflicts with the active claim; heartbeat attribution is hidden.")).toBeInTheDocument();
+    expect(screen.queryByText(/holder-b|machine-b|intruder-chat|reviewing/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
+  it("does not advertise resume on completed History cards", () => {
+    render(<AttentionShell items={[ITEMS[1]]} onQueryChange={vi.fn()} query="" surface="history" />);
+    expect(screen.getByRole("heading", { name: /Issue #44/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
+  });
+
   it("does not expose an enabled timeline action when no open handler is supplied", () => {
     render(<AttentionShell items={ITEMS} onQueryChange={vi.fn()} query="" surface="attention" />);
 
@@ -152,8 +174,8 @@ describe("AttentionShell", () => {
   });
 
   it("matches hash targets while preserving exact structured repo, batch, lane, and operator filters", async () => {
-    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
-    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
+    const repoA = { ...ITEMS[0], id: "repo/a#43", repo: "repo/a", heartbeat: { ...ITEMS[0].heartbeat!, repo: "repo/a" }, batchSignals: [{ batchId: "batch-a", laneName: "lane-a", status: "running", blockedOn: [] }] };
+    const repoB = { ...ITEMS[0], id: "repo/b#43", repo: "repo/b", heartbeat: { ...ITEMS[0].heartbeat!, repo: "repo/b" }, batchSignals: [{ batchId: "batch-b", laneName: "lane-b", status: "running", blockedOn: [] }] };
     const onClearDeepLink = vi.fn();
     const { rerender } = render(<AttentionShell deepLink={{ repo: "repo/a", target: "43", batchId: "batch-a", laneName: "lane-a", query: "worker" }} items={[repoA, repoB]} onClearDeepLink={onClearDeepLink} onQueryChange={vi.fn()} query="#43" surface="find" />);
     expect(screen.getByText("repo/a")).toBeInTheDocument();

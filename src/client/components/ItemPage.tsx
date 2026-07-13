@@ -4,6 +4,7 @@ import { firstDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
 import { safePullRequestUrl } from "../githubUrls";
+import { fallbackTimelineWorkItem } from "../../shared/fallbackWorkItem";
 
 function duration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
@@ -134,7 +135,7 @@ function timelineTimestamp(value: string | undefined): number {
 
 export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { timeline: ItemTimelineResponse; onBack: () => void; onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void; onClearAnnotation?: () => Promise<void> | void }) {
   const heartbeat = timeline.item?.heartbeat;
-  const terminal = timeline.item?.operatorState === "terminal" || timeline.item?.terminalState !== undefined;
+  const terminal = ["terminal", "archived_view"].includes(timeline.item?.operatorState || "") || timeline.item?.terminalState !== undefined;
   const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
   const heartbeatHolder = !terminal
     && !timeline.item?.claim
@@ -145,7 +146,7 @@ export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { 
   const holder = firstDisplayAttribution([activeClaim?.agentId, heartbeatHolder], "UNKNOWN");
   const state = timeline.item?.operatorState || "UNKNOWN";
   const holderDead = Boolean(activeClaim && claimedHolderIsDead(timeline, activeClaim.agentId));
-  const actionItem = timeline.item || { id: `${timeline.repo}#${timeline.target}`, repo: timeline.repo, target: timeline.target, type: "unknown" as const, schedulingState: "started_not_processing" as const, provenance: { classification: "unknown" as const, evidence: [] }, warnings: [], selected: false };
+  const actionItem = timeline.item || fallbackTimelineWorkItem(timeline.repo, timeline.target);
   const branches = unique([...timeline.branches, loadedGitHub?.branch]);
   const prUrls = uniquePullRequestUrls([...timeline.prUrls, loadedGitHub?.url]);
   const custodySourceEvents = new Set(timeline.claims.flatMap((claim) => {
@@ -184,7 +185,7 @@ export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { 
           <p>Holder: {holder}</p>
           <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: ${(timeline.item.github.ciStatus || "unknown").toUpperCase()}` : "UNKNOWN"}</p>
         </div>
-        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} takeoverAvailable={holderDead} />
+        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} resumeAvailable={!terminal} takeoverAvailable={holderDead} />
       </header>
       {sourceIsUnknown(timeline) ? <p className="item-timeline-warning">Coordination data: UNKNOWN</p> : null}
       <TimelineWarnings timeline={timeline} />

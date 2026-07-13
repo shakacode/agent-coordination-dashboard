@@ -5,6 +5,7 @@ import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { effectiveCustody } from "../shared/effectiveCustody";
+import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
@@ -35,19 +36,6 @@ const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
 interface ItemRoute {
   repo: string;
   target: string;
-}
-
-function fallbackTimelineWorkItem(timeline: Pick<ItemTimelineResponse, "repo" | "target">): WorkItem {
-  return {
-    id: `${timeline.repo}#${timeline.target}`,
-    repo: timeline.repo,
-    target: timeline.target,
-    type: "unknown",
-    schedulingState: "started_not_processing",
-    provenance: { classification: "unknown", evidence: [] },
-    warnings: [],
-    selected: false
-  };
 }
 
 function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefined {
@@ -636,7 +624,7 @@ export function App() {
       </>
     );
   };
-  const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline) : undefined;
+  const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline.repo, itemTimeline.target) : undefined;
 
   return (
     <main className="app-shell">
