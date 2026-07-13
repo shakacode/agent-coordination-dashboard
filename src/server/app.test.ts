@@ -402,6 +402,14 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-userinfo-github-url", type: "phase", phase: "See https://user@github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:29:00Z"
+        },
+        {
+          event_id: "foreign-after-query-reset", type: "phase", phase: "See https://example.com/?x=1|https://github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:29:05Z"
+        },
+        {
+          event_id: "foreign-after-host-only-url", type: "phase", phase: "See https://example.com|other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:29:10Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -492,6 +500,8 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "foreign-braced-github-url")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-second-http-url")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-userinfo-github-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-query-reset")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-host-only-url")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

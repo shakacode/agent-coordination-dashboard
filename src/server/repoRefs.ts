@@ -1,5 +1,5 @@
 const HTTP_URL_SCAN_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[^\s)]+/gim;
-const HTTP_URL_CANDIDATE_PATTERN = /(^|[|;=,!?&#:])(https?:\/\/(?:[A-Za-z0-9._~%!$&'()*+,;=:-]+@)?[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?)/gim;
+const HTTP_URL_CANDIDATE_PATTERN = /(^|[|;=,!?&#:])(https?:\/\/[^\s/)\]}>,'"`|?#]+(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?)/gim;
 const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
 const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
@@ -19,13 +19,18 @@ function withoutHttpUrls(value: string): string {
     const token = match.slice(boundary.length);
     const authorityEnd = token.indexOf("://") + 3;
     const pathStart = token.indexOf("/", authorityEnd);
-    if (pathStart < 0) return `${boundary} `;
     const queryIndexes = [token.indexOf("?", pathStart), token.indexOf("#", pathStart)].filter((index) => index >= 0);
     const queryStart = queryIndexes.length > 0 ? Math.min(...queryIndexes) : -1;
-    const suffixOffset = token.slice(pathStart).search(/[|;=,:!&]/);
-    const suffixStart = suffixOffset >= 0 ? pathStart + suffixOffset : -1;
+    const earlySuffixOffset = token.slice(authorityEnd).search(/[|;,!]/);
+    const earlySuffixStart = earlySuffixOffset >= 0 ? authorityEnd + earlySuffixOffset : -1;
+    const pathSuffixOffset = pathStart >= 0 ? token.slice(pathStart).search(/[=,:&]/) : -1;
+    const pathSuffixStart = pathSuffixOffset >= 0 ? pathStart + pathSuffixOffset : -1;
+    const suffixCandidates = [earlySuffixStart, pathSuffixStart].filter((index) => index >= 0);
+    const suffixStart = suffixCandidates.length > 0 ? Math.min(...suffixCandidates) : -1;
     if (suffixStart >= 0 && (queryStart < 0 || suffixStart < queryStart)) {
-      return `${boundary} ${token.slice(suffixStart)}`;
+      const suffix = token.slice(suffixStart);
+      const cleanedSuffix = withoutHttpUrls(` ${suffix.slice(1)}`).slice(1);
+      return `${boundary} ${suffix[0]}${cleanedSuffix}`;
     }
     return `${boundary} `;
   });
@@ -38,7 +43,10 @@ function githubRepoRefsFromText(value: string): string[] {
     for (const candidate of httpToken.matchAll(HTTP_URL_CANDIDATE_PATTERN)) {
       if (candidate.index > 0) {
         const queryStart = Math.max(httpToken.lastIndexOf("?", candidate.index), httpToken.lastIndexOf("#", candidate.index));
-        if (queryStart >= 0 && httpToken.slice(queryStart + 1, candidate.index).replace(/[|;,:!&]/g, "").length > 0) continue;
+        const structuralReset = Math.max(
+          ...["|", ";", ",", ":", "!"].map((delimiter) => httpToken.lastIndexOf(delimiter, candidate.index))
+        );
+        if (queryStart > structuralReset && httpToken.slice(queryStart + 1, candidate.index).length > 0) continue;
       }
       const rawUrl = candidate[2].replace(/[>}\],.'"`]+$/, "");
       try {

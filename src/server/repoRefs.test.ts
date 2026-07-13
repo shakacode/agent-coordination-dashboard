@@ -88,6 +88,36 @@ describe("repoRefsFromStructuredEventField", () => {
     expect(repoRefsFromStructuredEventField("https://github.com@evil.example/other/private")).toEqual([]);
   });
 
+  it("resumes URL scanning after a structural delimiter ends query or fragment state", () => {
+    for (const delimiter of ["|", ";", ",", ":", "!"]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com/?x=1${delimiter}https://github.com/other/private`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`https://example.com/#section${delimiter}https://github.com/other/private`)).toContain("other/private");
+    }
+  });
+
+  it("does not treat a nested named query URL as a top-level repository ref", () => {
+    expect(repoRefsFromStructuredEventField("https://example.com/?x=1&next=https://github.com/other/private")).toEqual([]);
+  });
+
+  it.each([
+    "https://example.com|other/private/path",
+    "https://github.com|other/private/path"
+  ])("preserves a foreign chain after a host-only URL: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it("removes a replayed non-GitHub URL query before generic ref scanning", () => {
+    expect(repoRefsFromStructuredEventField("https://example.com/docs|https://example.com/search?q=other/private")).toEqual([]);
+  });
+
+  it.each([
+    "https://user@@github.com/other/private",
+    "https://user:pa@ss@github.com/other/private",
+    "https://@github.com/other/private"
+  ])("lets URL resolve valid raw or empty userinfo: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
   it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
