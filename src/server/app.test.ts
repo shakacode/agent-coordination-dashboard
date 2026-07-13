@@ -380,8 +380,16 @@ describe("dashboard app import endpoint", () => {
           at: "2026-07-12T10:28:35Z"
         },
         {
+          event_id: "safe-pseudo-scheme-github-url", type: "phase", phase: "See javascript:https://github.com/other/private", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:37Z"
+        },
+        {
           event_id: "foreign-after-http-url", type: "phase", phase: "See https://example.com/docs|other/private/path", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:28:40Z"
+        },
+        {
+          event_id: "foreign-after-http-url-colon", type: "phase", phase: "See https://example.com/docs:other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:45Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -466,7 +474,9 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "saved-repo-url-header-query")?.status).toBe("Repository: https://github.com/shakacode/react_on_rails?tab=readme");
     expect(timeline.events.find((event) => event.eventId === "safe-github-docs-url")?.status).toBe("See https://docs.github.com/en/repositories");
     expect(timeline.events.find((event) => event.eventId === "safe-nested-github-looking-url")?.status).toBe("See https://example.com/github.com/other/private");
+    expect(timeline.events.find((event) => event.eventId === "safe-pseudo-scheme-github-url")?.status).toBe("See javascript:https://github.com/other/private");
     expect(timeline.events.find((event) => event.eventId === "foreign-after-http-url")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-http-url-colon")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

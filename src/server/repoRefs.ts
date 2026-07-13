@@ -1,6 +1,7 @@
-const HTTP_URL_TEXT_PATTERN = /https?:\/\/[^\s)\]}>,'"`|;=&#?]+/gi;
-const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`:])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
-const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`:])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?]+/gimu;
+const HTTP_URL_SCAN_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[^\s)]+/gim;
+const HTTP_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?/gim;
+const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
+const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
@@ -15,8 +16,8 @@ function normalizeGithubRepoRef(ref: string): string {
 
 function githubRepoRefsFromText(value: string): string[] {
   const refs = new Set<string>();
-  for (const match of value.matchAll(HTTP_URL_TEXT_PATTERN)) {
-    const rawUrl = match[0].replace(/[>\],.'"`]+$/, "");
+  for (const match of value.matchAll(HTTP_URL_SCAN_PATTERN)) {
+    const rawUrl = match[0].slice(match[1].length).replace(/[>\],.'"`]+$/, "");
     try {
       const url = new URL(rawUrl);
       const hostname = url.hostname.toLowerCase();
@@ -24,14 +25,15 @@ function githubRepoRefsFromText(value: string): string[] {
       if (url.protocol === "https:" && url.port && url.port !== "443") continue;
       if (url.protocol === "http:" && url.port && url.port !== "80") continue;
       if (url.protocol !== "https:" && url.protocol !== "http:") continue;
-      const [owner, repository] = url.pathname.split("/").filter(Boolean);
+      const [owner, rawRepository] = url.pathname.split("/").filter(Boolean);
+      const repository = rawRepository?.split(/[|;=&#?,:!]/, 1)[0];
       if (!owner || !repository || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repository)) continue;
       refs.add(normalizeGithubRepoRef(`${owner}/${repository}`));
     } catch {
       // Ignore malformed URLs and continue with explicit schemeless refs.
     }
   }
-  const withoutHttpUrls = value.replace(HTTP_URL_TEXT_PATTERN, "");
+  const withoutHttpUrls = value.replace(HTTP_URL_TEXT_PATTERN, "$1");
   for (const match of withoutHttpUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
     refs.add(normalizeGithubRepoRef(match[2]));
   }
@@ -40,7 +42,7 @@ function githubRepoRefsFromText(value: string): string[] {
 
 function withoutRepositoryUrls(value: string): string {
   return value
-    .replace(HTTP_URL_TEXT_PATTERN, "")
+    .replace(HTTP_URL_TEXT_PATTERN, "$1")
     .replace(SCHEMELESS_GITHUB_URL_TEXT_PATTERN, "$1");
 }
 
