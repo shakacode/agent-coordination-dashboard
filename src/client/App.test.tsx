@@ -232,6 +232,26 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "Find work" })).toHaveValue("https://github.com/repo/dashboard/pull/44");
   });
 
+  it("does not open a pasted PR URL sourced from another holder's heartbeat", async () => {
+    const splitHolderModel: DashboardModel = {
+      ...model,
+      workItems: [{
+        ...model.workItems[0],
+        claim: { schemaVersion: 1, repo: "repo/dashboard", target: "43", agentId: "holder-a", status: "active", prUrl: "https://github.com/repo/dashboard/pull/43", path: "claims/43.json" },
+        heartbeat: { ...model.workItems[0].heartbeat!, agentId: "holder-b", prUrl: "https://github.com/repo/dashboard/pull/99" }
+      }, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input) === "/api/settings" ? settings : splitHolderModel })));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Find" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Find work" }), "https://github.com/repo/dashboard/pull/99");
+
+    expect(screen.getByRole("heading", { name: "Find" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Work item #43" })).not.toBeInTheDocument();
+    expect(window.location.search).not.toContain("item=");
+  });
+
   it("hides unmounted header drill-downs in item mode and restores them after Back", async () => {
     const itemTimeline = {
       repo: "repo/dashboard", target: "44", claims: [], liveness: [], phases: [], events: [], branches: [], prUrls: [],

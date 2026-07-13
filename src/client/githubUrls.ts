@@ -1,6 +1,8 @@
 /** Accept a safe GitHub PR page and return its original URL. */
 export function safePullRequestUrl(value: string): string | undefined {
   try {
+    const authority = value.match(/^https:\/\/([^/?#]+)/i)?.[1];
+    if (!authority || authority.slice(authority.lastIndexOf("@") + 1).includes(":")) return undefined;
     const url = new URL(value);
     if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com" || url.username || url.password || url.port) return undefined;
     return /^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+(?:\/(?:files|checks|commits)(?:\/[^/]*)*)?\/?$/.test(url.pathname)

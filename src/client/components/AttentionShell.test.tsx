@@ -69,6 +69,25 @@ describe("AttentionShell", () => {
     expect(time).not.toHaveTextContent("2026-07-12T11:00:00.000Z");
   });
 
+  it("fences mismatched heartbeat provenance from card display and search", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:00:00Z"));
+    const splitHolder: WorkItem = {
+      ...ITEMS[0],
+      claim: { schemaVersion: 1, repo: "repo/dashboard", target: "43", agentId: "holder-a", machineId: "machine-a", threadHandle: "owner-chat", status: "active", updatedAt: "2026-07-12T11:00:00Z", prUrl: "https://github.com/repo/dashboard/pull/43", path: "claims/43.json" },
+      heartbeat: { ...ITEMS[0].heartbeat!, agentId: "holder-b", machineId: "machine-b", threadHandle: "intruder-chat", status: "reviewing", updatedAt: "2026-07-12T11:59:00Z", prUrl: "https://github.com/repo/dashboard/pull/99" }
+    };
+    const { rerender } = render(<AttentionShell items={[splitHolder]} onQueryChange={vi.fn()} query="" surface="attention" />);
+    expect(screen.getByText(/Holder: holder-a/)).toBeInTheDocument();
+    expect(screen.getByText(/Phase: unattributed/).closest("p")).toHaveTextContent("1h ago · machine-a · owner-chat");
+    expect(screen.queryByText(/holder-b|machine-b|intruder-chat|reviewing/)).not.toBeInTheDocument();
+
+    rerender(<AttentionShell items={[splitHolder]} onQueryChange={vi.fn()} query="intruder-chat" surface="find" />);
+    expect(screen.queryByRole("heading", { name: /Issue #43/ })).not.toBeInTheDocument();
+    rerender(<AttentionShell items={[splitHolder]} onQueryChange={vi.fn()} query="https://github.com/repo/dashboard/pull/99" surface="find" />);
+    expect(screen.queryByRole("heading", { name: /Issue #43/ })).not.toBeInTheDocument();
+  });
+
   it("does not expose an enabled timeline action when no open handler is supplied", () => {
     render(<AttentionShell items={ITEMS} onQueryChange={vi.fn()} query="" surface="attention" />);
 

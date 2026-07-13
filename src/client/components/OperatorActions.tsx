@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { resumeCommandPrompt, takeoverCommand } from "../../shared/commands";
 import type { WorkItem } from "../../shared/types";
+import { effectiveCustody } from "../../shared/effectiveCustody";
 import { canonicalPullRequestUrl } from "../githubUrls";
 
 export interface AnnotationAction {
@@ -8,27 +9,21 @@ export interface AnnotationAction {
   until?: string;
 }
 
-function actionCustody(item: WorkItem) {
-  const claim = item.claim?.status === "active" ? item.claim : undefined;
-  const heartbeat = !claim || item.heartbeat?.agentId === claim.agentId ? item.heartbeat : undefined;
-  return { claim, heartbeat };
-}
-
 function pullRequestUrl(item: WorkItem): string | undefined {
-  const { claim, heartbeat } = actionCustody(item);
+  const { claim, heartbeat } = effectiveCustody(item);
   const values = [item.github?.type === "pull_request" ? item.github.url : undefined, claim?.prUrl, heartbeat?.prUrl];
   return values.flatMap((value) => value ? [canonicalPullRequestUrl(value)] : []).find(Boolean);
 }
 
 function branchUrl(item: WorkItem): string | undefined {
-  const { claim, heartbeat } = actionCustody(item);
+  const { claim, heartbeat } = effectiveCustody(item);
   const branch = claim?.branch || heartbeat?.branch || (item.github?.loadState === "loaded" ? item.github.branch : undefined);
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch || "") || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(item.repo)) return undefined;
   return `https://github.com/${item.repo}/tree/${encodeURIComponent(branch!)}`;
 }
 
 function batchId(item: WorkItem): string | undefined {
-  const { claim, heartbeat } = actionCustody(item);
+  const { claim, heartbeat } = effectiveCustody(item);
   const value = claim?.batchId || heartbeat?.batchId || item.batchSignals?.[0]?.batchId;
   return /^[A-Za-z0-9][A-Za-z0-9._:@+-]*$/.test(value || "") ? value : undefined;
 }

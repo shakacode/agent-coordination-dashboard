@@ -53,6 +53,8 @@ describe("OperatorActions", () => {
   it.each([
     "http://github.com/shakacode/dashboard/pull/56",
     "https://user@github.com/shakacode/dashboard/pull/56",
+    "https://github.com:443/shakacode/dashboard/pull/56",
+    "https://github.com:0443/shakacode/dashboard/pull/56",
     "https://github.com:444/shakacode/dashboard/pull/56",
     "https://example.test/shakacode/dashboard/pull/56",
     "https://github.com/shakacode/dashboard/issues/56"

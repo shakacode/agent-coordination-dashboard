@@ -1,4 +1,5 @@
 import type { WorkItem } from "./types";
+import { effectiveCustody } from "./effectiveCustody";
 
 type OperatorCommandItem = Pick<WorkItem, "repo" | "target" | "claim" | "heartbeat" | "github" | "batchSignals">;
 
@@ -15,9 +16,7 @@ function quote(value: string): string {
 }
 
 function context(item: OperatorCommandItem) {
-  const claim = item.claim?.status === "active" ? item.claim : undefined;
-  const heartbeatMatchesClaim = !claim || item.heartbeat?.agentId === claim.agentId;
-  const heartbeat = heartbeatMatchesClaim ? item.heartbeat : undefined;
+  const { claim, heartbeat } = effectiveCustody(item);
   return {
     repo: safe(item.repo, REPO),
     target: safe(item.target, TARGET),

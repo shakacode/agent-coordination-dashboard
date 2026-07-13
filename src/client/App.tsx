@@ -4,6 +4,7 @@ import { generatePrBatchPrompt } from "../shared/prompt";
 import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
+import { effectiveCustody } from "../shared/effectiveCustody";
 import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
 import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
@@ -432,10 +433,11 @@ export function App() {
 
   function updateOperatorQuery(query: string) {
     const githubUrl = canonicalGithubItemUrl(query);
-    const item = githubUrl && dashboard?.workItems.find((candidate) =>
-      [candidate.github?.url, candidate.claim?.prUrl, candidate.heartbeat?.prUrl]
-        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl)
-    );
+    const item = githubUrl && dashboard?.workItems.find((candidate) => {
+      const { claim, heartbeat } = effectiveCustody(candidate);
+      return [candidate.github?.url, claim?.prUrl, heartbeat?.prUrl]
+        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl) === githubUrl);
+    });
     if (item) {
       setOperatorQuery(query);
       const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);

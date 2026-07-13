@@ -1,6 +1,7 @@
 import type { WorkItem } from "../../shared/types";
 import { isOperationalWorkItem, isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
+import { effectiveCustody } from "../../shared/effectiveCustody";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
 
@@ -17,7 +18,8 @@ function itemTitle(item: WorkItem): string {
 }
 
 function holder(item: WorkItem): string {
-  return firstDisplayAttribution([item.claim?.agentId, item.heartbeat?.agentId]);
+  const { claim, heartbeat } = effectiveCustody(item);
+  return firstDisplayAttribution([claim?.agentId, heartbeat?.agentId]);
 }
 
 function canonicalGithubItemUrl(value: string | undefined): string | undefined {
@@ -34,12 +36,13 @@ function canonicalGithubItemUrl(value: string | undefined): string | undefined {
 }
 
 function matches(item: WorkItem, query: string): boolean {
+  const { claim, heartbeat } = effectiveCustody(item);
   const value = query.trim().toLowerCase();
   if (!value) return true;
   if (/^#?\d+$/.test(value)) return item.target === value.replace(/^#/, "");
   const githubItemUrl = canonicalGithubItemUrl(query.trim());
   if (githubItemUrl) {
-    return [item.github?.url, item.claim?.prUrl, item.heartbeat?.prUrl]
+    return [item.github?.url, claim?.prUrl, heartbeat?.prUrl]
       .some((candidate) => canonicalGithubItemUrl(candidate) === githubItemUrl);
   }
   if (/^[^/#\s]+\/[^/#\s]+#\d+$/.test(value)) return item.id.toLowerCase() === value;
@@ -49,12 +52,12 @@ function matches(item: WorkItem, query: string): boolean {
     item.target,
     item.github?.title,
     item.github?.url,
-    item.claim?.branch,
-    item.heartbeat?.branch,
-    item.claim?.threadHandle,
-    item.heartbeat?.threadHandle,
-    item.claim?.machineId,
-    item.heartbeat?.machineId,
+    claim?.branch,
+    heartbeat?.branch,
+    claim?.threadHandle,
+    heartbeat?.threadHandle,
+    claim?.machineId,
+    heartbeat?.machineId,
     ...item.batchSignals?.flatMap((signal) => [signal.batchId, signal.laneName]) || []
   ]
     .filter(Boolean)
@@ -62,9 +65,10 @@ function matches(item: WorkItem, query: string): boolean {
 }
 
 function isNowItem(item: WorkItem): boolean {
+  const { heartbeat } = effectiveCustody(item);
   return Boolean(
-    item.heartbeat
-    && ["live", "stale"].includes(item.heartbeat.liveness)
+    heartbeat
+    && ["live", "stale"].includes(heartbeat.liveness)
     && isOperationalWorkItem(item)
   );
 }
@@ -135,11 +139,11 @@ function WorkCard({
   onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
 }) {
   const reason = item.attention;
-  const heartbeat = item.heartbeat;
+  const { claim, heartbeat } = effectiveCustody(item);
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
-  const machine = firstDisplayAttribution([heartbeat?.machineId, item.claim?.machineId]);
-  const thread = firstDisplayAttribution([heartbeat?.threadHandle, item.claim?.threadHandle]);
-  const elapsed = elapsedSince(item.lastActivityAt || heartbeat?.updatedAt || item.claim?.updatedAt);
+  const machine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
+  const thread = firstDisplayAttribution([heartbeat?.threadHandle, claim?.threadHandle]);
+  const elapsed = elapsedSince(heartbeat?.updatedAt || claim?.updatedAt || item.lastActivityAt);
   const githubUrl = canonicalGithubItemUrl(item.github?.url) ? item.github?.url : undefined;
   return (
     <article className="attention-card">
@@ -178,7 +182,7 @@ function WorkCard({
           item={item}
           onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
           onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
-          takeoverAvailable={reason?.kind === "dead_holder"}
+          takeoverAvailable={reason?.kind === "dead_holder" && heartbeat?.liveness === "dead"}
         />
       </div>
     </article>
