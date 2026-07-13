@@ -121,4 +121,20 @@ describe("repoRefsFromStructuredEventField", () => {
   ])("preserves token boundaries around a removed quoted path: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
   });
+
+  it.each([
+    String.raw`ci/passed; updated \"./x/y other/private/path"`,
+    String.raw`ci/passed; updated \'./x/y other/private/path'`,
+    "ci/passed; updated \\`./x/y other/private/path`"
+  ])("does not treat an odd-backslash quote as a path opener: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it.each([
+    String.raw`ci/passed; updated \\"./x/y ci/passed/private"`,
+    String.raw`ci/passed; updated \\'./x/y ci/passed/private'`,
+    "ci/passed; updated \\\\`./x/y ci/passed/private`"
+  ])("treats an even-backslash quote as a path opener: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
 });

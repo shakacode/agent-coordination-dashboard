@@ -346,6 +346,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-after-escaped-control", type: "phase", phase: "ci/passed; updated \"./x/y\\​other/private/path\"", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:27:55Z"
+        },
+        {
+          event_id: "foreign-after-escaped-opener", type: "phase", phase: String.raw`ci/passed; updated \"./x/y other/private/path"`, repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:28:00Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -422,6 +426,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "foreign-after-quoted-line-boundary")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-adjacent-to-quoted-path")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-after-escaped-control")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-escaped-opener")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
