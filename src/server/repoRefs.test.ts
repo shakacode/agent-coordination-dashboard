@@ -29,6 +29,7 @@ describe("repoRefsFromStructuredEventField", () => {
 
   it.each([
     "blocked-on:https://github.com/other/private",
+    "blocked_on:https://github.com/other/private",
     "depends_on:https://github.com/other/private",
     "depends_on:github.com/other/private"
   ])("detects repository evidence after a compact coordination label: %s", (value) => {

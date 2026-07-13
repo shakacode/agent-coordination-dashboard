@@ -4,7 +4,7 @@ const OWNER_REPO_REF_AT_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+/y;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
 const URL_LABEL_PREFIXES = [
-  "blocked", "blocked-on", "pr", "status", "phase", "repo", "repository", "waiting", "depends", "depends_on",
+  "blocked", "blocked-on", "blocked_on", "pr", "status", "phase", "repo", "repository", "waiting", "depends", "depends_on",
   "target", "holder", "branch", "source", "upstream", "owner", "machine", "url",
   "host", "operator", "thread", "thread-handle", "section"
 ];
