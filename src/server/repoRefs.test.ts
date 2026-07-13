@@ -76,6 +76,19 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it.each([
+    "https://user@github.com/other/private",
+    "https://user:pass@github.com/other/private",
+    "https://user@www.github.com/other/private",
+    "https://example.com/docs|https://user@github.com/other/private"
+  ])("parses an exact GitHub authority with URL-standard userinfo: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toContain("other/private");
+  });
+
+  it("rejects a lookalike GitHub userinfo authority", () => {
+    expect(repoRefsFromStructuredEventField("https://github.com@evil.example/other/private")).toEqual([]);
+  });
+
+  it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
     ["blocked on ci/passed", "ci/passed"],

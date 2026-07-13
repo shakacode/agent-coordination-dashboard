@@ -1,6 +1,5 @@
 const HTTP_URL_SCAN_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[^\s)]+/gim;
-const HTTP_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])https?:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?/gim;
-const HTTP_URL_CANDIDATE_PATTERN = /(^|[|;=,!?&#:])(https?:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?)/gim;
+const HTTP_URL_CANDIDATE_PATTERN = /(^|[|;=,!?&#:])(https?:\/\/(?:[A-Za-z0-9._~%!$&'()*+,;=:-]+@)?[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s)\]}>,'"`|;=&#?!:]*)?)/gim;
 const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
 const SCHEMELESS_GITHUB_URL_TEXT_PATTERN = /(^|[\s(<\[{'"`])(?:www\.)?github\.com\/[^\s)\]}>,'"`|;=&#?!:]+/gimu;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
@@ -15,11 +14,32 @@ function normalizeGithubRepoRef(ref: string): string {
   return ref.replace(/\.+$/, "").replace(/\.git$/i, "").replace(/\.+$/, "");
 }
 
+function withoutHttpUrls(value: string): string {
+  return value.replace(HTTP_URL_SCAN_PATTERN, (match, boundary: string) => {
+    const token = match.slice(boundary.length);
+    const authorityEnd = token.indexOf("://") + 3;
+    const pathStart = token.indexOf("/", authorityEnd);
+    if (pathStart < 0) return `${boundary} `;
+    const queryIndexes = [token.indexOf("?", pathStart), token.indexOf("#", pathStart)].filter((index) => index >= 0);
+    const queryStart = queryIndexes.length > 0 ? Math.min(...queryIndexes) : -1;
+    const suffixOffset = token.slice(pathStart).search(/[|;=,:!&]/);
+    const suffixStart = suffixOffset >= 0 ? pathStart + suffixOffset : -1;
+    if (suffixStart >= 0 && (queryStart < 0 || suffixStart < queryStart)) {
+      return `${boundary} ${token.slice(suffixStart)}`;
+    }
+    return `${boundary} `;
+  });
+}
+
 function githubRepoRefsFromText(value: string): string[] {
   const refs = new Set<string>();
   for (const match of value.matchAll(HTTP_URL_SCAN_PATTERN)) {
     const httpToken = match[0].slice(match[1].length);
     for (const candidate of httpToken.matchAll(HTTP_URL_CANDIDATE_PATTERN)) {
+      if (candidate.index > 0) {
+        const queryStart = Math.max(httpToken.lastIndexOf("?", candidate.index), httpToken.lastIndexOf("#", candidate.index));
+        if (queryStart >= 0 && httpToken.slice(queryStart + 1, candidate.index).replace(/[|;,:!&]/g, "").length > 0) continue;
+      }
       const rawUrl = candidate[2].replace(/[>}\],.'"`]+$/, "");
       try {
         const url = new URL(rawUrl);
@@ -36,17 +56,15 @@ function githubRepoRefsFromText(value: string): string[] {
       }
     }
   }
-  const withoutHttpUrls = value.replace(HTTP_URL_TEXT_PATTERN, "$1");
-  for (const match of withoutHttpUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
+  const textWithoutHttpUrls = withoutHttpUrls(value);
+  for (const match of textWithoutHttpUrls.matchAll(SCHEMELESS_GITHUB_REPO_REF_PATTERN)) {
     refs.add(normalizeGithubRepoRef(match[2]));
   }
   return Array.from(refs);
 }
 
 function withoutRepositoryUrls(value: string): string {
-  return value
-    .replace(HTTP_URL_TEXT_PATTERN, "$1")
-    .replace(SCHEMELESS_GITHUB_URL_TEXT_PATTERN, "$1");
+  return withoutHttpUrls(value).replace(SCHEMELESS_GITHUB_URL_TEXT_PATTERN, "$1");
 }
 
 export function repoRefsFromText(value: string | undefined): string[] {
