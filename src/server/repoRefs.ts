@@ -66,8 +66,8 @@ export function highConfidenceRepoRefsFromMessage(value: string | undefined): st
 const STRUCTURED_SLASH_VOCABULARY = [
   /^read\/write$/i,
   /^frontend\/backend$/i,
-  /^ci\/(?:passed|failed|pending|running|success|successful|complete|completed)$/i,
-  /^deploy\/(?:staging|production|preview|development|dev|test)$/i
+  /^ci\/(?:passed|failed|pending|queued|running|skipped|cancelled|canceled|success|successful|complete|completed)$/i,
+  /^deploy\/(?:staging|production|prod|qa|canary|preview|development|dev|test)$/i
 ];
 
 function isStructuredSlashVocabulary(ref: string): boolean {
@@ -76,10 +76,10 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 
 /**
  * Event type/status fields are structured enough to recognize embedded repo
- * references, but they also use conventional slash vocabulary. Treat URL and
- * issue references, standalone refs, repo-like punctuation, and explicit repo
- * context as identity evidence without mistaking common operational terms for
- * repositories.
+ * references, but they also use conventional slash vocabulary. High-confidence
+ * and explicit-context refs take precedence over that vocabulary; otherwise
+ * only known operational terms are exempted and every remaining slash ref is
+ * conservatively treated as repository identity evidence.
  */
 export function repoRefsFromStructuredEventField(value: string | undefined): string[] {
   if (!value) return [];
@@ -90,11 +90,12 @@ export function repoRefsFromStructuredEventField(value: string | undefined): str
   for (const match of value.matchAll(contextPattern)) explicitContext.add(match[1]);
 
   for (const ref of repoRefsFromText(value)) {
-    if (isStructuredSlashVocabulary(ref)) continue;
-    const [owner = "", repo = ""] = ref.split("/", 2);
-    if (highConfidence.has(ref) || /[._-]/.test(owner) || /[._-]/.test(repo) || explicitContext.has(ref)) {
+    if (highConfidence.has(ref) || explicitContext.has(ref)) {
       refs.add(ref);
+      continue;
     }
+    if (isStructuredSlashVocabulary(ref)) continue;
+    refs.add(ref);
   }
   return Array.from(refs);
 }
