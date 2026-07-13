@@ -221,6 +221,13 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   });
 
+  it("applies direct-versus-named schemeless query semantics inside HTTP URLs", () => {
+    for (const delimiter of ["?", "#"]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com/${delimiter}github.com/other/private`)).toEqual(["other/private"]);
+      expect(repoRefsFromStructuredEventField(`https://example.com/${delimiter}next=github.com/other/private`)).toEqual([]);
+    }
+  });
+
   it.each([
     "https://[::1|github.com/other/private",
     "https://[::1|other/private/path",

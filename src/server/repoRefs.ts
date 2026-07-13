@@ -1,4 +1,4 @@
-const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(^|[\s(<\[{'"`|;=,!&])(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gimu;
+const SCHEMELESS_GITHUB_REPO_REF_PATTERN = /(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/iy;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
 const LOCAL_FILE_REF_PATTERN = /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/;
@@ -29,46 +29,17 @@ function addGithubRepoRef(refs: Set<string>, rawUrl: string): boolean {
   return false;
 }
 
-function scanSchemelessGithubText(value: string): { refs: string[]; withoutUrls: string } {
-  const refs = new Set<string>();
-  const output: string[] = [];
-  let cursor = 0;
-  SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = 0;
+function schemelessGithubRepoMatchAt(value: string, index: number): RegExpExecArray | null {
+  SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = index;
+  return SCHEMELESS_GITHUB_REPO_REF_PATTERN.exec(value);
+}
 
-  while (cursor < value.length) {
-    SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = cursor;
-    const match = SCHEMELESS_GITHUB_REPO_REF_PATTERN.exec(value);
-    if (!match) break;
-    const boundary = match[1];
-    output.push(value.slice(cursor, match.index), boundary, " ");
-    refs.add(normalizeGithubRepoRef(match[2]));
-    cursor = match.index + match[0].length;
+function isHttpUrlAt(value: string, index: number): boolean {
+  return value.slice(index, index + 7).toLowerCase() === "http://" || value.slice(index, index + 8).toLowerCase() === "https://";
+}
 
-    if ("?#".includes(value[cursor] || "")) {
-      const queryDelimiter = value[cursor];
-      const queryValueStart = cursor + 1;
-      const directHttp = value.slice(queryValueStart, queryValueStart + 7).toLowerCase() === "http://" ||
-        value.slice(queryValueStart, queryValueStart + 8).toLowerCase() === "https://";
-      if (directHttp) {
-        output.push(queryDelimiter, " ");
-        cursor = queryValueStart;
-      } else {
-        cursor = queryValueStart;
-        while (cursor < value.length && !/\s/.test(value[cursor]) && !")]}>\'\"`".includes(value[cursor])) {
-          if ("|;,:!".includes(value[cursor])) break;
-          cursor += 1;
-        }
-        if ("|;,:!".includes(value[cursor] || "")) {
-          output.push(value[cursor], " ");
-          cursor += 1;
-        }
-      }
-    }
-  }
-
-  output.push(value.slice(cursor));
-  SCHEMELESS_GITHUB_REPO_REF_PATTERN.lastIndex = 0;
-  return { refs: Array.from(refs), withoutUrls: output.join("") };
+function isRepositoryUrlAt(value: string, index: number): boolean {
+  return isHttpUrlAt(value, index) || Boolean(schemelessGithubRepoMatchAt(value, index));
 }
 
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
@@ -83,12 +54,43 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   while (index < value.length) {
     const isHttp = value.slice(index, index + 7).toLowerCase() === "http://";
     const isHttps = value.slice(index, index + 8).toLowerCase() === "https://";
+    const schemelessMatch = schemelessGithubRepoMatchAt(value, index);
     const previous = value[index - 1] || "";
     const validBoundary = index === 0 || forcedBoundary || /\s/.test(previous) || openingBoundaries.includes(previous) || "|;=,!&".includes(previous);
-    if ((!isHttp && !isHttps) || !validBoundary) {
+    if ((!isHttp && !isHttps && !schemelessMatch) || !validBoundary) {
       output.push(value[index]);
       index += 1;
       forcedBoundary = false;
+      continue;
+    }
+
+    if (schemelessMatch) {
+      refs.add(normalizeGithubRepoRef(schemelessMatch[1]));
+      let cursor = index + schemelessMatch[0].length;
+      output.push(" ");
+      if ("?#".includes(value[cursor] || "")) {
+        const queryDelimiter = value[cursor];
+        const queryValueStart = cursor + 1;
+        if (isRepositoryUrlAt(value, queryValueStart)) {
+          output.push(queryDelimiter, " ");
+          index = queryValueStart;
+          forcedBoundary = true;
+          continue;
+        }
+        cursor = queryValueStart;
+        while (cursor < value.length && !/\s/.test(value[cursor]) && !closingDelimiters.includes(value[cursor])) {
+          if ("|;,:!".includes(value[cursor])) break;
+          cursor += 1;
+        }
+      }
+      if (structuralDelimiters.includes(value[cursor] || "")) {
+        output.push(value[cursor], " ");
+        index = cursor + 1;
+        forcedBoundary = true;
+      } else {
+        index = cursor;
+        forcedBoundary = false;
+      }
       continue;
     }
 
@@ -139,9 +141,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
     if (delimiterIndex < 0 && "?#".includes(value[cursor] || "")) {
       const queryDelimiter = cursor;
       const queryValueStart = cursor + 1;
-      const directHttp = value.slice(queryValueStart, queryValueStart + 7).toLowerCase() === "http://" ||
-        value.slice(queryValueStart, queryValueStart + 8).toLowerCase() === "https://";
-      if (directHttp) {
+      if (isRepositoryUrlAt(value, queryValueStart)) {
         delimiterIndex = queryDelimiter;
       } else {
         cursor = queryValueStart;
@@ -173,9 +173,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         if ("?#".includes(value[canonicalAlternateResume] || "")) {
           const queryDelimiter = value[canonicalAlternateResume];
           const queryValueStart = canonicalAlternateResume + 1;
-          const directHttp = value.slice(queryValueStart, queryValueStart + 7).toLowerCase() === "http://" ||
-            value.slice(queryValueStart, queryValueStart + 8).toLowerCase() === "https://";
-          if (directHttp) {
+          if (isRepositoryUrlAt(value, queryValueStart)) {
             canonicalAlternateReplay += `${queryDelimiter} `;
             canonicalAlternateResume = queryValueStart;
             canonicalAlternateForcesBoundary = true;
@@ -220,17 +218,11 @@ function withoutHttpUrls(value: string): string {
 }
 
 function githubRepoRefsFromText(value: string): string[] {
-  const schemeless = scanSchemelessGithubText(value);
-  const http = scanHttpText(schemeless.withoutUrls);
-  const replayedSchemeless = scanSchemelessGithubText(http.withoutUrls);
-  const refs = new Set([...schemeless.refs, ...http.refs, ...replayedSchemeless.refs]);
-  return Array.from(refs);
+  return scanHttpText(value).refs;
 }
 
 function withoutRepositoryUrls(value: string): string {
-  const schemeless = scanSchemelessGithubText(value);
-  const http = scanHttpText(schemeless.withoutUrls);
-  return scanSchemelessGithubText(http.withoutUrls).withoutUrls;
+  return withoutHttpUrls(value);
 }
 
 export function repoRefsFromText(value: string | undefined): string[] {
