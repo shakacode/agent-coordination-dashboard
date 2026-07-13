@@ -58,6 +58,36 @@ describe("buildLivenessSpans", () => {
 
     expect(spans[0]).toMatchObject({ branch: "codex/live-span", prUrl: "https://github.com/shakacode/dashboard/pull/46" });
   });
+
+  it.each([
+    ["equal expiry", "2026-07-12T10:00:00Z"],
+    ["earlier expiry", "2026-07-12T09:59:00Z"]
+  ])("renders a finite heartbeat with %s as dead until its custody boundary", (_description, expiresAt) => {
+    const spans = buildLivenessSpans(
+      [heartbeat({ updatedAt: "2026-07-12T10:00:00Z", expiresAt })],
+      new Date("2026-07-12T10:10:00Z"),
+      [{ agentId: "worker-a", endedAt: "2026-07-12T10:03:00Z" }]
+    );
+
+    expect(spans).toEqual([
+      expect.objectContaining({
+        liveness: "dead",
+        startedAt: "2026-07-12T10:00:00.000Z",
+        endedAt: "2026-07-12T10:03:00.000Z"
+      })
+    ]);
+  });
+
+  it.each([
+    ["invalid update", "not-a-time", "2026-07-12T10:05:00Z"],
+    ["invalid expiry", "2026-07-12T10:00:00Z", "not-a-time"],
+    ["future update", "2026-07-12T10:11:00Z", "2026-07-12T10:12:00Z"]
+  ])("keeps %s heartbeat timestamps out of observed liveness spans", (_description, updatedAt, expiresAt) => {
+    expect(buildLivenessSpans(
+      [heartbeat({ updatedAt, expiresAt })],
+      new Date("2026-07-12T10:10:00Z")
+    )).toEqual([]);
+  });
 });
 
 describe("buildCustodyTimeline", () => {

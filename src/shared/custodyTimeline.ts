@@ -1,4 +1,5 @@
 import type { BatchEvent, ClaimRecord, HeartbeatRecord, Liveness } from "./types";
+import { DEAD_AFTER_TTL_MULTIPLIER } from "./liveness";
 
 export interface LivenessSpan {
   agentId: string;
@@ -75,7 +76,6 @@ export interface BuildCustodyTimelineInput {
   now?: Date;
 }
 
-const DEAD_AFTER_TTL_MULTIPLIER = 4;
 const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|closed|stopped|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
 const TERMINAL_OWNERSHIP_EVENT_TYPES = new Set([
   "done", "lane.done", "closed", "lane.closed", "stopped", "lane.stopped"
@@ -115,15 +115,13 @@ export function buildLivenessSpans(heartbeats: HeartbeatRecord[], now = new Date
     ordered.forEach((heartbeat, index) => {
       const startedMs = time(heartbeat.updatedAt);
       const expiresMs = time(heartbeat.expiresAt);
-      if (startedMs === undefined || expiresMs === undefined || expiresMs <= startedMs || startedMs > nowMs) return;
+      if (startedMs === undefined || expiresMs === undefined || startedMs > nowMs) return;
       const nextMs = time(ordered[index + 1]?.updatedAt || "") || nowMs;
       const boundaryMs = boundaries
         .filter((boundary) => boundary.agentId === heartbeat.agentId)
         .map((boundary) => time(boundary.endedAt))
         .find((candidate): candidate is number => candidate !== undefined && candidate > startedMs);
       const endsAt = Math.min(Math.max(Math.min(nextMs, boundaryMs || nowMs), startedMs), nowMs);
-      const ttl = expiresMs - startedMs;
-      const deadAt = startedMs + ttl * DEAD_AFTER_TTL_MULTIPLIER;
       const details = {
         agentId: heartbeat.agentId,
         ...(heartbeat.machineId ? { machineId: heartbeat.machineId } : {}),
@@ -137,6 +135,12 @@ export function buildLivenessSpans(heartbeats: HeartbeatRecord[], now = new Date
       const append = (liveness: LivenessSpan["liveness"], start: number, end: number) => {
         if (end > start) spans.push({ ...details, liveness, startedAt: iso(start), endedAt: iso(end) });
       };
+      const ttl = expiresMs - startedMs;
+      if (ttl <= 0) {
+        append("dead", startedMs, endsAt);
+        return;
+      }
+      const deadAt = startedMs + ttl * DEAD_AFTER_TTL_MULTIPLIER;
       append("live", startedMs, Math.min(expiresMs, endsAt));
       append("stale", Math.min(expiresMs, endsAt), Math.min(deadAt, endsAt));
       append("dead", Math.min(deadAt, endsAt), endsAt);
