@@ -76,12 +76,17 @@ function isStructuredSlashVocabulary(ref: string): boolean {
 
 function repoRefsFromStructuredText(value: string): string[] {
   const refs = new Set<string>();
-  for (const match of value.matchAll(OWNER_REPO_REF_PATTERN)) {
+  // Explicit path syntax is the only reliable signal that a slash-shaped
+  // value is local. Scrub those tokens first; bare multi-segment values remain
+  // conservative repository candidates.
+  const textWithoutExplicitPaths = value.replace(
+    /(^|[\s(])(?:(?:file:\/\/)?(?:\.{1,2}\/|\/))[^\s)]+/gi,
+    "$1"
+  );
+  for (const match of textWithoutExplicitPaths.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
-    const end = start + match[1].length;
-    const before = value[start - 1] || "";
-    const after = value[end] || "";
-    if (/[/.]/.test(before) || after === "/") continue;
+    const before = textWithoutExplicitPaths[start - 1] || "";
+    if (/[/.]/.test(before)) continue;
     refs.add(match[1]);
   }
   return Array.from(refs);

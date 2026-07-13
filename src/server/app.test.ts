@@ -290,6 +290,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "safe-explicit-local-path-status", type: "phase", phase: "updated ./src/client.ts", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:21:00Z"
+        },
+        {
+          event_id: "foreign-bare-multisegment-status", type: "phase", phase: "reviewing other/private/path", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:22:00Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -350,6 +354,8 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.phases.find((phase) => phase.eventId === "ambiguous-local-looking-status")?.phase).toBe("phase");
     expect(timeline.events.find((event) => event.eventId === "safe-explicit-local-path-status")?.status).toBe("updated ./src/client.ts");
     expect(timeline.phases.find((phase) => phase.eventId === "safe-explicit-local-path-status")?.phase).toBe("updated ./src/client.ts");
+    expect(timeline.events.find((event) => event.eventId === "foreign-bare-multisegment-status")?.status).toBeUndefined();
+    expect(timeline.phases.find((phase) => phase.eventId === "foreign-bare-multisegment-status")?.phase).toBe("phase");
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);
