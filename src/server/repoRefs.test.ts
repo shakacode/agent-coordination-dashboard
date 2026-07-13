@@ -75,6 +75,20 @@ describe("repoRefsFromStructuredEventField", () => {
     }
   });
 
+  it("replays closing delimiters after HTTP and schemeless URL paths", () => {
+    for (const delimiter of [")", "]", "}", ">", "'", "\"", "`"]) {
+      expect(repoRefsFromStructuredEventField(`https://example.com/docs${delimiter}github.com/other/private`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`https://example.com/docs${delimiter}https://github.com/other/private`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`https://example.com/docs?next=x${delimiter}github.com/other/private`)).toContain("other/private");
+      expect(repoRefsFromStructuredEventField(`github.com/saved/repo/issues/1${delimiter}github.com/other/private`)).toEqual(
+        expect.arrayContaining(["saved/repo", "other/private"])
+      );
+      expect(repoRefsFromStructuredEventField(`github.com/saved/repo/issues/1${delimiter}https://github.com/other/private`)).toEqual(
+        expect.arrayContaining(["saved/repo", "other/private"])
+      );
+    }
+  });
+
   it.each([
     "https://user@github.com/other/private",
     "https://user:pass@github.com/other/private",

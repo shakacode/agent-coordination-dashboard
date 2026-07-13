@@ -95,7 +95,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
           cursor += 1;
         }
       }
-      if (structuralDelimiters.includes(value[cursor] || "")) {
+      if ((structuralDelimiters + closingDelimiters).includes(value[cursor] || "")) {
         output.push(value[cursor], " ");
         index = cursor + 1;
         forcedBoundary = true;
@@ -151,7 +151,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
         cursor += 1;
       }
       urlEnd = cursor;
-      if (structuralDelimiters.includes(value[cursor] || "")) delimiterIndex = cursor;
+      if ((structuralDelimiters + closingDelimiters).includes(value[cursor] || "")) delimiterIndex = cursor;
     }
 
     if (delimiterIndex < 0 && "?#".includes(value[cursor] || "")) {
@@ -168,6 +168,7 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
           }
           cursor += 1;
         }
+        if (closingDelimiters.includes(value[cursor] || "")) delimiterIndex = cursor;
       }
     }
 
@@ -205,6 +206,11 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
               canonicalAlternateForcesBoundary = true;
             }
           }
+        }
+        if (closingDelimiters.includes(value[canonicalAlternateResume] || "")) {
+          canonicalAlternateReplay += `${value[canonicalAlternateResume]} `;
+          canonicalAlternateResume += 1;
+          canonicalAlternateForcesBoundary = true;
         }
       }
     }
