@@ -334,6 +334,10 @@ describe("dashboard app import endpoint", () => {
         {
           event_id: "foreign-after-unicode-space-path", type: "phase", phase: "ci/passed; updated ./x/y other/private/path", repo: "shakacode/react_on_rails", target: "46",
           at: "2026-07-12T10:27:30Z"
+        },
+        {
+          event_id: "foreign-after-quoted-line-boundary", type: "phase", phase: "ci/passed; updated \"./x/y other/private/path\"", repo: "shakacode/react_on_rails", target: "46",
+          at: "2026-07-12T10:27:45Z"
         }
       ].map((event) => JSON.stringify(event)).join("\n") + "\n")
     ]);
@@ -407,6 +411,7 @@ describe("dashboard app import endpoint", () => {
     expect(timeline.events.find((event) => event.eventId === "foreign-after-explicit-local-path")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-after-pipe-local-path")?.status).toBeUndefined();
     expect(timeline.events.find((event) => event.eventId === "foreign-after-unicode-space-path")?.status).toBeUndefined();
+    expect(timeline.events.find((event) => event.eventId === "foreign-after-quoted-line-boundary")?.status).toBeUndefined();
     expect(timeline.prUrls).toEqual([]);
     expect(timeline.liveness[0]?.branch).toBe("feature/in-scope");
     expect(timeline.branches).toEqual(["feature/in-scope"]);

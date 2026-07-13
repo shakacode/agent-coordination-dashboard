@@ -99,4 +99,11 @@ describe("repoRefsFromStructuredEventField", () => {
   ])("does not let explicit paths consume punctuation-adjacent repository chains: %s", (value, ref) => {
     expect(repoRefsFromStructuredEventField(value)).toContain(ref);
   });
+
+  it.each(["\u2028", "\u2029", "\u0085", "\u0000", "\t", "\u200B"])(
+    "does not let quoted paths consume a repository chain across control boundary U+%s",
+    (boundary) => {
+      expect(repoRefsFromStructuredEventField(`ci/passed; updated "./x/y${boundary}other/private/path"`)).toContain("other/private");
+    }
+  );
 });
