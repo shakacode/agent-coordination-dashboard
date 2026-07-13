@@ -1,5 +1,5 @@
-const GITHUB_REPO_REF_PATTERN = /(?<![A-Za-z0-9.-])(?:https?:\/\/)?(?:www\.)?github\.com(?::(?:80|443))?\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
-const GITHUB_URL_TEXT_PATTERN = /(?<![A-Za-z0-9.-])(?:https?:\/\/)?(?:www\.)?github\.com(?::(?:80|443))?\/[^\s)]+/gi;
+const GITHUB_REPO_REF_PATTERN = /(?<![\p{L}\p{M}\p{N}._@/:-])(?:https:\/\/(?:www\.)?github\.com(?::443)?|http:\/\/(?:www\.)?github\.com(?::80)?|(?:www\.)?github\.com)\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/giu;
+const GITHUB_URL_TEXT_PATTERN = /(?<![\p{L}\p{M}\p{N}._@/:-])(?:https:\/\/(?:www\.)?github\.com(?::443)?|http:\/\/(?:www\.)?github\.com(?::80)?|(?:www\.)?github\.com)\/[^\s)]+/giu;
 const HTTP_URL_TEXT_PATTERN = /https?:\/\/[^\s)]+/gi;
 const OWNER_REPO_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)\b/g;
 const OWNER_REPO_ISSUE_REF_PATTERN = /\b([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)#\d+\b/g;
@@ -21,7 +21,7 @@ export function repoRefsFromText(value: string | undefined): string[] {
   for (const match of value.matchAll(GITHUB_REPO_REF_PATTERN)) {
     refs.add(normalizeGithubRepoRef(match[1]));
   }
-  const textWithoutGithubUrls = value.replace(GITHUB_URL_TEXT_PATTERN, "");
+  const textWithoutGithubUrls = value.replace(HTTP_URL_TEXT_PATTERN, "").replace(GITHUB_URL_TEXT_PATTERN, "");
   for (const match of textWithoutGithubUrls.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
     const end = start + match[1].length;
@@ -114,7 +114,7 @@ function repoRefsFromStructuredText(value: string): string[] {
   // Explicit path syntax is the only reliable signal that a slash-shaped
   // value is local. Scrub those tokens first; bare multi-segment values remain
   // conservative repository candidates.
-  const textWithoutExplicitPaths = withoutExplicitStructuredPaths(value).replace(GITHUB_URL_TEXT_PATTERN, "");
+  const textWithoutExplicitPaths = withoutExplicitStructuredPaths(value).replace(HTTP_URL_TEXT_PATTERN, "").replace(GITHUB_URL_TEXT_PATTERN, "");
   for (const match of textWithoutExplicitPaths.matchAll(OWNER_REPO_REF_PATTERN)) {
     const start = match.index || 0;
     const before = textWithoutExplicitPaths[start - 1] || "";

@@ -34,6 +34,18 @@ describe("repoRefsFromStructuredEventField", () => {
   });
 
   it.each([
+    "See https://example.com/github.com/other/private",
+    "See https://example.com/@github.com/other/private",
+    "See _github.com/other/private",
+    "See égithub.com/other/private",
+    "See @github.com/other/private",
+    "See https://github.com:80/other/private",
+    "See http://github.com:443/other/private"
+  ])("requires an exact GitHub authority and scheme-specific default port: %s", (value) => {
+    expect(repoRefsFromStructuredEventField(value)).toEqual([]);
+  });
+
+  it.each([
     ["repo read/write", "read/write"],
     ["Repository: frontend/backend", "frontend/backend"],
     ["blocked on ci/passed", "ci/passed"],
