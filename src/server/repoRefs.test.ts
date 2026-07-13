@@ -279,7 +279,16 @@ describe("repoRefsFromStructuredEventField", () => {
     "https://[bad:@other/private/path",
     "https://[bad:user@other/private/path",
     "https://[user:pass@localhost/private/path",
-    "https://[user:pa@ss@localhost/private/path"
+    "https://[user:pa@ss@localhost/private/path",
+    "https://[user|name@localhost/private/path",
+    "https://[user=name@localhost/private/path",
+    "https://[user;name@localhost/private/path",
+    "https://[user,name@localhost/private/path",
+    "https://[user!name@localhost/private/path",
+    "https://[user&name@localhost/private/path",
+    "https://[user)name@localhost/private/path",
+    "https://[user}name@localhost/private/path",
+    "https://[user>name@localhost/private/path"
   ])("does not reinterpret a valid non-GitHub userinfo URL as a repository: %s", (value) => {
     expect(repoRefsFromStructuredEventField(value)).toEqual([]);
   });

@@ -48,6 +48,15 @@ function isOwnerRepoRefAt(value: string, index: number): boolean {
   return Boolean(OWNER_REPO_REF_AT_PATTERN.exec(value));
 }
 
+function isValidHttpAuthority(value: string, start: number, end: number): boolean {
+  try {
+    const url = new URL(value.slice(start, end));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
   const refs = new Set<string>();
   const output: string[] = [];
@@ -140,7 +149,11 @@ function scanHttpText(value: string): { refs: string[]; withoutUrls: string } {
       }
       coarseAuthorityEnd += 1;
     }
-    if (bracketDepth > 0 && authorityDelimiter < 0) authorityDelimiter = bracketFallbackDelimiter;
+    if (bracketDepth > 0 && lastAt >= 0 && isValidHttpAuthority(value, index, coarseAuthorityEnd)) {
+      authorityDelimiter = -1;
+    } else if (bracketDepth > 0 && authorityDelimiter < 0) {
+      authorityDelimiter = bracketFallbackDelimiter;
+    }
     let cursor = authorityDelimiter >= 0 ? authorityDelimiter : coarseAuthorityEnd;
     let delimiterIndex = authorityDelimiter >= 0 && (structuralDelimiters + closingDelimiters).includes(value[authorityDelimiter]) ? authorityDelimiter : -1;
 
