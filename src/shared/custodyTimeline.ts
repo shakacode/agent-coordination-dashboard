@@ -76,7 +76,10 @@ export interface BuildCustodyTimelineInput {
 }
 
 const DEAD_AFTER_TTL_MULTIPLIER = 4;
-const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
+const TERMINAL_LIFECYCLE_PATTERN = /(?:^|[._\s-])(done|final|merged|complete(?:d)?|released|closed|stopped|cancel(?:led|ed)?|handoff)(?:$|[._\s-])/i;
+const TERMINAL_OWNERSHIP_EVENT_TYPES = new Set([
+  "done", "lane.done", "closed", "lane.closed", "stopped", "lane.stopped"
+]);
 const OWNERSHIP_EVENT_TYPES = new Set([
   "claim", "claimed", "acquire", "acquired", "takeover", "renew", "renewed", "continued", "resumed", "heartbeat", "handoff", "release", "released", "lane.started", "lane.handoff"
 ]);
@@ -251,18 +254,17 @@ function isRenewalEvidence(event: BatchEvent): boolean {
  */
 function isOwnershipBearingEvent(event: BatchEvent): boolean {
   const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
-  if (type === "done" || type === "lane.done") return true;
+  if (TERMINAL_OWNERSHIP_EVENT_TYPES.has(type)) return true;
   if (OWNERSHIP_EVENT_TYPES.has(type)) return true;
   if (/^(?:claim|custody)\.(?:acquired|takeover|renewed|continued|resumed|released)$/.test(type)) return true;
   return /^(?:claim|custody|lifecycle)$/i.test(event.type)
-    && /^(?:acquired|takeover|renewed|continued|resumed|released|handoff|done)$/i.test(event.status || "");
+    && /^(?:acquired|takeover|renewed|continued|resumed|released|handoff|done|closed|stopped)$/i.test(event.status || "");
 }
 
 function isCustodyTerminalEvent(event: BatchEvent): boolean {
   if (!isOwnershipBearingEvent(event)) return false;
   const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
-  return type === "done"
-    || type === "lane.done"
+  return TERMINAL_OWNERSHIP_EVENT_TYPES.has(type)
     || /(?:^|[._\s-])(handoff|release(?:d)?)(?:$|[._\s-])/i.test(event.type)
     || (/^(?:claim|custody|lifecycle)$/i.test(event.type) && TERMINAL_LIFECYCLE_PATTERN.test(event.status || ""));
 }
