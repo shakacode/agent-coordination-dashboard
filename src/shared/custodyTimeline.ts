@@ -265,6 +265,7 @@ function isOwnershipBearingEvent(event: BatchEvent): boolean {
 function isRenewalOnlyEvent(event: BatchEvent): boolean {
   const type = event.type.trim().toLowerCase().replace(/[\s_-]+/g, ".");
   return RENEWAL_ONLY_EVENT_TYPES.has(type)
+    || /^(?:claim|custody)\.(?:renewed|renewal)$/.test(type)
     || /^(?:claim|custody|lifecycle)$/i.test(event.type) && /^(?:renewed|renewal)$/i.test(event.status || "");
 }
 

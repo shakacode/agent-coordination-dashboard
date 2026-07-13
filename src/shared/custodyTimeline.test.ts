@@ -537,6 +537,28 @@ describe("buildCustodyTimeline", () => {
     expect(timeline.claims).toEqual([expect.objectContaining({ action: "acquired", agentId: "worker-a" })]);
   });
 
+  it.each([
+    "claim.renewed",
+    "claim_renewed",
+    "claim-renewed",
+    "custody.renewed",
+    "custody_renewed",
+    "custody-renewed"
+  ])("ignores normalized %s telemetry from a non-holder", (type) => {
+    const timeline = buildCustodyTimeline({
+      repo: "shakacode/dashboard",
+      target: "46",
+      claims: [],
+      heartbeats: [],
+      events: [
+        { eventId: "started", type: "lane.started", repo: "shakacode/dashboard", target: "46", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z", path: "events/custody.jsonl:1" },
+        { eventId: "late-renewal", type, repo: "shakacode/dashboard", target: "46", agentId: "worker-b", timestamp: "2026-07-12T10:05:00Z", path: "events/custody.jsonl:2" }
+      ]
+    });
+
+    expect(timeline.claims).toEqual([expect.objectContaining({ action: "acquired", agentId: "worker-a" })]);
+  });
+
   it("keeps a current claim for a repository whose name is history", () => {
     const timeline = buildCustodyTimeline({
       repo: "acme/history",
