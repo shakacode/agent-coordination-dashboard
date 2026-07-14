@@ -801,20 +801,30 @@ export function App() {
     warningsRef.current.scrollIntoView?.({ block: "start" });
   }
 
+  function fenceFailedAction(caught: unknown, fallback: string): never {
+    const actionError = caught instanceof Error ? caught : new Error(fallback);
+    setError(actionError.message);
+    throw actionError;
+  }
+
   async function mutateAnnotation(item: WorkItem, action?: AnnotationAction) {
     if (cachedSnapshotAt || error) throw new Error("Local actions require current coordination data");
     return enqueueUserAction(async () => {
       const requestVersion = ++dashboardRequestVersion.current;
-      if (action) await saveAnnotation({ repo: item.repo, target: item.target, ...action });
-      else await deleteAnnotation({ repo: item.repo, target: item.target });
-      const [loadedSettings, loadedDashboard, loadedTimeline] = await Promise.all([
-        fetchSettings(),
-        fetchDashboard({ fresh: true }),
-        itemRoute?.repo === item.repo && itemRoute.target === item.target ? fetchItemTimeline(item.repo, item.target) : undefined
-      ]);
-      if (requestVersion === dashboardRequestVersion.current) {
-        applyFreshDashboard(loadedDashboard, loadedSettings);
-        if (loadedTimeline) setItemTimeline(loadedTimeline);
+      try {
+        if (action) await saveAnnotation({ repo: item.repo, target: item.target, ...action });
+        else await deleteAnnotation({ repo: item.repo, target: item.target });
+        const [loadedSettings, loadedDashboard, loadedTimeline] = await Promise.all([
+          fetchSettings(),
+          fetchDashboard({ fresh: true }),
+          itemRoute?.repo === item.repo && itemRoute.target === item.target ? fetchItemTimeline(item.repo, item.target) : undefined
+        ]);
+        if (requestVersion === dashboardRequestVersion.current) {
+          applyFreshDashboard(loadedDashboard, loadedSettings);
+          if (loadedTimeline) setItemTimeline(loadedTimeline);
+        }
+      } catch (caught: unknown) {
+        fenceFailedAction(caught, "Presentation preference update failed");
       }
     });
   }
@@ -833,7 +843,7 @@ export function App() {
           applyFreshDashboard(loadedDashboard, loadedSettings);
         }
       } catch (caught: unknown) {
-        throw caught instanceof Error ? caught : new Error("Batch plan import failed");
+        fenceFailedAction(caught, "Batch plan import failed");
       }
     });
   }
@@ -852,7 +862,7 @@ export function App() {
           applyFreshDashboard(loadedDashboard, loadedSettings);
         }
       } catch (caught: unknown) {
-        throw caught instanceof Error ? caught : new Error("Batch stop request failed");
+        fenceFailedAction(caught, "Batch stop request failed");
       }
     });
   }

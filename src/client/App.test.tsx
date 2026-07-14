@@ -417,6 +417,29 @@ describe("App", () => {
     });
   });
 
+  it("fences further writes when annotation reconciliation fails", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      if (url === "/api/annotations") {
+        return { ok: true, json: async () => ({ path: "annotations/43.json" }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("annotation reconciliation unavailable");
+    }));
+
+    render(<App />);
+    await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "annotation reconciliation unavailable"
+    );
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+  });
+
   it("reloads once at the earliest active snooze expiry when polling is disabled", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-07-12T10:00:00.000Z"));
