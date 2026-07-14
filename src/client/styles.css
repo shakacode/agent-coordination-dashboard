@@ -40,6 +40,7 @@
   --color-on-danger-strong: #ffffff;
   --color-code-surface: #101828;
   --color-code-text: #e6f0ff;
+
   color: var(--color-text-primary);
   background: var(--color-canvas);
   font-family:
