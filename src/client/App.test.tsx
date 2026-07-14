@@ -1171,15 +1171,22 @@ describe("App", () => {
 
   it("preserves shell selection while a background refresh failure recovers", async () => {
     let dashboardCalls = 0;
+    let rejectBackgroundRefresh: ((reason?: unknown) => void) | undefined;
+    const failingRefresh = new Promise<Response>((_resolve, reject) => {
+      rejectBackgroundRefresh = reject;
+    });
+    let releaseRecovery: ((response: Response) => void) | undefined;
+    const recovery = new Promise<Response>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const refreshedModel = { ...model, workItems: model.workItems.map((item) => ({ ...item, selected: false })) };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
       dashboardCalls += 1;
-      if (dashboardCalls === 3) throw new Error("transient refresh failure");
-      return {
-        ok: true,
-        json: async () => ({ ...model, workItems: model.workItems.map((item) => ({ ...item, selected: false })) })
-      } as Response;
+      if (dashboardCalls === 2) return failingRefresh;
+      if (dashboardCalls > 2) return recovery;
+      return { ok: true, json: async () => refreshedModel } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
@@ -1188,8 +1195,11 @@ describe("App", () => {
     const checkbox = screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" });
     await userEvent.click(checkbox);
 
+    expect(checkbox).toBeChecked();
+    rejectBackgroundRefresh?.(new Error("transient refresh failure"));
     expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("transient refresh failure");
     expect(checkbox).toBeChecked();
+    releaseRecovery?.({ ok: true, json: async () => refreshedModel } as Response);
     await waitFor(() => expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument());
     expect(checkbox).toBeChecked();
   });
