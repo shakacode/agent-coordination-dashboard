@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel } from "../shared/types";
-import { App, nextActiveSnoozeDelayMs } from "./App";
+import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, nextActiveSnoozeDelayMs } from "./App";
 
 const model = {
   generatedAt: "2026-07-12T11:20:00.000Z",
@@ -89,10 +89,11 @@ const model = {
   ]
 } satisfies DashboardModel;
 
-const settings = { targetRepos: ["repo/dashboard"] };
+const settings = { targetRepos: ["repo/dashboard"], scopeId: "test-runtime-scope" };
 
 describe("App", () => {
   beforeEach(() => {
+    localStorage.clear();
     window.history.pushState({}, "", "/");
     vi.stubGlobal(
       "fetch",
@@ -134,6 +135,8 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    expect(document.title).toBe("Agent Coordination Dashboard");
+    expect(screen.getByRole("heading", { name: "Agent Coordination Dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Dashboard surfaces" })).toHaveTextContent("AttentionNowFindHistory");
     await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
@@ -150,9 +153,293 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
   });
 
+  it("renders an accessible dashboard skeleton when no cached snapshot exists", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".loading-skeleton-line").length).toBeGreaterThanOrEqual(4);
+    view.unmount();
+  });
+
+  it("paints the last-known snapshot after current settings validate its scope", async () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: "2026-07-12T11:19:00.000Z",
+      dashboard: model,
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return Promise.resolve({ ok: true, json: async () => settings } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    }));
+
+    const view = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Last-known dashboard snapshot" })).toHaveTextContent(
+      "Refreshing current coordination data"
+    );
+    expect(screen.queryByRole("status", { name: "Loading coordination dashboard" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("waits for current settings scope before painting cached records", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: "2026-07-12T11:19:00.000Z",
+      dashboard: model,
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("rejects a cached snapshot from a different runtime scope", async () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: "2026-07-12T11:19:00.000Z",
+      dashboard: model,
+      settings: { ...settings, scopeId: "previous-state-root" }
+    }));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return Promise.resolve({ ok: true, json: async () => ({ ...settings, scopeId: "current-state-root" }) } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    }));
+
+    const view = render(<App />);
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/settings",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    ));
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("ignores malformed cached dashboard snapshots", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: model.generatedAt,
+      dashboard: { ...model, workItems: [null] },
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("ignores cached snapshots with malformed optional containers", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: model.generatedAt,
+      dashboard: { ...model, sourceStatus: {} },
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it.each([
+    ["coordinationTokenEnvVar", "NOT_A_TOKEN_ENV"],
+    ["githubMergeTimeStatus", "sometimes"],
+    ["trulyOpenCountStatus", "stale"]
+  ])("ignores cached snapshots with malformed optional field %s", (field, value) => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: model.generatedAt,
+      dashboard: { ...model, [field]: value },
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("starts settings and dashboard reads in parallel", async () => {
+    let releaseSettings: ((response: Response) => void) | undefined;
+    const pendingSettings = new Promise<Response>((resolve) => {
+      releaseSettings = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input) === "/api/settings"
+      ? pendingSettings
+      : Promise.resolve({ ok: true, json: async () => model } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard",
+      expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } })
+    ));
+    releaseSettings?.({ ok: true, json: async () => settings } as Response);
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+  });
+
+  it("aborts the sibling dashboard read when settings fail", async () => {
+    let dashboardSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings") return Promise.reject(new Error("settings unavailable"));
+      dashboardSignal = init?.signal || undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        dashboardSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByText("settings unavailable")).toBeInTheDocument();
+    expect(dashboardSignal?.aborted).toBe(true);
+  });
+
+  it("keeps cached-only state read-only until current coordination data loads", async () => {
+    const cachedModel = {
+      ...model,
+      batches: [{ schemaVersion: 1, batchId: "cached-batch", repo: "repo/dashboard", lanes: [], path: "batches/cached-batch.json" }]
+    };
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: model.generatedAt,
+      dashboard: cachedModel,
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      throw new Error("refresh unavailable");
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("Showing the last available dashboard snapshot");
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText("Batch operations"));
+    expect(screen.getByRole("button", { name: "Request stop for cached-batch in repo/dashboard" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review batch plan" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" })).toBeDisabled();
+    await userEvent.click(screen.getByText("PR-batch prompt"));
+    expect(screen.getByTitle("Copy prompt")).toBeDisabled();
+  });
+
+  it("clears a foreground refresh error after an automatic background recovery", async () => {
+    const pollingSettings = { ...settings, refreshIntervalMs: 20 };
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: model.generatedAt,
+      dashboard: model,
+      settings: pollingSettings
+    }));
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => pollingSettings } as Response;
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) throw new Error("initial refresh unavailable");
+      return { ok: true, json: async () => model } as Response;
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("initial refresh unavailable");
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("status", { name: "Last-known dashboard snapshot" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeEnabled();
+  });
+
+  it("clears previously rendered records when refreshed settings change scope", async () => {
+    let settingsCalls = 0;
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        settingsCalls += 1;
+        return {
+          ok: true,
+          json: async () => settingsCalls === 1
+            ? settings
+            : { targetRepos: ["other/repo"], scopeId: settings.scopeId }
+        } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("new scope unavailable");
+    }));
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument());
+    expect(screen.getByText("new scope unavailable")).toBeInTheDocument();
+  });
+
+  it("persists a validated last-known snapshot after a successful load", async () => {
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Attention" });
+    expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
+      version: 2,
+      dashboard: { generatedAt: model.generatedAt, stateRoot: model.stateRoot },
+      settings
+    });
+  });
+
+  it("throttles cache writes during frequent background polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const pollingSettings = { ...settings, refreshIntervalMs: 20 };
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => pollingSettings } as Response;
+      dashboardCalls += 1;
+      return {
+        ok: true,
+        json: async () => ({ ...model, generatedAt: `2026-07-12T11:20:0${dashboardCalls}.000Z` })
+      } as Response;
+    }));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(80));
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThanOrEqual(3));
+
+    const cacheWrites = setItem.mock.calls.filter(([key]) => key === DASHBOARD_SNAPSHOT_CACHE_KEY);
+    expect(cacheWrites).toHaveLength(1);
+  });
+
   it("persists a card snooze through the dashboard annotation API", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-07-12T11:20:00.000Z"));
+    const snoozedModel = { ...model, generatedAt: "2026-07-12T11:21:00.000Z" };
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      if (url === "/api/annotations") return { ok: true, json: async () => ({ path: "annotations/43.json" }) } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => dashboardCalls === 1 ? model : snoozedModel } as Response;
+    }));
     render(<App />);
     await screen.findByRole("heading", { name: "Attention" });
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
@@ -164,6 +451,32 @@ describe("App", () => {
     expect(Date.parse(body.until)).toBeGreaterThan(Date.now());
     expect(Date.parse(body.until) - Date.now()).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
     expect(await screen.findByRole("status")).toHaveTextContent("Presentation preference saved");
+    expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
+      dashboard: { generatedAt: snoozedModel.generatedAt }
+    });
+  });
+
+  it("fences further writes when annotation reconciliation fails", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      if (url === "/api/annotations") {
+        return { ok: true, json: async () => ({ path: "annotations/43.json" }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("annotation reconciliation unavailable");
+    }));
+
+    render(<App />);
+    await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Dismiss or snooze" }), "snooze-1h");
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "annotation reconciliation unavailable"
+    );
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
   });
 
   it("reloads once at the earliest active snooze expiry when polling is disabled", async () => {
@@ -739,6 +1052,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" }));
     await userEvent.click(screen.getByText("PR-batch prompt"));
 
+    expect(screen.getByText("Builds a copyable $pr-batch handoff from the work selected in Find.")).toBeInTheDocument();
     expect(screen.getByText(/Issue #45: https:\/\/github.com\/repo\/dashboard\/issues\/45/)).toBeInTheDocument();
     expect(screen.getByTitle("Copy prompt")).toBeEnabled();
   });
@@ -834,17 +1148,84 @@ describe("App", () => {
     expect(fetch).toHaveBeenCalledWith("/api/dashboard", expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } }));
   });
 
-  it("preserves shell selection across background refreshes and hides transient refresh failures", async () => {
+  it("rejects an out-of-scope dashboard returned after saving repositories", async () => {
     let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => ({ targetRepos: ["repo/dashboard", "other/repo"], scopeId: settings.scopeId })
+        } as Response;
+      }
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      return {
+        ok: true,
+        json: async () => dashboardCalls === 1
+          ? model
+          : { ...model, targetRepos: ["private/repo"], workItems: [] }
+      } as Response;
+    }));
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("Add target repository"), "other/repo");
+    await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "Dashboard data does not match the current repository scope"
+    );
+    expect(screen.queryByText("private/repo")).not.toBeInTheDocument();
+    expect(screen.getAllByText("repo/dashboard").length).toBeGreaterThan(0);
+  });
+
+  it("keeps the displayed repository scope atomic when its dashboard reload fails", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return { ok: true, json: async () => ({ targetRepos: ["repo/dashboard", "other/repo"] }) } as Response;
+      }
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("scoped dashboard reload failed");
+    }));
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("Add target repository"), "other/repo");
+    await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("scoped dashboard reload failed");
+    expect(screen.queryByText("other/repo")).not.toBeInTheDocument();
+    expect(screen.getAllByText("repo/dashboard").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+
+    vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => undefined));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+  });
+
+  it("preserves shell selection while a background refresh failure recovers", async () => {
+    let dashboardCalls = 0;
+    let rejectBackgroundRefresh: ((reason?: unknown) => void) | undefined;
+    const failingRefresh = new Promise<Response>((_resolve, reject) => {
+      rejectBackgroundRefresh = reject;
+    });
+    let releaseRecovery: ((response: Response) => void) | undefined;
+    const recovery = new Promise<Response>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const refreshedModel = { ...model, workItems: model.workItems.map((item) => ({ ...item, selected: false })) };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
       dashboardCalls += 1;
-      if (dashboardCalls > 2) throw new Error("transient refresh failure");
-      return {
-        ok: true,
-        json: async () => ({ ...model, workItems: model.workItems.map((item) => ({ ...item, selected: false })) })
-      } as Response;
+      if (dashboardCalls === 2) return failingRefresh;
+      if (dashboardCalls > 2) return recovery;
+      return { ok: true, json: async () => refreshedModel } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
@@ -853,9 +1234,105 @@ describe("App", () => {
     const checkbox = screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" });
     await userEvent.click(checkbox);
 
-    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(2));
     expect(checkbox).toBeChecked();
-    expect(screen.queryByText("transient refresh failure")).not.toBeInTheDocument();
+    rejectBackgroundRefresh?.(new Error("transient refresh failure"));
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("transient refresh failure");
+    expect(checkbox).toBeChecked();
+    releaseRecovery?.({ ok: true, json: async () => refreshedModel } as Response);
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument());
+    expect(checkbox).toBeChecked();
+  });
+
+  it("fences local writes after a background refresh failure", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("polling refresh unavailable");
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "polling refresh unavailable"
+    );
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+  });
+
+  it("ignores an older background failure after a foreground refresh succeeds", async () => {
+    let dashboardCalls = 0;
+    let rejectBackgroundRefresh: ((reason?: unknown) => void) | undefined;
+    const pendingBackgroundRefresh = new Promise<Response>((_resolve, reject) => {
+      rejectBackgroundRefresh = reject;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      if (dashboardCalls === 2) return pendingBackgroundRefresh;
+      return { ok: true, json: async () => ({ ...model, generatedAt: "2026-07-12T11:21:00.000Z" }) } as Response;
+    }));
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(dashboardCalls).toBe(3));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeEnabled());
+
+    await act(async () => {
+      rejectBackgroundRefresh?.(new Error("stale background failure"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeEnabled();
+  });
+
+  it("aborts a superseded background dashboard read", async () => {
+    let settingsCalls = 0;
+    let dashboardCalls = 0;
+    let releaseBackgroundSettings: ((response: Response) => void) | undefined;
+    const pendingBackgroundSettings = new Promise<Response>((resolve) => {
+      releaseBackgroundSettings = resolve;
+    });
+    let backgroundDashboardSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings") {
+        settingsCalls += 1;
+        if (settingsCalls === 2) return pendingBackgroundSettings;
+        return Promise.resolve({ ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response);
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 2) {
+        backgroundDashboardSignal = init?.signal || undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          backgroundDashboardSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ ...model, generatedAt: dashboardCalls === 1 ? model.generatedAt : "2026-07-12T11:21:00.000Z" })
+      } as Response);
+    }));
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    await waitFor(() => expect(backgroundDashboardSignal).toBeDefined());
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(dashboardCalls).toBe(3));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeEnabled());
+
+    releaseBackgroundSettings?.({ ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response);
+
+    await waitFor(() => expect(backgroundDashboardSignal?.aborted).toBe(true));
+    expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument();
   });
 
   it("drops a selected item when background GitHub reconciliation makes it terminal", async () => {
@@ -903,10 +1380,13 @@ describe("App", () => {
       lanes: [],
       path: "batches/batch-recovery.json"
     };
+    let dashboardCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/batches/import" || url === "/api/batches/stop") return { ok: true, json: async () => ({ path: "local-state.json" }) } as Response;
-      return { ok: true, json: async () => url === "/api/settings" ? settings : { ...model, batches: [batch], events: [{ eventId: "event-1", type: "lane_started", batchId: "batch-recovery", batchPath: batch.path, repo: "repo/dashboard", timestamp: model.generatedAt, path: "events/event-1.json" }] } } as Response;
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      return { ok: true, json: async () => ({ ...model, generatedAt: `2026-07-12T11:2${dashboardCalls}:00.000Z`, batches: [batch], events: [{ eventId: "event-1", type: "lane_started", batchId: "batch-recovery", batchPath: batch.path, repo: "repo/dashboard", timestamp: model.generatedAt, path: "events/event-1.json" }] }) } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
@@ -930,6 +1410,9 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save batch plan" }));
     expect(await screen.findByText("Batch plan saved.")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/batches/import", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
+      dashboard: { generatedAt: "2026-07-12T11:23:00.000Z" }
+    });
   });
 
   it("serializes overlapping loopback writes instead of racing coordination mutations", async () => {
@@ -975,5 +1458,11 @@ describe("App", () => {
     const srOnlyRule = stylesheet.match(/\.sr-only\s*\{[^}]+\}/)?.[0] || "";
     expect(srOnlyRule).toContain("clip-path: inset(50%)");
     expect(srOnlyRule).not.toMatch(/\n\s*clip:/);
+    expect(stylesheet).toMatch(/:root\s*{[\s\S]*--color-canvas:/);
+    expect(stylesheet).toMatch(/@media \(prefers-color-scheme: dark\)\s*{[\s\S]*color-scheme: dark/);
+    expect(stylesheet).toMatch(/--color-on-danger-strong:\s*#ffffff/);
+    expect(stylesheet).toMatch(/\.coordination-degraded-banner\s*{[\s\S]*color:\s*var\(--color-on-danger-strong\)/);
+    expect(stylesheet).toMatch(/\.source-chip-error\s*{[\s\S]*color:\s*var\(--color-danger-text\)/);
+    expect(stylesheet).toMatch(/\.loading-skeleton-line\s*{[\s\S]*animation:/);
   });
 });

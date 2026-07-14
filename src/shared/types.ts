@@ -40,6 +40,11 @@ export interface DashboardSettings {
   refreshIntervalMs?: number;
 }
 
+export interface DashboardRuntimeSettings extends DashboardSettings {
+  /** Opaque identity for the server-side state root, API source, and settings store. */
+  scopeId: string;
+}
+
 export interface DashboardAnnotation {
   key: string;
   kind: DashboardAnnotationKind;

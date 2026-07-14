@@ -2,6 +2,7 @@ import type { WorkItem } from "../../shared/types";
 import { isOperationalWorkItem, isSelectableWorkItem } from "../../shared/workItemSelection";
 import { displayAttribution, firstDisplayAttribution } from "../../shared/attribution";
 import { effectiveCustody } from "../../shared/effectiveCustody";
+import { inferLegacyMachineId } from "../../shared/legacyMachine";
 import type { OperatorDeepLink, OverviewOperatorFilter } from "../operatorRows";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
 import { canonicalGithubItemUrl } from "../githubUrls";
@@ -25,6 +26,7 @@ function holder(item: WorkItem): string {
 
 function matches(item: WorkItem, query: string): boolean {
   const { claim, heartbeat } = effectiveCustody(item);
+  const inferredMachine = inferLegacyMachineId(claim?.agentId || heartbeat?.agentId);
   const value = query.trim().toLowerCase();
   if (!value) return true;
   if (/^#?\d+$/.test(value)) return item.target === value.replace(/^#/, "");
@@ -44,8 +46,11 @@ function matches(item: WorkItem, query: string): boolean {
     heartbeat?.branch,
     claim?.threadHandle,
     heartbeat?.threadHandle,
+    claim?.agentId,
+    heartbeat?.agentId,
     claim?.machineId,
     heartbeat?.machineId,
+    inferredMachine,
     ...item.batchSignals?.flatMap((signal) => [signal.batchId, signal.laneName]) || []
   ]
     .filter(Boolean)
@@ -136,7 +141,9 @@ function WorkCard({
   const { claim, heartbeat, heartbeatConflict } = effectiveCustody(item);
   const canResumeIfPrIsFenced = reason?.action === "Open PR" && heartbeatConflict && Boolean(claim);
   const phase = heartbeat?.status || item.batchSignals?.[0]?.status || "unattributed";
-  const machine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
+  const observedMachine = firstDisplayAttribution([heartbeat?.machineId, claim?.machineId]);
+  const inferredMachine = observedMachine === "unattributed" ? inferLegacyMachineId(claim?.agentId || heartbeat?.agentId) : undefined;
+  const machine = inferredMachine ? `${inferredMachine} (inferred)` : observedMachine;
   const thread = firstDisplayAttribution([heartbeat?.threadHandle, claim?.threadHandle]);
   const elapsed = elapsedSince(heartbeat?.updatedAt || claim?.updatedAt || item.lastActivityAt);
   const githubUrl = canonicalGithubItemUrl(item.github?.url);

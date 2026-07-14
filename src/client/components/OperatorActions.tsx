@@ -98,7 +98,7 @@ export function OperatorActions({
     {batch ? <a href={`/?batch=${encodeURIComponent(batch)}&repo=${encodeURIComponent(item.repo)}`}>Open batch</a> : null}
     {onAnnotate ? <label className="annotation-choice">
       <span className="sr-only">Dismiss or snooze</span>
-      <select aria-label="Dismiss or snooze" onChange={(event) => void chooseAnnotation(event.target.value)} value={annotationChoice}>
+      <select aria-label="Dismiss or snooze" name="annotationAction" onChange={(event) => void chooseAnnotation(event.target.value)} value={annotationChoice}>
         <option value="">Dismiss / snooze…</option>
         <option value="snooze-1h">Snooze 1 hour</option>
         <option value="snooze-1d">Snooze 1 day</option>
