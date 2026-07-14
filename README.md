@@ -87,11 +87,16 @@ lets local foreground refreshes bypass it. The read cache is capped at 5 seconds
 so larger polling intervals reduce polling frequency but not the short
 coalescing window.
 
-The browser keeps one validated last-known dashboard snapshot in local storage
-so reloads can paint immediately while current data is fetched. Cached content
-is visibly labeled until a fresh read succeeds, and malformed cache entries are
-ignored. The interface follows the operating system's light or dark color
-preference; all palette values are defined as CSS custom properties.
+The browser keeps one validated last-known dashboard snapshot in local storage.
+On reload it first confirms the server-issued runtime scope and saved target
+repositories, then may paint the matching snapshot while current data is
+fetched; a snapshot from another state root, API source, settings store, or
+repository scope is never rendered. Cached content is visibly labeled until a
+fresh read succeeds, malformed cache entries are ignored, and background polls
+write at most one snapshot per minute while foreground and operator-triggered
+refreshes persist immediately. The interface follows the operating system's
+light or dark color preference; all palette values are defined as CSS custom
+properties.
 
 ## What It Shows
 

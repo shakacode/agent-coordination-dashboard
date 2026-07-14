@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
@@ -69,6 +70,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
+  const runtimeScopeId = createHash("sha256")
+    .update(JSON.stringify([config.stateRoot, coordApiUrl, persistedSettingsPath]))
+    .digest("hex");
   const dashboardCacheTtlMs = config.refreshIntervalMs > 0 ? Math.min(config.refreshIntervalMs, MAX_DASHBOARD_CACHE_TTL_MS) : 0;
   let dashboardCacheGeneration = 0;
   let dashboardBuildSequence = 0;
@@ -106,7 +110,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   async function currentSettings() {
     const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
-    return { ...settings, refreshIntervalMs: config.refreshIntervalMs };
+    return { ...settings, refreshIntervalMs: config.refreshIntervalMs, scopeId: runtimeScopeId };
   }
 
   async function captureCoordinationSnapshot(): Promise<CoordinationSnapshot> {
@@ -508,7 +512,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
     const saved = await writeDashboardSettings(persistedSettingsPath, { targetRepos });
     invalidateDashboardCache();
-    res.json({ ...saved, refreshIntervalMs: config.refreshIntervalMs });
+    res.json({ ...saved, refreshIntervalMs: config.refreshIntervalMs, scopeId: runtimeScopeId });
   });
 
   async function writeAnnotation(req: express.Request, res: express.Response, remove = false) {

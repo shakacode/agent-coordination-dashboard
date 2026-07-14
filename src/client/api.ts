@@ -1,5 +1,5 @@
 import type { CustodyTimeline } from "../shared/custodyTimeline";
-import type { BatchRecord, CoordinationSourceStatus, CoordinationWarning, DashboardAnnotation, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
+import type { BatchRecord, CoordinationSourceStatus, CoordinationWarning, DashboardAnnotation, DashboardModel, DashboardRuntimeSettings, DashboardSettings, WorkItem } from "../shared/types";
 
 export interface ItemTimelineResponse extends CustodyTimeline {
   item?: WorkItem;
@@ -23,12 +23,12 @@ export async function fetchDashboard(options: { fresh?: boolean; signal?: AbortS
   return (await response.json()) as DashboardModel;
 }
 
-export async function fetchSettings(options: { signal?: AbortSignal } = {}): Promise<DashboardSettings> {
+export async function fetchSettings(options: { signal?: AbortSignal } = {}): Promise<DashboardRuntimeSettings> {
   const response = await fetch("/api/settings", options.signal ? { signal: options.signal } : undefined);
   if (!response.ok) {
     throw new Error(`Settings API failed with ${response.status}`);
   }
-  return (await response.json()) as DashboardSettings;
+  return (await response.json()) as DashboardRuntimeSettings;
 }
 
 export async function fetchItemTimeline(repo: string, target: string, options: { signal?: AbortSignal } = {}): Promise<ItemTimelineResponse> {
@@ -39,7 +39,7 @@ export async function fetchItemTimeline(repo: string, target: string, options: {
   return (await response.json()) as ItemTimelineResponse;
 }
 
-export async function saveSettings(settings: DashboardSettings): Promise<DashboardSettings> {
+export async function saveSettings(settings: DashboardSettings): Promise<DashboardRuntimeSettings> {
   const response = await fetch("/api/settings", {
     body: JSON.stringify(settings),
     headers: { "Content-Type": "application/json" },
@@ -48,7 +48,7 @@ export async function saveSettings(settings: DashboardSettings): Promise<Dashboa
   if (!response.ok) {
     throw new Error(`Settings API failed with ${response.status}`);
   }
-  return (await response.json()) as DashboardSettings;
+  return (await response.json()) as DashboardRuntimeSettings;
 }
 
 export async function saveImportedBatchManifest(manifest: Partial<BatchRecord>): Promise<{ path: string }> {

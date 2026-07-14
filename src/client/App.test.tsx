@@ -89,7 +89,7 @@ const model = {
   ]
 } satisfies DashboardModel;
 
-const settings = { targetRepos: ["repo/dashboard"] };
+const settings = { targetRepos: ["repo/dashboard"], scopeId: "test-runtime-scope" };
 
 describe("App", () => {
   beforeEach(() => {
@@ -163,9 +163,33 @@ describe("App", () => {
     view.unmount();
   });
 
-  it("paints the last-known snapshot immediately while refreshing current data", () => {
+  it("paints the last-known snapshot after current settings validate its scope", async () => {
     localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
+      savedAt: "2026-07-12T11:19:00.000Z",
+      dashboard: model,
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return Promise.resolve({ ok: true, json: async () => settings } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    }));
+
+    const view = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Last-known dashboard snapshot" })).toHaveTextContent(
+      "Refreshing current coordination data"
+    );
+    expect(screen.queryByRole("status", { name: "Loading coordination dashboard" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("waits for current settings scope before painting cached records", () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
       savedAt: "2026-07-12T11:19:00.000Z",
       dashboard: model,
       settings
@@ -174,17 +198,36 @@ describe("App", () => {
 
     const view = render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Attention" })).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Last-known dashboard snapshot" })).toHaveTextContent(
-      "Refreshing current coordination data"
-    );
-    expect(screen.queryByRole("status", { name: "Loading coordination dashboard" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("rejects a cached snapshot from a different runtime scope", async () => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: "2026-07-12T11:19:00.000Z",
+      dashboard: model,
+      settings: { ...settings, scopeId: "previous-state-root" }
+    }));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return Promise.resolve({ ok: true, json: async () => ({ ...settings, scopeId: "current-state-root" }) } as Response);
+      }
+      return new Promise<Response>(() => undefined);
+    }));
+
+    const view = render(<App />);
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/settings", undefined));
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
     view.unmount();
   });
 
   it("ignores malformed cached dashboard snapshots", () => {
     localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       savedAt: model.generatedAt,
       dashboard: { ...model, workItems: [null] },
       settings
@@ -199,9 +242,28 @@ describe("App", () => {
 
   it("ignores cached snapshots with malformed optional containers", () => {
     localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       savedAt: model.generatedAt,
       dashboard: { ...model, sourceStatus: {} },
+      settings
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const view = render(<App />);
+
+    expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it.each([
+    ["coordinationTokenEnvVar", "NOT_A_TOKEN_ENV"],
+    ["githubMergeTimeStatus", "sometimes"],
+    ["trulyOpenCountStatus", "stale"]
+  ])("ignores cached snapshots with malformed optional field %s", (field, value) => {
+    localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
+      version: 2,
+      savedAt: model.generatedAt,
+      dashboard: { ...model, [field]: value },
       settings
     }));
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
@@ -218,12 +280,15 @@ describe("App", () => {
       batches: [{ schemaVersion: 1, batchId: "cached-batch", repo: "repo/dashboard", lanes: [], path: "batches/cached-batch.json" }]
     };
     localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       savedAt: model.generatedAt,
       dashboard: cachedModel,
       settings
     }));
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("refresh unavailable"); }));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      throw new Error("refresh unavailable");
+    }));
 
     render(<App />);
 
@@ -242,7 +307,7 @@ describe("App", () => {
   it("clears a foreground refresh error after an automatic background recovery", async () => {
     const pollingSettings = { ...settings, refreshIntervalMs: 20 };
     localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       savedAt: model.generatedAt,
       dashboard: model,
       settings: pollingSettings
@@ -263,15 +328,65 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Add repository" })).toBeEnabled();
   });
 
+  it("clears previously rendered records when refreshed settings change scope", async () => {
+    let settingsCalls = 0;
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        settingsCalls += 1;
+        return {
+          ok: true,
+          json: async () => settingsCalls === 1
+            ? settings
+            : { targetRepos: ["other/repo"], scopeId: settings.scopeId }
+        } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("new scope unavailable");
+    }));
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument());
+    expect(screen.getByText("new scope unavailable")).toBeInTheDocument();
+  });
+
   it("persists a validated last-known snapshot after a successful load", async () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "Attention" });
     expect(JSON.parse(localStorage.getItem(DASHBOARD_SNAPSHOT_CACHE_KEY) || "null")).toMatchObject({
-      version: 1,
+      version: 2,
       dashboard: { generatedAt: model.generatedAt, stateRoot: model.stateRoot },
       settings
     });
+  });
+
+  it("throttles cache writes during frequent background polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const pollingSettings = { ...settings, refreshIntervalMs: 20 };
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") return { ok: true, json: async () => pollingSettings } as Response;
+      dashboardCalls += 1;
+      return {
+        ok: true,
+        json: async () => ({ ...model, generatedAt: `2026-07-12T11:20:0${dashboardCalls}.000Z` })
+      } as Response;
+    }));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(80));
+    await waitFor(() => expect(dashboardCalls).toBeGreaterThanOrEqual(3));
+
+    const cacheWrites = setItem.mock.calls.filter(([key]) => key === DASHBOARD_SNAPSHOT_CACHE_KEY);
+    expect(cacheWrites).toHaveLength(1);
   });
 
   it("persists a card snooze through the dashboard annotation API", async () => {

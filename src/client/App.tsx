@@ -6,7 +6,7 @@ import { displayAttribution, firstDisplayAttribution } from "../shared/attributi
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { effectiveCustody } from "../shared/effectiveCustody";
 import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
-import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardSettings } from "../shared/types";
+import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { BatchesTab } from "./components/BatchesTab";
 import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
@@ -28,18 +28,19 @@ import { canonicalGithubItemUrl } from "./githubUrls";
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
 const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
+const BACKGROUND_CACHE_WRITE_INTERVAL_MS = 60_000;
 const REQUIRED_COORDINATION_RESOURCES: readonly CoordinationResource[] = ["claims", "heartbeats", "batches"];
 const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
   ...REQUIRED_COORDINATION_RESOURCES,
   "events"
 ];
-export const DASHBOARD_SNAPSHOT_CACHE_KEY = "agent-coordination-dashboard:last-known-snapshot:v1";
+export const DASHBOARD_SNAPSHOT_CACHE_KEY = "agent-coordination-dashboard:last-known-snapshot:v2";
 
 interface CachedDashboardSnapshot {
-  version: 1;
+  version: 2;
   savedAt: string;
   dashboard: DashboardModel;
-  settings: DashboardSettings;
+  settings: DashboardRuntimeSettings;
 }
 
 interface ItemRoute {
@@ -53,6 +54,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function sameTargetRepos(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((repo, index) => repo === right[index]);
 }
 
 function hasStrings(value: Record<string, unknown>, fields: string[]): boolean {
@@ -173,19 +178,24 @@ function isSourceStatus(value: unknown): boolean {
 }
 
 function isCachedDashboardSnapshot(value: unknown): value is CachedDashboardSnapshot {
-  if (!isRecord(value) || value.version !== 1 || typeof value.savedAt !== "string") return false;
+  if (!isRecord(value) || value.version !== 2 || typeof value.savedAt !== "string") return false;
   if (!isRecord(value.settings)) return false;
   const settings = value.settings;
   const settingsTargetRepos = settings.targetRepos;
   if (!isStringArray(settingsTargetRepos)
+    || typeof settings.scopeId !== "string"
     || (settings.refreshIntervalMs !== undefined && typeof settings.refreshIntervalMs !== "number")) return false;
   const dashboard = value.dashboard;
   if (!isRecord(dashboard) || typeof dashboard.generatedAt !== "string" || typeof dashboard.stateRoot !== "string") return false;
   if (!isStringArray(dashboard.targetRepos)
     || dashboard.targetRepos.length !== settingsTargetRepos.length
     || dashboard.targetRepos.some((repo, index) => repo !== settingsTargetRepos[index])) return false;
+  // Keep every optional top-level DashboardModel field here in sync before bumping the cache version.
   return (dashboard.sourceStatus === undefined || (Array.isArray(dashboard.sourceStatus) && dashboard.sourceStatus.every(isSourceStatus)))
+    && (dashboard.coordinationTokenEnvVar === undefined || (typeof dashboard.coordinationTokenEnvVar === "string" && ["AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"].includes(dashboard.coordinationTokenEnvVar)))
+    && (dashboard.githubMergeTimeStatus === undefined || (typeof dashboard.githubMergeTimeStatus === "string" && ["available", "unavailable"].includes(dashboard.githubMergeTimeStatus)))
     && (dashboard.trulyOpenCount === undefined || typeof dashboard.trulyOpenCount === "number")
+    && (dashboard.trulyOpenCountStatus === undefined || (typeof dashboard.trulyOpenCountStatus === "string" && ["available", "unknown"].includes(dashboard.trulyOpenCountStatus)))
     && Array.isArray(dashboard.agents) && dashboard.agents.every(isAgent)
     && Array.isArray(dashboard.batches) && dashboard.batches.every(isBatch)
     && Array.isArray(dashboard.events) && dashboard.events.every(isEvent)
@@ -207,10 +217,10 @@ function readCachedDashboardSnapshot(): CachedDashboardSnapshot | undefined {
   }
 }
 
-function writeCachedDashboardSnapshot(dashboard: DashboardModel, settings: DashboardSettings): string | undefined {
+function writeCachedDashboardSnapshot(dashboard: DashboardModel, settings: DashboardRuntimeSettings): string | undefined {
   const savedAt = new Date().toISOString();
   try {
-    window.localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({ version: 1, savedAt, dashboard, settings }));
+    window.localStorage.setItem(DASHBOARD_SNAPSHOT_CACHE_KEY, JSON.stringify({ version: 2, savedAt, dashboard, settings }));
     return savedAt;
   } catch {
     return undefined;
@@ -334,9 +344,10 @@ function preserveWorkItemSelections(current: DashboardModel | null, next: Dashbo
 
 export function App() {
   const initialSnapshot = useMemo(readCachedDashboardSnapshot, []);
-  const [dashboard, setDashboard] = useState<DashboardModel | null>(initialSnapshot?.dashboard || null);
-  const [settings, setSettings] = useState<DashboardSettings | null>(initialSnapshot?.settings || null);
-  const [cachedSnapshotAt, setCachedSnapshotAt] = useState<string | null>(initialSnapshot?.savedAt || null);
+  const initialSnapshotRef = useRef(initialSnapshot);
+  const [dashboard, setDashboard] = useState<DashboardModel | null>(null);
+  const [settings, setSettings] = useState<DashboardRuntimeSettings | null>(null);
+  const [cachedSnapshotAt, setCachedSnapshotAt] = useState<string | null>(null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
@@ -358,9 +369,21 @@ export function App() {
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
+  const currentSettingsRef = useRef<DashboardRuntimeSettings | null>(null);
   const batchOperationsRef = useRef<HTMLDetailsElement>(null);
   const diagnosticsRef = useRef<HTMLDetailsElement>(null);
   const warningsRef = useRef<HTMLElement>(null);
+  const lastCacheWriteAttemptAt = useRef(0);
+
+  const cacheDashboard = useCallback((nextDashboard: DashboardModel, nextSettings: DashboardRuntimeSettings, background = false) => {
+    const attemptedAt = Date.now();
+    if (background && attemptedAt - lastCacheWriteAttemptAt.current < BACKGROUND_CACHE_WRITE_INTERVAL_MS) {
+      return undefined;
+    }
+    // Count attempts, not only successes, so quota failures cannot cause a tight polling loop.
+    lastCacheWriteAttemptAt.current = attemptedAt;
+    return writeCachedDashboardSnapshot(nextDashboard, nextSettings);
+  }, []);
 
   useEffect(() => {
     document.title = "Agent Coordination Dashboard";
@@ -444,21 +467,43 @@ export function App() {
       ? window.setTimeout(() => abortController.abort(), options.backgroundTimeoutMs ?? MIN_BACKGROUND_REFRESH_TIMEOUT_MS)
       : undefined;
     const requestVersion = ++dashboardRequestVersion.current;
+    let scopeChanged = false;
     try {
-      const [loadedSettings, loadedDashboard] = await Promise.all([
-        fetchSettings({ signal: abortController?.signal }),
-        fetchDashboard({ fresh: !isBackground, signal: abortController?.signal })
-      ]);
+      const loadedSettings = await fetchSettings({ signal: abortController?.signal });
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
+      const previousSettings = currentSettingsRef.current;
+      scopeChanged = Boolean(previousSettings
+        && (previousSettings.scopeId !== loadedSettings.scopeId
+          || !sameTargetRepos(previousSettings.targetRepos, loadedSettings.targetRepos)));
+      currentSettingsRef.current = loadedSettings;
       setSettings(loadedSettings);
+      if (scopeChanged) {
+        setDashboard(null);
+        setCachedSnapshotAt(null);
+      }
+      const initialSnapshot = initialSnapshotRef.current;
+      initialSnapshotRef.current = undefined;
+      if (initialSnapshot
+        && initialSnapshot.settings.scopeId === loadedSettings.scopeId
+        && sameTargetRepos(initialSnapshot.settings.targetRepos, loadedSettings.targetRepos)) {
+        setDashboard(initialSnapshot.dashboard);
+        setCachedSnapshotAt(initialSnapshot.savedAt);
+      }
+      const loadedDashboard = await fetchDashboard({ fresh: !isBackground, signal: abortController?.signal });
+      if (requestVersion !== dashboardRequestVersion.current) {
+        return;
+      }
+      if (!sameTargetRepos(loadedDashboard.targetRepos, loadedSettings.targetRepos)) {
+        throw new Error("Dashboard data does not match the current repository scope");
+      }
       setDashboard((current) => (isBackground ? preserveWorkItemSelections(current, loadedDashboard) : loadedDashboard));
-      writeCachedDashboardSnapshot(loadedDashboard, loadedSettings);
+      cacheDashboard(loadedDashboard, loadedSettings, isBackground);
       setCachedSnapshotAt(null);
       setError(null);
     } catch (caught: unknown) {
-      if (!isBackground) {
+      if (!isBackground || scopeChanged) {
         setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
       }
     } finally {
@@ -472,7 +517,7 @@ export function App() {
         finishUserAction();
       }
     }
-  }, []);
+  }, [cacheDashboard]);
 
   useEffect(() => {
     void loadDashboard();
@@ -587,9 +632,10 @@ export function App() {
         const saved = await saveSettings({ targetRepos: nextRepos });
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
+          currentSettingsRef.current = saved;
           setSettings(saved);
           setDashboard(loadedDashboard);
-          writeCachedDashboardSnapshot(loadedDashboard, saved);
+          cacheDashboard(loadedDashboard, saved);
           setCachedSnapshotAt(null);
         }
       } catch (caught: unknown) {
@@ -755,7 +801,7 @@ export function App() {
       if (requestVersion === dashboardRequestVersion.current) {
         setDashboard(loadedDashboard);
         if (loadedTimeline) setItemTimeline(loadedTimeline);
-        if (settings) writeCachedDashboardSnapshot(loadedDashboard, settings);
+        if (settings) cacheDashboard(loadedDashboard, settings);
         setCachedSnapshotAt(null);
       }
     });
@@ -770,7 +816,7 @@ export function App() {
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
           setDashboard(loadedDashboard);
-          if (settings) writeCachedDashboardSnapshot(loadedDashboard, settings);
+          if (settings) cacheDashboard(loadedDashboard, settings);
           setCachedSnapshotAt(null);
         }
       } catch (caught: unknown) {
@@ -788,7 +834,7 @@ export function App() {
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
           setDashboard(loadedDashboard);
-          if (settings) writeCachedDashboardSnapshot(loadedDashboard, settings);
+          if (settings) cacheDashboard(loadedDashboard, settings);
           setCachedSnapshotAt(null);
         }
       } catch (caught: unknown) {
