@@ -484,14 +484,23 @@ export function App() {
       setError(null);
       beginUserAction();
     }
-    const abortController = isBackground ? new AbortController() : undefined;
-    const timeoutId = abortController
+    const abortController = new AbortController();
+    const timeoutId = isBackground
       ? window.setTimeout(() => abortController.abort(), options.backgroundTimeoutMs ?? MIN_BACKGROUND_REFRESH_TIMEOUT_MS)
       : undefined;
     const requestVersion = ++dashboardRequestVersion.current;
     let scopeChanged = false;
+    let dashboardPromise: Promise<
+      { ok: true; value: DashboardModel }
+      | { ok: false; error: unknown }
+    > | undefined;
     try {
-      const loadedSettings = await fetchSettings({ signal: abortController?.signal });
+      const settingsPromise = fetchSettings({ signal: abortController.signal });
+      dashboardPromise = fetchDashboard({ fresh: !isBackground, signal: abortController.signal }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      const loadedSettings = await settingsPromise;
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
@@ -513,7 +522,11 @@ export function App() {
         setDashboard(initialSnapshot.dashboard);
         setCachedSnapshotAt(initialSnapshot.savedAt);
       }
-      const loadedDashboard = await fetchDashboard({ fresh: !isBackground, signal: abortController?.signal });
+      const dashboardResult = await dashboardPromise;
+      if (!dashboardResult.ok) {
+        throw dashboardResult.error;
+      }
+      const loadedDashboard = dashboardResult.value;
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
@@ -522,8 +535,15 @@ export function App() {
         preserveSelections: isBackground
       });
     } catch (caught: unknown) {
+      if (requestVersion !== dashboardRequestVersion.current) {
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
     } finally {
+      abortController.abort();
+      if (dashboardPromise) {
+        await dashboardPromise;
+      }
       if (timeoutId !== undefined) {
         window.clearTimeout(timeoutId);
       }

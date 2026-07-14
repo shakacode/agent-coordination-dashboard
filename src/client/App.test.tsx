@@ -219,7 +219,10 @@ describe("App", () => {
 
     const view = render(<App />);
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/settings", undefined));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/settings",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    ));
     expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Attention" })).not.toBeInTheDocument();
     view.unmount();
@@ -272,6 +275,42 @@ describe("App", () => {
 
     expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
     view.unmount();
+  });
+
+  it("starts settings and dashboard reads in parallel", async () => {
+    let releaseSettings: ((response: Response) => void) | undefined;
+    const pendingSettings = new Promise<Response>((resolve) => {
+      releaseSettings = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input) === "/api/settings"
+      ? pendingSettings
+      : Promise.resolve({ ok: true, json: async () => model } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard",
+      expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } })
+    ));
+    releaseSettings?.({ ok: true, json: async () => settings } as Response);
+    expect(await screen.findByRole("heading", { name: "Attention" })).toBeInTheDocument();
+  });
+
+  it("aborts the sibling dashboard read when settings fail", async () => {
+    let dashboardSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings") return Promise.reject(new Error("settings unavailable"));
+      dashboardSignal = init?.signal || undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        dashboardSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByText("settings unavailable")).toBeInTheDocument();
+    expect(dashboardSignal?.aborted).toBe(true);
   });
 
   it("keeps cached-only state read-only until current coordination data loads", async () => {
@@ -1222,6 +1261,78 @@ describe("App", () => {
     );
     expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
     expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+  });
+
+  it("ignores an older background failure after a foreground refresh succeeds", async () => {
+    let dashboardCalls = 0;
+    let rejectBackgroundRefresh: ((reason?: unknown) => void) | undefined;
+    const pendingBackgroundRefresh = new Promise<Response>((_resolve, reject) => {
+      rejectBackgroundRefresh = reject;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      if (dashboardCalls === 2) return pendingBackgroundRefresh;
+      return { ok: true, json: async () => ({ ...model, generatedAt: "2026-07-12T11:21:00.000Z" }) } as Response;
+    }));
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(dashboardCalls).toBe(3));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeEnabled());
+
+    await act(async () => {
+      rejectBackgroundRefresh?.(new Error("stale background failure"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeEnabled();
+  });
+
+  it("aborts a superseded background dashboard read", async () => {
+    let settingsCalls = 0;
+    let dashboardCalls = 0;
+    let releaseBackgroundSettings: ((response: Response) => void) | undefined;
+    const pendingBackgroundSettings = new Promise<Response>((resolve) => {
+      releaseBackgroundSettings = resolve;
+    });
+    let backgroundDashboardSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings") {
+        settingsCalls += 1;
+        if (settingsCalls === 2) return pendingBackgroundSettings;
+        return Promise.resolve({ ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response);
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 2) {
+        backgroundDashboardSignal = init?.signal || undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          backgroundDashboardSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ ...model, generatedAt: dashboardCalls === 1 ? model.generatedAt : "2026-07-12T11:21:00.000Z" })
+      } as Response);
+    }));
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Attention" });
+    await waitFor(() => expect(backgroundDashboardSignal).toBeDefined());
+    await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
+    await waitFor(() => expect(dashboardCalls).toBe(3));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh dashboard" })).toBeEnabled());
+
+    releaseBackgroundSettings?.({ ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response);
+
+    await waitFor(() => expect(backgroundDashboardSignal?.aborted).toBe(true));
+    expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument();
   });
 
   it("drops a selected item when background GitHub reconciliation makes it terminal", async () => {
