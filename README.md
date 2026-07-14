@@ -94,9 +94,10 @@ fetched; a snapshot from another state root, API source, settings store, or
 repository scope is never rendered. Cached content is visibly labeled until a
 fresh read succeeds, malformed cache entries are ignored, and background polls
 write at most one snapshot per minute while foreground and operator-triggered
-refreshes persist immediately. The interface follows the operating system's
-light or dark color preference; all palette values are defined as CSS custom
-properties.
+refreshes persist immediately. A failed background refresh visibly marks the
+displayed data unavailable and disables local writes until polling recovers.
+The interface follows the operating system's light or dark color preference;
+all palette values are defined as CSS custom properties.
 
 ## What It Shows
 

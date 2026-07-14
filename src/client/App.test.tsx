@@ -1086,6 +1086,37 @@ describe("App", () => {
     expect(fetch).toHaveBeenCalledWith("/api/dashboard", expect.objectContaining({ headers: { "X-Dashboard-Refresh": "foreground" } }));
   });
 
+  it("rejects an out-of-scope dashboard returned after saving repositories", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => ({ targetRepos: ["repo/dashboard", "other/repo"], scopeId: settings.scopeId })
+        } as Response;
+      }
+      if (url === "/api/settings") return { ok: true, json: async () => settings } as Response;
+      dashboardCalls += 1;
+      return {
+        ok: true,
+        json: async () => dashboardCalls === 1
+          ? model
+          : { ...model, targetRepos: ["private/repo"], workItems: [] }
+      } as Response;
+    }));
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText("Add target repository"), "other/repo");
+    await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "Dashboard data does not match the current repository scope"
+    );
+    expect(screen.queryByText("private/repo")).not.toBeInTheDocument();
+    expect(screen.getAllByText("repo/dashboard").length).toBeGreaterThan(0);
+  });
+
   it("keeps the displayed repository scope atomic when its dashboard reload fails", async () => {
     let dashboardCalls = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1115,13 +1146,13 @@ describe("App", () => {
     expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
   });
 
-  it("preserves shell selection across background refreshes and hides transient refresh failures", async () => {
+  it("preserves shell selection while a background refresh failure recovers", async () => {
     let dashboardCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/settings") return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
       dashboardCalls += 1;
-      if (dashboardCalls > 2) throw new Error("transient refresh failure");
+      if (dashboardCalls === 3) throw new Error("transient refresh failure");
       return {
         ok: true,
         json: async () => ({ ...model, workItems: model.workItems.map((item) => ({ ...item, selected: false })) })
@@ -1134,9 +1165,30 @@ describe("App", () => {
     const checkbox = screen.getByRole("checkbox", { name: "Include repo/dashboard#45 in PR-batch prompt" });
     await userEvent.click(checkbox);
 
-    await waitFor(() => expect(dashboardCalls).toBeGreaterThan(2));
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent("transient refresh failure");
     expect(checkbox).toBeChecked();
-    expect(screen.queryByText("transient refresh failure")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Dashboard refresh failed" })).not.toBeInTheDocument());
+    expect(checkbox).toBeChecked();
+  });
+
+  it("fences local writes after a background refresh failure", async () => {
+    let dashboardCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      throw new Error("polling refresh unavailable");
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "polling refresh unavailable"
+    );
+    expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
   });
 
   it("drops a selected item when background GitHub reconciliation makes it terminal", async () => {

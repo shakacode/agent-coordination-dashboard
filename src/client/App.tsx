@@ -60,6 +60,12 @@ function sameTargetRepos(left: readonly string[], right: readonly string[]): boo
   return left.length === right.length && left.every((repo, index) => repo === right[index]);
 }
 
+function assertDashboardScope(dashboard: DashboardModel, settings: DashboardRuntimeSettings): void {
+  if (!sameTargetRepos(dashboard.targetRepos, settings.targetRepos)) {
+    throw new Error("Dashboard data does not match the current repository scope");
+  }
+}
+
 function hasStrings(value: Record<string, unknown>, fields: string[]): boolean {
   return fields.every((field) => typeof value[field] === "string");
 }
@@ -385,6 +391,22 @@ export function App() {
     return writeCachedDashboardSnapshot(nextDashboard, nextSettings);
   }, []);
 
+  const applyFreshDashboard = useCallback((
+    nextDashboard: DashboardModel,
+    nextSettings: DashboardRuntimeSettings,
+    options: { background?: boolean; preserveSelections?: boolean } = {}
+  ) => {
+    assertDashboardScope(nextDashboard, nextSettings);
+    currentSettingsRef.current = nextSettings;
+    setSettings(nextSettings);
+    setDashboard((current) => options.preserveSelections
+      ? preserveWorkItemSelections(current, nextDashboard)
+      : nextDashboard);
+    cacheDashboard(nextDashboard, nextSettings, options.background);
+    setCachedSnapshotAt(null);
+    setError(null);
+  }, [cacheDashboard]);
+
   useEffect(() => {
     document.title = "Agent Coordination Dashboard";
   }, []);
@@ -495,17 +517,12 @@ export function App() {
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
-      if (!sameTargetRepos(loadedDashboard.targetRepos, loadedSettings.targetRepos)) {
-        throw new Error("Dashboard data does not match the current repository scope");
-      }
-      setDashboard((current) => (isBackground ? preserveWorkItemSelections(current, loadedDashboard) : loadedDashboard));
-      cacheDashboard(loadedDashboard, loadedSettings, isBackground);
-      setCachedSnapshotAt(null);
-      setError(null);
+      applyFreshDashboard(loadedDashboard, loadedSettings, {
+        background: isBackground,
+        preserveSelections: isBackground
+      });
     } catch (caught: unknown) {
-      if (!isBackground || scopeChanged) {
-        setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
-      }
+      setError(caught instanceof Error ? caught.message : "Dashboard failed to load");
     } finally {
       if (timeoutId !== undefined) {
         window.clearTimeout(timeoutId);
@@ -517,7 +534,7 @@ export function App() {
         finishUserAction();
       }
     }
-  }, [cacheDashboard]);
+  }, [applyFreshDashboard]);
 
   useEffect(() => {
     void loadDashboard();
@@ -632,11 +649,7 @@ export function App() {
         const saved = await saveSettings({ targetRepos: nextRepos });
         const loadedDashboard = await fetchDashboard({ fresh: true });
         if (requestVersion === dashboardRequestVersion.current) {
-          currentSettingsRef.current = saved;
-          setSettings(saved);
-          setDashboard(loadedDashboard);
-          cacheDashboard(loadedDashboard, saved);
-          setCachedSnapshotAt(null);
+          applyFreshDashboard(loadedDashboard, saved);
         }
       } catch (caught: unknown) {
         setError(caught instanceof Error ? caught.message : "Settings failed to save");
@@ -794,15 +807,14 @@ export function App() {
       const requestVersion = ++dashboardRequestVersion.current;
       if (action) await saveAnnotation({ repo: item.repo, target: item.target, ...action });
       else await deleteAnnotation({ repo: item.repo, target: item.target });
-      const [loadedDashboard, loadedTimeline] = await Promise.all([
+      const [loadedSettings, loadedDashboard, loadedTimeline] = await Promise.all([
+        fetchSettings(),
         fetchDashboard({ fresh: true }),
         itemRoute?.repo === item.repo && itemRoute.target === item.target ? fetchItemTimeline(item.repo, item.target) : undefined
       ]);
       if (requestVersion === dashboardRequestVersion.current) {
-        setDashboard(loadedDashboard);
+        applyFreshDashboard(loadedDashboard, loadedSettings);
         if (loadedTimeline) setItemTimeline(loadedTimeline);
-        if (settings) cacheDashboard(loadedDashboard, settings);
-        setCachedSnapshotAt(null);
       }
     });
   }
@@ -813,11 +825,12 @@ export function App() {
       const requestVersion = ++dashboardRequestVersion.current;
       try {
         await saveImportedBatchManifest(manifest);
-        const loadedDashboard = await fetchDashboard({ fresh: true });
+        const [loadedSettings, loadedDashboard] = await Promise.all([
+          fetchSettings(),
+          fetchDashboard({ fresh: true })
+        ]);
         if (requestVersion === dashboardRequestVersion.current) {
-          setDashboard(loadedDashboard);
-          if (settings) cacheDashboard(loadedDashboard, settings);
-          setCachedSnapshotAt(null);
+          applyFreshDashboard(loadedDashboard, loadedSettings);
         }
       } catch (caught: unknown) {
         throw caught instanceof Error ? caught : new Error("Batch plan import failed");
@@ -831,11 +844,12 @@ export function App() {
       const requestVersion = ++dashboardRequestVersion.current;
       try {
         await requestBatchStop(input);
-        const loadedDashboard = await fetchDashboard({ fresh: true });
+        const [loadedSettings, loadedDashboard] = await Promise.all([
+          fetchSettings(),
+          fetchDashboard({ fresh: true })
+        ]);
         if (requestVersion === dashboardRequestVersion.current) {
-          setDashboard(loadedDashboard);
-          if (settings) cacheDashboard(loadedDashboard, settings);
-          setCachedSnapshotAt(null);
+          applyFreshDashboard(loadedDashboard, loadedSettings);
         }
       } catch (caught: unknown) {
         throw caught instanceof Error ? caught : new Error("Batch stop request failed");
