@@ -1,4 +1,8 @@
 import type { RequestHandler } from "express";
+import { isLoopbackAddress } from "./loopback";
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const LOOPBACK_DIAGNOSTIC_PATHS = new Set(["/api/health", "/api/doctor"]);
 
 export function parseHostHeader(hostHeader: string | undefined): string | null {
   if (!hostHeader) {
@@ -18,19 +22,27 @@ export function parseHostHeader(hostHeader: string | undefined): string | null {
   return host.split(":")[0] || null;
 }
 
-export function isAllowedHostHeader(hostHeader: string | undefined, allowedHosts: Iterable<string>): boolean {
+export function isAllowedHostHeader(
+  hostHeader: string | undefined,
+  allowedHosts: Iterable<string>,
+  remoteAddress?: string,
+  requestPath?: string
+): boolean {
   const host = parseHostHeader(hostHeader);
   if (!host) {
     return false;
   }
 
   const allowed = new Set(Array.from(allowedHosts, (item) => item.toLowerCase()));
-  return allowed.has(host);
+  const localDiagnostic = LOOPBACK_DIAGNOSTIC_PATHS.has(requestPath || "")
+    && LOOPBACK_HOSTS.has(host)
+    && isLoopbackAddress(remoteAddress);
+  return allowed.has(host) || localDiagnostic;
 }
 
 export function createHostGuard(allowedHosts: string[]): RequestHandler {
   return (req, res, next) => {
-    if (!isAllowedHostHeader(req.headers.host, allowedHosts)) {
+    if (!isAllowedHostHeader(req.headers.host, allowedHosts, req.socket.remoteAddress, req.path)) {
       res.status(403).json({ error: "Forbidden host" });
       return;
     }

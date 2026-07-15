@@ -43,6 +43,39 @@ npx agent-coordination-dashboard
 This repository is package-ready only: these steps do not publish to npm,
 create a Git tag, or change registry state.
 
+## Component diagnostics
+
+The installed command owns a read-only machine contract for stack-wide health
+aggregation:
+
+```bash
+npx agent-coordination-dashboard doctor --stack-json
+npx agent-coordination-dashboard doctor --stack-json --deep
+npx agent-coordination-dashboard doctor --stack-json --deep \
+  --url http://127.0.0.1:4319
+```
+
+The default URL is `http://127.0.0.1:4319`. An override must be plain HTTP at
+the root of the exact `localhost`, `127.0.0.1`, or `[::1]` host, with no
+credentials, query, fragment, or endpoint path. Invalid usage exits `64` before
+probing. Requests never follow redirects, share a roughly 10-second total
+deadline, and accept at most 256 KiB per response.
+
+`--stack-json` emits schema version `1` with the component id
+`agent-coordination-dashboard` and the stable checks `dashboard.package`,
+`dashboard.health`, and `dashboard.resources`. Default mode marks the resource
+check `skipped`; `--deep` reads fresh `/api/doctor` evidence and exposes only
+normalized states for the registered `claims`, `heartbeats`, `batches`, and
+`events` resources. Endpoint configuration, timestamps, unknown fields, and
+secret-bearing values are not copied into the contract.
+
+Statuses are `healthy`, `degraded`, and `failed`; individual checks may also be
+`skipped`. The process exits `0`, `1`, or `2` to match the aggregate status. A
+stopped optional dashboard is `degraded`, while a reachable service with a
+malformed or redirected health response is `failed`. The command only observes
+the installed package and running service; it does not start the dashboard or
+change coordination state.
+
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
 If it has not been populated yet, the dashboard shows a setup notice rather
 than coordination data. To inspect an existing coordination run, point
