@@ -1113,6 +1113,7 @@ export function App() {
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
               <ItemPage
+                commandActionsDisabled={localWritesDisabled}
                 onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(timelineWorkItem!, annotation)}
                 onBack={closeItem}
                 onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(timelineWorkItem!)}
