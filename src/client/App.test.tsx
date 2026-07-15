@@ -1260,6 +1260,45 @@ describe("App", () => {
       "polling refresh unavailable"
     );
     expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
+  });
+
+  it("fences timeline command actions after a background refresh failure", async () => {
+    window.history.pushState({}, "", "/?item=repo%2Fdashboard%2F43");
+    let dashboardCalls = 0;
+    let rejectBackgroundRefresh: ((reason?: unknown) => void) | undefined;
+    const pendingBackgroundRefresh = new Promise<Response>((_resolve, reject) => {
+      rejectBackgroundRefresh = reject;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") {
+        return { ok: true, json: async () => ({ ...settings, refreshIntervalMs: 20 }) } as Response;
+      }
+      if (url.startsWith("/api/item/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            repo: "repo/dashboard", target: "43", claims: [], liveness: [], phases: [], events: [],
+            branches: ["codex/heartbeat"], prUrls: [], item: model.workItems[0], sourceStatus: [], warnings: []
+          })
+        } as Response;
+      }
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) return { ok: true, json: async () => model } as Response;
+      return pendingBackgroundRefresh;
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Copy resume prompt" })).toBeEnabled();
+    await waitFor(() => expect(dashboardCalls).toBe(2));
+    rejectBackgroundRefresh?.(new Error("polling refresh unavailable"));
+    expect(await screen.findByRole("alert", { name: "Dashboard refresh failed" })).toHaveTextContent(
+      "polling refresh unavailable"
+    );
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeDisabled();
     expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
   });
 

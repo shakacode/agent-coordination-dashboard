@@ -1113,6 +1113,7 @@ export function App() {
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
               <ItemPage
+                commandActionsDisabled={localWritesDisabled}
                 onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(timelineWorkItem!, annotation)}
                 onBack={closeItem}
                 onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(timelineWorkItem!)}
@@ -1122,6 +1123,7 @@ export function App() {
           ) : itemError ? (
             <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
           ) : <p className="empty-state">Loading work item timeline…</p> : <AttentionShell
+            commandActionsDisabled={localWritesDisabled}
             items={dashboard.workItems}
             deepLink={operatorDeepLink}
             historyMergedTodayOnly={historyMergedTodayOnly}

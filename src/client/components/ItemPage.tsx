@@ -133,7 +133,7 @@ function timelineTimestamp(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
-export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { timeline: ItemTimelineResponse; onBack: () => void; onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void; onClearAnnotation?: () => Promise<void> | void }) {
+export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation, commandActionsDisabled = false }: { timeline: ItemTimelineResponse; onBack: () => void; onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void; onClearAnnotation?: () => Promise<void> | void; commandActionsDisabled?: boolean }) {
   const heartbeat = timeline.item?.heartbeat;
   const terminal = ["terminal", "archived_view"].includes(timeline.item?.operatorState || "") || timeline.item?.terminalState !== undefined;
   const activeClaim = !terminal && timeline.item?.claim?.status === "active" ? timeline.item.claim : undefined;
@@ -185,7 +185,7 @@ export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation }: { 
           <p>Holder: {holder}</p>
           <p>GitHub: {timeline.item?.github?.loadState === "loaded" ? `${timeline.item.github.state} · ${timeline.item.github.reviewDecision || "review UNKNOWN"} · CI: ${(timeline.item.github.ciStatus || "unknown").toUpperCase()}` : "UNKNOWN"}</p>
         </div>
-        <OperatorActions item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} resumeAvailable={Boolean(timeline.item) && !terminal} takeoverAvailable={holderDead} />
+        <OperatorActions commandActionsDisabled={commandActionsDisabled} item={actionItem} onAnnotate={onAnnotate} onClearAnnotation={onClearAnnotation} resumeAvailable={Boolean(timeline.item) && !terminal} takeoverAvailable={holderDead} />
       </header>
       {sourceIsUnknown(timeline) ? <p className="item-timeline-warning">Coordination data: UNKNOWN</p> : null}
       <TimelineWarnings timeline={timeline} />
