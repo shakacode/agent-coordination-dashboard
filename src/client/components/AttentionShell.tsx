@@ -126,6 +126,7 @@ function WorkCard({
   onOpenItem,
   onAnnotate,
   onClearAnnotation,
+  commandActionsDisabled = false,
   showResumeAction
 }: {
   item: WorkItem;
@@ -135,6 +136,7 @@ function WorkCard({
   onOpenItem?: (item: WorkItem) => void;
   onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
+  commandActionsDisabled?: boolean;
   showResumeAction: boolean;
 }) {
   const reason = item.attention;
@@ -182,6 +184,7 @@ function WorkCard({
         ) : null}
         {githubUrl ? <a href={githubUrl} rel="noreferrer" target="_blank">{item.github?.state.toLowerCase() === "merged" ? "Open merge" : "Open"}</a> : null}
         <OperatorActions
+          commandActionsDisabled={commandActionsDisabled}
           item={item}
           onAnnotate={onAnnotate ? (annotation) => onAnnotate(item, annotation) : undefined}
           onClearAnnotation={onClearAnnotation ? () => onClearAnnotation(item) : undefined}
@@ -212,6 +215,7 @@ export function AttentionShell({
   onShowMergedToday,
   onAnnotate,
   onClearAnnotation,
+  commandActionsDisabled = false,
   repairWorkItemIds = new Set<string>(),
   repairBatchCount = 0
 }: {
@@ -232,6 +236,7 @@ export function AttentionShell({
   onShowMergedToday?: () => void;
   onAnnotate?: (item: WorkItem, annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: (item: WorkItem) => Promise<void> | void;
+  commandActionsDisabled?: boolean;
   repairWorkItemIds?: ReadonlySet<string>;
   repairBatchCount?: number;
 }) {
@@ -253,6 +258,7 @@ export function AttentionShell({
     <WorkCard
       item={item}
       key={item.id}
+      commandActionsDisabled={commandActionsDisabled}
       onToggle={onToggle}
       selectionDisabled={selectionDisabled}
       onOpenBatchOperations={onOpenBatchOperations}

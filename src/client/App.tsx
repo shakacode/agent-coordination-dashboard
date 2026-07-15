@@ -1122,6 +1122,7 @@ export function App() {
           ) : itemError ? (
             <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
           ) : <p className="empty-state">Loading work item timeline…</p> : <AttentionShell
+            commandActionsDisabled={localWritesDisabled}
             items={dashboard.workItems}
             deepLink={operatorDeepLink}
             historyMergedTodayOnly={historyMergedTodayOnly}

@@ -34,6 +34,18 @@ describe("OperatorActions", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Takeover command copied");
   });
 
+  it("disables stale resume and takeover commands", async () => {
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(navigator, { clipboard });
+    render(<OperatorActions commandActionsDisabled item={item} takeoverAvailable />);
+
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy takeover command" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Copy resume prompt" }));
+    await userEvent.click(screen.getByRole("button", { name: "Copy takeover command" }));
+    expect(clipboard.writeText).not.toHaveBeenCalled();
+  });
+
   it("shows a visible failure when the clipboard API is unavailable", async () => {
     Object.assign(navigator, { clipboard: undefined });
     render(<OperatorActions item={item} />);

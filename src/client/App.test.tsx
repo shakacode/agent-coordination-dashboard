@@ -1260,6 +1260,7 @@ describe("App", () => {
       "polling refresh unavailable"
     );
     expect(screen.getByRole("button", { name: "Add repository" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy resume prompt" })).toBeDisabled();
     expect(screen.queryByRole("combobox", { name: "Dismiss or snooze" })).not.toBeInTheDocument();
   });
 
