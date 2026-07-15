@@ -1028,6 +1028,44 @@ describe("buildDashboardModel", () => {
     expect(model.healthItems.map((item) => item.title)).toContain("Heartbeat missing machine id");
   });
 
+  it("uses a strict legacy agent-id machine token as visibly inferred metadata", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, agentId: "feature-worker-m5-max", machineId: undefined }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      machineId: "m5",
+      machineMetadata: { value: "m5", state: "inferred", source: "dashboard" }
+    });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
+  it("treats a legacy unknown machine sentinel as absent before strict agent-id inference", () => {
+    const model = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["shakacode/react_on_rails"],
+      claims: [],
+      heartbeats: [{ ...heartbeat, agentId: "feature-worker-m5-max", machineId: "UNKNOWN machine" }],
+      batches: [],
+      githubItems: [],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+
+    expect(model.agents[0]).toMatchObject({
+      machineId: "m5",
+      machineMetadata: { value: "m5", state: "inferred", source: "dashboard" }
+    });
+    expect(model.healthItems.map((item) => item.title)).not.toContain("Heartbeat missing machine id");
+  });
+
   it("treats a whitespace-only heartbeat machine identity as missing", () => {
     const model = buildDashboardModel({
       stateRoot: "/state",

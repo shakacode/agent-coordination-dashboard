@@ -33,6 +33,7 @@ export function OperatorActions({
   takeoverAvailable = false,
   resumeAvailable = true,
   resumeFallbackWhenPrUnavailable = false,
+  commandActionsDisabled = false,
   now = () => new Date(),
   onAnnotate,
   onClearAnnotation
@@ -41,6 +42,7 @@ export function OperatorActions({
   takeoverAvailable?: boolean;
   resumeAvailable?: boolean;
   resumeFallbackWhenPrUnavailable?: boolean;
+  commandActionsDisabled?: boolean;
   now?: () => Date;
   onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: () => Promise<void> | void;
@@ -91,14 +93,14 @@ export function OperatorActions({
   }
 
   return <div className="operator-actions">
-    {showResume ? <button onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button> : null}
-    {takeoverAvailable ? <button onClick={() => void copy(takeoverCommand(item), "Takeover command")} type="button">Copy takeover command</button> : null}
+    {showResume ? <button disabled={commandActionsDisabled} onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button> : null}
+    {takeoverAvailable ? <button disabled={commandActionsDisabled} onClick={() => void copy(takeoverCommand(item), "Takeover command")} type="button">Copy takeover command</button> : null}
     {pr ? <a href={pr} rel="noreferrer" target="_blank">Open PR</a> : null}
     {branch ? <a href={branch} rel="noreferrer" target="_blank">Open branch</a> : null}
     {batch ? <a href={`/?batch=${encodeURIComponent(batch)}&repo=${encodeURIComponent(item.repo)}`}>Open batch</a> : null}
     {onAnnotate ? <label className="annotation-choice">
       <span className="sr-only">Dismiss or snooze</span>
-      <select aria-label="Dismiss or snooze" onChange={(event) => void chooseAnnotation(event.target.value)} value={annotationChoice}>
+      <select aria-label="Dismiss or snooze" name="annotationAction" onChange={(event) => void chooseAnnotation(event.target.value)} value={annotationChoice}>
         <option value="">Dismiss / snooze…</option>
         <option value="snooze-1h">Snooze 1 hour</option>
         <option value="snooze-1d">Snooze 1 day</option>

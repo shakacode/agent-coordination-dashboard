@@ -135,6 +135,27 @@ describe("AttentionShell", () => {
     expect(screen.getAllByText(/unattributed/i).length).toBeGreaterThan(0);
   });
 
+  it("marks a strict legacy machine suffix as inferred when explicit machine metadata is absent", () => {
+    const legacyItem: WorkItem = {
+      ...ITEMS[0],
+      heartbeat: { ...ITEMS[0].heartbeat!, agentId: "feature-worker-m5-max", machineId: undefined }
+    };
+    render(<AttentionShell items={[legacyItem]} onQueryChange={vi.fn()} query="" surface="attention" />);
+
+    expect(screen.getByText(/Phase: wedged/).closest("p")).toHaveTextContent("m5 (inferred)");
+  });
+
+  it("finds a legacy item by the inferred machine identity it displays", () => {
+    const legacyItem: WorkItem = {
+      ...ITEMS[0],
+      heartbeat: { ...ITEMS[0].heartbeat!, agentId: "feature-worker-m5-max", machineId: undefined }
+    };
+    render(<AttentionShell items={[legacyItem]} onQueryChange={vi.fn()} query="m5" surface="find" />);
+
+    expect(screen.getByRole("heading", { name: /Issue #43/ })).toBeInTheDocument();
+    expect(screen.getByText(/Phase: wedged/).closest("p")).toHaveTextContent("m5 (inferred)");
+  });
+
   it("offers eligible items for batch selection and keeps the prompt selection controlled by App", async () => {
     const onToggle = vi.fn();
     const onAnnotate = vi.fn();

@@ -600,7 +600,8 @@ describe("dashboard app import endpoint", () => {
     const initial = await fetch(`${baseUrl}/api/settings`);
     await expect(initial.json()).resolves.toEqual({
       targetRepos: ["shakacode/react_on_rails"],
-      refreshIntervalMs: 2500
+      refreshIntervalMs: 2500,
+      scopeId: expect.stringMatching(/^[a-f0-9]{64}$/)
     });
 
     const saved = await fetch(`${baseUrl}/api/settings`, {
@@ -611,7 +612,8 @@ describe("dashboard app import endpoint", () => {
 
     await expect(saved.json()).resolves.toEqual({
       targetRepos: ["repo-a/app"],
-      refreshIntervalMs: 2500
+      refreshIntervalMs: 2500,
+      scopeId: expect.stringMatching(/^[a-f0-9]{64}$/)
     });
   });
 

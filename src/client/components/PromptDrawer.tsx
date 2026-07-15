@@ -7,7 +7,10 @@ export function PromptDrawer({ prompt, disabled = false }: { prompt: string; dis
   return (
     <aside className="prompt-drawer">
       <header>
-        <h2>PR-batch Prompt</h2>
+        <div>
+          <h2>PR-batch Prompt</h2>
+          <p className="prompt-drawer-description">Builds a copyable $pr-batch handoff from the work selected in Find.</p>
+        </div>
         <button
           className="icon-button"
           disabled={disabled}

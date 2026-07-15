@@ -164,7 +164,11 @@ describe("demo coordination state", () => {
       await expect(page.text()).resolves.toContain('<div id="root"></div>');
 
       const settings = await fetch(`http://127.0.0.1:${port}/api/settings`);
-      await expect(settings.json()).resolves.toEqual({ targetRepos: [DEMO_REPO], refreshIntervalMs: 2000 });
+      await expect(settings.json()).resolves.toEqual({
+        targetRepos: [DEMO_REPO],
+        refreshIntervalMs: 2000,
+        scopeId: expect.stringMatching(/^[a-f0-9]{64}$/)
+      });
 
       const dashboard = (await (
         await fetch(`http://127.0.0.1:${port}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } })

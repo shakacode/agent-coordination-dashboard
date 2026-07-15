@@ -57,11 +57,13 @@ function stopRepos(batch: BatchRecord): string[] {
 function BatchOperationPanel({
   batch,
   operation,
-  onRequestStop
+  onRequestStop,
+  localWritesDisabled = false
 }: {
   batch: BatchRecord;
   operation?: BatchOperation;
   onRequestStop?: (input: { batchId: string; repo?: string; reason?: string }) => Promise<void> | void;
+  localWritesDisabled?: boolean;
 }) {
   const [status, setStatus] = useState<string | null>(null);
   const controlStatus = operation?.controlStatus || "running";
@@ -99,6 +101,7 @@ function BatchOperationPanel({
           <button
             aria-label={repo ? `Request stop for ${displayBatchId} in ${displayAttribution(repo)}` : `Request stop for ${displayBatchId}`}
             className="secondary-action"
+            disabled={localWritesDisabled}
             key={repo || "batch"}
             onClick={() => void requestStop(repo)}
             title="Request batch stop"
@@ -154,7 +157,7 @@ function parseEditableJson(json: string): Partial<BatchRecord> {
   return parsed;
 }
 
-function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partial<BatchRecord>) => Promise<void> | void }) {
+function BatchImportPanel({ onImportBatch, localWritesDisabled = false }: { onImportBatch?: (manifest: Partial<BatchRecord>) => Promise<void> | void; localWritesDisabled?: boolean }) {
   const [launchPrompt, setLaunchPrompt] = useState("");
   const [manifestJson, setManifestJson] = useState("");
   const [batchId, setBatchId] = useState("");
@@ -216,17 +219,21 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
         <label>
           Paste coordination prompt
           <textarea
+            disabled={localWritesDisabled}
+            name="coordinationPrompt"
             onChange={(event) => setLaunchPrompt(event.target.value)}
             value={launchPrompt}
           />
         </label>
-        <button type="submit">Review batch plan</button>
+        <button disabled={localWritesDisabled} type="submit">Review batch plan</button>
       </form>
       {manifestJson && (
         <div className="manifest-review">
           <label>
             Batch id
             <input
+              disabled={localWritesDisabled}
+              name="batchId"
               onChange={(event) => {
                 setBatchId(event.target.value);
                 patchEditableManifest({ batchId: event.target.value });
@@ -237,6 +244,8 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
           <label>
             Repo
             <input
+              disabled={localWritesDisabled}
+              name="repo"
               onChange={(event) => {
                 setRepo(event.target.value);
                 patchEditableManifest({ repo: event.target.value });
@@ -247,6 +256,8 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
           <label>
             Objective
             <input
+              disabled={localWritesDisabled}
+              name="objective"
               onChange={(event) => {
                 setObjective(event.target.value);
                 patchEditableManifest({ objective: event.target.value });
@@ -258,11 +269,13 @@ function BatchImportPanel({ onImportBatch }: { onImportBatch?: (manifest: Partia
             Plan details
             <textarea
               aria-label="Plan details"
+              disabled={localWritesDisabled}
+              name="planDetails"
               onChange={(event) => setManifestJson(event.target.value)}
               value={manifestJson}
             />
           </label>
-          <button onClick={() => void saveManifest()} type="button">
+          <button disabled={localWritesDisabled} onClick={() => void saveManifest()} type="button">
             Save batch plan
           </button>
         </div>
@@ -277,12 +290,14 @@ export function BatchesTab({
   events,
   onImportBatch,
   onRequestStop,
+  localWritesDisabled = false,
   operations = []
 }: {
   batches: BatchRecord[];
   events: BatchEvent[];
   onImportBatch?: (manifest: Partial<BatchRecord>) => Promise<void> | void;
   onRequestStop?: (input: { batchId: string; repo?: string; reason?: string }) => Promise<void> | void;
+  localWritesDisabled?: boolean;
   operations?: BatchOperation[];
 }) {
   const hasBatchContent = batches.length > 0 || events.length > 0;
@@ -294,7 +309,7 @@ export function BatchesTab({
       {!hasBatchContent ? (
         <>
           <p className="empty-state">No saved batch plans found.</p>
-          <BatchImportPanel onImportBatch={onImportBatch} />
+          <BatchImportPanel localWritesDisabled={localWritesDisabled} onImportBatch={onImportBatch} />
         </>
       ) : (
         <>
@@ -315,7 +330,7 @@ export function BatchesTab({
                   {batch.source === "inferred" ? <span className="source-badge">Inferred</span> : null}
                 </header>
                 <p className="batch-scope">{displayAttribution(batch.repo || batch.path)}</p>
-                <BatchOperationPanel batch={batch} operation={operation} onRequestStop={onRequestStop} />
+                <BatchOperationPanel batch={batch} localWritesDisabled={localWritesDisabled} operation={operation} onRequestStop={onRequestStop} />
                 <PromptStatus batch={batch} />
                 {batch.lanes.map((lane) => (
                   <div className="lane-row" key={lane.name}>
@@ -340,7 +355,7 @@ export function BatchesTab({
               </article>
             )}
           </section>
-          <BatchImportPanel onImportBatch={onImportBatch} />
+          <BatchImportPanel localWritesDisabled={localWritesDisabled} onImportBatch={onImportBatch} />
         </>
       )}
     </section>

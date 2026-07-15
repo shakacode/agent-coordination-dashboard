@@ -120,6 +120,18 @@ lets local foreground refreshes bypass it. The read cache is capped at 5 seconds
 so larger polling intervals reduce polling frequency but not the short
 coalescing window.
 
+The browser keeps one validated last-known dashboard snapshot in local storage.
+On reload it first confirms the server-issued runtime scope and saved target
+repositories, then may paint the matching snapshot while current data is
+fetched; a snapshot from another state root, API source, settings store, or
+repository scope is never rendered. Cached content is visibly labeled until a
+fresh read succeeds, malformed cache entries are ignored, and background polls
+write at most one snapshot per minute while foreground and operator-triggered
+refreshes persist immediately. A failed background refresh visibly marks the
+displayed data unavailable and disables local writes until polling recovers.
+The interface follows the operating system's light or dark color preference;
+all palette values are defined as CSS custom properties.
+
 ## What It Shows
 
 - **Overview**: needs-attention queue, active/recoverable work, batch repairs,
@@ -135,11 +147,14 @@ coalescing window.
   lanes, dependencies, liveness, blocked-on refs, coordination prompt status, and
   recent history events, stop-request status, audit counts, and QA counts.
 - **Machines**: machines, agents, heartbeats, claims, liveness, warnings, and current work.
+  A single strict legacy `m<number>` token in an agent id is shown as inferred
+  machine metadata when no coordination record supplies a machine id; ambiguous
+  ids remain unattributed.
 - **Health**: missing machine IDs, missing heartbeats, missing batch plans,
   missing coordination prompts, prompt/target drift, missing history, and other
   coordination data gaps.
-- **Prompt drawer**: collapsed copyable `$pr-batch` prompt for checked work
-  items.
+- **Prompt drawer**: collapsed copyable `$pr-batch` handoff built from work
+  selected in Find.
 
 Operator tab search is client-side over loaded rows. It matches target numbers
 such as `123`, `#123`, `PR #123`, and `issue #123`, plus branch names, thread
