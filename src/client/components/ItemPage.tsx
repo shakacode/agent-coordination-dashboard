@@ -18,15 +18,23 @@ function parseTimestampMs(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-// Formatters are constructed per call so they honor the environment's current
-// time zone at render time. The visible text is the operator's local wall
-// clock; the exact ISO-8601 instant stays on the element for copy/paste.
+// The formatters are shared across custody entries because constructing
+// Intl.DateTimeFormat per entry is costly on long append-only chains, and
+// they are created lazily at first render rather than module import so they
+// capture the environment's time zone after tests have pinned it. The visible
+// text is the operator's local wall clock; the exact ISO-8601 instant stays
+// on the element for copy/paste.
+let dayFormat: Intl.DateTimeFormat | undefined;
+let clockFormat: Intl.DateTimeFormat | undefined;
+
 function localDay(ms: number): string {
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(ms);
+  dayFormat ??= new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+  return dayFormat.format(ms);
 }
 
 function localClock(ms: number): string {
-  return new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ms);
+  clockFormat ??= new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return clockFormat.format(ms);
 }
 
 function TimePoint({ value }: { value: string | undefined }) {
@@ -131,8 +139,10 @@ function Claim({ event }: { event: ClaimCustodyEvent }) {
 }
 
 function Liveness({ span }: { span: LivenessSpan }) {
-  const elapsed = Date.parse(span.endedAt) - Date.parse(span.startedAt);
-  return <li className={`timeline-entry timeline-liveness timeline-${span.liveness}`}><strong>{span.liveness} · <TimeRange startedAt={span.startedAt} endedAt={span.endedAt} /> ({duration(elapsed)})</strong><span>{span.status} · {span.agentId}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
+  const startMs = parseTimestampMs(span.startedAt);
+  const endMs = parseTimestampMs(span.endedAt);
+  const elapsed = startMs === undefined || endMs === undefined ? undefined : endMs - startMs;
+  return <li className={`timeline-entry timeline-liveness timeline-${span.liveness}`}><strong>{span.liveness} · <TimeRange startedAt={span.startedAt} endedAt={span.endedAt} />{elapsed === undefined ? null : ` (${duration(elapsed)})`}</strong><span>{span.status} · {span.agentId}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
 }
 
 function Phase({ span }: { span: PhaseSpan }) {

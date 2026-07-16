@@ -151,6 +151,20 @@ describe("ItemPage", () => {
     ]);
   });
 
+  it("omits the duration when a liveness span has no parseable timestamps", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [{ agentId: "worker-a", liveness: "stale", status: "implementing", startedAt: "not-a-date", endedAt: "also-not-a-date" }],
+      phases: [],
+      events: []
+    }} />);
+
+    const entries = screen.getAllByRole("listitem").map((entry) => entry.textContent);
+    expect(entries).toEqual([expect.stringContaining("stale · time UNKNOWNimplementing · worker-a")]);
+    expect(entries[0]).not.toContain("NaN");
+  });
+
   it("preserves ISO-8601 instants in time element attributes for copy/paste", () => {
     render(<ItemPage onBack={vi.fn()} timeline={timeline} />);
 
