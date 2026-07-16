@@ -252,6 +252,23 @@ describe("applyDashboardHistoryWindow", () => {
     expect(windowed.warnings.at(-1)?.message).toContain("omitted 1 batch history event");
   });
 
+  it("never lets a whitespace-only status mask an older lifecycle-status carrier", () => {
+    const input = model([
+      { ...event("old-blank-status", "2026-06-10T12:00:00Z"), status: "  " },
+      { ...event("older-real-status", "2026-06-01T12:00:00Z"), status: "implementing" },
+      { ...event("oldest-redundant-status", "2026-05-01T12:00:00Z"), status: "started" }
+    ]);
+
+    const windowed = applyDashboardHistoryWindow(input, now);
+
+    // The client's lifecycle candidate is `status || type`, rejected when
+    // whitespace-only without falling back to the type, so the blank-status
+    // newest event cannot supply the lifecycle status: the older real carrier
+    // must survive while the redundant oldest one trims.
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["old-blank-status", "older-real-status"]);
+    expect(windowed.warnings.at(-1)?.message).toContain("omitted 1 batch history event");
+  });
+
   it("preserves each scope's newest evidence even when events arrive out of recency order", () => {
     const input = model([
       { ...event("lane-older", "2026-05-01T12:00:00Z"), laneName: "server" },
