@@ -1,6 +1,33 @@
 import type { ReactNode } from "react";
+import type { CoordinationWarning } from "../../shared/types";
 import type { SignalGroup } from "../signalGroups";
 import { StatusBadge } from "./StatusBadge";
+
+/** One "Skipped N … outside saved target repositories." scope notice, parsed. */
+export interface RepoScopeExclusion {
+  count: number;
+  label: string;
+}
+
+// Mirrors appendSkippedWarning in src/server/state/buildDashboardModel.ts. When
+// that template changes, update this pattern in the same PR so repo-scope
+// exclusion notices keep routing to the target-repositories affordance instead
+// of stacking on the warning surfaces.
+const REPO_SCOPE_EXCLUSION_PATTERN = /^Skipped (\d+) (.+) outside saved target repositories\.$/;
+
+/**
+ * Recognize the fleet-global "records excluded by repository scope" notice.
+ * Exclusion is normal steady-state operator scoping, so these render as one
+ * compact affordance on the target-repositories row rather than as banners.
+ * Anything that does not match the template exactly (including a non-info
+ * severity) is not claimed, so unknown signals keep their honest rendering.
+ */
+export function parseRepoScopeExclusion(warning: CoordinationWarning): RepoScopeExclusion | undefined {
+  if (warning.severity !== "info") return undefined;
+  const match = warning.message.match(REPO_SCOPE_EXCLUSION_PATTERN);
+  if (!match) return undefined;
+  return { count: Number(match[1]), label: match[2] };
+}
 
 /**
  * Render grouped coordination signals. A group with a single record renders

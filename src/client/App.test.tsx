@@ -153,6 +153,63 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "0 notices" })).toBeDisabled();
   });
 
+  it("routes repo-scope exclusion notices to the target repositories row instead of the warning surfaces", async () => {
+    const scopedModel = {
+      ...model,
+      warnings: [
+        { severity: "info" as const, message: "Skipped 104 claim records outside saved target repositories." },
+        { severity: "info" as const, message: "Skipped 262 heartbeat records outside saved target repositories." },
+        { severity: "warning" as const, message: "Work has 2 heartbeat records for the same target.", repo: "repo/dashboard", target: "43" }
+      ]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input).startsWith("/api/settings") ? settings : scopedModel)
+    })));
+
+    render(<App />);
+
+    // Warning surfaces count and render only the remaining fleet signal.
+    expect(await screen.findAllByRole("button", { name: "1 warnings" })).toHaveLength(2);
+    expect(screen.getByText("repo/dashboard#43: Work has 2 heartbeat records for the same target.")).toBeInTheDocument();
+    expect(screen.queryByText(/Skipped 104 claim records/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Skipped 262 heartbeat records/)).not.toBeInTheDocument();
+
+    // The compact affordance carries the exclusion evidence and the add path.
+    expect(screen.getByText("1 configured · 366 records excluded")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Target repositories"));
+    expect(screen.getByText("Excluded by scope: 104 claim records · 262 heartbeat records")).toBeInTheDocument();
+    expect(screen.getByText("Add a repository above to include its records.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Add target repository")).toBeInTheDocument();
+  });
+
+  it("keeps only-scope-notice dashboards quiet and drops the exclusion note when nothing is excluded", async () => {
+    const noticeOnlyModel = {
+      ...model,
+      warnings: [{ severity: "info" as const, message: "Skipped 5 batch records outside saved target repositories." }]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input).startsWith("/api/settings") ? settings : noticeOnlyModel)
+    })));
+
+    const view = render(<App />);
+
+    expect(await screen.findByRole("button", { name: "0 notices" })).toBeDisabled();
+    expect(view.container.querySelector(".warnings-panel")).not.toBeInTheDocument();
+    expect(screen.getByText("1 configured · 5 records excluded")).toBeInTheDocument();
+
+    view.unmount();
+    localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input).startsWith("/api/settings") ? settings : model)
+    })));
+    render(<App />);
+    expect(await screen.findByText("1 configured")).toBeInTheDocument();
+    expect(screen.queryByText(/records excluded/)).not.toBeInTheDocument();
+  });
+
   it("renders an accessible dashboard skeleton when no cached snapshot exists", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
 
