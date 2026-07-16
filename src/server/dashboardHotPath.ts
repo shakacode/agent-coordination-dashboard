@@ -16,10 +16,12 @@ import type { GitHubLoadResult } from "./github/githubClient";
  *   the payload's warnings, and events whose age cannot be proven (missing or
  *   unparseable timestamps) are always kept.
  * - The window never converts known row state into UNKNOWN: client operator
- *   rows derive provenance, operator state, activity, and metadata from the
- *   payload's events, so an old event is trimmed only when a newer kept event
- *   of the same evidence scope already carries everything those derivations
- *   read (see keepsRowEvidence below).
+ *   rows derive provenance, operator state, lifecycle status, activity, and
+ *   metadata from the payload's events, so an old event is trimmed only when a
+ *   newer kept event of the same evidence scope already carries everything
+ *   those derivations read (see keepsRowEvidence below). Presence is always
+ *   judged with the client's trimmed semantics, because the state normalizer
+ *   preserves whitespace verbatim while the client trims before use.
  */
 
 export const OPEN_GITHUB_ITEMS_CACHE_TTL_MS = 60_000;
@@ -92,6 +94,9 @@ const EVENT_METADATA_FIELDS = ["agentId", "machineId", "threadHandle", "host", "
  * preserves every row's newest evidence.
  */
 function eventEvidenceScope(event: BatchEvent): string {
+  // Scope values are deliberately compared untrimmed: a whitespace variant can
+  // only split a scope in two, and each split scope still keeps its own newest
+  // evidence — over-retention in the safe direction, never row starvation.
   return JSON.stringify([event.batchId, event.batchPath, event.laneName, event.repo, event.target, event.agentId]
     .map((value) => value || ""));
 }
@@ -99,6 +104,7 @@ function eventEvidenceScope(event: BatchEvent): string {
 interface RowEvidenceTracker {
   hasNewest: boolean;
   hasTransition: boolean;
+  hasLifecycleStatus: boolean;
   fields: Set<(typeof EVENT_METADATA_FIELDS)[number]>;
 }
 
@@ -111,22 +117,37 @@ function carriesField(event: BatchEvent, field: (typeof EVENT_METADATA_FIELDS)[n
 }
 
 /**
+ * Mirrors the client's lifecycle-status candidate (`event.status || event.type`,
+ * rejected when whitespace-only): a non-QA event with `status: "  "` produces a
+ * candidate the client discards without falling back to the type, so it does
+ * not cover lifecycle status for its scope.
+ */
+function carriesLifecycleStatus(event: BatchEvent): boolean {
+  return Boolean((event.status || event.type)?.trim());
+}
+
+/**
  * True when this event must stay in the payload regardless of age because a
  * row derivation would otherwise lose evidence: the newest event of its scope
  * (activity/last-activity/provenance), the newest non-QA event (operator state
- * and retention transitions), or the newest carrier of a metadata field.
- * Events must be visited newest-first; applyDashboardHistoryWindow enforces
- * that ordering itself.
+ * and retention transitions), the newest non-QA carrier of a usable lifecycle
+ * status (the client rejects whitespace-only status candidates), or the newest
+ * carrier of a metadata field. Events must be visited newest-first;
+ * applyDashboardHistoryWindow enforces that ordering itself.
  */
 function keepsRowEvidence(event: BatchEvent, tracker: RowEvidenceTracker): boolean {
   return !tracker.hasNewest
     || (!tracker.hasTransition && !isQaEventType(event.type))
+    || (!tracker.hasLifecycleStatus && !isQaEventType(event.type) && carriesLifecycleStatus(event))
     || EVENT_METADATA_FIELDS.some((field) => carriesField(event, field) && !tracker.fields.has(field));
 }
 
 function recordRowEvidence(event: BatchEvent, tracker: RowEvidenceTracker): void {
   tracker.hasNewest = true;
-  if (!isQaEventType(event.type)) tracker.hasTransition = true;
+  if (!isQaEventType(event.type)) {
+    tracker.hasTransition = true;
+    if (carriesLifecycleStatus(event)) tracker.hasLifecycleStatus = true;
+  }
   for (const field of EVENT_METADATA_FIELDS) {
     if (carriesField(event, field)) tracker.fields.add(field);
   }
@@ -165,7 +186,7 @@ export function applyDashboardHistoryWindow(
     const scope = eventEvidenceScope(event);
     let tracker = trackers.get(scope);
     if (!tracker) {
-      tracker = { hasNewest: false, hasTransition: false, fields: new Set() };
+      tracker = { hasNewest: false, hasTransition: false, hasLifecycleStatus: false, fields: new Set() };
       trackers.set(scope, tracker);
     }
     const timestamp = Date.parse(event.timestamp || "");
