@@ -644,4 +644,78 @@ describe("ItemPage", () => {
     expect(screen.getAllByText("WARNING: Target coordination history is partial.")).toHaveLength(1);
     expect(screen.getByText("INFO: Target source remained reachable.")).toBeInTheDocument();
   });
+
+  it("renders only signals attributable to the viewed item or its batch", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [{ batchId: "batch-item", status: "running", blockedOn: [] }] },
+      warnings: [
+        { severity: "info", message: "Skipped 104 claim records outside saved target repositories." },
+        { severity: "info", message: "Skipped 262 heartbeat records outside saved target repositories." },
+        { severity: "warning", message: "Lane legacy-batch:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." },
+        { severity: "warning", message: "Lane batch-item:server owner heartbeat points at shakacode/dashboard#41 and was not applied." },
+        { severity: "warning", message: "Work has 2 heartbeat records for the same target.", repo: "shakacode/dashboard", target: "46" },
+        { severity: "info", message: "GitHub preview refresh was throttled." }
+      ]
+    }} />);
+
+    // Fleet-global scope counters belong to the target-repositories affordance.
+    expect(screen.queryByText(/Skipped 104 claim records/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Skipped 262 heartbeat records/)).not.toBeInTheDocument();
+    // A lane mismatch positively attributed to another batch's work leaves the page.
+    expect(screen.queryByText(/legacy-batch:ui/)).not.toBeInTheDocument();
+    // The viewed item's batch, its own warnings, and unattributable notices stay.
+    expect(screen.getByText("WARNING: Lane batch-item:server owner heartbeat points at shakacode/dashboard#41 and was not applied.")).toBeInTheDocument();
+    expect(screen.getByText("WARNING: Work has 2 heartbeat records for the same target.")).toBeInTheDocument();
+    expect(screen.getByText("INFO: GitHub preview refresh was throttled.")).toBeInTheDocument();
+  });
+
+  it("collapses repeated batch lane-mismatch warnings into one counted, expandable row", async () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [{ batchId: "batch-item", status: "running", blockedOn: [] }] },
+      warnings: [
+        { severity: "warning", message: "Lane batch-item:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." },
+        { severity: "warning", message: "Lane batch-item:server owner heartbeat points at shakacode/dashboard#41 and was not applied." },
+        { severity: "warning", message: "Lane batch-item:qa owner heartbeat points at shakacode/dashboard#48 and was not applied." }
+      ]
+    }} />);
+
+    const summary = screen.getByText("Batch lane owner heartbeat points at different work.", { selector: "summary .signal-group-label" });
+    expect(screen.getByText("3×")).toBeInTheDocument();
+
+    await userEvent.click(summary);
+    expect(screen.getByText(/points at shakacode\/dashboard#31/)).toBeInTheDocument();
+    expect(screen.getByText(/points at shakacode\/dashboard#48/)).toBeInTheDocument();
+  });
+
+  it("keeps lane-mismatch warnings visible when no current item resolves batch attribution", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: undefined,
+      warnings: [{ severity: "warning", message: "Lane legacy-batch:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." }]
+    }} />);
+
+    expect(screen.getByText(/legacy-batch:ui owner heartbeat/)).toBeInTheDocument();
+  });
+
+  it("keeps lane-mismatch warnings visible when the item's batch membership is unattributable", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [{ status: "running", blockedOn: [] }] },
+      warnings: [{ severity: "warning", message: "Lane legacy-batch:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." }]
+    }} />);
+
+    expect(screen.getByText(/legacy-batch:ui owner heartbeat/)).toBeInTheDocument();
+  });
+
+  it("keeps lane-mismatch warnings from another batch when they point at the viewed item", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [{ batchId: "batch-item", status: "running", blockedOn: [] }] },
+      warnings: [{ severity: "warning", message: "Lane other-batch:ui owner heartbeat points at shakacode/dashboard#46 and was not applied." }]
+    }} />);
+
+    expect(screen.getByText(/other-batch:ui owner heartbeat points at shakacode\/dashboard#46/)).toBeInTheDocument();
+  });
 });

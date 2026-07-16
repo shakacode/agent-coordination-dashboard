@@ -1,10 +1,12 @@
 import type { ClaimCustodyEvent, LivenessSpan, PhaseSpan } from "../../shared/custodyTimeline";
-import type { BatchEvent } from "../../shared/types";
-import { firstDisplayAttribution } from "../../shared/attribution";
+import type { BatchEvent, CoordinationWarning } from "../../shared/types";
+import { firstDisplayAttribution, hasDisplayAttribution } from "../../shared/attribution";
 import type { ItemTimelineResponse } from "../api";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
 import { safePullRequestUrl } from "../githubUrls";
 import { fallbackTimelineWorkItem } from "../../shared/fallbackWorkItem";
+import { groupWarnings } from "../signalGroups";
+import { parseRepoScopeExclusion, SignalGroupList } from "./SignalGroups";
 
 function duration(durationMs: number): string {
   const seconds = Math.max(0, Math.round(durationMs / 1000));
@@ -76,16 +78,66 @@ export function uniquePullRequestUrls(values: Array<string | undefined>): string
   });
 }
 
-function TimelineWarnings({ timeline }: { timeline: ItemTimelineResponse }) {
-  const warnings = timeline.warnings.filter(
+// Mirrors the batch lane warning template in src/server/state/buildDashboardModel.ts.
+// When that template changes, update this pattern in the same PR so legacy
+// lane-mismatch records keep scoping to the viewed item instead of stacking.
+const LANE_OWNER_MISMATCH_PATTERN = /^Lane .+ owner heartbeat points at .+ and was not applied\.$/;
+
+/** Batch evidence that names a batch without a displayable id is unknowable. */
+function declaresUnattributableBatch(batchId: string | undefined): boolean {
+  return batchId !== undefined && !hasDisplayAttribution(batchId);
+}
+
+/**
+ * Keep only signals attributable to the viewed item or its batch. Fleet-wide
+ * repo-scope exclusion notices belong to the target-repositories affordance,
+ * and lane-mismatch warnings that positively concern another batch's work
+ * belong to the fleet surfaces. Signals whose attribution is unknowable
+ * (no resolved item, unattributable batch evidence, or an unrecognized
+ * message) always stay visible rather than being hidden.
+ */
+export function itemScopedTimelineWarnings(timeline: ItemTimelineResponse): CoordinationWarning[] {
+  const deduped = timeline.warnings.filter(
     (warning, index, all) => all.findIndex((candidate) => candidate.severity === warning.severity && candidate.message === warning.message) === index
   );
+  const item = timeline.item;
+  const batchMembershipKnowable = Boolean(item)
+    && !declaresUnattributableBatch(item?.claim?.batchId)
+    && !declaresUnattributableBatch(item?.heartbeat?.batchId)
+    && !(item?.batchSignals || []).some((signal) => !hasDisplayAttribution(signal.batchId));
+  const itemBatchIds = [
+    item?.claim?.batchId,
+    item?.heartbeat?.batchId,
+    ...(item?.batchSignals || []).map((signal) => signal.batchId),
+    ...timeline.events.map((event) => event.batchId)
+  ].filter(hasDisplayAttribution).map((batchId) => batchId.trim());
+  return deduped.filter((warning) => {
+    if (parseRepoScopeExclusion(warning)) return false;
+    if (warning.repo && warning.repo !== timeline.repo) return false;
+    if (warning.target && warning.target !== timeline.target) return false;
+    if (!LANE_OWNER_MISMATCH_PATTERN.test(warning.message)) return true;
+    if (warning.message.endsWith(` points at ${timeline.repo}#${timeline.target} and was not applied.`)) return true;
+    if (!batchMembershipKnowable) return true;
+    return itemBatchIds.some((batchId) => warning.message.startsWith(`Lane ${batchId}:`));
+  });
+}
+
+function TimelineWarnings({ timeline }: { timeline: ItemTimelineResponse }) {
+  const warnings = itemScopedTimelineWarnings(timeline);
   if (warnings.length === 0) return null;
-  return <section aria-label="Timeline warnings">{warnings.map((warning) => (
-    <p className={`item-timeline-warning item-timeline-warning-${warning.severity}`} key={`${warning.severity}:${warning.message}`}>
-      {warning.severity.toUpperCase()}: {warning.message}
-    </p>
-  ))}</section>;
+  return (
+    <section aria-label="Timeline warnings">
+      <SignalGroupList
+        ariaLabel="Timeline warnings grouped by type"
+        groups={groupWarnings(warnings)}
+        renderItem={(warning) => (
+          <p className={`item-timeline-warning item-timeline-warning-${warning.severity}`}>
+            {warning.severity.toUpperCase()}: {warning.message}
+          </p>
+        )}
+      />
+    </section>
+  );
 }
 
 function copy(value: string) {

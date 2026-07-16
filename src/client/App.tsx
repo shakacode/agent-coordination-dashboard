@@ -15,7 +15,7 @@ import { ItemPage } from "./components/ItemPage";
 import type { AnnotationAction } from "./components/OperatorActions";
 import { MachinesTab } from "./components/MachinesTab";
 import { PromptDrawer } from "./components/PromptDrawer";
-import { SignalGroupList } from "./components/SignalGroups";
+import { parseRepoScopeExclusion, SignalGroupList } from "./components/SignalGroups";
 import {
   hasStructuredOperatorDeepLink,
   operatorDeepLinkFromSearchParams,
@@ -897,7 +897,16 @@ export function App() {
 
   const localWritesDisabled = currentDataUnavailable;
 
-  const warningLabel = dashboard.warnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
+  // Repo-scope exclusion notices are normal steady-state operator scoping.
+  // They render as one compact affordance on the target-repositories row, so
+  // every warning surface works from the remaining fleet signals instead.
+  const repoScopeExclusions = dashboard.warnings.flatMap((warning) => {
+    const exclusion = parseRepoScopeExclusion(warning);
+    return exclusion ? [exclusion] : [];
+  });
+  const fleetWarnings = dashboard.warnings.filter((warning) => !parseRepoScopeExclusion(warning));
+  const excludedRecordCount = repoScopeExclusions.reduce((total, exclusion) => total + exclusion.count, 0);
+  const warningLabel = fleetWarnings.some((warning) => warning.severity !== "info") ? "warnings" : "notices";
   const sourceFailures = (dashboard.sourceStatus || []).filter((source) =>
     ["auth_error", "unreachable"].includes(source.status)
   );
@@ -926,7 +935,7 @@ export function App() {
   const unavailableSources = (resources: readonly CoordinationResource[]) =>
     resources.filter((resource) => failedResources.has(resource));
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
-  const warningGroups = groupWarnings(dashboard.warnings);
+  const warningGroups = groupWarnings(fleetWarnings);
   const visibleWarningGroups = warningGroups.slice(0, 3);
   const overflowWarningGroups = warningGroups.slice(3);
   const renderWarning = (warning: CoordinationWarning) => {
@@ -970,8 +979,8 @@ export function App() {
               {coordinationCount(dashboard.healthItems.length, healthSources)} health
             </button>
           </>}
-          <button className="summary-count" disabled={dashboard.warnings.length === 0} onClick={revealWarnings} type="button">
-            {dashboard.warnings.length} {warningLabel}
+          <button className="summary-count" disabled={fleetWarnings.length === 0} onClick={revealWarnings} type="button">
+            {fleetWarnings.length} {warningLabel}
           </button>
           <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
           <button
@@ -1041,7 +1050,10 @@ export function App() {
       <details className="repo-filter" aria-label="Target repositories">
         <summary>
           <span>Target repositories</span>
-          <span>{settings.targetRepos.length} configured</span>
+          <span>
+            {settings.targetRepos.length} configured
+            {excludedRecordCount > 0 ? ` · ${excludedRecordCount} ${excludedRecordCount === 1 ? "record" : "records"} excluded` : ""}
+          </span>
         </summary>
         <div className="repo-filter-body">
           <div className="repo-chips">
@@ -1074,14 +1086,22 @@ export function App() {
             </button>
           </form>
         </div>
+        {repoScopeExclusions.length > 0 && (
+          <div aria-label="Records excluded by repository scope" className="repo-filter-body" role="note">
+            <span>
+              Excluded by scope: {repoScopeExclusions.map((exclusion) => `${exclusion.count} ${exclusion.label}`).join(" · ")}
+            </span>
+            <span>Add a repository above to include its records.</span>
+          </div>
+        )}
       </details>
 
-      {dashboard.warnings.length > 0 && (
+      {fleetWarnings.length > 0 && (
         <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`} ref={warningsRef}>
           <div className="warnings-panel-summary">
             <span className="warnings-heading">{warningsHeading}</span>
             <button className="inline-count" onClick={revealWarnings} type="button">
-              {dashboard.warnings.length} {warningLabel}
+              {fleetWarnings.length} {warningLabel}
             </button>
           </div>
           <SignalGroupList
