@@ -7,7 +7,8 @@ import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { buildCustodyTimeline } from "../shared/custodyTimeline";
 import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
 import type { ServerConfig } from "./config";
-import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubTargetReference } from "./github/githubClient";
+import { applyDashboardHistoryWindow, createOpenGitHubItemsCache } from "./dashboardHotPath";
+import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubLoadResult, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
@@ -18,7 +19,7 @@ import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeBatchEven
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
-type LoadOpenGitHubItems = typeof defaultLoadOpenGitHubItems;
+type LoadOpenGitHubItems = (repo: string, options?: { bypassCache?: boolean }) => Promise<GitHubLoadResult>;
 type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
 type CoordinationSnapshot = { state: Awaited<ReturnType<typeof readCoordinationState>>; now: Date };
 interface BuildScopedDashboardOptions {
@@ -64,7 +65,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   const app = express();
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const annotationStore = createAnnotationStore(join(dirname(persistedSettingsPath), "annotations.json"));
-  const loadOpenGitHubItems = options.loadOpenGitHubItems || defaultLoadOpenGitHubItems;
+  // The default open-list loader is wrapped in a short-TTL cache so repeated
+  // dashboard builds do not respawn `gh pr/issue list` per repository; injected
+  // loaders (tests) are used as-is so callers keep full control.
+  const loadOpenGitHubItems: LoadOpenGitHubItems =
+    options.loadOpenGitHubItems || createOpenGitHubItemsCache(defaultLoadOpenGitHubItems).load;
   const defaultTargetReconciler = createGitHubTargetReconciler();
   const loadGitHubTargets = options.loadGitHubTargets || defaultTargetReconciler.load;
   const coordApiUrl = config.coordApiUrl?.trim() || "";
@@ -280,10 +285,14 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   async function buildScopedDashboard(settings: DashboardSettings, options: BuildScopedDashboardOptions = {}): Promise<DashboardModel> {
-    const captured = options.captured || await captureCoordinationSnapshot();
+    // The coordination snapshot and the per-repo GitHub open lists are
+    // independent reads; overlap them instead of paying both latencies serially.
+    const [captured, githubResults] = await Promise.all([
+      options.captured || captureCoordinationSnapshot(),
+      Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo, { bypassCache: options.bypassGitHubCache })))
+    ]);
     const now = captured.now;
     const state = captured.state;
-    const githubResults = await Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo)));
     const openGithubItems = githubResults.flatMap((result) => result.items);
     const openGithubWarnings = githubResults.flatMap((result) => result.warnings);
 
@@ -610,7 +619,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   app.get("/api/dashboard", async (req, res) => {
     const settings = await currentSettings();
     const bypassCache = canBypassDashboardCache(req.get("X-Dashboard-Refresh"), req.socket.remoteAddress);
-    res.json(await readScopedDashboard(settings, { bypassCache }));
+    const model = await readScopedDashboard(settings, { bypassCache });
+    // Default to a hot history window; ?history=full opts into the complete
+    // payload. Windowing runs per request so the shared cache keeps full history.
+    res.json(req.query.history === "full" ? model : applyDashboardHistoryWindow(model, new Date()));
   });
 
   if (options.serveFrontend !== false) {
