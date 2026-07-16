@@ -103,24 +103,39 @@ interface RowEvidenceTracker {
 }
 
 /**
+ * Mirrors the client's presence test (firstValue trims before use): a
+ * whitespace-only value neither covers a field nor is worth retaining for it.
+ */
+function carriesField(event: BatchEvent, field: (typeof EVENT_METADATA_FIELDS)[number]): boolean {
+  return Boolean(event[field]?.trim());
+}
+
+/**
  * True when this event must stay in the payload regardless of age because a
  * row derivation would otherwise lose evidence: the newest event of its scope
  * (activity/last-activity/provenance), the newest non-QA event (operator state
  * and retention transitions), or the newest carrier of a metadata field.
- * Assumes events are visited newest-first, which buildDashboardModel guarantees.
+ * Events must be visited newest-first; applyDashboardHistoryWindow enforces
+ * that ordering itself.
  */
 function keepsRowEvidence(event: BatchEvent, tracker: RowEvidenceTracker): boolean {
   return !tracker.hasNewest
     || (!tracker.hasTransition && !isQaEventType(event.type))
-    || EVENT_METADATA_FIELDS.some((field) => event[field] && !tracker.fields.has(field));
+    || EVENT_METADATA_FIELDS.some((field) => carriesField(event, field) && !tracker.fields.has(field));
 }
 
 function recordRowEvidence(event: BatchEvent, tracker: RowEvidenceTracker): void {
   tracker.hasNewest = true;
   if (!isQaEventType(event.type)) tracker.hasTransition = true;
   for (const field of EVENT_METADATA_FIELDS) {
-    if (event[field]) tracker.fields.add(field);
+    if (carriesField(event, field)) tracker.fields.add(field);
   }
+}
+
+/** Recency for evidence decisions; mirrors the client's timestampMs (missing or unparseable sorts oldest). */
+function eventRecencyMs(event: BatchEvent): number {
+  const parsed = Date.parse(event.timestamp || "");
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 /**
@@ -138,10 +153,15 @@ export function applyDashboardHistoryWindow(
   windowDays = DEFAULT_HISTORY_WINDOW_DAYS
 ): DashboardModel {
   const cutoff = now.getTime() - windowDays * 24 * 60 * 60 * 1000;
-  const kept: BatchEvent[] = [];
+  // Evidence coverage must be recorded newest-first or an older event could
+  // mark a scope covered and silently omit its real newest evidence.
+  // buildDashboardModel already emits newest-first, but sort a copy for the
+  // decisions instead of trusting callers; the stable sort mirrors the
+  // client's recency comparison and keeps payload order for ties.
+  const decisionOrder = [...model.events].sort((left, right) => eventRecencyMs(right) - eventRecencyMs(left));
   const trackers = new Map<string, RowEvidenceTracker>();
-  let omittedCount = 0;
-  for (const event of model.events) {
+  const omitted = new Set<BatchEvent>();
+  for (const event of decisionOrder) {
     const scope = eventEvidenceScope(event);
     let tracker = trackers.get(scope);
     if (!tracker) {
@@ -151,18 +171,17 @@ export function applyDashboardHistoryWindow(
     const timestamp = Date.parse(event.timestamp || "");
     const withinWindow = Number.isNaN(timestamp) || timestamp >= cutoff;
     if (withinWindow || keepsRowEvidence(event, tracker)) {
-      kept.push(event);
       recordRowEvidence(event, tracker);
     } else {
-      omittedCount += 1;
+      omitted.add(event);
     }
   }
-  if (omittedCount === 0) {
+  if (omitted.size === 0) {
     return model;
   }
   return {
     ...model,
-    events: kept,
-    warnings: [...model.warnings, historyWindowNotice(omittedCount, windowDays)]
+    events: model.events.filter((event) => !omitted.has(event)),
+    warnings: [...model.warnings, historyWindowNotice(omitted.size, windowDays)]
   };
 }

@@ -237,6 +237,38 @@ describe("applyDashboardHistoryWindow", () => {
     expect(windowed.warnings.at(-1)?.message).toContain("omitted 2 batch history events");
   });
 
+  it("never lets whitespace-only metadata mask an older real carrier", () => {
+    const input = model([
+      { ...event("fresh-blank-operator", "2026-07-15T11:00:00Z"), operator: "  " },
+      { ...event("old-real-operator", "2026-06-01T12:00:00Z"), operator: "justin808" },
+      { ...event("old-blank-operator", "2026-05-01T12:00:00Z"), operator: " " }
+    ]);
+
+    const windowed = applyDashboardHistoryWindow(input, now);
+
+    // The client trims before use, so "  " is not operator evidence: the real
+    // carrier must survive, while the whitespace-only old event adds nothing.
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["fresh-blank-operator", "old-real-operator"]);
+    expect(windowed.warnings.at(-1)?.message).toContain("omitted 1 batch history event");
+  });
+
+  it("preserves each scope's newest evidence even when events arrive out of recency order", () => {
+    const input = model([
+      { ...event("lane-older", "2026-05-01T12:00:00Z"), laneName: "server" },
+      event("work-older", "2026-06-01T12:00:00Z"),
+      { ...event("lane-newest", "2026-06-15T12:00:00Z"), laneName: "server" },
+      event("work-newest", "2026-06-10T12:00:00Z")
+    ]);
+
+    const windowed = applyDashboardHistoryWindow(input, now);
+
+    // Decisions are made over a recency-sorted copy, so the shuffled input
+    // cannot trick coverage tracking into keeping an older event instead of
+    // the scope's newest; kept events stay in payload order.
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["lane-newest", "work-newest"]);
+    expect(windowed.warnings.at(-1)?.message).toContain("omitted 2 batch history events");
+  });
+
   it("keeps the newest non-QA event of a scope so operator-state transitions survive QA noise", () => {
     const input = model([
       { ...event("old-qa", "2026-06-10T12:00:00Z"), type: "qa.validation.passed" },
