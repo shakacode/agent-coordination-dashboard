@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { batchLanesFor, canBypassDashboardCache, createDashboardApp } from "./app";
+import { createOpenGitHubItemsCache } from "./dashboardHotPath";
 import { createGitHubTargetReconciler } from "./github/githubClient";
 import type { ServerConfig } from "./config";
 import type { DashboardModel, WorkItem } from "../shared/types";
@@ -669,6 +670,56 @@ describe("dashboard app import endpoint", () => {
     const refreshed = await fetch(`${baseUrl}/api/dashboard`);
     expect(refreshed.ok).toBe(true);
     expect(githubLoads).toBe(3);
+  });
+
+  it("defaults the dashboard payload to a hot history window with ?history=full opt-in", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-history-window-"));
+    await mkdir(join(stateRoot, "history"), { recursive: true });
+    const dayMs = 24 * 60 * 60 * 1000;
+    const staleAt = new Date(Date.now() - 8 * dayMs).toISOString();
+    const freshAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    // Filesystem retention outlives the window: a stalled lane whose newest
+    // event is older than 7 days must keep that evidence in the default payload
+    // so client lane rows never degrade known state to UNKNOWN (PR #71 review).
+    const stalledLaneNewestAt = new Date(Date.now() - 10 * dayMs).toISOString();
+    const stalledLaneOlderAt = new Date(Date.now() - 20 * dayMs).toISOString();
+    await writeFile(join(stateRoot, "history", "timeline.jsonl"), [
+      { event_id: "stale-event", type: "phase.implementing", repo: "shakacode/react_on_rails", target: "46", at: staleAt },
+      { event_id: "fresh-event", type: "phase.reviewing", repo: "shakacode/react_on_rails", target: "46", at: freshAt },
+      { event_id: "stalled-lane-newest", type: "phase.implementing", batch_id: "batch-old", lane_name: "server", agent_id: "worker-a", repo: "shakacode/react_on_rails", at: stalledLaneNewestAt },
+      { event_id: "stalled-lane-older", type: "phase.started", batch_id: "batch-old", lane_name: "server", agent_id: "worker-a", repo: "shakacode/react_on_rails", at: stalledLaneOlderAt }
+    ].map((event) => JSON.stringify(event)).join("\n"));
+    const baseUrl = await listen(stateRoot);
+
+    const windowed = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { events: Array<{ eventId: string }>; warnings: Array<{ severity: string; message: string }> };
+    expect(windowed.events.map((event) => event.eventId)).toEqual(["fresh-event", "stalled-lane-newest"]);
+    expect(windowed.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "info", message: expect.stringContaining("Dashboard history window: omitted 2 batch history events older than 7 days") })
+    ]));
+
+    const full = await (await fetch(`${baseUrl}/api/dashboard?history=full`)).json() as { events: Array<{ eventId: string }>; warnings: Array<{ message: string }> };
+    expect(full.events.map((event) => event.eventId)).toEqual(["fresh-event", "stale-event", "stalled-lane-newest", "stalled-lane-older"]);
+    expect(full.warnings.some((warning) => warning.message.includes("Dashboard history window"))).toBe(false);
+  });
+
+  it("reuses cached open GitHub previews across rebuilds while foreground refresh loads live", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-preview-cache-"));
+    let githubLoads = 0;
+    const previewCache = createOpenGitHubItemsCache(async () => {
+      githubLoads += 1;
+      return { items: [], warnings: [] };
+    });
+    // refreshIntervalMs 0 disables the whole-model cache, so every request
+    // rebuilds and the open-list previews are served by the short-TTL cache.
+    const baseUrl = await listen(stateRoot, {}, { loadOpenGitHubItems: previewCache.load });
+
+    await fetch(`${baseUrl}/api/dashboard`);
+    await fetch(`${baseUrl}/api/dashboard`);
+    expect(githubLoads).toBe(1);
+
+    const fresh = await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+    expect(fresh.ok).toBe(true);
+    expect(githubLoads).toBe(2);
   });
 
   it("uses a claim PR URL as the canonical GitHub target and maps its terminal result onto the issue WorkItem", async () => {
