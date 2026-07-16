@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ItemTimelineResponse } from "../api";
 import { ItemPage, uniquePullRequestUrls } from "./ItemPage";
 
@@ -49,6 +49,17 @@ const timeline = {
 } satisfies ItemTimelineResponse;
 
 describe("ItemPage", () => {
+  // Custody timestamps render in the operator's local zone. Pin the zone so
+  // expected strings stay deterministic on any CI host; ItemPage constructs
+  // its formatters at render time, so this stub applies after module import.
+  beforeAll(() => {
+    vi.stubEnv("TZ", "UTC");
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("does not offer resume when no current item was resolved for the timeline", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{ ...timeline, item: undefined }} />);
     expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
@@ -87,6 +98,84 @@ describe("ItemPage", () => {
     ]);
   });
 
+  it("orders the custody chain strictly by start time and labels the direction", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [{ action: "acquired", agentId: "worker-a", timestamp: "2026-07-12T10:06:00Z" }],
+      liveness: [{ agentId: "worker-a", liveness: "stale", status: "implementing", startedAt: "2026-07-12T10:04:00Z", endedAt: "2026-07-12T10:08:00Z" }],
+      phases: [{ eventId: "phase-late", phase: "verifying", startedAt: "2026-07-12T10:09:00Z", endedAt: "2026-07-12T10:10:00Z", durationMs: 60_000 }],
+      events: [{ eventId: "note", type: "status.update", repo: "shakacode/dashboard", target: "46", timestamp: "2026-07-12T10:01:00Z", message: "First evidence", path: "events/order.jsonl:1" }]
+    }} />);
+
+    expect(screen.getByText("Ordered oldest → newest")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("status.update · Jul 12 10:01"),
+      expect.stringContaining("stale · Jul 12 10:04–10:08 (4m)"),
+      expect.stringContaining("acquired by worker-a · Jul 12 10:06"),
+      expect.stringContaining("verifying · Jul 12 10:09–10:10 (1m)")
+    ]);
+  });
+
+  it("shows time UNKNOWN only for custody records that truly lack timestamps", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [
+        { action: "acquired", agentId: "worker-a", timestamp: "2026-07-12T10:00:00Z" },
+        { action: "unknown", agentId: "worker-c" }
+      ],
+      liveness: [],
+      phases: [],
+      events: [{ eventId: "no-time", type: "operator.note", repo: "shakacode/dashboard", target: "46", message: "Recovered evidence", path: "history/recovered.jsonl:1" }]
+    }} />);
+
+    const entries = screen.getAllByRole("listitem").map((entry) => entry.textContent);
+    expect(entries).toEqual([
+      expect.stringContaining("acquired by worker-a · Jul 12 10:00"),
+      expect.stringContaining("UNKNOWN ownership by worker-c · time UNKNOWN"),
+      expect.stringContaining("operator.note · time UNKNOWN")
+    ]);
+    expect(entries[0]).not.toContain("time UNKNOWN");
+  });
+
+  it("keeps the end-of-span date visible when a span crosses local midnight", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [{ agentId: "worker-a", liveness: "stale", status: "implementing", startedAt: "2026-07-12T23:50:00Z", endedAt: "2026-07-13T00:20:00Z" }],
+      phases: [],
+      events: []
+    }} />);
+
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("stale · Jul 12 23:50–Jul 13 00:20 (30m)")
+    ]);
+  });
+
+  it("omits the duration when a liveness span has no parseable timestamps", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      claims: [],
+      liveness: [{ agentId: "worker-a", liveness: "stale", status: "implementing", startedAt: "not-a-date", endedAt: "also-not-a-date" }],
+      phases: [],
+      events: []
+    }} />);
+
+    const entries = screen.getAllByRole("listitem").map((entry) => entry.textContent);
+    expect(entries).toEqual([expect.stringContaining("stale · time UNKNOWNimplementing · worker-a")]);
+    expect(entries[0]).not.toContain("NaN");
+  });
+
+  it("preserves ISO-8601 instants in time element attributes for copy/paste", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={timeline} />);
+
+    const acquiredTime = screen.getByTitle("2026-07-12T10:00:00.000Z");
+    expect(acquiredTime.tagName).toBe("TIME");
+    expect(acquiredTime).toHaveAttribute("datetime", "2026-07-12T10:00:00.000Z");
+    expect(screen.getByTitle("2026-07-12T10:02:00.000Z")).toHaveAttribute("datetime", "2026-07-12T10:02:00.000Z");
+    expect(screen.getAllByTitle("2026-07-12T10:05:00.000Z")).toHaveLength(2);
+    expect(screen.getAllByTitle("2026-07-12T10:10:00.000Z")).toHaveLength(2);
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("shows the complete custody chain and copies ownership handles locally", async () => {
@@ -100,14 +189,14 @@ describe("ItemPage", () => {
     expect(screen.getAllByText("Machine: m2 · Host: claude · Operator: riley")).toHaveLength(2);
     expect(screen.getByText("Machine: m3 · Host: codex · Operator: devon")).toBeInTheDocument();
     expect(screen.getByText(/worker-a → worker-b/)).toBeInTheDocument();
-    expect(screen.getByText("implementing · 8m")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "PR 47" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/47");
     expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
-      expect.stringContaining("acquired by worker-a"),
-      expect.stringContaining("implementing · 8m"),
-      expect.stringContaining("worker-a → worker-b"),
-      expect.stringContaining("live · 5m")
+      expect.stringContaining("acquired by worker-a · Jul 12 10:00"),
+      expect.stringContaining("implementing · Jul 12 10:02–10:10 (8m)"),
+      expect.stringContaining("worker-a → worker-b · Jul 12 10:05"),
+      expect.stringContaining("live · Jul 12 10:05–10:10 (5m)")
     ]);
+    expect(screen.queryByText(/time UNKNOWN/)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("button", { name: "Copy thread handle takeover-chat" })[0]);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("takeover-chat");
@@ -324,7 +413,9 @@ describe("ItemPage", () => {
       }]
     }} />);
 
-    expect(screen.getByText("heartbeat")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining("heartbeat · Jul 12 10:01")])
+    );
     expect(screen.getAllByText("Machine: m1 · Host: codex · Operator: justin")).toHaveLength(2);
   });
 
@@ -347,10 +438,10 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
-      expect.stringContaining("acquired by worker-a"),
-      expect.stringContaining("renewed by worker-a"),
-      expect.stringContaining("worker-a → worker-b"),
-      expect.stringContaining("phase.progressStill working")
+      expect.stringContaining("acquired by worker-a · Jul 12 10:00"),
+      expect.stringContaining("renewed by worker-a · Jul 12 10:02"),
+      expect.stringContaining("worker-a → worker-b · Jul 12 10:04"),
+      expect.stringContaining("phase.progress · Jul 12 10:05Still working")
     ]);
   });
 
@@ -373,8 +464,8 @@ describe("ItemPage", () => {
     }} />);
 
     expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
-      expect.stringContaining("acquired by worker-a"),
-      expect.stringContaining("status.updateUnrelated telemetry")
+      expect.stringContaining("acquired by worker-a · Jul 12 10:00"),
+      expect.stringContaining("status.update · Jul 12 10:01Unrelated telemetry")
     ]);
   });
 
@@ -391,7 +482,10 @@ describe("ItemPage", () => {
       ]
     }} />);
 
-    expect(screen.getAllByText("status.update")).toHaveLength(2);
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("status.update · Jul 12 10:00First event"),
+      expect.stringContaining("status.update · Jul 12 10:01Second event")
+    ]);
     expect(consoleError).not.toHaveBeenCalledWith(expect.stringContaining("same key"), expect.anything());
   });
 
@@ -408,8 +502,10 @@ describe("ItemPage", () => {
       events: []
     }} />);
 
-    expect(screen.getByText("planning · 1m")).toBeInTheDocument();
-    expect(screen.getByText("implementing · 1m")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("planning · Jul 12 10:00–10:01 (1m)"),
+      expect.stringContaining("implementing · Jul 12 10:01–10:02 (1m)")
+    ]);
     expect(consoleError).not.toHaveBeenCalledWith(expect.stringContaining("same key"), expect.anything());
   });
 
@@ -425,9 +521,10 @@ describe("ItemPage", () => {
       ]
     }} />);
 
-    expect(screen.getByText("planning · 1m")).toBeInTheDocument();
-    expect(screen.getByText("status.update")).toBeInTheDocument();
-    expect(screen.getByText("Unrelated telemetry")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("planning · Jul 12 10:00–10:01 (1m)"),
+      expect.stringContaining("status.update · Jul 12 10:01Unrelated telemetry")
+    ]);
   });
 
   it("retains all same-ID telemetry when a phase has no source provenance", () => {
