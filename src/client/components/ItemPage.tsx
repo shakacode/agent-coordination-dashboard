@@ -104,7 +104,8 @@ export function itemScopedTimelineWarnings(timeline: ItemTimelineResponse): Coor
   const batchMembershipKnowable = Boolean(item)
     && !declaresUnattributableBatch(item?.claim?.batchId)
     && !declaresUnattributableBatch(item?.heartbeat?.batchId)
-    && !(item?.batchSignals || []).some((signal) => !hasDisplayAttribution(signal.batchId));
+    && !(item?.batchSignals || []).some((signal) => !hasDisplayAttribution(signal.batchId))
+    && !timeline.events.some((event) => declaresUnattributableBatch(event.batchId));
   const itemBatchIds = [
     item?.claim?.batchId,
     item?.heartbeat?.batchId,
@@ -113,12 +114,17 @@ export function itemScopedTimelineWarnings(timeline: ItemTimelineResponse): Coor
   ].filter(hasDisplayAttribution).map((batchId) => batchId.trim());
   return deduped.filter((warning) => {
     if (parseRepoScopeExclusion(warning)) return false;
+    if (LANE_OWNER_MISMATCH_PATTERN.test(warning.message)) {
+      // Lane warnings carry the batch's operating repo, not the pointed-at
+      // work's, so the repo/target mismatch checks below must not pre-filter
+      // them; the message text is the attribution.
+      if (warning.message.endsWith(` points at ${timeline.repo}#${timeline.target} and was not applied.`)) return true;
+      if (!batchMembershipKnowable) return true;
+      return itemBatchIds.some((batchId) => warning.message.startsWith(`Lane ${batchId}:`));
+    }
     if (warning.repo && warning.repo !== timeline.repo) return false;
     if (warning.target && warning.target !== timeline.target) return false;
-    if (!LANE_OWNER_MISMATCH_PATTERN.test(warning.message)) return true;
-    if (warning.message.endsWith(` points at ${timeline.repo}#${timeline.target} and was not applied.`)) return true;
-    if (!batchMembershipKnowable) return true;
-    return itemBatchIds.some((batchId) => warning.message.startsWith(`Lane ${batchId}:`));
+    return true;
   });
 }
 

@@ -670,6 +670,37 @@ describe("ItemPage", () => {
     expect(screen.getByText("INFO: GitHub preview refresh was throttled.")).toBeInTheDocument();
   });
 
+  it("keeps cross-repo lane mismatches that point at the viewed item and drops foreign ones", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [{ batchId: "batch-item", status: "running", blockedOn: [] }] },
+      warnings: [
+        { severity: "warning", message: "Lane other-batch:ui owner heartbeat points at shakacode/dashboard#46 and was not applied.", repo: "shakacode/other-repo" },
+        { severity: "warning", message: "Lane other-batch:qa owner heartbeat points at shakacode/other-repo#9 and was not applied.", repo: "shakacode/other-repo" }
+      ]
+    }} />);
+
+    // Lane warnings carry the batch's operating repo, so a repo mismatch must
+    // not hide a warning that points at the viewed item itself.
+    expect(screen.getByText(/Lane other-batch:ui owner heartbeat points at shakacode\/dashboard#46/)).toBeInTheDocument();
+    expect(screen.queryByText(/points at shakacode\/other-repo#9/)).not.toBeInTheDocument();
+  });
+
+  it("treats unattributable event batches as unknowable and keeps lane mismatches visible", () => {
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      events: [{ eventId: "legacy", type: "heartbeat", repo: "shakacode/dashboard", target: "46", batchId: "UNKNOWN", timestamp: "2026-07-12T10:03:00Z", path: "history/events.jsonl:1" }],
+      item: { ...timeline.item, batchSignals: [{ batchId: "batch-item", status: "running", blockedOn: [] }] },
+      warnings: [
+        { severity: "warning", message: "Lane mystery-batch:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." }
+      ]
+    }} />);
+
+    // An event that names a batch without a displayable id makes membership
+    // unknowable; ambiguity resolves toward keeping the signal visible.
+    expect(screen.getByText(/Lane mystery-batch:ui owner heartbeat/)).toBeInTheDocument();
+  });
+
   it("collapses repeated batch lane-mismatch warnings into one counted, expandable row", async () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,
