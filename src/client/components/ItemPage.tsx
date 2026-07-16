@@ -13,6 +13,39 @@ function duration(durationMs: number): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+function parseTimestampMs(value: string | undefined): number | undefined {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+// Formatters are constructed per call so they honor the environment's current
+// time zone at render time. The visible text is the operator's local wall
+// clock; the exact ISO-8601 instant stays on the element for copy/paste.
+function localDay(ms: number): string {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(ms);
+}
+
+function localClock(ms: number): string {
+  return new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ms);
+}
+
+function TimePoint({ value }: { value: string | undefined }) {
+  const ms = parseTimestampMs(value);
+  if (ms === undefined) return <>time UNKNOWN</>;
+  const isoValue = new Date(ms).toISOString();
+  return <time className="timeline-time" dateTime={isoValue} title={isoValue}>{localDay(ms)} {localClock(ms)}</time>;
+}
+
+function TimeRange({ startedAt, endedAt }: { startedAt: string; endedAt: string }) {
+  const startMs = parseTimestampMs(startedAt);
+  const endMs = parseTimestampMs(endedAt);
+  if (startMs === undefined || endMs === undefined) return <>time UNKNOWN</>;
+  const startIso = new Date(startMs).toISOString();
+  const endIso = new Date(endMs).toISOString();
+  const sameLocalDay = new Date(startMs).toDateString() === new Date(endMs).toDateString();
+  return <><time className="timeline-time" dateTime={startIso} title={startIso}>{localDay(startMs)} {localClock(startMs)}</time>–<time className="timeline-time" dateTime={endIso} title={endIso}>{sameLocalDay ? localClock(endMs) : `${localDay(endMs)} ${localClock(endMs)}`}</time></>;
+}
+
 function sourceIsUnknown(timeline: ItemTimelineResponse): boolean {
   return timeline.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
 }
@@ -94,20 +127,20 @@ function Claim({ event }: { event: ClaimCustodyEvent }) {
     : event.action === "unknown"
       ? `UNKNOWN ownership by ${event.agentId}`
       : `${event.action} by ${event.agentId}`;
-  return <li className="timeline-entry timeline-claim"><strong>{action}</strong><span>{event.generation === undefined ? "CAS generation UNKNOWN" : `CAS generation ${event.generation}`}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
+  return <li className="timeline-entry timeline-claim"><strong>{action} · <TimePoint value={event.timestamp} /></strong><span>{event.generation === undefined ? "CAS generation UNKNOWN" : `CAS generation ${event.generation}`}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
 }
 
 function Liveness({ span }: { span: LivenessSpan }) {
   const elapsed = Date.parse(span.endedAt) - Date.parse(span.startedAt);
-  return <li className={`timeline-entry timeline-liveness timeline-${span.liveness}`}><strong>{span.liveness} · {duration(elapsed)}</strong><span>{span.status} · {span.agentId}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
+  return <li className={`timeline-entry timeline-liveness timeline-${span.liveness}`}><strong>{span.liveness} · <TimeRange startedAt={span.startedAt} endedAt={span.endedAt} /> ({duration(elapsed)})</strong><span>{span.status} · {span.agentId}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
 }
 
 function Phase({ span }: { span: PhaseSpan }) {
-  return <li className="timeline-entry timeline-phase"><strong>{span.phase} · {duration(span.durationMs)}</strong><span>{span.message || "Phase event"}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
+  return <li className="timeline-entry timeline-phase"><strong>{span.phase} · <TimeRange startedAt={span.startedAt} endedAt={span.endedAt} /> ({duration(span.durationMs)})</strong><span>{span.message || "Phase event"}</span><Ownership machineId={span.machineId} host={span.host} operator={span.operator} /><Handle handle={span.threadHandle} /><RowAnchors branch={span.branch} prUrl={span.prUrl} /></li>;
 }
 
 function Telemetry({ event }: { event: BatchEvent }) {
-  return <li className="timeline-entry timeline-event"><strong>{event.type}</strong><span>{event.status || event.message || "Telemetry evidence"}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
+  return <li className="timeline-entry timeline-event"><strong>{event.type} · <TimePoint value={event.timestamp} /></strong><span>{event.status || event.message || "Telemetry evidence"}</span><Ownership machineId={event.machineId} host={event.host} operator={event.operator} /><Handle handle={event.threadHandle} /><RowAnchors branch={event.branch} prUrl={event.prUrl} /></li>;
 }
 
 function eventProvenanceKey(path: string | undefined, eventId: string | undefined): string | undefined {
@@ -129,8 +162,7 @@ function phaseKey(span: PhaseSpan, index: number): string {
 }
 
 function timelineTimestamp(value: string | undefined): number {
-  const parsed = Date.parse(value || "");
-  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+  return parseTimestampMs(value) ?? Number.MAX_SAFE_INTEGER;
 }
 
 export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation, commandActionsDisabled = false }: { timeline: ItemTimelineResponse; onBack: () => void; onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void; onClearAnnotation?: () => Promise<void> | void; commandActionsDisabled?: boolean }) {
@@ -198,6 +230,7 @@ export function ItemPage({ timeline, onBack, onAnnotate, onClearAnnotation, comm
       </section>
       <section aria-label="Full custody chain">
         <h2>Full custody chain</h2>
+        <p className="custody-direction">Ordered oldest → newest</p>
         <ol className="custody-timeline">
           {custodyEntries.map((entry) => {
             if (entry.kind === "claim") return <Claim event={entry.event} key={`claim-${claimKey(entry.event, entry.index)}`} />;
