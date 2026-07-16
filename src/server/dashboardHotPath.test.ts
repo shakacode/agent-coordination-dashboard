@@ -179,9 +179,74 @@ describe("applyDashboardHistoryWindow", () => {
   });
 
   it("honors a custom window and singular phrasing", () => {
-    const input = model([event("stale", "2026-07-13T11:00:00Z")]);
+    const input = model([event("stale-newest", "2026-07-13T11:00:00Z"), event("stale-older", "2026-07-13T09:00:00Z")]);
     const windowed = applyDashboardHistoryWindow(input, now, 1);
-    expect(windowed.events).toEqual([]);
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["stale-newest"]);
     expect(windowed.warnings.at(-1)?.message).toContain("omitted 1 batch history event older than 1 day");
+  });
+
+  it("keeps a stalled lane's newest evidence regardless of age so known row state never turns UNKNOWN", () => {
+    const laneEvent = (eventId: string, timestamp: string, overrides: Partial<BatchEvent> = {}): BatchEvent => ({
+      eventId,
+      type: "phase.implementing",
+      batchId: "batch-old",
+      laneName: "server",
+      repo: "repo/app",
+      timestamp,
+      path: "events/batches/batch-old.jsonl:1",
+      ...overrides
+    });
+    const input = model([
+      event("fresh-work", "2026-07-15T11:00:00Z"),
+      laneEvent("stalled-lane-newest", "2026-06-10T12:00:00Z", { status: "implementing", agentId: "worker-a" }),
+      laneEvent("stalled-lane-older", "2026-06-01T12:00:00Z", { status: "started", agentId: "worker-a" }),
+      { ...event("other-scope-newest", "2026-05-20T12:00:00Z"), target: "46" }
+    ]);
+
+    const windowed = applyDashboardHistoryWindow(input, now);
+
+    // The stalled lane and the aged work scope keep their newest evidence even
+    // though it is far outside the window; only the redundant older lane event
+    // is omitted, and the notice counts exactly that omission.
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["fresh-work", "stalled-lane-newest", "other-scope-newest"]);
+    expect(windowed.warnings.at(-1)?.message).toContain("omitted 1 batch history event older than 7 days");
+  });
+
+  it("returns the model unchanged when every old event is a scope's newest evidence", () => {
+    const input = model([
+      { ...event("lane-b", "2026-02-01T12:00:00Z"), laneName: "lane-b" },
+      { ...event("lane-a", "2026-01-01T12:00:00Z"), laneName: "lane-a" }
+    ]);
+    expect(applyDashboardHistoryWindow(input, now)).toBe(input);
+  });
+
+  it("keeps old events that carry metadata a newer kept event lacks", () => {
+    const input = model([
+      event("fresh-no-machine", "2026-07-15T11:00:00Z"),
+      { ...event("old-with-machine", "2026-06-01T12:00:00Z"), machineId: "mac-studio" },
+      { ...event("older-with-machine", "2026-05-01T12:00:00Z"), machineId: "mac-studio" },
+      { ...event("older-no-new-fields", "2026-04-01T12:00:00Z") }
+    ]);
+
+    const windowed = applyDashboardHistoryWindow(input, now);
+
+    // old-with-machine is the newest machineId carrier for the scope, so the
+    // client's newest-first metadata derivation stays identical; the two older
+    // events add nothing a row derivation reads and are omitted.
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["fresh-no-machine", "old-with-machine"]);
+    expect(windowed.warnings.at(-1)?.message).toContain("omitted 2 batch history events");
+  });
+
+  it("keeps the newest non-QA event of a scope so operator-state transitions survive QA noise", () => {
+    const input = model([
+      { ...event("old-qa", "2026-06-10T12:00:00Z"), type: "qa.validation.passed" },
+      { ...event("old-transition", "2026-06-01T12:00:00Z"), type: "phase.completed", status: "completed" },
+      { ...event("old-earlier-transition", "2026-05-01T12:00:00Z"), type: "phase.started", status: "started" }
+    ]);
+
+    const windowed = applyDashboardHistoryWindow(input, now);
+
+    expect(windowed.events.map((item) => item.eventId)).toEqual(["old-qa", "old-transition"]);
+    expect(windowed.warnings.at(-1)?.message).toContain("omitted 1 batch history event");
   });
 });

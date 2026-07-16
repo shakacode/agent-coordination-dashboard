@@ -675,22 +675,30 @@ describe("dashboard app import endpoint", () => {
   it("defaults the dashboard payload to a hot history window with ?history=full opt-in", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-history-window-"));
     await mkdir(join(stateRoot, "history"), { recursive: true });
-    const staleAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const staleAt = new Date(Date.now() - 8 * dayMs).toISOString();
     const freshAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    // Filesystem retention outlives the window: a stalled lane whose newest
+    // event is older than 7 days must keep that evidence in the default payload
+    // so client lane rows never degrade known state to UNKNOWN (PR #71 review).
+    const stalledLaneNewestAt = new Date(Date.now() - 10 * dayMs).toISOString();
+    const stalledLaneOlderAt = new Date(Date.now() - 20 * dayMs).toISOString();
     await writeFile(join(stateRoot, "history", "timeline.jsonl"), [
       { event_id: "stale-event", type: "phase.implementing", repo: "shakacode/react_on_rails", target: "46", at: staleAt },
-      { event_id: "fresh-event", type: "phase.reviewing", repo: "shakacode/react_on_rails", target: "46", at: freshAt }
+      { event_id: "fresh-event", type: "phase.reviewing", repo: "shakacode/react_on_rails", target: "46", at: freshAt },
+      { event_id: "stalled-lane-newest", type: "phase.implementing", batch_id: "batch-old", lane_name: "server", agent_id: "worker-a", repo: "shakacode/react_on_rails", at: stalledLaneNewestAt },
+      { event_id: "stalled-lane-older", type: "phase.started", batch_id: "batch-old", lane_name: "server", agent_id: "worker-a", repo: "shakacode/react_on_rails", at: stalledLaneOlderAt }
     ].map((event) => JSON.stringify(event)).join("\n"));
     const baseUrl = await listen(stateRoot);
 
     const windowed = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { events: Array<{ eventId: string }>; warnings: Array<{ severity: string; message: string }> };
-    expect(windowed.events.map((event) => event.eventId)).toEqual(["fresh-event"]);
+    expect(windowed.events.map((event) => event.eventId)).toEqual(["fresh-event", "stalled-lane-newest"]);
     expect(windowed.warnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ severity: "info", message: expect.stringContaining("Dashboard history window: omitted 1 batch history event older than 7 days") })
+      expect.objectContaining({ severity: "info", message: expect.stringContaining("Dashboard history window: omitted 2 batch history events older than 7 days") })
     ]));
 
     const full = await (await fetch(`${baseUrl}/api/dashboard?history=full`)).json() as { events: Array<{ eventId: string }>; warnings: Array<{ message: string }> };
-    expect(full.events.map((event) => event.eventId)).toEqual(["fresh-event", "stale-event"]);
+    expect(full.events.map((event) => event.eventId)).toEqual(["fresh-event", "stale-event", "stalled-lane-newest", "stalled-lane-older"]);
     expect(full.warnings.some((warning) => warning.message.includes("Dashboard history window"))).toBe(false);
   });
 

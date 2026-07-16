@@ -1,3 +1,4 @@
+import { isQaEventType } from "../shared/qaEvents";
 import type { BatchEvent, CoordinationWarning, DashboardModel } from "../shared/types";
 import type { GitHubLoadResult } from "./github/githubClient";
 
@@ -14,6 +15,11 @@ import type { GitHubLoadResult } from "./github/githubClient";
  * - The history window never hides its own effect: omissions are announced in
  *   the payload's warnings, and events whose age cannot be proven (missing or
  *   unparseable timestamps) are always kept.
+ * - The window never converts known row state into UNKNOWN: client operator
+ *   rows derive provenance, operator state, activity, and metadata from the
+ *   payload's events, so an old event is trimmed only when a newer kept event
+ *   of the same evidence scope already carries everything those derivations
+ *   read (see keepsRowEvidence below).
  */
 
 export const OPEN_GITHUB_ITEMS_CACHE_TTL_MS = 60_000;
@@ -76,11 +82,55 @@ function historyWindowNotice(omittedCount: number, windowDays: number): Coordina
   };
 }
 
+/** Event fields the client's per-row metadata derivation reads newest-first. */
+const EVENT_METADATA_FIELDS = ["agentId", "machineId", "threadHandle", "host", "operator", "branch", "prUrl"] as const;
+
+/**
+ * The finest evidence scope any payload consumer partitions events by. Client
+ * operator rows match events on subsets of these fields, so every row's event
+ * set is a union of these groups; preserving each group's newest evidence
+ * preserves every row's newest evidence.
+ */
+function eventEvidenceScope(event: BatchEvent): string {
+  return JSON.stringify([event.batchId, event.batchPath, event.laneName, event.repo, event.target, event.agentId]
+    .map((value) => value || ""));
+}
+
+interface RowEvidenceTracker {
+  hasNewest: boolean;
+  hasTransition: boolean;
+  fields: Set<(typeof EVENT_METADATA_FIELDS)[number]>;
+}
+
+/**
+ * True when this event must stay in the payload regardless of age because a
+ * row derivation would otherwise lose evidence: the newest event of its scope
+ * (activity/last-activity/provenance), the newest non-QA event (operator state
+ * and retention transitions), or the newest carrier of a metadata field.
+ * Assumes events are visited newest-first, which buildDashboardModel guarantees.
+ */
+function keepsRowEvidence(event: BatchEvent, tracker: RowEvidenceTracker): boolean {
+  return !tracker.hasNewest
+    || (!tracker.hasTransition && !isQaEventType(event.type))
+    || EVENT_METADATA_FIELDS.some((field) => event[field] && !tracker.fields.has(field));
+}
+
+function recordRowEvidence(event: BatchEvent, tracker: RowEvidenceTracker): void {
+  tracker.hasNewest = true;
+  if (!isQaEventType(event.type)) tracker.hasTransition = true;
+  for (const field of EVENT_METADATA_FIELDS) {
+    if (event[field]) tracker.fields.add(field);
+  }
+}
+
 /**
  * Defaults the dashboard payload to a hot window of recent batch history.
  * Model derivations (terminal states, QA statuses, batch operation counters)
  * are computed from full history before this runs, so windowing only trims the
- * serialized `events` list. The input model is never mutated.
+ * serialized `events` list. Events older than the window are omitted only when
+ * they are redundant for row derivations (see keepsRowEvidence); the newest
+ * evidence of every scope survives regardless of age. The input model is never
+ * mutated.
  */
 export function applyDashboardHistoryWindow(
   model: DashboardModel,
@@ -89,11 +139,20 @@ export function applyDashboardHistoryWindow(
 ): DashboardModel {
   const cutoff = now.getTime() - windowDays * 24 * 60 * 60 * 1000;
   const kept: BatchEvent[] = [];
+  const trackers = new Map<string, RowEvidenceTracker>();
   let omittedCount = 0;
   for (const event of model.events) {
+    const scope = eventEvidenceScope(event);
+    let tracker = trackers.get(scope);
+    if (!tracker) {
+      tracker = { hasNewest: false, hasTransition: false, fields: new Set() };
+      trackers.set(scope, tracker);
+    }
     const timestamp = Date.parse(event.timestamp || "");
-    if (Number.isNaN(timestamp) || timestamp >= cutoff) {
+    const withinWindow = Number.isNaN(timestamp) || timestamp >= cutoff;
+    if (withinWindow || keepsRowEvidence(event, tracker)) {
       kept.push(event);
+      recordRowEvidence(event, tracker);
     } else {
       omittedCount += 1;
     }
