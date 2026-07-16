@@ -192,6 +192,23 @@ describe("github list parsers", () => {
     expect(result.warnings[0].message).toContain("auth required");
   });
 
+  it("fetches target and branch evidence for one reference concurrently", async () => {
+    let branchRequested: () => void = () => undefined;
+    const branchSeen = new Promise<void>((resolve) => { branchRequested = resolve; });
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
+      if (args[1].includes("/branches/")) {
+        branchRequested();
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      }
+      // The target lookup completes only once the branch lookup has started,
+      // so a serial implementation would deadlock here.
+      await branchSeen;
+      return { stdout: JSON.stringify({ number: 45, title: "Open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    } });
+    const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
+    expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "present" });
+  });
+
   it("records branch deletion only as supporting evidence", async () => {
     let calls = 0;
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
@@ -426,5 +443,38 @@ describe("github list parsers", () => {
     expect(result.items).toEqual([]);
     expect(result.warnings).toHaveLength(2);
     expect(result.warnings[0].message).toContain("auth required");
+    expect(result.failed).toBe(true);
+  });
+
+  it("marks partially failed open-list loads while keeping clean loads cacheable", async () => {
+    const partial = await loadOpenGitHubItems("shakacode/react_on_rails", {
+      run: async (args) => args[0] === "issue"
+        ? { stdout: "not json", stderr: "", exitCode: 0 }
+        : { stdout: "[]", stderr: "", exitCode: 0 }
+    });
+    expect(partial.failed).toBe(true);
+    expect(partial.warnings[0].message).toContain("unreadable JSON");
+
+    const clean = await loadOpenGitHubItems("shakacode/react_on_rails", {
+      run: async () => ({ stdout: "[]", stderr: "", exitCode: 0 })
+    });
+    expect(clean.failed).toBeUndefined();
+  });
+
+  it("keeps truncated-but-successful open lists cacheable with their warning visible", async () => {
+    const issues = Array.from({ length: 1000 }, (_, index) => ({
+      number: index + 1,
+      title: `Issue ${index + 1}`,
+      url: `https://github.com/shakacode/react_on_rails/issues/${index + 1}`,
+      state: "OPEN",
+      labels: []
+    }));
+    const result = await loadOpenGitHubItems("shakacode/react_on_rails", {
+      run: async (args) => ({ stdout: args[0] === "issue" ? JSON.stringify(issues) : "[]", stderr: "", exitCode: 0 })
+    });
+
+    expect(result.items).toHaveLength(1000);
+    expect(result.warnings[0].message).toContain("may be truncated");
+    expect(result.failed).toBeUndefined();
   });
 });

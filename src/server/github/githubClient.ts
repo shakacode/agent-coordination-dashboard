@@ -48,6 +48,8 @@ export interface GitHubLoadResult {
   warnings: CoordinationWarning[];
   /** Parallel to items for target reconciliation; absent for open-list loads. */
   references?: GitHubTargetReference[];
+  /** True when any underlying GitHub read failed; short-TTL caches must never reuse failed loads. */
+  failed?: boolean;
 }
 
 export interface GitHubTargetReference {
@@ -217,7 +219,10 @@ export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
   };
 }
 
-export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 8, maxCacheEntries = 2_000) {
+// The concurrency cap bounds simultaneous gh processes (one per API request), not
+// references; it trades cold reconciliation latency against gh spawn pressure and
+// GitHub secondary rate limits, and stays well below GitHub's <100 concurrent guidance.
+export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 24, maxCacheEntries = 2_000) {
   const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult>; settled: boolean }>();
   const targetCache = new Map<string, { expiresAt: number; promise: ReturnType<GhRunner["run"]>; settled: boolean }>();
   const queue: Array<() => void> = [];
@@ -251,7 +256,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     const key = `${reference.repo}#${reference.target}:${reference.type}`;
     const existing = targetCache.get(key);
     if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
-    const promise = runner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]);
+    const promise = schedule(() => runner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]));
     const entry = { expiresAt: now + ttlMs, promise, settled: false };
     targetCache.set(key, entry);
     const settle = () => { entry.settled = true; pruneTargetCache(Date.now()); };
@@ -295,11 +300,12 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       }
     }
 
-    const result = reference.existingTarget
-      ? undefined
-      : await loadTarget(reference);
-    if (branchPath) {
-      const branchResult = await runner.run(["api", branchPath]);
+    // Target and branch evidence are independent lookups; fetch them concurrently.
+    const [result, branchResult] = await Promise.all([
+      reference.existingTarget ? undefined : loadTarget(reference),
+      branchPath ? schedule(() => runner.run(["api", branchPath!])) : undefined
+    ]);
+    if (branchPath && branchResult) {
       if (branchResult.exitCode === 0) {
         branchState = "present";
       } else if (isGitHubHttpNotFound(branchResult.stderr)) {
@@ -348,7 +354,8 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
         const key = githubTargetReferenceKey(reference);
         const existing = cache.get(key);
         if (!options.bypassCache && existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
-        const promise = schedule(() => loadOne(reference));
+        // loadOne is cheap orchestration; the concurrency cap is applied per gh spawn inside it.
+        const promise = loadOne(reference);
         const entry = { expiresAt: now + ttlMs, promise, settled: false };
         cache.set(key, entry);
         const settleEntry = () => {
@@ -379,6 +386,7 @@ export async function loadOpenGitHubItems(
   runner: GhRunner = childProcessGhRunner
 ): Promise<GitHubLoadResult> {
   const warnings: CoordinationWarning[] = [];
+  let failedSources = 0;
 
   async function loadKind(
     kind: "pr" | "issue",
@@ -399,6 +407,7 @@ export async function loadOpenGitHubItems(
     ]);
 
     if (result.exitCode !== 0) {
+      failedSources += 1;
       warnings.push({
         severity: "warning",
         repo,
@@ -418,6 +427,7 @@ export async function loadOpenGitHubItems(
       }
       return items;
     } catch (error) {
+      failedSources += 1;
       warnings.push({
         severity: "warning",
         repo,
@@ -436,6 +446,9 @@ export async function loadOpenGitHubItems(
 
   return {
     items: [...prs, ...issues],
-    warnings
+    warnings,
+    // A truncated-but-successful list stays cacheable with its warning visible;
+    // failed reads must be retried live by any caller-side cache.
+    ...(failedSources > 0 ? { failed: true } : {})
   };
 }
