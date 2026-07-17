@@ -103,6 +103,15 @@ than being mistaken for a failed start. For a specific IP address assigned to
 the local machine, lifecycle diagnostics connect from a loopback source address;
 the dashboard's machine-local `/api/doctor` boundary remains unchanged.
 
+Write routes recognize a same-machine peer from the kernel-reported TCP source
+address, not from forwarded headers. Exact non-link-local interface matching is
+not application authentication: it cannot compensate for a host or network that
+permits source-address spoofing, or for a proxy that makes remote clients appear
+local. Keep `HOST` on loopback on shared or untrusted networks. If a non-loopback
+bind is required, use host firewall or equivalent access controls so untrusted
+traffic cannot reach the dashboard. `/api/doctor` and foreground cache bypass
+remain loopback-only.
+
 ## Component diagnostics
 
 The installed command owns a read-only machine contract for stack-wide health
@@ -151,7 +160,8 @@ The server binds to `127.0.0.1` by default because it exposes private local
 coordination metadata. Set `HOST=0.0.0.0` only when you intentionally want to
 make it reachable from another machine on the network, and set `ALLOWED_HOSTS`
 to the exact hostnames or IP addresses you will use in the browser.
-Changing target repositories through the UI remains loopback-only.
+Changing target repositories through the UI uses the same exact same-machine
+socket-peer boundary described above; other network peers remain read-only.
 
 To read from the HTTP coordination backend instead of the local filesystem
 state root, set the same API variables used by `agent-coord`:

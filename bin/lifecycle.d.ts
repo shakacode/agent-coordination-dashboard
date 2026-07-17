@@ -41,3 +41,7 @@ export function readLifecycleLogTail(
 ): Promise<{ contents: Buffer; truncated: boolean }>;
 export function processGroupInventoryHasLiveProcesses(states: string[] | null): boolean;
 export function resolvedLocalhostIsLoopback(address: string): boolean;
+export function runWithLifecycleRelease<T>(
+  operation: () => T | Promise<T>,
+  release: () => unknown | Promise<unknown>
+): Promise<T>;

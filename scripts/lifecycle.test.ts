@@ -17,7 +17,8 @@ import {
   processGroupInventoryHasLiveProcesses,
   probeHostsForBindHost,
   readLifecycleLogTail,
-  resolvedLocalhostIsLoopback
+  resolvedLocalhostIsLoopback,
+  runWithLifecycleRelease
 } from "../bin/lifecycle.js";
 
 async function runLifecycle(
@@ -126,6 +127,23 @@ async function linuxProcessIdentity(pid: number): Promise<{ birthMarker: string;
   return { birthMarker: `linux:${fields[19]}`, state: fields[0] };
 }
 
+async function portableProcessIdentity(pid: number): Promise<{ birthMarker: string; state: string }> {
+  if (process.platform === "linux") return await linuxProcessIdentity(pid);
+  const child = spawn(
+    "ps",
+    ["-ww", "-p", String(pid), "-o", "stat=", "-o", "lstart="],
+    { stdio: ["ignore", "pipe", "ignore"] }
+  );
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  const [status] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  const match = output.trim().match(/^(\S+)\s+(.+)$/);
+  if (status !== 0 || !match) throw new Error(`Could not parse process identity for ${pid}.`);
+  return { birthMarker: `ps:${match[2]}`, state: match[1] };
+}
+
 function processGroupExists(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
@@ -221,6 +239,24 @@ const supportsIpv6WildcardIpv4 = await (async () => {
 })();
 
 describe("portable dashboard lifecycle", () => {
+  it("preserves an operation failure when lifecycle lock release also fails", async () => {
+    await expect(runWithLifecycleRelease(
+      async () => { throw new Error("operation failed"); },
+      async () => { throw new Error("release failed"); }
+    )).rejects.toThrow(
+      "operation failed; additionally, lifecycle lock release failed: release failed"
+    );
+  });
+
+  it("reports a completed operation separately when lifecycle lock release fails", async () => {
+    await expect(runWithLifecycleRelease(
+      async () => "completed",
+      async () => { throw new Error("release failed"); }
+    )).rejects.toThrow(
+      "Lifecycle operation completed, but lifecycle lock release failed: release failed"
+    );
+  });
+
   it("requires localhost to resolve to loopback before lifecycle startup", () => {
     expect(resolvedLocalhostIsLoopback("192.168.7.26")).toBe(false);
     expect(resolvedLocalhostIsLoopback("127.0.0.2")).toBe(true);
@@ -1023,12 +1059,16 @@ describe("portable dashboard lifecycle", () => {
   it.each([
     { label: "missing", fixture: "missing", message: "does not exist" },
     { label: "invalid", fixture: "invalid", message: "invalid syntax on line 1" },
+    { label: "trailing escaped quote", fixture: "escaped_quote", message: "unterminated quoted value" },
     { label: "symlinked", fixture: "symlink", message: "regular file, not a symlink" }
   ])("rejects a $label protected environment file", async ({ fixture, message }) => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const envFile = join(root, "dashboard.env");
     if (fixture === "invalid") {
       await writeFile(envFile, "this is not an assignment\n", "utf8");
+      await chmod(envFile, 0o600);
+    } else if (fixture === "escaped_quote") {
+      await writeFile(envFile, `${String.raw`PORT="4319\"`}\n`, "utf8");
       await chmod(envFile, 0o600);
     } else if (fixture === "symlink") {
       const target = join(root, "dashboard-target.env");
@@ -2082,7 +2122,7 @@ describe("portable dashboard lifecycle", () => {
     30_000
   );
 
-  it.runIf(process.platform === "linux")(
+  it(
     "falls through a test-owned zombie wrapper to its marked live server group",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
@@ -2138,13 +2178,13 @@ setTimeout(() => { process.exitCode = 1; }, 2000).unref();
           const pidText = await readFile(wrapperPidFile, "utf8").catch(() => "");
           if (pidText) {
             wrapperPid = Number(pidText);
-            identity = await linuxProcessIdentity(wrapperPid).catch(() => undefined);
-            if (identity?.state === "Z") break;
+            identity = await portableProcessIdentity(wrapperPid).catch(() => undefined);
+            if (identity?.state.startsWith("Z")) break;
           }
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
         }
         expect(wrapperPid).toBeTypeOf("number");
-        expect(identity?.state).toBe("Z");
+        expect(identity?.state.startsWith("Z")).toBe(true);
         await writeFile(runtimePath, `${JSON.stringify({
           schema_version: 1,
           pid: wrapperPid,

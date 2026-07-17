@@ -198,13 +198,42 @@ async function acquireLifecycleLock(paths) {
   throw new Error("Another lifecycle command is still running; try again after it finishes.");
 }
 
-async function withLifecycleLock(paths, operation) {
-  const release = await acquireLifecycleLock(paths);
+export async function runWithLifecycleRelease(operation, release) {
+  let operationFailed = false;
+  let operationError;
   try {
     return await operation();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+    throw error;
   } finally {
-    await release();
+    try {
+      await release();
+    } catch (releaseError) {
+      const releaseMessage = releaseError instanceof Error
+        ? releaseError.message
+        : String(releaseError);
+      if (!operationFailed) {
+        throw new AggregateError(
+          [releaseError],
+          `Lifecycle operation completed, but lifecycle lock release failed: ${releaseMessage}`
+        );
+      }
+      const operationMessage = operationError instanceof Error
+        ? operationError.message
+        : String(operationError);
+      throw new AggregateError(
+        [operationError, releaseError],
+        `${operationMessage}; additionally, lifecycle lock release failed: ${releaseMessage}`
+      );
+    }
   }
+}
+
+async function withLifecycleLock(paths, operation) {
+  const release = await acquireLifecycleLock(paths);
+  return await runWithLifecycleRelease(operation, release);
 }
 
 function isFileNotFound(error) {
@@ -390,7 +419,15 @@ function parseEnvLine(line, lineNumber) {
   let value = match[2].trim();
   if (value.startsWith('"') || value.startsWith("'")) {
     const quote = value[0];
-    if (value.length < 2 || value.at(-1) !== quote) {
+    let trailingBackslashes = 0;
+    for (let index = value.length - 2; index >= 0 && value[index] === "\\"; index -= 1) {
+      trailingBackslashes += 1;
+    }
+    if (
+      value.length < 2 ||
+      value.at(-1) !== quote ||
+      (quote === '"' && trailingBackslashes % 2 === 1)
+    ) {
       throw new Error(`Environment file contains an unterminated quoted value on line ${lineNumber}.`);
     }
     value = value.slice(1, -1);
@@ -832,7 +869,6 @@ export function processGroupInventoryHasLiveProcesses(states) {
 
 async function processGroupHasLiveProcesses(pgid) {
   if (!processGroupExists(pgid)) return false;
-  if (process.platform !== "linux") return true;
   const states = await processGroupStates(pgid);
   return processGroupInventoryHasLiveProcesses(states);
 }
