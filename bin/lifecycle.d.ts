@@ -39,3 +39,4 @@ export function readLifecycleLogTail(
   },
   maxBytes?: number
 ): Promise<{ contents: Buffer; truncated: boolean }>;
+export function processGroupInventoryHasLiveProcesses(states: string[] | null): boolean;

@@ -118,6 +118,48 @@ describe("dashboard app import endpoint", () => {
     await expect(response.json()).resolves.toEqual({ error: "Annotations can only be changed from the machine running the dashboard. Remote viewers have read-only access." });
   });
 
+  it("allows writes from an exact assigned interface while keeping LAN peers read-only", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-machine-local-writes-"));
+    const appOptions = {
+      serveFrontend: false,
+      machineInterfaces: { ethernet: [{ address: "192.168.7.26" }] }
+    };
+    const localApp = await createDashboardApp(testConfig(root), appOptions);
+    const remoteApp = await createDashboardApp(testConfig(root), appOptions);
+    const localBaseUrl = await listenServer(createServer((req, res) => {
+      Object.defineProperty(req.socket, "remoteAddress", { value: "::ffff:192.168.7.26" });
+      localApp(req, res);
+    }).listen(0, "127.0.0.1"));
+    const remoteBaseUrl = await listenServer(createServer((req, res) => {
+      Object.defineProperty(req.socket, "remoteAddress", { value: "192.168.7.27" });
+      remoteApp(req, res);
+    }).listen(0, "127.0.0.1"));
+    const writes = [
+      { method: "PUT", path: "/api/settings", body: {} },
+      { method: "POST", path: "/api/annotations", body: {} },
+      { method: "POST", path: "/api/batches/import", body: {} },
+      { method: "POST", path: "/api/batches/stop", body: {} }
+    ];
+
+    for (const write of writes) {
+      const request = {
+        method: write.method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(write.body)
+      };
+      const local = await fetch(`${localBaseUrl}${write.path}`, request);
+      expect(local.status, `${write.path} should pass machine-local authorization`).not.toBe(403);
+      const remote = await fetch(`${remoteBaseUrl}${write.path}`, {
+        ...request,
+        headers: {
+          ...request.headers,
+          "X-Forwarded-For": "192.168.7.26"
+        }
+      });
+      expect(remote.status, `${write.path} should keep LAN peers read-only`).toBe(403);
+    }
+  });
+
   it.each(["corrupt", "unreadable"])("keeps dashboard and item reads available when annotation storage is %s", async (failure) => {
     const root = await mkdtemp(join(tmpdir(), `coord-annotation-${failure}-`));
     const annotationPath = join(root, "annotations.json");

@@ -791,6 +791,46 @@ async function processGroupCommands(pgid) {
   }
 }
 
+async function processGroupStates(pgid) {
+  try {
+    const child = spawn("ps", ["-ww", "-axo", "pgid=,stat="], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    const states = [];
+    let pending = "";
+    const collectLine = (line) => {
+      const match = line.match(/^\s*(\d+)\s+(\S+)/);
+      if (match && Number(match[1]) === pgid) states.push(match[2]);
+    };
+    child.stdout.on("data", (chunk) => {
+      pending += String(chunk);
+      let newlineIndex;
+      while ((newlineIndex = pending.indexOf("\n")) >= 0) {
+        collectLine(pending.slice(0, newlineIndex));
+        pending = pending.slice(newlineIndex + 1);
+      }
+    });
+    const [status] = await once(child, "close");
+    if (status !== 0) return null;
+    if (pending) collectLine(pending);
+    return states;
+  } catch {
+    return null;
+  }
+}
+
+export function processGroupInventoryHasLiveProcesses(states) {
+  return states === null || states.length === 0 || states.some((state) => !state.startsWith("Z"));
+}
+
+async function processGroupHasLiveProcesses(pgid) {
+  if (!processGroupExists(pgid)) return false;
+  if (process.platform !== "linux") return true;
+  const states = await processGroupStates(pgid);
+  return processGroupInventoryHasLiveProcesses(states);
+}
+
 async function runtimeOwnership(runtime, context) {
   if (processExists(runtime.pid)) {
     if (runtime.process_birth_marker) {
@@ -1225,10 +1265,10 @@ async function stopDetachedGroup(pgid, signal) {
 async function waitForProcessGroupExit(pgid, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!processGroupExists(pgid)) return true;
+    if (!(await processGroupHasLiveProcesses(pgid))) return true;
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  return !processGroupExists(pgid);
+  return !(await processGroupHasLiveProcesses(pgid));
 }
 
 async function terminateDetachedGroup(pgid) {

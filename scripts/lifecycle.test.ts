@@ -14,6 +14,7 @@ import {
   bindHostCoversProbeHost,
   installLifecycleLogWriter,
   ownedEndpointCoversCandidateBind,
+  processGroupInventoryHasLiveProcesses,
   probeHostsForBindHost,
   readLifecycleLogTail
 } from "../bin/lifecycle.js";
@@ -276,6 +277,13 @@ describe("portable dashboard lifecycle", () => {
     expect(() => assertSupportedLifecyclePlatform("win32")).toThrow("macOS and Linux");
     expect(() => assertSupportedLifecyclePlatform("darwin")).not.toThrow();
     expect(() => assertSupportedLifecyclePlatform("linux")).not.toThrow();
+  });
+
+  it("fails closed when Linux process-group state inventory is unavailable", () => {
+    expect(processGroupInventoryHasLiveProcesses(null)).toBe(true);
+    expect(processGroupInventoryHasLiveProcesses([])).toBe(true);
+    expect(processGroupInventoryHasLiveProcesses(["Z", "Z+"])).toBe(false);
+    expect(processGroupInventoryHasLiveProcesses(["Z", "S"])).toBe(true);
   });
 
   it("rejects a non-regular inherited lifecycle log descriptor before installing writers", async () => {
@@ -2125,6 +2133,12 @@ setTimeout(() => { process.exitCode = 1; }, 2000).unref();
         expect(status.status).toBe(1);
         expect(status.stderr).toContain("process is running, but its health check failed");
         expect(status.stderr).not.toContain("does not identify an owned process");
+
+        const stopped = await runLifecycle(["stop"], root);
+        expect(stopped.status).toBe(0);
+        expect(stopped.stderr).toBe("");
+        expect(stopped.stdout).toContain("Dashboard stopped.");
+        await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         const holderExit = once(holder, "exit").catch(() => []);
         await writeFile(releaseFile, "release\n", "utf8").catch(() => {});
