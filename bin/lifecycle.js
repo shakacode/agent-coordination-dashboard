@@ -580,6 +580,12 @@ function normalizeAddress(host) {
   return new URL(`http://[${value}]`).hostname.slice(1, -1);
 }
 
+function isIpv6LinkLocal(address) {
+  if (isIP(address) !== 6) return false;
+  const firstHextet = Number.parseInt(normalizeAddress(address).split(":")[0], 16);
+  return (firstHextet & 0xffc0) === 0xfe80;
+}
+
 function isLocalBindAddress(address) {
   if (address === "0.0.0.0" || address === "::") return true;
   if (isIP(address) === 4 && address.startsWith("127.")) return true;
@@ -685,6 +691,9 @@ function validateLifecycleHost(value) {
   const addressFamily = isIP(host);
   if (addressFamily === 6 && host.includes("%")) {
     throw new Error("IPv6 zone identifiers are not supported in HOST.");
+  }
+  if (addressFamily === 6 && isIpv6LinkLocal(host)) {
+    throw new Error("IPv6 link-local HOST addresses require scope identifiers and are not supported.");
   }
   if (host !== "localhost" && addressFamily === 0) {
     throw new Error("HOST must be localhost or an IPv4 or IPv6 address (including wildcard addresses).");
