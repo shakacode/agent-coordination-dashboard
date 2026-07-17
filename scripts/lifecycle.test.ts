@@ -11,10 +11,11 @@ import { describe, expect, it } from "vitest";
 async function runLifecycle(
   args: string[],
   root: string,
-  extraEnv: NodeJS.ProcessEnv = {}
+  extraEnv: NodeJS.ProcessEnv = {},
+  cwd = process.cwd()
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, ["bin/agent-coordination-dashboard.js", ...args], {
-    cwd: process.cwd(),
+  const child = spawn(process.execPath, [resolve("bin/agent-coordination-dashboard.js"), ...args], {
+    cwd,
     env: {
       ...process.env,
       XDG_CONFIG_HOME: join(root, "config"),
@@ -310,7 +311,7 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
-  it("accepts explicit hostname and IP wildcard ALLOWED_HOSTS entries", async () => {
+  it("adds the advertised lifecycle URL host to an explicit wildcard ALLOWED_HOSTS list", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort();
     const configDir = join(root, "config", "agent-coordination-dashboard");
@@ -327,6 +328,14 @@ describe("portable dashboard lifecycle", () => {
       const started = await runLifecycle(["start"], root);
       expect(started.status).toBe(0);
       expect(started.stdout).toContain(`Dashboard started at http://127.0.0.1:${port}.`);
+
+      const browserResponse = await fetch(`http://127.0.0.1:${port}/`);
+      expect(browserResponse.status).toBe(200);
+
+      const configuredHostResponse = await fetch(`http://127.0.0.1:${port}/`, {
+        headers: { host: `dashboard.example.test:${port}` }
+      });
+      expect(configuredHostResponse.status).toBe(200);
     } finally {
       await cleanupLifecycle(root);
       await rm(root, { force: true, recursive: true });
@@ -615,6 +624,59 @@ describe("portable dashboard lifecycle", () => {
         .resolves.toMatchObject({ ok: true });
     } finally {
       await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 60_000);
+
+  it("restarts safely without forwarding inherited caller-relative NODE_OPTIONS to the child", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const port = await unusedPort();
+    const callerDir = join(root, "caller");
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const markerPath = join(root, "node-options-marker.txt");
+    await mkdir(callerDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      join(callerDir, "hook.cjs"),
+      "require('node:fs').appendFileSync(process.env.NODE_OPTIONS_MARKER, `${process.pid}\\n`);\n",
+      "utf8"
+    );
+    const envFile = join(configDir, "env");
+    await writeFile(
+      envFile,
+      `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const originalPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+
+      const restarted = await runLifecycle(
+        ["restart"],
+        root,
+        {
+          NODE_OPTIONS: "--require=./hook.cjs",
+          NODE_OPTIONS_MARKER: markerPath
+        },
+        callerDir
+      );
+      expect(restarted.status).toBe(0);
+      expect(restarted.stderr).toBe("");
+
+      const replacementPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+      expect(replacementPid).not.toBe(originalPid);
+      expect(processExists(replacementPid)).toBe(true);
+      expect((await readFile(markerPath, "utf8")).trim().split("\n")).toHaveLength(1);
+      await expect(fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json()))
+        .resolves.toMatchObject({ ok: true });
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
       await rm(root, { force: true, recursive: true });
     }
   }, 60_000);

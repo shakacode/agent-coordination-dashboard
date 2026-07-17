@@ -669,10 +669,12 @@ async function runDeepDoctor(executablePath, url) {
   if (!["localhost", "127.0.0.1", "[::1]"].includes(hostname)) {
     doctorArgs.push("--local-interface-url");
   }
+  const doctorEnv = { ...process.env };
+  delete doctorEnv.NODE_OPTIONS;
   const child = spawn(
     process.execPath,
     doctorArgs,
-    { stdio: ["ignore", "pipe", "pipe"] }
+    { env: doctorEnv, stdio: ["ignore", "pipe", "pipe"] }
   );
   let stdout = "";
   child.stdout.on("data", (chunk) => {
@@ -759,6 +761,7 @@ async function prepareStart(options) {
     throw new Error("NODE_OPTIONS is not supported in the protected environment file.");
   }
   const childEnv = { ...process.env };
+  delete childEnv.NODE_OPTIONS;
   for (const key of API_ENV_KEYS) childEnv[key] = "";
   Object.assign(childEnv, fileEnv);
   childEnv.NODE_ENV = "production";
@@ -783,15 +786,18 @@ async function prepareStart(options) {
       "ALLOWED_HOSTS must contain only specific hostnames or IP addresses when HOST binds all interfaces."
     );
   }
-  if (childEnv.ALLOWED_HOSTS !== undefined) {
-    childEnv.ALLOWED_HOSTS = allowedHosts.map(canonicalizeAllowedHost).join(",");
-  }
   const bindAddress = bindHost === "localhost" ? (await lookup(bindHost)).address : bindHost;
   if (!isLocalBindAddress(bindAddress)) {
     throw new Error("HOST must be a loopback address or an IP address assigned to this machine.");
   }
   childEnv.HOST = bindAddress;
   const probeHost = probeHostForBindHost(bindHost);
+  if (childEnv.ALLOWED_HOSTS !== undefined) {
+    childEnv.ALLOWED_HOSTS = [...new Set([
+      ...allowedHosts.map(canonicalizeAllowedHost).filter(Boolean),
+      canonicalizeAllowedHost(probeHost)
+    ])].join(",");
+  }
   return {
     bindAddress,
     bindHost,
