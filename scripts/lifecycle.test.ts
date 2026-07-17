@@ -7,6 +7,7 @@ import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { assertSupportedLifecyclePlatform } from "../bin/lifecycle.js";
 
 async function runLifecycle(
   args: string[],
@@ -149,6 +150,12 @@ const lanIpv4 = Object.values(networkInterfaces())
   .find((address) => address.family === "IPv4" && !address.internal)?.address;
 
 describe("portable dashboard lifecycle", () => {
+  it("rejects unsupported lifecycle platforms through the shared public-command guard", () => {
+    expect(() => assertSupportedLifecyclePlatform("win32")).toThrow("macOS and Linux");
+    expect(() => assertSupportedLifecyclePlatform("darwin")).not.toThrow();
+    expect(() => assertSupportedLifecyclePlatform("linux")).not.toThrow();
+  });
+
   it("reports a fresh lifecycle as stopped", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     try {
@@ -542,6 +549,11 @@ describe("portable dashboard lifecycle", () => {
       message: "NODE_OPTIONS is not supported in the protected environment file"
     },
     {
+      label: "literal NUL byte",
+      fixture: "nul_byte",
+      message: "must not contain NUL bytes"
+    },
+    {
       label: "wildcard host without allowed hosts",
       fixture: "wildcard_missing",
       message: "specific hostnames or IP addresses"
@@ -600,6 +612,8 @@ describe("portable dashboard lifecycle", () => {
         await writeFile(envFile, `HOST=192.0.2.10\nPORT=${port}\n`, "utf8");
       } else if (fixture === "node_options") {
         await writeFile(envFile, `PORT=${port}\nNODE_OPTIONS=--require=/missing.cjs\n`, "utf8");
+      } else if (fixture === "nul_byte") {
+        await writeFile(envFile, `PORT=${port}\nDASHBOARD_SETTINGS_PATH=${root}\0settings.json\n`, "utf8");
       } else if (fixture.startsWith("wildcard_")) {
         const allowedHosts = fixture === "wildcard_missing"
           ? ""
@@ -1136,6 +1150,7 @@ describe("portable dashboard lifecycle", () => {
     const configDir = join(root, "config", "agent-coordination-dashboard");
     const fakeBinDir = join(root, "fake-bin");
     const psArgumentsLog = join(root, "ps-arguments.log");
+    const psLocaleLog = join(root, "ps-locale.log");
     const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
     const envFile = join(configDir, "env");
     const realPs = await executableOnPath("ps");
@@ -1150,13 +1165,14 @@ describe("portable dashboard lifecycle", () => {
     const fakePs = join(fakeBinDir, "ps");
     await writeFile(
       fakePs,
-      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PS_ARGUMENTS_LOG\"\nexec \"$REAL_PS\" \"$@\"\n",
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PS_ARGUMENTS_LOG\"\nprintf '%s\\n' \"$LC_ALL\" >> \"$PS_LOCALE_LOG\"\nexec \"$REAL_PS\" \"$@\"\n",
       "utf8"
     );
     await chmod(fakePs, 0o700);
     const fakePsEnv = {
       PATH: `${fakeBinDir}:${process.env.PATH}`,
       PS_ARGUMENTS_LOG: psArgumentsLog,
+      PS_LOCALE_LOG: psLocaleLog,
       REAL_PS: realPs
     };
 
@@ -1187,6 +1203,7 @@ describe("portable dashboard lifecycle", () => {
       const psArguments = (await readFile(psArgumentsLog, "utf8")).trim().split("\n");
       expect(psArguments.some((line) => /^-ww -p \d+ -o command=$/.test(line))).toBe(true);
       expect(psArguments).toContain("-ww -axo pgid=,command=");
+      expect((await readFile(psLocaleLog, "utf8")).trim().split("\n").every((locale) => locale === "C")).toBe(true);
 
       const repeatedStart = await runLifecycle(["start"], root);
       expect(repeatedStart.status).toBe(0);

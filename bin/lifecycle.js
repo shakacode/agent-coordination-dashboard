@@ -19,8 +19,15 @@ const PROCESS_IDENTITY_ATTEMPTS = 3;
 const PROCESS_IDENTITY_RETRY_MS = 25;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
+const SUPPORTED_LIFECYCLE_PLATFORMS = new Set(["darwin", "linux"]);
 
 class LifecycleUsageError extends Error {}
+
+export function assertSupportedLifecyclePlatform(platform = process.platform) {
+  if (!SUPPORTED_LIFECYCLE_PLATFORMS.has(platform)) {
+    throw new Error("Dashboard lifecycle commands support macOS and Linux hosts.");
+  }
+}
 
 function lifecyclePaths(env = process.env) {
   const stateHome = env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state");
@@ -291,6 +298,9 @@ function parseEnvLine(line, lineNumber) {
     const commentIndex = value.search(/\s+#/);
     if (commentIndex >= 0) value = value.slice(0, commentIndex).trimEnd();
   }
+  if (value.includes("\0")) {
+    throw new Error(`Environment file values must not contain NUL bytes (line ${lineNumber}).`);
+  }
   return [match[1], value];
 }
 
@@ -400,6 +410,7 @@ async function processBirthMarker(pid) {
 
 async function processCommand(pid) {
   const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "command="], {
+    env: { ...process.env, LC_ALL: "C" },
     stdio: ["ignore", "pipe", "ignore"]
   });
   let output = "";
@@ -971,9 +982,6 @@ async function printLogs(paths) {
 }
 
 async function openDashboard(context, paths) {
-  if (!new Set(["darwin", "linux"]).has(process.platform)) {
-    throw new Error("The open lifecycle command supports macOS and Linux hosts.");
-  }
   const runtime = await readRuntime(paths.runtimeFile);
   const ownership = runtime ? await runtimeOwnership(runtime, context) : "stopped";
   if (!new Set(["owned", "orphaned_owned"]).has(ownership)) {
@@ -990,8 +998,9 @@ async function openDashboard(context, paths) {
 }
 
 export async function runLifecycleCommand(command, args, context) {
-  const paths = lifecyclePaths();
   try {
+    assertSupportedLifecyclePlatform();
+    const paths = lifecyclePaths();
     const options = parseCommandOptions(command, args, paths);
     if (command === "start") {
       await withLifecycleLock(paths, () => startDashboard(options, context, paths));
