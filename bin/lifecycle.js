@@ -67,7 +67,13 @@ async function reapStaleLock(paths, instanceId, verifiedOwners) {
     throw new Error("Lifecycle lock directory must use mode 0700.");
   }
 
-  const entries = await readdir(paths.lockDir);
+  let entries;
+  try {
+    entries = await readdir(paths.lockDir);
+  } catch (error) {
+    if (isFileNotFound(error)) return true;
+    throw error;
+  }
   if (entries.length === 0) {
     if (Date.now() - stats.mtimeMs < LOCK_STALE_MS) return false;
     try {
@@ -84,7 +90,13 @@ async function reapStaleLock(paths, instanceId, verifiedOwners) {
     throw new Error("Lifecycle lock directory contains unexpected files.");
   }
   if (entries[0].startsWith("reap-")) {
-    const currentStats = await lstat(paths.lockDir);
+    let currentStats;
+    try {
+      currentStats = await lstat(paths.lockDir);
+    } catch (error) {
+      if (isFileNotFound(error)) return true;
+      throw error;
+    }
     if (Date.now() - currentStats.mtimeMs < LOCK_STALE_MS) return false;
   }
 

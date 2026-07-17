@@ -505,22 +505,24 @@ describe("portable dashboard lifecycle", () => {
   }, 20_000);
 
   it("serializes simultaneous starts across a transient process identity lookup failure", async () => {
-    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const baseline = await lifecycleProcessIds();
-    const port = await unusedPort();
     const realPs = await executableOnPath("ps");
-    const configDir = join(root, "config", "agent-coordination-dashboard");
-    const fakeBinDir = join(root, "fake-bin");
-    const psCounterDir = join(root, "ps-counters");
-    await Promise.all([
-      mkdir(configDir, { recursive: true }),
-      mkdir(fakeBinDir, { recursive: true }),
-      mkdir(psCounterDir, { recursive: true })
-    ]);
-    const fakePs = join(fakeBinDir, "ps");
-    await writeFile(
-      fakePs,
-      `#!/bin/sh
+    for (let iteration = 1; iteration <= 10; iteration += 1) {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort();
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const fakeBinDir = join(root, "fake-bin");
+      const psCounterDir = join(root, "ps-counters");
+      const psFailureLog = join(root, "ps-failures.log");
+      await Promise.all([
+        mkdir(configDir, { recursive: true }),
+        mkdir(fakeBinDir, { recursive: true }),
+        mkdir(psCounterDir, { recursive: true })
+      ]);
+      const fakePs = join(fakeBinDir, "ps");
+      await writeFile(
+        fakePs,
+        `#!/bin/sh
 if [ "$4" = "lstart=" ]; then
   counter="$PS_COUNTER_DIR/$2"
   while ! mkdir "$counter.lock" 2>/dev/null; do sleep 0.01; done
@@ -529,45 +531,58 @@ if [ "$4" = "lstart=" ]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$counter.count"
   rmdir "$counter.lock"
-  if [ "$count" -eq 2 ]; then exit 1; fi
+  if [ "$count" -eq 2 ]; then
+    printf '%s\\n' "$2" >> "$PS_FAILURE_LOG"
+    exit 1
+  fi
 fi
 exec "$REAL_PS" "$@"
 `,
-      "utf8"
-    );
-    await chmod(fakePs, 0o700);
-    const envFile = join(configDir, "env");
-    await writeFile(
-      envFile,
-      `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
-      "utf8"
-    );
-    await chmod(envFile, 0o600);
-
-    try {
-      const starts = await Promise.all(
-        Array.from({ length: 4 }, () =>
-          runLifecycle(["start"], root, {
-            PATH: `${fakeBinDir}:${process.env.PATH}`,
-            PS_COUNTER_DIR: psCounterDir,
-            REAL_PS: realPs
-          })
-        )
+        "utf8"
       );
-      expect(starts.filter((result) => result.status !== 0)).toEqual([]);
-      expect(starts.filter((result) => result.stdout.includes("Dashboard started at")).length).toBe(1);
-      expect(starts.filter((result) => result.stdout.includes("Dashboard is already running")).length).toBe(3);
+      await chmod(fakePs, 0o700);
+      const envFile = join(configDir, "env");
+      await writeFile(
+        envFile,
+        `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
 
-      const status = await runLifecycle(["status"], root);
-      expect(status.status).toBe(0);
-      expect(status.stdout).toContain(`Dashboard is running at http://127.0.0.1:${port}.`);
-    } finally {
-      await cleanupLifecycle(root);
-      await cleanupNewLifecycleProcesses(baseline);
-      expect(await lifecycleProcessIds()).toEqual(baseline);
-      await rm(root, { force: true, recursive: true });
+      try {
+        const starts = await Promise.all(
+          Array.from({ length: 4 }, () =>
+            runLifecycle(["start"], root, {
+              PATH: `${fakeBinDir}:${process.env.PATH}`,
+              PS_COUNTER_DIR: psCounterDir,
+              PS_FAILURE_LOG: psFailureLog,
+              REAL_PS: realPs
+            })
+          )
+        );
+        expect({ iteration, failures: starts.filter((result) => result.status !== 0) }).toEqual({
+          iteration,
+          failures: []
+        });
+        expect(starts.filter((result) => result.stdout.includes("Dashboard started at")).length).toBe(1);
+        expect(starts.filter((result) => result.stdout.includes("Dashboard is already running")).length).toBe(3);
+        expect(await readFile(psFailureLog, "utf8")).toMatch(/\d/);
+
+        const status = await runLifecycle(["status"], root);
+        expect(status.status).toBe(0);
+        expect(status.stdout).toContain(`Dashboard is running at http://127.0.0.1:${port}.`);
+
+        const stopped = await runLifecycle(["stop"], root);
+        expect(stopped.status).toBe(0);
+        expect(stopped.stdout).toContain("Dashboard stopped.");
+      } finally {
+        await cleanupLifecycle(root);
+        await cleanupNewLifecycleProcesses(baseline);
+        expect(await lifecycleProcessIds()).toEqual(baseline);
+        await rm(root, { force: true, recursive: true });
+      }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("terminates the detached process when runtime metadata cannot be persisted", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
