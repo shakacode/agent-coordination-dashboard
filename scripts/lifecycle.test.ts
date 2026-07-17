@@ -423,6 +423,35 @@ describe("portable dashboard lifecycle", () => {
     }
   });
 
+  it("decodes double-quoted protected environment escapes in one pass", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const stateRootPrefix = join(root, "coordination-state");
+    const encodedStateRoot = String.raw`${stateRootPrefix}-literal\\n-newline\n-carriage\r-tab\t-quote\"-slash\\-unknown\q`;
+    const expectedStateRoot = `${stateRootPrefix}-literal\\n-newline\n-carriage\r-tab\t-quote"-slash\\-unknown\\q`;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      envFile,
+      `PORT=${port}\nAGENT_COORD_STATE_ROOT="${encodedStateRoot}"\n`,
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+
+      const doctorResponse = await fetch(`http://127.0.0.1:${port}/api/doctor`);
+      const doctor = await doctorResponse.json() as { stateRoot: string };
+      expect(doctor.stateRoot).toBe(expectedStateRoot);
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
   it.each([
     { label: "missing", fixture: "missing", message: "does not exist" },
     { label: "invalid", fixture: "invalid", message: "invalid syntax on line 1" },
@@ -1342,9 +1371,11 @@ exec "$REAL_PS" "$@"
     await mkdir(configDir, { recursive: true });
     const envFile = join(configDir, "env");
     const commonEnv = `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\nDASHBOARD_SETTINGS_PATH=${join(root, "settings.json")}\n`;
+    const firstToken = String.raw`sentinel-token-one\n`;
+    const encodedFirstToken = String.raw`sentinel-token-one\\n`;
     await writeFile(
       envFile,
-      `${commonEnv}AGENT_COORD_API_URL=${apiUrl}\nAGENT_COORD_API_TOKEN=sentinel-token-one\n`,
+      `${commonEnv}AGENT_COORD_API_URL=${apiUrl}\nAGENT_COORD_API_TOKEN="${encodedFirstToken}"\n`,
       "utf8"
     );
     await chmod(envFile, 0o600);
@@ -1352,7 +1383,7 @@ exec "$REAL_PS" "$@"
     try {
       const firstStart = await runLifecycle(["start"], root);
       expect(firstStart.status).toBe(0);
-      expect(authorizations).toContain("Bearer sentinel-token-one");
+      expect(authorizations).toContain(`Bearer ${firstToken}`);
 
       authorizations.length = 0;
       await writeFile(
@@ -1363,7 +1394,7 @@ exec "$REAL_PS" "$@"
       const rotated = await runLifecycle(["restart"], root);
       expect(rotated.status).toBe(0);
       expect(authorizations).toContain("Bearer sentinel-token-two");
-      expect(authorizations).not.toContain("Bearer sentinel-token-one");
+      expect(authorizations).not.toContain(`Bearer ${firstToken}`);
 
       authorizations.length = 0;
       await writeFile(envFile, commonEnv, "utf8");

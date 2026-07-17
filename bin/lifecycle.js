@@ -272,7 +272,20 @@ function parseEnvLine(line, lineNumber) {
     }
     value = value.slice(1, -1);
     if (quote === '"') {
-      value = value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+      const escapes = { n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\" };
+      let decoded = "";
+      // Decode only the documented escape pairs once; unsupported pairs stay literal.
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index];
+        const escaped = value[index + 1];
+        if (character === "\\" && Object.hasOwn(escapes, escaped)) {
+          decoded += escapes[escaped];
+          index += 1;
+        } else {
+          decoded += character;
+        }
+      }
+      value = decoded;
     }
   } else {
     const commentIndex = value.search(/\s+#/);
