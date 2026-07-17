@@ -333,6 +333,45 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
+  it.each([
+    { label: "missing", allowedHosts: null },
+    { label: "non-specific", allowedHosts: "0:0:0:0:0:0:0:0" }
+  ])(
+    "rejects an expanded IPv6 wildcard HOST with a $label allow-list before spawning",
+    async ({ allowedHosts }) => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const baseline = await lifecycleProcessIds();
+      const port = await unusedPort("::1");
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      const allowedHostsLine = allowedHosts === null ? "" : `ALLOWED_HOSTS=${allowedHosts}\n`;
+      await writeFile(
+        envFile,
+        `HOST=0:0:0:0:0:0:0:0\nPORT=${port}\n${allowedHostsLine}`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(1);
+        expect(started.stderr).toContain("specific hostnames or IP addresses");
+        await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readFile(join(lifecycleDir, "dashboard.log"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        expect(await lifecycleProcessIds()).toEqual(baseline);
+      } finally {
+        await cleanupLifecycle(root);
+        await cleanupNewLifecycleProcesses(baseline);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
+
   it.runIf(Boolean(lanIpv4))("keeps deep diagnostics healthy for a specific local interface bind", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const host = lanIpv4 as string;
@@ -497,6 +536,49 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   }, 60_000);
+
+  it.each([
+    { label: "missing", allowedHosts: null },
+    { label: "non-specific", allowedHosts: "0:0:0:0:0:0:0:0" }
+  ])(
+    "keeps the running dashboard intact when expanded IPv6 wildcard HOST has a $label allow-list",
+    async ({ allowedHosts }) => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort();
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `PORT=${port}\n`, "utf8");
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        const originalRuntime = await readFile(runtimePath, "utf8");
+        const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+        const allowedHostsLine = allowedHosts === null ? "" : `ALLOWED_HOSTS=${allowedHosts}\n`;
+        await writeFile(
+          envFile,
+          `HOST=0:0:0:0:0:0:0:0\nPORT=${port}\n${allowedHostsLine}`,
+          "utf8"
+        );
+
+        const restarted = await runLifecycle(["restart"], root);
+
+        expect(restarted.status).toBe(1);
+        expect(restarted.stderr).toContain("specific hostnames or IP addresses");
+        expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
+        expect(processExists(originalPid)).toBe(true);
+        await expect(fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json()))
+          .resolves.toMatchObject({ ok: true });
+      } finally {
+        await cleanupLifecycle(root);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    30_000
+  );
 
   it("preflights an occupied replacement endpoint before restarting the owned dashboard", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

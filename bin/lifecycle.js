@@ -509,7 +509,7 @@ function validateLifecycleHost(value) {
   if (host !== "localhost" && addressFamily === 0) {
     throw new Error("HOST must be localhost or an IPv4 or IPv6 address (including wildcard addresses).");
   }
-  return host;
+  return addressFamily > 0 ? normalizeAddress(host) : host;
 }
 
 function isSpecificAllowedHost(value) {
