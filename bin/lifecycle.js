@@ -700,14 +700,22 @@ function probeHostForBindHost(host) {
   return host;
 }
 
-function probeHostsForBindHost(host, bindAddress = probeHostForBindHost(host)) {
+export function probeHostsForBindHost(
+  host,
+  bindAddress = probeHostForBindHost(host),
+  ipv6WildcardCoversIpv4 = false,
+  interfaces = networkInterfaces()
+) {
   const probeHosts = new Set([host === "localhost" ? bindAddress : probeHostForBindHost(host)]);
   if (host !== "0.0.0.0" && host !== "::") return [...probeHosts];
 
-  for (const addresses of Object.values(networkInterfaces())) {
+  for (const addresses of Object.values(interfaces)) {
     for (const address of addresses || []) {
       const isIpv4 = address.family === "IPv4" || address.family === 4;
-      if (host === "0.0.0.0" ? isIpv4 : true) probeHosts.add(address.address);
+      const isIpv6 = address.family === "IPv6" || address.family === 6;
+      if (host === "0.0.0.0" ? isIpv4 : isIpv6 || (ipv6WildcardCoversIpv4 && isIpv4)) {
+        probeHosts.add(address.address);
+      }
     }
   }
   return [...probeHosts];
@@ -1126,7 +1134,11 @@ async function preflightRestartEndpoint(preparedStart, context, paths) {
   ) {
     return;
   }
-  for (const host of probeHostsForBindHost(preparedStart.bindHost, preparedStart.bindAddress)) {
+  for (const host of probeHostsForBindHost(
+    preparedStart.bindHost,
+    preparedStart.bindAddress,
+    preparedStart.bindIpv4Coverage
+  )) {
     if (await portIsListening(preparedStart.port, host)) {
       if (
         currentEndpoint?.port === preparedStart.port &&
@@ -1166,7 +1178,7 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
   }
 
   const { bindAddress, bindHost, bindIpv4Coverage, childEnv, port, url } = preparedStart || await prepareStart(options);
-  for (const host of probeHostsForBindHost(bindHost, bindAddress)) {
+  for (const host of probeHostsForBindHost(bindHost, bindAddress, bindIpv4Coverage)) {
     if (await portIsListening(port, host)) {
       throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
     }

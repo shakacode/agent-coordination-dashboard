@@ -9,7 +9,11 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { assertSupportedLifecyclePlatform, bindHostCoversProbeHost } from "../bin/lifecycle.js";
+import {
+  assertSupportedLifecyclePlatform,
+  bindHostCoversProbeHost,
+  probeHostsForBindHost
+} from "../bin/lifecycle.js";
 
 async function runLifecycle(
   args: string[],
@@ -217,6 +221,29 @@ describe("portable dashboard lifecycle", () => {
     expect(bindHostCoversProbeHost("::", "127.0.0.1")).toBe(false);
     expect(bindHostCoversProbeHost("::", "127.0.0.1", true)).toBe(true);
     expect(bindHostCoversProbeHost("0.0.0.0", "127.0.0.1")).toBe(true);
+  });
+
+  it("includes IPv4 probes for an IPv6 wildcard only when dual-stack support was recorded", () => {
+    const interfaces = {
+      loopback: [
+        { address: "127.0.0.1", family: "IPv4" },
+        { address: "::1", family: "IPv6" }
+      ],
+      lan: [
+        { address: "192.0.2.10", family: "IPv4" },
+        { address: "2001:db8::10", family: "IPv6" }
+      ]
+    } as unknown as ReturnType<typeof networkInterfaces>;
+
+    expect(new Set(probeHostsForBindHost("::", "::", false, interfaces))).toEqual(
+      new Set(["::1", "2001:db8::10"])
+    );
+    expect(new Set(probeHostsForBindHost("::", "::", true, interfaces))).toEqual(
+      new Set(["::1", "127.0.0.1", "192.0.2.10", "2001:db8::10"])
+    );
+    expect(new Set(probeHostsForBindHost("0.0.0.0", "0.0.0.0", false, interfaces))).toEqual(
+      new Set(["127.0.0.1", "192.0.2.10"])
+    );
   });
 
   it("rejects unsupported lifecycle platforms through the shared public-command guard", () => {
