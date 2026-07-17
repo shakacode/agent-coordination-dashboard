@@ -249,11 +249,43 @@ async function ensureLifecycleStateDir(paths) {
   }
 }
 
-async function readRuntime(runtimeFile) {
+async function validateLifecycleStateDirForRead(paths) {
   let handle;
   try {
     handle = await open(
-      runtimeFile,
+      paths.stateDir,
+      fsConstants.O_RDONLY |
+        fsConstants.O_DIRECTORY |
+        fsConstants.O_NOFOLLOW |
+        fsConstants.O_NONBLOCK
+    );
+  } catch (error) {
+    if (isFileNotFound(error)) return false;
+    throw lifecycleStateDirError(error);
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isDirectory()) {
+      throw new Error("Lifecycle state path is not a protected directory.");
+    }
+    if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+      throw new Error("Lifecycle state directory is not owned by the current user.");
+    }
+    if ((stats.mode & 0o777) !== 0o700) {
+      throw new Error("Lifecycle state directory must use mode 0700.");
+    }
+    return true;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readRuntime(paths) {
+  if (!(await validateLifecycleStateDirForRead(paths))) return null;
+  let handle;
+  try {
+    handle = await open(
+      paths.runtimeFile,
       fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
     );
   } catch (error) {
@@ -468,6 +500,7 @@ async function openLifecycleLogForAppend(paths) {
 }
 
 async function openLifecycleLogForRead(paths) {
+  if (!(await validateLifecycleStateDirForRead(paths))) return null;
   let handle;
   try {
     handle = await open(
@@ -966,7 +999,7 @@ async function terminateDetachedGroup(pgid) {
 }
 
 async function stopDashboard(context, paths, { quiet = false } = {}) {
-  const runtime = await readRuntime(paths.runtimeFile);
+  const runtime = await readRuntime(paths);
   if (!runtime) {
     if (!quiet) process.stdout.write("Dashboard is already stopped.\n");
     return true;
@@ -1049,7 +1082,7 @@ async function prepareStart(options) {
 }
 
 async function preflightRestartEndpoint(preparedStart, context, paths) {
-  const current = await readRuntime(paths.runtimeFile);
+  const current = await readRuntime(paths);
   let currentEndpoint = null;
   if (current) {
     const ownership = await runtimeOwnership(current, context);
@@ -1083,7 +1116,7 @@ async function preflightRestartEndpoint(preparedStart, context, paths) {
 }
 
 async function startDashboard(options, context, paths, preparedStart = null, preparedLogHandle = null) {
-  const current = await readRuntime(paths.runtimeFile);
+  const current = await readRuntime(paths);
   if (current) {
     const ownership = await runtimeOwnership(current, context);
     if (ownership === "owned" || ownership === "orphaned_owned") {
@@ -1164,7 +1197,7 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
 }
 
 async function reportStatus(context, paths) {
-  const runtime = await readRuntime(paths.runtimeFile);
+  const runtime = await readRuntime(paths);
   if (!runtime) {
     process.stdout.write("Dashboard is stopped.\n");
     process.exitCode = 3;
@@ -1210,7 +1243,7 @@ async function printLogs(paths) {
 }
 
 async function openDashboard(context, paths) {
-  const runtime = await readRuntime(paths.runtimeFile);
+  const runtime = await readRuntime(paths);
   const ownership = runtime ? await runtimeOwnership(runtime, context) : "stopped";
   if (!new Set(["owned", "orphaned_owned"]).has(ownership)) {
     throw new Error("Dashboard is not running as an owned lifecycle process.");

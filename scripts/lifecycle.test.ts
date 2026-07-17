@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -209,14 +209,20 @@ describe("portable dashboard lifecycle", () => {
     expect(() => assertSupportedLifecyclePlatform("linux")).not.toThrow();
   });
 
-  it("reports a fresh lifecycle as stopped", async () => {
+  it("preserves fresh status and logs behavior without creating lifecycle state", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     try {
       const result = await runLifecycle(["status"], root);
+      const logs = await runLifecycle(["logs"], root);
 
       expect(result.status).toBe(3);
       expect(result.stdout).toContain("Dashboard is stopped.");
       expect(result.stderr).toBe("");
+      expect(logs.status).toBe(0);
+      expect(logs.stdout).toContain("No lifecycle logs are available yet.");
+      expect(logs.stderr).toBe("");
+      await expect(access(join(root, "state", "agent-coordination-dashboard")))
+        .rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { force: true, recursive: true });
     }
@@ -1108,6 +1114,7 @@ describe("portable dashboard lifecycle", () => {
     const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
     const runtimePath = join(lifecycleDir, "runtime.json");
     await mkdir(lifecycleDir, { recursive: true });
+    await chmod(lifecycleDir, 0o700);
     await writeFile(runtimePath, JSON.stringify({
       schema_version: 1,
       pid: 999_999_999,
@@ -1674,6 +1681,90 @@ exec "$REAL_PS" "$@"
     }
   });
 
+  it.each(["logs", "status"])(
+    "does not let %s read through a symlinked lifecycle state directory",
+    async (command) => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const stateHome = join(root, "state");
+      const lifecycleDir = join(stateHome, "agent-coordination-dashboard");
+      const harmlessTarget = join(root, "harmless-read-target");
+      const sentinel = "sentinel contents must not be disclosed\n";
+      await Promise.all([
+        mkdir(stateHome, { recursive: true }),
+        mkdir(harmlessTarget, { mode: 0o700 })
+      ]);
+      if (command === "logs") {
+        await writeFile(join(harmlessTarget, "dashboard.log"), sentinel, "utf8");
+      } else {
+        await writeFile(join(harmlessTarget, "runtime.json"), JSON.stringify({
+          schema_version: 1,
+          pid: 999_999_999,
+          instance_id: "0".repeat(32),
+          url: "http://127.0.0.1:4319"
+        }), "utf8");
+      }
+      await symlink(harmlessTarget, lifecycleDir);
+
+      try {
+        const result = await runLifecycle([command], root);
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).not.toContain("sentinel");
+        expect(result.stdout).not.toContain("stale lifecycle metadata");
+        expect(result.stderr).toContain("Lifecycle state path is not a protected directory");
+        if (command === "logs") {
+          expect(await readFile(join(harmlessTarget, "dashboard.log"), "utf8")).toBe(sentinel);
+        }
+      } finally {
+        await rm(root, { force: true, recursive: true });
+      }
+    }
+  );
+
+  it("does not invoke an opener through a symlinked lifecycle state directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const relocatedStateDir = join(root, "relocated-lifecycle-state");
+    const openerDir = join(root, "opener-bin");
+    const openedUrlFile = join(root, "opened-url.txt");
+    const envFile = join(configDir, "env");
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(openerDir, { recursive: true })
+    ]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    for (const opener of ["open", "xdg-open"]) {
+      const openerPath = join(openerDir, opener);
+      await writeFile(openerPath, '#!/bin/sh\nprintf "%s" "$1" > "$OPEN_CAPTURE"\n', "utf8");
+      await chmod(openerPath, 0o700);
+    }
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      await rename(lifecycleDir, relocatedStateDir);
+      await symlink(relocatedStateDir, lifecycleDir);
+
+      const opened = await runLifecycle(["open"], root, {
+        OPEN_CAPTURE: openedUrlFile,
+        PATH: `${openerDir}:/usr/bin:/bin`
+      });
+
+      expect(opened.status).toBe(1);
+      expect(opened.stdout).not.toContain("Opened ");
+      expect(opened.stderr).toContain("Lifecycle state path is not a protected directory");
+      await expect(access(openedUrlFile)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await unlink(lifecycleDir).catch(() => {});
+      await rename(relocatedStateDir, lifecycleDir).catch(() => {});
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
   it("does not follow or chmod a symlinked lifecycle log when starting", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const baseline = await lifecycleProcessIds();
@@ -1790,6 +1881,7 @@ exec "$REAL_PS" "$@"
     const harmlessTarget = join(root, "harmless-target.txt");
     const targetContents = "sentinel harmless target contents\n";
     await mkdir(lifecycleDir, { recursive: true });
+    await chmod(lifecycleDir, 0o700);
     await writeFile(harmlessTarget, targetContents, "utf8");
     await chmod(harmlessTarget, 0o644);
     await symlink(harmlessTarget, logFile);
@@ -1815,6 +1907,7 @@ exec "$REAL_PS" "$@"
       const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
       const runtimeFile = join(lifecycleDir, "runtime.json");
       await mkdir(lifecycleDir, { recursive: true });
+      await chmod(lifecycleDir, 0o700);
       if (fixture === "symlink") {
         const harmlessTarget = join(root, "harmless-runtime-target.json");
         await writeFile(harmlessTarget, JSON.stringify({
