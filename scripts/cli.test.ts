@@ -416,7 +416,10 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
-  it("cancels a streaming redirect body and exits within the doctor deadline", async () => {
+  it.each([
+    { label: "public loopback", extraArgs: [] },
+    { label: "lifecycle local-interface", extraArgs: ["--local-interface-url"] }
+  ])("cancels a streaming redirect body through the $label path", async ({ extraArgs }) => {
     const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
       res.statusCode = 302;
       res.setHeader("location", `${baseUrl}/redirected-health`);
@@ -425,7 +428,7 @@ describe("agent-coordination-dashboard CLI", () => {
     });
     const child = spawn(
       process.execPath,
-      ["bin/agent-coordination-dashboard.js", "doctor", "--stack-json", "--url", baseUrl],
+      ["bin/agent-coordination-dashboard.js", "doctor", "--stack-json", "--url", baseUrl, ...extraArgs],
       { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] }
     );
     let stdout = "";
@@ -556,6 +559,20 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("--url must be a loopback HTTP URL");
     expect(result.stderr).not.toContain("sentinel-secret");
+  });
+
+  it("keeps lifecycle local-interface diagnostics constrained to this machine", async () => {
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      "http://192.0.2.10:4319",
+      "--local-interface-url"
+    ]);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("address assigned to this machine");
   });
 
   it("accepts an IPv6 loopback dashboard URL", async () => {
@@ -931,7 +948,7 @@ describe("agent-coordination-dashboard CLI", () => {
     } finally {
       await rm(root, { force: true, recursive: true });
     }
-  });
+  }, 10_000);
 
   it("stops the normal server cleanly when the launcher is terminated", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-cli-test-"));

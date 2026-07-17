@@ -43,6 +43,56 @@ npx agent-coordination-dashboard
 This repository is package-ready only: these steps do not publish to npm,
 create a Git tag, or change registry state.
 
+## Detached lifecycle commands
+
+The packaged CLI can manage a detached local dashboard on supported macOS and
+Linux hosts without tmux, private dotfiles, or an interactive shell:
+
+```bash
+npx agent-coordination-dashboard start
+npx agent-coordination-dashboard status
+npx agent-coordination-dashboard logs
+npx agent-coordination-dashboard open
+npx agent-coordination-dashboard restart
+npx agent-coordination-dashboard stop
+```
+
+Each `start` or `restart` reloads the optional protected environment file at
+`~/.config/agent-coordination-dashboard/env`. When the file exists, it must be
+a regular file owned by the current user with mode `0600`:
+
+```bash
+mkdir -p ~/.config/agent-coordination-dashboard
+touch ~/.config/agent-coordination-dashboard/env
+chmod 600 ~/.config/agent-coordination-dashboard/env
+```
+
+Use `--config-env-file <path>` on `start` or `restart` to load another protected
+file. The lifecycle CLI deliberately does not call this flag `--env-file`:
+current Node.js runtimes reserve that option and may consume it before the
+dashboard CLI can validate it.
+
+The child process receives explicit empty values for the coordination API URL
+and token variables before values from the protected file are applied. Removing
+API settings from the file and restarting therefore returns the dashboard to
+filesystem mode instead of inheriting stale credentials. Tokens are passed only
+in the child environment; they are not stored in lifecycle metadata or command
+arguments. Lifecycle metadata and logs live under
+`~/.local/state/agent-coordination-dashboard/` with user-only permissions.
+
+`start`, `stop`, and `restart` are idempotent. The CLI records an instance marker
+and verifies the owned process before signaling it, so a listener it does not
+own is reported but never terminated. Mutating lifecycle commands share a
+user-only lock, so simultaneous starts cannot race into an unowned listener; a
+lock left by a dead command is recovered without signaling that command's
+process. Startup probes the configured bind host, including IPv6 loopback, and
+waits for `/api/health`; lifecycle status then reuses
+`doctor --stack-json --deep` to report coordination health. A healthy server
+with degraded coordination remains running and is reported as degraded rather
+than being mistaken for a failed start. For a specific IP address assigned to
+the local machine, lifecycle diagnostics connect from a loopback source address;
+the dashboard's machine-local `/api/doctor` boundary remains unchanged.
+
 ## Component diagnostics
 
 The installed command owns a read-only machine contract for stack-wide health
