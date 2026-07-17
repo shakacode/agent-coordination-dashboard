@@ -85,6 +85,8 @@ Lifecycle `HOST` must be `localhost` or an IPv4 or IPv6 address, including the
 `0.0.0.0` and `::` wildcard addresses. A `restart` validates the protected file,
 `PORT`, and `HOST` before stopping the running dashboard, so invalid replacement
 configuration leaves the existing service intact.
+Wildcard `HOST` values require an `ALLOWED_HOSTS` list containing only specific
+hostnames or IP addresses; blank and catch-all entries are rejected.
 
 `start`, `stop`, and `restart` are idempotent. The CLI records an instance marker
 and verifies the owned process group before signaling it, so a listener it does

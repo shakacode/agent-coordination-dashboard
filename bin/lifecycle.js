@@ -879,6 +879,88 @@ export function bindHostCoversProbeHost(bindHost, probeHost, ipv6WildcardCoversI
   return normalizeAddress(bindHost) === normalizeAddress(probeHost);
 }
 
+export function ownedEndpointCoversCandidateBind(currentEndpoint, preparedStart) {
+  return Boolean(
+    currentEndpoint &&
+    currentEndpoint.port === preparedStart.port &&
+    bindHostCoversProbeHost(
+      currentEndpoint.address,
+      preparedStart.bindAddress,
+      currentEndpoint.ipv6WildcardCoversIpv4
+    )
+  );
+}
+
+function candidateBindCoversOwnedEndpoint(preparedStart, currentEndpoint) {
+  return Boolean(
+    currentEndpoint &&
+    currentEndpoint.port === preparedStart.port &&
+    bindHostCoversProbeHost(
+      preparedStart.bindAddress,
+      currentEndpoint.address,
+      preparedStart.bindIpv4Coverage
+    )
+  );
+}
+
+async function temporaryBindResult(preparedStart) {
+  const server = createServer((socket) => socket.destroy());
+  return await new Promise((resolveBind) => {
+    server.once("error", (error) => resolveBind({ error }));
+    server.listen(
+      { exclusive: true, host: preparedStart.bindAddress, port: preparedStart.port },
+      () => server.close((error) => resolveBind(error ? { error } : { error: null }))
+    );
+  });
+}
+
+async function preflightCandidateBind(preparedStart, currentEndpoint = null) {
+  const ownedEndpointCoversCandidate = ownedEndpointCoversCandidateBind(currentEndpoint, preparedStart);
+  if (
+    candidateBindCoversOwnedEndpoint(preparedStart, currentEndpoint) &&
+    !ownedEndpointCoversCandidate
+  ) {
+    throw new Error(
+      `Port ${preparedStart.port} cannot be safely widened while the owned dashboard is running; ` +
+      "nothing was stopped. Run stop, then start after checking the wider bind for conflicts."
+    );
+  }
+  const { error } = await temporaryBindResult(preparedStart);
+  if (!error) return;
+  if (!(error && typeof error === "object" && error.code === "EADDRINUSE")) {
+    throw new Error(
+      `Port ${preparedStart.port} could not be safely bind-checked; nothing was started or stopped.`
+    );
+  }
+  if (ownedEndpointCoversCandidate) return;
+  throw new Error(
+    `Port ${preparedStart.port} is already in use by a process this lifecycle does not own; nothing was stopped.`
+  );
+}
+
+async function preflightCandidateProbes(preparedStart, currentEndpoint = null) {
+  for (const host of probeHostsForBindHost(
+    preparedStart.bindHost,
+    preparedStart.bindAddress,
+    preparedStart.bindIpv4Coverage
+  )) {
+    if (!(await portIsListening(preparedStart.port, host))) continue;
+    if (
+      currentEndpoint?.port === preparedStart.port &&
+      bindHostCoversProbeHost(
+        currentEndpoint.address,
+        host,
+        currentEndpoint.ipv6WildcardCoversIpv4
+      )
+    ) {
+      continue;
+    }
+    throw new Error(
+      `Port ${preparedStart.port} is already in use by a process this lifecycle does not own; nothing was stopped.`
+    );
+  }
+}
+
 async function ipv6WildcardCoversIpv4() {
   const server = createServer();
   try {
@@ -1247,38 +1329,15 @@ async function preflightRestartEndpoint(preparedStart, context, paths) {
   let currentEndpoint = null;
   if (current) {
     const ownership = await runtimeOwnership(current, context);
+    if (ownership === "unowned") {
+      throw new Error("Lifecycle metadata points to a process this package does not own; nothing was started or stopped.");
+    }
     if (ownership === "owned" || ownership === "orphaned_owned") {
       currentEndpoint = runtimeBindEndpoint(current);
     }
   }
-  if (
-    currentEndpoint?.port === preparedStart.port &&
-    normalizeAddress(currentEndpoint.host) === normalizeAddress(preparedStart.bindHost) &&
-    normalizeAddress(currentEndpoint.address) === normalizeAddress(preparedStart.bindAddress)
-  ) {
-    return;
-  }
-  for (const host of probeHostsForBindHost(
-    preparedStart.bindHost,
-    preparedStart.bindAddress,
-    preparedStart.bindIpv4Coverage
-  )) {
-    if (await portIsListening(preparedStart.port, host)) {
-      if (
-        currentEndpoint?.port === preparedStart.port &&
-        bindHostCoversProbeHost(
-          currentEndpoint.address,
-          host,
-          currentEndpoint.ipv6WildcardCoversIpv4
-        )
-      ) {
-        continue;
-      }
-      throw new Error(
-        `Port ${preparedStart.port} is already in use by a process this lifecycle does not own; nothing was stopped.`
-      );
-    }
-  }
+  await preflightCandidateBind(preparedStart, currentEndpoint);
+  await preflightCandidateProbes(preparedStart, currentEndpoint);
 }
 
 async function startDashboard(options, context, paths, preparedStart = null, preparedLogHandle = null) {
@@ -1298,15 +1357,13 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
     if (ownership === "unowned") {
       throw new Error("Lifecycle metadata points to a process this package does not own; nothing was started or stopped.");
     }
-    await unlink(paths.runtimeFile);
   }
 
   const { bindAddress, bindHost, bindIpv4Coverage, childEnv, port, url } = preparedStart || await prepareStart(options);
-  for (const host of probeHostsForBindHost(bindHost, bindAddress, bindIpv4Coverage)) {
-    if (await portIsListening(port, host)) {
-      throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
-    }
-  }
+  const preparedBind = { bindAddress, bindHost, bindIpv4Coverage, port };
+  await preflightCandidateBind(preparedBind);
+  await preflightCandidateProbes(preparedBind);
+  if (current) await unlink(paths.runtimeFile);
 
   const logHandle = preparedLogHandle || await openLifecycleLogForAppend(paths);
   const instanceId = randomBytes(16).toString("hex");

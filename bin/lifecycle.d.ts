@@ -13,6 +13,14 @@ export function bindHostCoversProbeHost(
   probeHost: string,
   ipv6WildcardCoversIpv4?: boolean
 ): boolean;
+export function ownedEndpointCoversCandidateBind(
+  currentEndpoint: {
+    address: string;
+    ipv6WildcardCoversIpv4: boolean;
+    port: number;
+  } | null,
+  preparedStart: { bindAddress: string; port: number }
+): boolean;
 export function probeHostsForBindHost(
   host: string,
   bindAddress?: string,

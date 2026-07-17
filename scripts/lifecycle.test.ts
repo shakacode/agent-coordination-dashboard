@@ -13,6 +13,7 @@ import {
   assertSupportedLifecyclePlatform,
   bindHostCoversProbeHost,
   installLifecycleLogWriter,
+  ownedEndpointCoversCandidateBind,
   probeHostsForBindHost
 } from "../bin/lifecycle.js";
 
@@ -222,6 +223,29 @@ describe("portable dashboard lifecycle", () => {
     expect(bindHostCoversProbeHost("::", "127.0.0.1")).toBe(false);
     expect(bindHostCoversProbeHost("::", "127.0.0.1", true)).toBe(true);
     expect(bindHostCoversProbeHost("0.0.0.0", "127.0.0.1")).toBe(true);
+  });
+
+  it("only attributes a candidate bind conflict to an owned endpoint that covers it", () => {
+    expect(ownedEndpointCoversCandidateBind(
+      { address: "0.0.0.0", ipv6WildcardCoversIpv4: false, port: 4319 },
+      { bindAddress: "127.0.0.2", port: 4319 }
+    )).toBe(true);
+    expect(ownedEndpointCoversCandidateBind(
+      { address: "127.0.0.1", ipv6WildcardCoversIpv4: false, port: 4319 },
+      { bindAddress: "0.0.0.0", port: 4319 }
+    )).toBe(false);
+    expect(ownedEndpointCoversCandidateBind(
+      { address: "::", ipv6WildcardCoversIpv4: true, port: 4319 },
+      { bindAddress: "0.0.0.0", port: 4319 }
+    )).toBe(true);
+    expect(ownedEndpointCoversCandidateBind(
+      { address: "::", ipv6WildcardCoversIpv4: false, port: 4319 },
+      { bindAddress: "127.0.0.1", port: 4319 }
+    )).toBe(false);
+    expect(ownedEndpointCoversCandidateBind(
+      { address: "0.0.0.0", ipv6WildcardCoversIpv4: false, port: 4319 },
+      { bindAddress: "127.0.0.2", port: 4320 }
+    )).toBe(false);
   });
 
   it("includes IPv4 probes for an IPv6 wildcard only when dual-stack support was recorded", () => {
@@ -658,6 +682,63 @@ describe("portable dashboard lifecycle", () => {
         expect(unrelated.listening).toBe(true);
         await expect(new Promise<string>((resolveResponse, rejectResponse) => {
           const socket = createConnection({ host: lanIpv4 as string, port: address.port });
+          let response = "";
+          socket.on("data", (chunk) => {
+            response += String(chunk);
+          });
+          socket.on("end", () => resolveResponse(response));
+          socket.on("error", rejectResponse);
+        })).resolves.toBe("still-running");
+      } finally {
+        await cleanupLifecycle(root);
+        await cleanupNewLifecycleProcesses(baseline);
+        await new Promise<void>((resolveClose) => unrelated.close(() => resolveClose()));
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
+
+  it.runIf(supportsSecondaryIpv4Loopback)(
+    "preflights a wildcard start against a listener on an unlisted IPv4 loopback",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const baseline = await lifecycleProcessIds();
+      const unrelated = createNetServer((socket) => {
+        socket.on("error", () => {});
+        socket.end("still-running");
+      });
+      unrelated.listen(0, "127.0.0.2");
+      await once(unrelated, "listening");
+      const address = unrelated.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected an unrelated TCP address.");
+      }
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        envFile,
+        `HOST=0.0.0.0\nPORT=${address.port}\nALLOWED_HOSTS=dashboard.example.test\n`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+
+        expect(started.status).toBe(1);
+        expect(started.stderr).toContain(`Port ${address.port} is already in use`);
+        expect(started.stderr).toContain("nothing was stopped");
+        await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readFile(join(lifecycleDir, "dashboard.log"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        expect(await lifecycleProcessIds()).toEqual(baseline);
+        expect(unrelated.listening).toBe(true);
+        await expect(new Promise<string>((resolveResponse, rejectResponse) => {
+          const socket = createConnection({ host: "127.0.0.2", port: address.port });
           let response = "";
           socket.on("data", (chunk) => {
             response += String(chunk);
@@ -1254,8 +1335,9 @@ describe("portable dashboard lifecycle", () => {
         const restarted = await runLifecycle(["restart"], root);
 
         expect(restarted.status).toBe(1);
-        expect(restarted.stderr).toContain(`Port ${unrelatedAddress.port} is already in use`);
+        expect(restarted.stderr).toContain(`Port ${unrelatedAddress.port} cannot be safely widened`);
         expect(restarted.stderr).toContain("nothing was stopped");
+        expect(restarted.stderr).toContain("Run stop, then start");
         expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
         expect(processExists(originalPid)).toBe(true);
         await expect(fetch(`http://127.0.0.1:${originalPort}/api/health`).then((response) => response.json()))
@@ -1270,22 +1352,80 @@ describe("portable dashboard lifecycle", () => {
     30_000
   );
 
+  it.runIf(supportsSecondaryIpv4Loopback)(
+    "preserves a healthy dashboard when wildcard restart finds an unlisted IPv4 loopback listener",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const unrelated = createNetServer((socket) => {
+        socket.on("error", () => {});
+        socket.end("still-running");
+      });
+      unrelated.listen(0, "127.0.0.2");
+      await once(unrelated, "listening");
+      const unrelatedAddress = unrelated.address();
+      if (!unrelatedAddress || typeof unrelatedAddress === "string") {
+        throw new Error("Expected an unrelated TCP address.");
+      }
+      const originalPort = unrelatedAddress.port;
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const runtimePath = join(lifecycleDir, "runtime.json");
+      const logFile = join(lifecycleDir, "dashboard.log");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `PORT=${originalPort}\n`, "utf8");
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        const originalRuntime = await readFile(runtimePath, "utf8");
+        const originalLog = await readFile(logFile, "utf8");
+        const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+        await writeFile(
+          envFile,
+          `HOST=0.0.0.0\nPORT=${unrelatedAddress.port}\nALLOWED_HOSTS=dashboard.example.test\n`,
+          "utf8"
+        );
+
+        const restarted = await runLifecycle(["restart"], root);
+
+        expect(restarted.status).toBe(1);
+        expect(restarted.stderr).toContain(`Port ${unrelatedAddress.port} cannot be safely widened`);
+        expect(restarted.stderr).toContain("nothing was stopped");
+        expect(restarted.stderr).toContain("Run stop, then start");
+        expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
+        expect(await readFile(logFile, "utf8")).toBe(originalLog);
+        expect(processExists(originalPid)).toBe(true);
+        await expect(fetch(`http://127.0.0.1:${originalPort}/api/health`).then((response) => response.json()))
+          .resolves.toMatchObject({ ok: true });
+        expect(unrelated.listening).toBe(true);
+        await expect(new Promise<string>((resolveResponse, rejectResponse) => {
+          const socket = createConnection({ host: "127.0.0.2", port: unrelatedAddress.port });
+          let response = "";
+          socket.on("data", (chunk) => {
+            response += String(chunk);
+          });
+          socket.on("end", () => resolveResponse(response));
+          socket.on("error", rejectResponse);
+        })).resolves.toBe("still-running");
+      } finally {
+        await cleanupLifecycle(root);
+        await new Promise<void>((resolveClose) => unrelated.close(() => resolveClose()));
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    30_000
+  );
+
   it.runIf(Boolean(lanIpv4))(
-    "allows owned same-port wildcard, LAN, and localhost bind-host transitions",
+    "allows owned same-port wildcard narrowing transitions",
     async () => {
       const host = lanIpv4 as string;
       const cases = [
         {
           current: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`,
           replacement: `HOST=${host}\n`
-        },
-        {
-          current: `HOST=${host}\n`,
-          replacement: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`
-        },
-        {
-          current: "HOST=localhost\n",
-          replacement: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`
         },
         {
           current: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`,
@@ -1323,6 +1463,51 @@ describe("portable dashboard lifecycle", () => {
       }
     },
     40_000
+  );
+
+  it.runIf(Boolean(lanIpv4))(
+    "keeps a specific-address dashboard running when same-port wildcard widening is inconclusive",
+    async () => {
+      const host = lanIpv4 as string;
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort(host);
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const runtimePath = join(lifecycleDir, "runtime.json");
+      const logFile = join(lifecycleDir, "dashboard.log");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `HOST=${host}\nPORT=${port}\n`, "utf8");
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        const originalRuntime = await readFile(runtimePath, "utf8");
+        const originalLog = await readFile(logFile, "utf8");
+        const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+        await writeFile(
+          envFile,
+          `HOST=0.0.0.0\nPORT=${port}\nALLOWED_HOSTS=${host}\n`,
+          "utf8"
+        );
+
+        const restarted = await runLifecycle(["restart"], root);
+
+        expect(restarted.status).toBe(1);
+        expect(restarted.stderr).toContain(`Port ${port} cannot be safely widened`);
+        expect(restarted.stderr).toContain("Run stop, then start");
+        expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
+        expect(await readFile(logFile, "utf8")).toBe(originalLog);
+        expect(processExists(originalPid)).toBe(true);
+        await expect(fetch(`http://${host}:${port}/api/health`).then((response) => response.json()))
+          .resolves.toMatchObject({ ok: true });
+      } finally {
+        await cleanupLifecycle(root);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    30_000
   );
 
   it.runIf(Boolean(lanIpv4) && supportsIpv6WildcardIpv4)(
