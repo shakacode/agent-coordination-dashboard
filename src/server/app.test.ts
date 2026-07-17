@@ -118,14 +118,18 @@ describe("dashboard app import endpoint", () => {
     await expect(response.json()).resolves.toEqual({ error: "Annotations can only be changed from the machine running the dashboard. Remote viewers have read-only access." });
   });
 
-  it("allows writes from an exact assigned interface while keeping LAN peers read-only", async () => {
+  it("allows writes from an exact assigned interface while keeping LAN and link-local peers read-only", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-machine-local-writes-"));
     const appOptions = {
       serveFrontend: false,
-      machineInterfaces: { ethernet: [{ address: "192.168.7.26" }] }
+      machineInterfaces: {
+        ethernet: [{ address: "192.168.7.26" }],
+        bridge: [{ address: "fe80::1" }]
+      }
     };
     const localApp = await createDashboardApp(testConfig(root), appOptions);
     const remoteApp = await createDashboardApp(testConfig(root), appOptions);
+    const linkLocalApp = await createDashboardApp(testConfig(root), appOptions);
     const localBaseUrl = await listenServer(createServer((req, res) => {
       Object.defineProperty(req.socket, "remoteAddress", { value: "::ffff:192.168.7.26" });
       localApp(req, res);
@@ -133,6 +137,10 @@ describe("dashboard app import endpoint", () => {
     const remoteBaseUrl = await listenServer(createServer((req, res) => {
       Object.defineProperty(req.socket, "remoteAddress", { value: "192.168.7.27" });
       remoteApp(req, res);
+    }).listen(0, "127.0.0.1"));
+    const linkLocalBaseUrl = await listenServer(createServer((req, res) => {
+      Object.defineProperty(req.socket, "remoteAddress", { value: "fe80::1" });
+      linkLocalApp(req, res);
     }).listen(0, "127.0.0.1"));
     const writes = [
       { method: "PUT", path: "/api/settings", body: {} },
@@ -157,6 +165,8 @@ describe("dashboard app import endpoint", () => {
         }
       });
       expect(remote.status, `${write.path} should keep LAN peers read-only`).toBe(403);
+      const linkLocal = await fetch(`${linkLocalBaseUrl}${write.path}`, request);
+      expect(linkLocal.status, `${write.path} should keep link-local peers read-only`).toBe(403);
     }
   });
 

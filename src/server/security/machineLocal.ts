@@ -8,6 +8,8 @@ function canonicalAddress(address: string): string | undefined {
   if (isIP(address) !== 6) return undefined;
   try {
     const normalized = new URL(`http://[${address}]`).hostname.slice(1, -1);
+    const firstHextet = Number.parseInt(normalized.split(":")[0], 16);
+    if ((firstHextet & 0xffc0) === 0xfe80) return undefined;
     const mapped = normalized.match(/^::ffff:([a-f0-9]+):([a-f0-9]+)$/);
     if (!mapped) return `ipv6:${normalized}`;
     const high = Number.parseInt(mapped[1], 16);

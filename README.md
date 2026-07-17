@@ -237,9 +237,9 @@ Work items show three scheduling states:
 
 The dashboard does not launch Codex agents, edit code, merge PRs, resolve
 reviews, or mutate claims or heartbeats. Coordination-state writes are limited
-to explicit actions whose socket peer is loopback or exactly matches an address
-currently assigned to the dashboard machine. Other LAN and remote peers remain
-read-only:
+to explicit actions whose socket peer is loopback or exactly matches a
+non-link-local address currently assigned to the dashboard machine. Other LAN
+and remote peers remain read-only:
 
 - Save an imported batch plan to `batches/<batch-id>.json`.
 - Append a `batch.stop_requested` event to `events/batches/<batch-id>.jsonl`.
@@ -248,10 +248,10 @@ A stop request is a coordination/audit signal so a batch can be restarted
 cleanly; it does not kill processes or release claims by itself.
 
 Dismiss and snooze actions never write coordination state. They are
-presentation-only annotations, accepted from loopback or exact same-machine
-interface peers and persisted in `annotations.json` beside the dashboard
-settings file. Active snoozes expire automatically; dismissals remain until an
-operator clears them.
+presentation-only annotations, accepted from loopback or exact non-link-local
+same-machine interface peers and persisted in `annotations.json` beside the
+dashboard settings file. Active snoozes expire automatically; dismissals remain
+until an operator clears them.
 
 ## Configuration
 

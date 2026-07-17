@@ -47,4 +47,13 @@ describe("isMachineLocalAddress", () => {
       ethernet: [{ address: "192.168.7.26" }]
     })).toBe(true);
   });
+
+  it.each(["fe80::1", "febf::1"])(
+    "rejects link-local IPv6 peer %s even when an interface has the same address",
+    (address) => {
+      expect(isMachineLocalAddress(address, {
+        bridge: [{ address }]
+      })).toBe(false);
+    }
+  );
 });

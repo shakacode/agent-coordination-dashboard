@@ -140,6 +140,9 @@ async function reapStaleLock(paths, instanceId, verifiedOwners) {
       throw new Error("Lifecycle lock owner identity could not be verified; lock preserved for manual inspection.");
     }
     if (currentBirthMarker === owner.process_birth_marker) {
+      if (await processIsZombie(owner.pid)) {
+        return await removeClaimedLock(paths, entries[0], instanceId);
+      }
       verifiedOwners.set(ownerKey, Date.now() + LOCK_IDENTITY_RECHECK_MS);
       return false;
     }

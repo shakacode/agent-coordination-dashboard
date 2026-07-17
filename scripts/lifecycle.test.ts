@@ -2829,6 +2829,93 @@ exec "$REAL_PS" "$@"
     }
   }, 20_000);
 
+  it.runIf(process.platform === "linux")(
+    "recovers a verified lock left by a zombie lifecycle command",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort();
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lockDir = join(root, "state", "agent-coordination-dashboard", "lifecycle.lock");
+      const holderScript = join(root, "zombie-lock-holder.mjs");
+      const zombiePidFile = join(root, "zombie.pid");
+      const releaseFile = join(root, "release-holder");
+      await Promise.all([
+        mkdir(configDir, { recursive: true }),
+        mkdir(lockDir, { recursive: true })
+      ]);
+      const envFile = join(configDir, "env");
+      const ownerPath = join(lockDir, "owner.json");
+      await writeFile(
+        envFile,
+        `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+        "utf8"
+      );
+      await writeFile(
+        holderScript,
+        `import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+writeFileSync(process.argv[2], String(child.pid));
+child.once("exit", () => { process.exitCode = 0; });
+const waitArray = new Int32Array(new SharedArrayBuffer(4));
+while (!existsSync(process.argv[3])) Atomics.wait(waitArray, 0, 0, 25);
+setTimeout(() => { process.exitCode = 1; }, 2000).unref();
+`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
+      await chmod(lockDir, 0o700);
+      const holder = spawn(
+        process.execPath,
+        [holderScript, zombiePidFile, releaseFile],
+        { stdio: "ignore" }
+      );
+
+      try {
+        const zombieDeadline = Date.now() + 5_000;
+        let zombiePid: number | undefined;
+        let identity: { birthMarker: string; state: string } | undefined;
+        while (Date.now() < zombieDeadline) {
+          zombiePid = Number(await readFile(zombiePidFile, "utf8").catch(() => "")) || undefined;
+          if (zombiePid) {
+            identity = await linuxProcessIdentity(zombiePid).catch(() => undefined);
+            if (identity?.state === "Z") break;
+          }
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        }
+        expect(zombiePid).toBeTypeOf("number");
+        expect(identity?.state).toBe("Z");
+        await writeFile(
+          ownerPath,
+          `${JSON.stringify({
+            pid: zombiePid,
+            instance_id: "0".repeat(32),
+            process_birth_marker: identity?.birthMarker
+          })}\n`,
+          "utf8"
+        );
+        await chmod(ownerPath, 0o600);
+
+        const started = await runLifecycle(["start"], root, {}, process.cwd(), 3_000);
+
+        expect(started.status).toBe(0);
+        expect(started.stdout).toContain(`Dashboard started at http://127.0.0.1:${port}.`);
+        await expect(readFile(ownerPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        const holderExit = once(holder, "exit").catch(() => []);
+        await writeFile(releaseFile, "release\n", "utf8").catch(() => {});
+        await Promise.race([
+          holderExit,
+          new Promise((resolveTimeout) => setTimeout(resolveTimeout, 3_000))
+        ]);
+        if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+        await cleanupLifecycle(root);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    15_000
+  );
+
   it("recovers a stale lock when its PID was reused by another process", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort();
