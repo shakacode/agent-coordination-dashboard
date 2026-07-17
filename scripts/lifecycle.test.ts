@@ -333,6 +333,38 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
+  it("canonicalizes expanded IPv6 ALLOWED_HOSTS entries for the child host guard", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort("::1");
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      envFile,
+      [
+        "HOST=::",
+        `PORT=${port}`,
+        "ALLOWED_HOSTS=0:0:0:0:0:0:0:1",
+        `AGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}`,
+        `DASHBOARD_SETTINGS_PATH=${join(root, "settings.json")}`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+
+      const settingsResponse = await fetch(`http://[::1]:${port}/api/settings`);
+      expect(settingsResponse.status).toBe(200);
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
   it.each([
     { label: "missing", allowedHosts: null },
     { label: "non-specific", allowedHosts: "0:0:0:0:0:0:0:0" }
@@ -496,6 +528,11 @@ describe("portable dashboard lifecycle", () => {
       message: "HOST must be a loopback address or an IP address assigned to this machine"
     },
     {
+      label: "file-provided NODE_OPTIONS",
+      fixture: "node_options",
+      message: "NODE_OPTIONS is not supported in the protected environment file"
+    },
+    {
       label: "wildcard host without allowed hosts",
       fixture: "wildcard_missing",
       message: "specific hostnames or IP addresses"
@@ -552,6 +589,8 @@ describe("portable dashboard lifecycle", () => {
         await writeFile(envFile, `PORT=${port}\nDASHBOARD_REFRESH_MS=Infinity\n`, "utf8");
       } else if (fixture === "unassigned_host") {
         await writeFile(envFile, `HOST=192.0.2.10\nPORT=${port}\n`, "utf8");
+      } else if (fixture === "node_options") {
+        await writeFile(envFile, `PORT=${port}\nNODE_OPTIONS=--require=/missing.cjs\n`, "utf8");
       } else if (fixture.startsWith("wildcard_")) {
         const allowedHosts = fixture === "wildcard_missing"
           ? ""

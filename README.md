@@ -262,6 +262,10 @@ automatically; dismissals remain until an operator clears them.
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
+The protected lifecycle environment file accepts dashboard configuration but
+does not support `NODE_OPTIONS`. Configure Node runtime options outside this
+file so restart validation can finish before the running dashboard is stopped.
+
 Target repositories are edited in the dashboard and persisted across restarts.
 `TARGET_REPOS` accepts a comma-separated list only as the first-run fallback
 when no settings file exists yet.

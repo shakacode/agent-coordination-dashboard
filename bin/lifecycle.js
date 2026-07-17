@@ -553,6 +553,11 @@ function isSpecificAllowedHost(value) {
   );
 }
 
+function canonicalizeAllowedHost(value) {
+  const host = value.trim();
+  return isIP(host) > 0 && !host.includes("%") ? normalizeAddress(host) : host;
+}
+
 function formatUrlHost(host) {
   return host.includes(":") ? `[${host}]` : host;
 }
@@ -750,6 +755,9 @@ async function stopDashboard(context, paths, { quiet = false } = {}) {
 
 async function prepareStart(options) {
   const fileEnv = await readProtectedEnv(options.envFile, options.envFileRequired);
+  if (Object.hasOwn(fileEnv, "NODE_OPTIONS")) {
+    throw new Error("NODE_OPTIONS is not supported in the protected environment file.");
+  }
   const childEnv = { ...process.env };
   for (const key of API_ENV_KEYS) childEnv[key] = "";
   Object.assign(childEnv, fileEnv);
@@ -774,6 +782,9 @@ async function prepareStart(options) {
     throw new Error(
       "ALLOWED_HOSTS must contain only specific hostnames or IP addresses when HOST binds all interfaces."
     );
+  }
+  if (childEnv.ALLOWED_HOSTS !== undefined) {
+    childEnv.ALLOWED_HOSTS = allowedHosts.map(canonicalizeAllowedHost).join(",");
   }
   const bindAddress = bindHost === "localhost" ? (await lookup(bindHost)).address : bindHost;
   if (!isLocalBindAddress(bindAddress)) {
