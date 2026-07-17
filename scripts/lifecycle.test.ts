@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { once } from "node:events";
-import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, fstatSync, writeSync as fsWriteSync } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer as createNetServer, isIP } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertSupportedLifecyclePlatform,
   bindHostCoversProbeHost,
+  installLifecycleLogWriter,
   probeHostsForBindHost
 } from "../bin/lifecycle.js";
 
@@ -250,6 +251,106 @@ describe("portable dashboard lifecycle", () => {
     expect(() => assertSupportedLifecyclePlatform("win32")).toThrow("macOS and Linux");
     expect(() => assertSupportedLifecyclePlatform("darwin")).not.toThrow();
     expect(() => assertSupportedLifecyclePlatform("linux")).not.toThrow();
+  });
+
+  it("rejects a non-regular inherited lifecycle log descriptor before installing writers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const handle = await open(
+      root,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NONBLOCK
+    );
+    const stream = {
+      fd: handle.fd,
+      write: () => true
+    } as Parameters<typeof installLifecycleLogWriter>[0];
+    try {
+      expect(() => installLifecycleLogWriter(stream, stream)).toThrow(
+        "Lifecycle log file must be a regular file"
+      );
+    } finally {
+      await handle.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("hard-bounds single and burst writes shared by lifecycle stdout and stderr", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const logFile = join(root, "dashboard.log");
+    const handle = await open(
+      logFile,
+      fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+      0o600
+    );
+    const directWrite = (
+      chunk: string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | (() => void),
+      callback?: () => void
+    ) => {
+      const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
+      const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
+      fsWriteSync(handle.fd, buffer);
+      completion?.();
+      return true;
+    };
+    const stdout = {
+      fd: handle.fd,
+      write: directWrite
+    } as unknown as NonNullable<Parameters<typeof installLifecycleLogWriter>[0]>;
+    const stderr = {
+      fd: handle.fd,
+      write: directWrite
+    } as unknown as NonNullable<Parameters<typeof installLifecycleLogWriter>[1]>;
+    const cap = 8 * 1024 * 1024;
+    const rolloverMarker = "[lifecycle log reset after exceeding 8 MiB]";
+    const discardedSecret = "sentinel-secret-in-discarded-prefix";
+    const safeTail = "safe-newest-log-tail";
+    let callbackCount = 0;
+    const restore = installLifecycleLogWriter(stdout, stderr);
+
+    try {
+      stdout.write(
+        Buffer.concat([
+          Buffer.from(`${discardedSecret}\n`),
+          Buffer.alloc(cap, "x"),
+          Buffer.from(`\n${safeTail}\n`)
+        ]),
+        () => {
+          callbackCount += 1;
+        }
+      );
+      let maximumObservedSize = fstatSync(handle.fd).size;
+      expect(maximumObservedSize).toBeLessThanOrEqual(cap);
+      const singleWriteContents = await readFile(logFile, "utf8");
+      expect(singleWriteContents).toContain(rolloverMarker);
+      expect(singleWriteContents).toContain(safeTail);
+      expect(singleWriteContents).not.toContain(discardedSecret);
+      expect(singleWriteContents).not.toContain("\0");
+
+      for (let index = 0; index < 96; index += 1) {
+        const stream = index % 2 === 0 ? stdout : stderr;
+        expect(stream.write(Buffer.alloc(128 * 1024, index % 26 + 97), () => {
+          callbackCount += 1;
+        })).toBe(true);
+        maximumObservedSize = Math.max(maximumObservedSize, fstatSync(handle.fd).size);
+      }
+      expect(stderr.write("encoded stderr tail\n", "utf8", () => {
+        callbackCount += 1;
+      })).toBe(true);
+      maximumObservedSize = Math.max(maximumObservedSize, fstatSync(handle.fd).size);
+
+      const contents = await readFile(logFile, "utf8");
+      expect(maximumObservedSize).toBeLessThanOrEqual(cap);
+      expect(contents).toContain(rolloverMarker);
+      expect(contents).not.toContain(discardedSecret);
+      expect(contents).not.toContain("\0");
+      await new Promise<void>((resolveCallbacks) => setImmediate(resolveCallbacks));
+      expect(callbackCount).toBe(98);
+    } finally {
+      restore();
+      await handle.close();
+      await rm(root, { force: true, recursive: true });
+    }
   });
 
   it("preserves fresh status and logs behavior without creating lifecycle state", async () => {
@@ -2086,6 +2187,70 @@ exec "$REAL_PS" "$@"
       expect(restarted.stderr).toBe("");
       expect(replacementPid).not.toBe(originalPid);
       expect((await stat(logFile)).size).toBeLessThan(8 * 1024 * 1024);
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 30_000);
+
+  it("hard-caps marked server log writes while preserving live lifecycle commands", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const runtimePath = join(lifecycleDir, "runtime.json");
+    const logFile = join(lifecycleDir, "dashboard.log");
+    const envFile = join(configDir, "env");
+    const cap = 8 * 1024 * 1024;
+    const rolloverMarker = "[lifecycle log reset after exceeding 8 MiB]";
+    const secretSentinel = "sentinel-secret-from-oversized-log";
+    let pid: number | undefined;
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(lifecycleDir, { recursive: true })
+    ]);
+    await chmod(lifecycleDir, 0o700);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    const secretPrefix = Buffer.from(`${secretSentinel}\n`);
+    await writeFile(
+      logFile,
+      Buffer.concat([secretPrefix, Buffer.alloc(cap - secretPrefix.length, "x")])
+    );
+    await chmod(logFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      pid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+
+      const cappedSize = (await stat(logFile)).size;
+      const cappedContents = await readFile(logFile, "utf8");
+
+      expect(cappedSize).toBeLessThanOrEqual(cap);
+      expect(cappedContents).toContain(rolloverMarker);
+      expect(cappedContents).toContain(
+        `agent-coordination-dashboard listening on http://127.0.0.1:${port}`
+      );
+      expect(cappedContents).not.toContain(secretSentinel);
+      expect(cappedContents).not.toContain("\0");
+
+      const logs = await runLifecycle(["logs"], root);
+      expect(logs.status).toBe(0);
+      expect(logs.stdout).toContain(rolloverMarker);
+      expect(logs.stdout).not.toContain(secretSentinel);
+      expect(logs.stderr).toBe("");
+
+      const status = await runLifecycle(["status"], root);
+      expect(status.status).toBe(0);
+      expect(status.stdout).toContain(`Dashboard is running at http://127.0.0.1:${port}.`);
+      expect(processExists(pid)).toBe(true);
+
+      const stopped = await runLifecycle(["stop"], root);
+      expect(stopped.status).toBe(0);
+      expect(stopped.stdout).toContain("Dashboard stopped.");
+      await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(processExists(pid)).toBe(false);
     } finally {
       await cleanupLifecycle(root);
       await rm(root, { force: true, recursive: true });

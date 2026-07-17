@@ -2,7 +2,12 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { once } from "node:events";
-import { constants as fsConstants } from "node:fs";
+import {
+  constants as fsConstants,
+  fstatSync as fsFstatSync,
+  ftruncateSync as fsFtruncateSync,
+  writeSync as fsWriteSync
+} from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createConnection, createServer, isIP } from "node:net";
@@ -19,6 +24,8 @@ const PROCESS_IDENTITY_ATTEMPTS = 3;
 const PROCESS_IDENTITY_RETRY_MS = 25;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const MAX_LIFECYCLE_LOG_BYTES = 8 * 1024 * 1024;
+const LIFECYCLE_LOG_ROLLOVER_MARKER = "[lifecycle log reset after exceeding 8 MiB]\n";
+const LIFECYCLE_LOG_FAILURE_MARKER = "[lifecycle log enforcement failed; stopping dashboard]\n";
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
 const SUPPORTED_LIFECYCLE_PLATFORMS = new Set(["darwin", "linux"]);
 
@@ -459,8 +466,7 @@ function lifecycleLogOpenError(error) {
   return error;
 }
 
-async function validateLifecycleLogHandle(handle) {
-  const stats = await handle.stat();
+function validateLifecycleLogStats(stats) {
   if (!stats.isFile()) {
     throw new Error("Lifecycle log file must be a regular file.");
   }
@@ -468,6 +474,124 @@ async function validateLifecycleLogHandle(handle) {
     throw new Error("Lifecycle log file must be owned by the current user.");
   }
   return stats;
+}
+
+async function validateLifecycleLogHandle(handle) {
+  return validateLifecycleLogStats(await handle.stat());
+}
+
+function writeAllToLifecycleLog(fd, buffer) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const written = fsWriteSync(fd, buffer, offset, buffer.length - offset);
+    if (!Number.isInteger(written) || written <= 0) {
+      throw new Error("Lifecycle log descriptor could not accept output.");
+    }
+    offset += written;
+  }
+}
+
+function resetLifecycleLogWithTail(fd, chunk, maxBytes) {
+  const marker = Buffer.from(LIFECYCLE_LOG_ROLLOVER_MARKER);
+  const boundedMarker = marker.subarray(0, Math.min(marker.length, maxBytes));
+  const tailCapacity = maxBytes - boundedMarker.length;
+  const tail = chunk.subarray(Math.max(0, chunk.length - tailCapacity));
+  // Lifecycle startup opens this shared inherited descriptor with O_APPEND.
+  // Reset before writing the newest tail so the stale shared offset cannot
+  // create a sparse hole and the file never exceeds the cap at write return.
+  fsFtruncateSync(fd, 0);
+  writeAllToLifecycleLog(fd, boundedMarker);
+  writeAllToLifecycleLog(fd, tail);
+}
+
+function writeBoundedLifecycleLogChunk(fd, chunk, maxBytes) {
+  const stats = validateLifecycleLogStats(fsFstatSync(fd));
+  if (stats.size + chunk.length <= maxBytes) {
+    writeAllToLifecycleLog(fd, chunk);
+    return;
+  }
+  // Rollover discards the previous log and any oldest bytes from an oversized
+  // chunk. Only the fixed marker and newest chunk suffix are retained.
+  resetLifecycleLogWithTail(fd, chunk, maxBytes);
+}
+
+function lifecycleLogBuffer(chunk, encoding) {
+  if (typeof chunk === "string") return Buffer.from(chunk, encoding);
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (ArrayBuffer.isView(chunk) && chunk.BYTES_PER_ELEMENT === 1) {
+    return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  }
+  throw new TypeError("Lifecycle log writes require a string or Uint8Array chunk.");
+}
+
+function lifecycleLogWriteArguments(encodingOrCallback, callback) {
+  if (
+    encodingOrCallback !== undefined &&
+    typeof encodingOrCallback !== "string" &&
+    typeof encodingOrCallback !== "function"
+  ) {
+    throw new TypeError("Lifecycle log write encoding must be a string.");
+  }
+  const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+  if (completion !== undefined && typeof completion !== "function") {
+    throw new TypeError("Lifecycle log write callback must be a function.");
+  }
+  return {
+    completion,
+    encoding: typeof encodingOrCallback === "string" ? encodingOrCallback : undefined
+  };
+}
+
+function stopAfterLifecycleLogFailure(fd, maxBytes) {
+  try {
+    const marker = Buffer.from(LIFECYCLE_LOG_FAILURE_MARKER);
+    fsFtruncateSync(fd, 0);
+    writeAllToLifecycleLog(fd, marker.subarray(0, maxBytes));
+  } catch {
+    // The verified descriptor itself failed, so there is no safe fallback path.
+  }
+  process.kill(process.pid, "SIGTERM");
+}
+
+export function installLifecycleLogWriter(
+  stdout = process.stdout,
+  stderr = process.stderr,
+  maxBytes = MAX_LIFECYCLE_LOG_BYTES
+) {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) {
+    throw new Error("Lifecycle log cap must be a positive integer.");
+  }
+  const stdoutStats = validateLifecycleLogStats(fsFstatSync(stdout.fd));
+  const stderrStats = validateLifecycleLogStats(fsFstatSync(stderr.fd));
+  if (stdoutStats.dev !== stderrStats.dev || stdoutStats.ino !== stderrStats.ino) {
+    throw new Error("Lifecycle stdout and stderr must reference the same regular log file.");
+  }
+  if (stdoutStats.size > maxBytes) resetLifecycleLogWithTail(stdout.fd, Buffer.alloc(0), maxBytes);
+
+  const originalStdoutWrite = stdout.write;
+  const originalStderrWrite = stderr.write;
+  const boundedWrite = (stream) => function write(chunk, encodingOrCallback, callback) {
+    const { completion, encoding } = lifecycleLogWriteArguments(encodingOrCallback, callback);
+    const buffer = lifecycleLogBuffer(chunk, encoding);
+    try {
+      writeBoundedLifecycleLogChunk(stream.fd, buffer, maxBytes);
+    } catch (error) {
+      if (completion) process.nextTick(() => completion(error));
+      stopAfterLifecycleLogFailure(stream.fd, maxBytes);
+      return false;
+    }
+    if (completion) process.nextTick(() => completion());
+    return true;
+  };
+  const stdoutWrite = boundedWrite(stdout);
+  const stderrWrite = boundedWrite(stderr);
+  stdout.write = stdoutWrite;
+  stderr.write = stderrWrite;
+
+  return () => {
+    if (stdout.write === stdoutWrite) stdout.write = originalStdoutWrite;
+    if (stderr.write === stderrWrite) stderr.write = originalStderrWrite;
+  };
 }
 
 async function openLifecycleLogForAppend(paths) {

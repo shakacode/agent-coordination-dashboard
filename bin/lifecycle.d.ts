@@ -1,4 +1,13 @@
 export function assertSupportedLifecyclePlatform(platform?: string): void;
+export interface LifecycleLogWriteStream {
+  fd: number;
+  write: (...args: unknown[]) => boolean;
+}
+export function installLifecycleLogWriter(
+  stdout?: LifecycleLogWriteStream,
+  stderr?: LifecycleLogWriteStream,
+  maxBytes?: number
+): () => void;
 export function bindHostCoversProbeHost(
   bindHost: string,
   probeHost: string,
