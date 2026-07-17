@@ -61,6 +61,13 @@ function exitForStatus(status) {
   return status === "failed" ? 2 : status === "degraded" ? 1 : 0;
 }
 
+function hasCanonicalHttpOriginSpelling(rawUrl, parsed) {
+  const normalizedRaw = rawUrl.endsWith("/") ? rawUrl.slice(0, -1) : rawUrl;
+  const allowedSpellings = [parsed.origin];
+  if (!parsed.port) allowedSpellings.push(`${parsed.origin}:80`);
+  return allowedSpellings.some((spelling) => normalizedRaw.toLowerCase() === spelling.toLowerCase());
+}
+
 function parseDashboardUrl(rawUrl) {
   const exactLoopbackUrl = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?\/?$/i;
   // Check the raw spelling before URL parsing because WHATWG URL normalizes
@@ -83,7 +90,8 @@ function parseDashboardUrl(rawUrl) {
     parsed.password ||
     parsed.search ||
     parsed.hash ||
-    parsed.pathname !== "/"
+    parsed.pathname !== "/" ||
+    !hasCanonicalHttpOriginSpelling(rawUrl, parsed)
   ) {
     throw new Error("--url must be a loopback HTTP URL without credentials, query, fragment, or endpoint path.");
   }
@@ -97,7 +105,6 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
   } catch {
     throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
   }
-  const normalizedRaw = rawUrl.endsWith("/") ? rawUrl.slice(0, -1) : rawUrl;
   if (
     parsed.protocol !== "http:" ||
     parsed.username ||
@@ -105,7 +112,7 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
     parsed.search ||
     parsed.hash ||
     parsed.pathname !== "/" ||
-    normalizedRaw.toLowerCase() !== parsed.origin.toLowerCase()
+    !hasCanonicalHttpOriginSpelling(rawUrl, parsed)
   ) {
     throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
   }
@@ -159,6 +166,7 @@ async function readBoundedJson(response) {
 }
 
 async function fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress) {
+  // Keep this raw localAddress reader's redirect, timeout, size, and JSON rules aligned with the bounded fetch path.
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) throw new Error("timeout");
   return await new Promise((resolveRequest, rejectRequest) => {
@@ -169,8 +177,13 @@ async function fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress)
       clearTimeout(timeout);
       callback();
     };
-    const request = httpRequest(new URL(path, url), {
-      headers: { accept: "application/json" },
+    const targetUrl = new URL(path, url);
+    const loopbackHost = localAddress.includes(":") ? `[${localAddress}]` : localAddress;
+    const request = httpRequest(targetUrl, {
+      headers: {
+        accept: "application/json",
+        host: `${loopbackHost}:${targetUrl.port || "80"}`
+      },
       localAddress,
       method: "GET"
     }, (response) => {

@@ -82,6 +82,15 @@ function processExists(pid: number): boolean {
   }
 }
 
+function processGroupExists(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
+  }
+}
+
 async function lifecycleProcessIds(): Promise<Set<number>> {
   const child = spawn("ps", ["-axo", "pid=,command="], { stdio: ["ignore", "pipe", "ignore"] });
   let output = "";
@@ -182,6 +191,32 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
+  it("rejects a hostname bind before spawning a lifecycle process", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(envFile, `HOST=localhost.\nPORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(1);
+      expect(started.stdout).toBe("");
+      expect(started.stderr).toContain("HOST must be localhost or an IPv4 or IPv6 address");
+      await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await portIsListening(port)).toBe(false);
+      expect(await lifecycleProcessIds()).toEqual(baseline);
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
   it.runIf(Boolean(lanIpv4))("keeps deep diagnostics healthy for a specific local interface bind", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const host = lanIpv4 as string;
@@ -191,7 +226,7 @@ describe("portable dashboard lifecycle", () => {
     const envFile = join(configDir, "env");
     await writeFile(
       envFile,
-      `HOST=${host}\nPORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+      `HOST=${host}\nPORT=${port}\nALLOWED_HOSTS=dashboard.example.test\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
       "utf8"
     );
     await chmod(envFile, 0o600);
@@ -260,6 +295,59 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it.each([
+    { label: "missing override", fixture: "missing", message: "does not exist" },
+    { label: "invalid syntax", fixture: "invalid", message: "invalid syntax on line 1" },
+    { label: "unsafe mode", fixture: "mode", message: "must use mode 0600" },
+    { label: "invalid port", fixture: "port", message: "must be an integer" },
+    { label: "wildcard host without allowed hosts", fixture: "wildcard", message: "ALLOWED_HOSTS is required" }
+  ])("keeps the running dashboard intact when restart configuration has $label", async ({ fixture, message }) => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const runtimePath = join(lifecycleDir, "runtime.json");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      envFile,
+      `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const originalRuntime = await readFile(runtimePath, "utf8");
+      const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+
+      let restartArgs = ["restart"];
+      if (fixture === "missing") {
+        restartArgs = ["restart", "--config-env-file", join(root, "missing.env")];
+      } else if (fixture === "invalid") {
+        await writeFile(envFile, "not an assignment\n", "utf8");
+      } else if (fixture === "mode") {
+        await chmod(envFile, 0o400);
+      } else if (fixture === "wildcard") {
+        await writeFile(envFile, `HOST=0.0.0.0\nPORT=${port}\n`, "utf8");
+      } else {
+        await writeFile(envFile, "PORT=not-a-port\n", "utf8");
+      }
+
+      const restarted = await runLifecycle(restartArgs, root);
+      expect(restarted.status).toBe(1);
+      expect(restarted.stderr).toContain(message);
+      expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
+      expect(processExists(originalPid)).toBe(true);
+      await expect(fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json()))
+        .resolves.toMatchObject({ ok: true });
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 60_000);
 
   it("reports stale metadata and removes it on an idempotent stop", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
@@ -503,6 +591,117 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   }, 20_000);
+
+  it("recovers and stops the owned server group after the lifecycle wrapper is killed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const envFile = join(configDir, "env");
+    let pgid: number | undefined;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      envFile,
+      `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as {
+        instance_id: string;
+        pgid?: number;
+        pid: number;
+      };
+      pgid = runtime.pgid || runtime.pid;
+      process.kill(runtime.pid, "SIGKILL");
+      const wrapperDeadline = Date.now() + 2_000;
+      while (processExists(runtime.pid) && Date.now() < wrapperDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      expect(processExists(runtime.pid)).toBe(false);
+      expect(processGroupExists(pgid)).toBe(true);
+      expect(await portIsListening(port)).toBe(true);
+
+      const status = await runLifecycle(["status"], root);
+      expect(status.status).toBe(0);
+      expect(status.stdout).toContain(`Dashboard is running at http://127.0.0.1:${port}.`);
+
+      const repeatedStart = await runLifecycle(["start"], root);
+      expect(repeatedStart.status).toBe(0);
+      expect(repeatedStart.stdout).toContain("Dashboard is already running");
+
+      const stopped = await runLifecycle(["stop"], root);
+      expect(stopped.status).toBe(0);
+      expect(stopped.stdout).toContain("Dashboard stopped.");
+      expect(processGroupExists(pgid)).toBe(false);
+      expect(await portIsListening(port)).toBe(false);
+      await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (pgid && processGroupExists(pgid)) {
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch {
+          // The exact lifecycle process group may have exited between inspection and cleanup.
+        }
+      }
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 30_000);
+
+  it("fails closed when an orphaned server group's process inventory is unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const fakeBinDir = join(root, "fake-bin");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const envFile = join(configDir, "env");
+    let pgid: number | undefined;
+    await Promise.all([mkdir(configDir, { recursive: true }), mkdir(fakeBinDir, { recursive: true })]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    const fakePs = join(fakeBinDir, "ps");
+    await writeFile(fakePs, "#!/bin/sh\nexit 1\n", "utf8");
+    await chmod(fakePs, 0o700);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const originalRuntime = await readFile(runtimePath, "utf8");
+      const runtime = JSON.parse(originalRuntime) as { pgid: number; pid: number };
+      pgid = runtime.pgid;
+      process.kill(runtime.pid, "SIGKILL");
+      const wrapperDeadline = Date.now() + 2_000;
+      while (processExists(runtime.pid) && Date.now() < wrapperDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      const status = await runLifecycle(["status"], root, { PATH: `${fakeBinDir}:/usr/bin:/bin` });
+      expect(status.status).toBe(2);
+      expect(status.stderr).toContain("does not identify an owned process");
+      expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
+      expect(processGroupExists(runtime.pgid)).toBe(true);
+      expect(await portIsListening(port)).toBe(true);
+
+      const stopped = await runLifecycle(["stop"], root);
+      expect(stopped.status).toBe(0);
+      expect(processGroupExists(runtime.pgid)).toBe(false);
+    } finally {
+      if (pgid && processGroupExists(pgid)) {
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch {
+          // The exact lifecycle process group may have exited between inspection and cleanup.
+        }
+      }
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 30_000);
 
   it("serializes simultaneous starts across a transient process identity lookup failure", async () => {
     const baseline = await lifecycleProcessIds();
@@ -849,6 +1048,64 @@ exec "$REAL_PS" "$@"
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it("rejects owned runtime metadata that redirects signals to another process group", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore"
+    });
+    await once(unrelated, "spawn");
+    if (!unrelated.pid) throw new Error("Expected an unrelated process-group id.");
+    unrelated.unref();
+    await mkdir(configDir, { recursive: true });
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    let originalRuntime = "";
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      originalRuntime = await readFile(runtimePath, "utf8");
+      const redirectedRuntime = JSON.parse(originalRuntime) as { pgid: number };
+      redirectedRuntime.pgid = unrelated.pid;
+      await writeFile(runtimePath, `${JSON.stringify(redirectedRuntime, null, 2)}\n`, "utf8");
+
+      const status = await runLifecycle(["status"], root);
+      const stopped = await runLifecycle(["stop"], root);
+      const unrelatedSurvived = processGroupExists(unrelated.pid);
+      const serviceSurvived = await portIsListening(port);
+
+      await writeFile(runtimePath, originalRuntime, "utf8");
+      const cleanup = await runLifecycle(["stop"], root);
+      expect(cleanup.status).toBe(0);
+
+      expect(status.status).toBe(1);
+      expect(status.stderr).toContain("metadata is unreadable or invalid");
+      expect(stopped.status).toBe(1);
+      expect(stopped.stderr).toContain("metadata is unreadable or invalid");
+      expect(unrelatedSurvived).toBe(true);
+      expect(serviceSurvived).toBe(true);
+    } finally {
+      if (originalRuntime) {
+        await mkdir(join(root, "state", "agent-coordination-dashboard"), { recursive: true });
+        await writeFile(runtimePath, originalRuntime, "utf8");
+      }
+      await cleanupLifecycle(root);
+      if (processGroupExists(unrelated.pid)) {
+        try {
+          process.kill(-unrelated.pid, "SIGKILL");
+        } catch {
+          // The unrelated test process may have exited between inspection and cleanup.
+        }
+      }
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 30_000);
 
   it("keeps surfacing coordination-backend failure on repeated start and status", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

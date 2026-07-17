@@ -75,14 +75,22 @@ dashboard CLI can validate it.
 The child process receives explicit empty values for the coordination API URL
 and token variables before values from the protected file are applied. Removing
 API settings from the file and restarting therefore returns the dashboard to
-filesystem mode instead of inheriting stale credentials. Tokens are passed only
-in the child environment; they are not stored in lifecycle metadata or command
-arguments. Lifecycle metadata and logs live under
+filesystem mode instead of inheriting stale credentials. Lifecycle children
+always run with `NODE_ENV=production`. Tokens are passed only in the child
+environment; they are not stored in lifecycle metadata or command arguments.
+Lifecycle metadata and logs live under
 `~/.local/state/agent-coordination-dashboard/` with user-only permissions.
 
+Lifecycle `HOST` must be `localhost` or an IPv4 or IPv6 address, including the
+`0.0.0.0` and `::` wildcard addresses. A `restart` validates the protected file,
+`PORT`, and `HOST` before stopping the running dashboard, so invalid replacement
+configuration leaves the existing service intact.
+
 `start`, `stop`, and `restart` are idempotent. The CLI records an instance marker
-and verifies the owned process before signaling it, so a listener it does not
-own is reported but never terminated. Mutating lifecycle commands share a
+and verifies the owned process group before signaling it, so a listener it does
+not own is reported but never terminated. If the lifecycle wrapper exits while
+its marked server remains healthy, status and stop retain safe control of that
+group. Mutating lifecycle commands share a
 user-only lock, so simultaneous starts cannot race into an unowned listener; a
 lock left by a dead command is recovered without signaling that command's
 process. Startup probes the configured bind host, including IPv6 loopback, and

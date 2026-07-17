@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { request as httpRequest } from "node:http";
+import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -15,6 +16,7 @@ const LOCK_TIMEOUT_MS = 30_000;
 const LOCK_IDENTITY_RECHECK_MS = 250;
 const PROCESS_IDENTITY_ATTEMPTS = 3;
 const PROCESS_IDENTITY_RETRY_MS = 25;
+const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
 
 class LifecycleUsageError extends Error {}
@@ -200,7 +202,13 @@ async function readRuntime(runtimeFile) {
       parsed.pid <= 1 ||
       typeof parsed.instance_id !== "string" ||
       !/^[a-f0-9]{32}$/.test(parsed.instance_id) ||
-      typeof parsed.url !== "string"
+      typeof parsed.url !== "string" ||
+      ((parsed.pgid !== undefined || parsed.process_birth_marker !== undefined) &&
+        (!Number.isInteger(parsed.pgid) ||
+          parsed.pgid <= 1 ||
+          parsed.pgid !== parsed.pid ||
+          typeof parsed.process_birth_marker !== "string" ||
+          !parsed.process_birth_marker))
     ) {
       throw new Error("invalid");
     }
@@ -264,30 +272,38 @@ function parseEnvLine(line, lineNumber) {
 }
 
 async function readProtectedEnv(envFile, required) {
-  let stats;
+  let handle;
   try {
-    stats = await lstat(envFile);
+    handle = await open(envFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   } catch (error) {
     if (isFileNotFound(error) && !required) return {};
     if (isFileNotFound(error)) throw new Error("Configured environment file does not exist.");
+    if (error && typeof error === "object" && error.code === "ELOOP") {
+      throw new Error("Configured environment file must be a regular file, not a symlink.");
+    }
     throw new Error("Configured environment file cannot be inspected.");
   }
-  if (!stats.isFile() || stats.isSymbolicLink()) {
-    throw new Error("Configured environment file must be a regular file, not a symlink.");
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error("Configured environment file must be a regular file, not a symlink.");
+    }
+    if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+      throw new Error("Configured environment file must be owned by the current user.");
+    }
+    if ((stats.mode & 0o777) !== 0o600) {
+      throw new Error("Configured environment file must use mode 0600; run chmod 600 on it.");
+    }
+    const entries = {};
+    const contents = await handle.readFile("utf8");
+    for (const [index, line] of contents.split(/\r?\n/).entries()) {
+      const parsed = parseEnvLine(line, index + 1);
+      if (parsed) entries[parsed[0]] = parsed[1];
+    }
+    return entries;
+  } finally {
+    await handle.close();
   }
-  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
-    throw new Error("Configured environment file must be owned by the current user.");
-  }
-  if ((stats.mode & 0o777) !== 0o600) {
-    throw new Error("Configured environment file must use mode 0600; run chmod 600 on it.");
-  }
-  const entries = {};
-  const contents = await readFile(envFile, "utf8");
-  for (const [index, line] of contents.split(/\r?\n/).entries()) {
-    const parsed = parseEnvLine(line, index + 1);
-    if (parsed) entries[parsed[0]] = parsed[1];
-  }
-  return entries;
 }
 
 function parseCommandOptions(command, args, paths) {
@@ -371,16 +387,71 @@ async function processCommand(pid) {
   return status === 0 ? output.trim() : "";
 }
 
-async function runtimeOwnership(runtime, executablePath) {
-  if (!processExists(runtime.pid)) return "stopped";
-  const command = await processCommand(runtime.pid);
-  const marker = `__lifecycle-serve --instance ${runtime.instance_id}`;
-  return command.includes(executablePath) && command.includes(marker) ? "owned" : "unowned";
+function processGroupExists(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && error.code === "EPERM");
+  }
+}
+
+async function processGroupCommands(pgid) {
+  try {
+    const child = spawn("ps", ["-axo", "pgid=,command="], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      if (output.length < 1024 * 1024) output += String(chunk);
+    });
+    const [status] = await once(child, "exit");
+    if (status !== 0) return null;
+    return output
+      .split("\n")
+      .map((line) => line.match(/^\s*(\d+)\s+(.*)$/))
+      .filter((match) => match && Number(match[1]) === pgid)
+      .map((match) => match[2]);
+  } catch {
+    return null;
+  }
+}
+
+async function runtimeOwnership(runtime, context) {
+  if (processExists(runtime.pid)) {
+    if (runtime.process_birth_marker) {
+      const currentBirthMarker = await processBirthMarker(runtime.pid);
+      if (!currentBirthMarker || currentBirthMarker !== runtime.process_birth_marker) return "unowned";
+    }
+    const command = await processCommand(runtime.pid);
+    const marker = `__lifecycle-serve --instance ${runtime.instance_id}`;
+    return command.includes(context.executablePath) && command.includes(marker) ? "owned" : "unowned";
+  }
+
+  const pgid = runtime.pgid;
+  if (!Number.isInteger(pgid) || !runtime.process_birth_marker) return "stopped";
+  if (!processGroupExists(pgid)) return "stopped";
+  const commands = await processGroupCommands(pgid);
+  if (!commands) return "unowned";
+  const serverEntrypoint = join(context.packageRoot, "src", "server", "index.ts");
+  const instanceMarker = `--lifecycle-instance ${runtime.instance_id}`;
+  return commands.some((command) => command.includes(serverEntrypoint) && command.includes(instanceMarker))
+    ? "orphaned_owned"
+    : "unowned";
 }
 
 function probeHostForBindHost(host) {
   if (host === "0.0.0.0") return "127.0.0.1";
   if (host === "::") return "::1";
+  return host;
+}
+
+function validateLifecycleHost(value) {
+  const host = String(value || "127.0.0.1").trim();
+  if (host !== "localhost" && isIP(host) === 0) {
+    throw new Error("HOST must be localhost or an IPv4 or IPv6 address (including wildcard addresses).");
+  }
   return host;
 }
 
@@ -402,6 +473,69 @@ async function portIsListening(port, host) {
 }
 
 async function serviceIsHealthy(url) {
+  const targetUrl = new URL("/api/health", url);
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(targetUrl.hostname)) {
+    const localAddress = targetUrl.hostname.includes(":") ? "::1" : "127.0.0.1";
+    const loopbackHost = localAddress.includes(":") ? `[${localAddress}]` : localAddress;
+    return await new Promise((resolveHealthy) => {
+      let settled = false;
+      let timeout;
+      const finish = (healthy) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolveHealthy(healthy);
+      };
+      const request = httpRequest(targetUrl, {
+        headers: {
+          accept: "application/json",
+          host: `${loopbackHost}:${targetUrl.port || "80"}`
+        },
+        localAddress,
+        method: "GET"
+      }, (response) => {
+        if (response.statusCode !== 200) {
+          response.destroy();
+          finish(false);
+          return;
+        }
+        const contentLength = Number(response.headers["content-length"]);
+        if (Number.isFinite(contentLength) && contentLength > MAX_HEALTH_BODY_BYTES) {
+          response.destroy();
+          finish(false);
+          return;
+        }
+        const chunks = [];
+        let size = 0;
+        response.on("data", (chunk) => {
+          if (settled) return;
+          size += chunk.length;
+          if (size > MAX_HEALTH_BODY_BYTES) {
+            response.destroy();
+            finish(false);
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.once("end", () => {
+          if (settled) return;
+          try {
+            finish(JSON.parse(Buffer.concat(chunks).toString("utf8"))?.ok === true);
+          } catch {
+            finish(false);
+          }
+        });
+        response.once("error", () => finish(false));
+      });
+      timeout = setTimeout(() => {
+        request.destroy();
+        finish(false);
+      }, 500);
+      request.once("error", () => finish(false));
+      request.end();
+    });
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 500);
   try {
@@ -416,10 +550,10 @@ async function serviceIsHealthy(url) {
   }
 }
 
-async function waitForHealthy(url, pid) {
+async function waitForHealthy(url, pgid) {
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (!processExists(pid)) return false;
+    if (!processGroupExists(pgid)) return false;
     if (await serviceIsHealthy(url)) return true;
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
@@ -461,28 +595,30 @@ async function reportCoordinationDiagnostics(executablePath, url, { reportHealth
   return false;
 }
 
-async function stopDetachedGroup(pid, signal) {
+async function stopDetachedGroup(pgid, signal) {
   try {
-    process.kill(-pid, signal);
+    process.kill(-pgid, signal);
   } catch (error) {
-    if (!isFileNotFound(error) && !(error && typeof error === "object" && error.code === "ESRCH")) throw error;
+    if (!(error && typeof error === "object" && error.code === "ESRCH")) throw error;
   }
 }
 
-async function waitForProcessExit(pid, timeoutMs) {
+async function waitForProcessGroupExit(pgid, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!processExists(pid)) return true;
+    if (!processGroupExists(pgid)) return true;
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  return !processExists(pid);
+  return !processGroupExists(pgid);
 }
 
-async function terminateDetachedGroup(pid) {
-  await stopDetachedGroup(pid, "SIGTERM");
-  if (!(await waitForProcessExit(pid, 5_000))) {
-    await stopDetachedGroup(pid, "SIGKILL");
-    await waitForProcessExit(pid, 1_000);
+async function terminateDetachedGroup(pgid) {
+  await stopDetachedGroup(pgid, "SIGTERM");
+  if (!(await waitForProcessGroupExit(pgid, 5_000))) {
+    await stopDetachedGroup(pgid, "SIGKILL");
+    if (!(await waitForProcessGroupExit(pgid, 1_000))) {
+      throw new Error(`Dashboard process group ${pgid} did not exit; lifecycle metadata was preserved.`);
+    }
   }
 }
 
@@ -492,29 +628,60 @@ async function stopDashboard(context, paths, { quiet = false } = {}) {
     if (!quiet) process.stdout.write("Dashboard is already stopped.\n");
     return true;
   }
-  const ownership = await runtimeOwnership(runtime, context.executablePath);
+  const ownership = await runtimeOwnership(runtime, context);
   if (ownership === "unowned") {
     process.stderr.write("Lifecycle metadata points to a process this package does not own; nothing was stopped.\n");
     process.exitCode = 2;
     return false;
   }
-  if (ownership === "owned") {
-    await terminateDetachedGroup(runtime.pid);
+  if (ownership === "owned" || ownership === "orphaned_owned") {
+    await terminateDetachedGroup(runtime.pgid || runtime.pid);
   }
   await unlink(paths.runtimeFile).catch((error) => {
     if (!isFileNotFound(error)) throw error;
   });
   if (!quiet) {
-    process.stdout.write(ownership === "owned" ? "Dashboard stopped.\n" : "Dashboard is already stopped.\n");
+    process.stdout.write(
+      ownership === "owned" || ownership === "orphaned_owned"
+        ? "Dashboard stopped.\n"
+        : "Dashboard is already stopped.\n"
+    );
   }
   return true;
 }
 
-async function startDashboard(options, context, paths) {
+async function prepareStart(options) {
+  const fileEnv = await readProtectedEnv(options.envFile, options.envFileRequired);
+  const childEnv = { ...process.env };
+  for (const key of API_ENV_KEYS) childEnv[key] = "";
+  Object.assign(childEnv, fileEnv);
+  childEnv.NODE_ENV = "production";
+  const port = Number(childEnv.PORT || 4319);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("PORT in the environment file must be an integer from 1 through 65535.");
+  }
+  const bindHost = validateLifecycleHost(childEnv.HOST);
+  const allowedHosts = String(childEnv.ALLOWED_HOSTS || "")
+    .split(",")
+    .some((host) => host.trim());
+  if (new Set(["0.0.0.0", "::"]).has(bindHost) && !allowedHosts) {
+    throw new Error("ALLOWED_HOSTS is required when HOST binds all interfaces.");
+  }
+  childEnv.HOST = bindHost;
+  const probeHost = probeHostForBindHost(bindHost);
+  return {
+    childEnv,
+    port,
+    probeHost,
+    url: `http://${formatUrlHost(probeHost)}:${port}`
+  };
+}
+
+async function startDashboard(options, context, paths, preparedStart = null) {
   const current = await readRuntime(paths.runtimeFile);
   if (current) {
-    const ownership = await runtimeOwnership(current, context.executablePath);
-    if (ownership === "owned") {
+    const ownership = await runtimeOwnership(current, context);
+    if (ownership === "owned" || ownership === "orphaned_owned") {
       process.stdout.write(`Dashboard is already running at ${current.url}.\n`);
       if (await serviceIsHealthy(current.url)) {
         await reportCoordinationDiagnostics(context.executablePath, current.url);
@@ -530,17 +697,7 @@ async function startDashboard(options, context, paths) {
     await unlink(paths.runtimeFile);
   }
 
-  const fileEnv = await readProtectedEnv(options.envFile, options.envFileRequired);
-  const childEnv = { ...process.env };
-  for (const key of API_ENV_KEYS) childEnv[key] = "";
-  Object.assign(childEnv, fileEnv);
-  childEnv.NODE_ENV = "production";
-  const port = Number(childEnv.PORT || 4319);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("PORT in the environment file must be an integer from 1 through 65535.");
-  }
-  const probeHost = probeHostForBindHost(childEnv.HOST || "127.0.0.1");
-  const url = `http://${formatUrlHost(probeHost)}:${port}`;
+  const { childEnv, port, probeHost, url } = preparedStart || await prepareStart(options);
   if (await portIsListening(port, probeHost)) {
     throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
   }
@@ -566,12 +723,20 @@ async function startDashboard(options, context, paths) {
     await logHandle.close();
   }
   if (!child.pid) throw new Error("Dashboard process did not receive a process id.");
+  const childBirthMarker = await processBirthMarker(child.pid);
+  if (!childBirthMarker) {
+    child.unref();
+    await terminateDetachedGroup(child.pid);
+    throw new Error("Dashboard process identity could not be determined; nothing was started.");
+  }
   child.unref();
   try {
     await writeRuntime(paths, {
       schema_version: LIFECYCLE_SCHEMA_VERSION,
       pid: child.pid,
+      pgid: child.pid,
       instance_id: instanceId,
+      process_birth_marker: childBirthMarker,
       started_at: new Date().toISOString(),
       url,
       log_file: paths.logFile
@@ -597,7 +762,7 @@ async function reportStatus(context, paths) {
     process.exitCode = 3;
     return;
   }
-  const ownership = await runtimeOwnership(runtime, context.executablePath);
+  const ownership = await runtimeOwnership(runtime, context);
   if (ownership === "stopped") {
     process.stdout.write("Dashboard is stopped (stale lifecycle metadata remains).\n");
     process.exitCode = 3;
@@ -646,7 +811,8 @@ async function openDashboard(context, paths) {
     throw new Error("The open lifecycle command supports macOS and Linux hosts.");
   }
   const runtime = await readRuntime(paths.runtimeFile);
-  if (!runtime || (await runtimeOwnership(runtime, context.executablePath)) !== "owned") {
+  const ownership = runtime ? await runtimeOwnership(runtime, context) : "stopped";
+  if (!new Set(["owned", "orphaned_owned"]).has(ownership)) {
     throw new Error("Dashboard is not running as an owned lifecycle process.");
   }
   if (!(await serviceIsHealthy(runtime.url))) {
@@ -669,8 +835,9 @@ export async function runLifecycleCommand(command, args, context) {
       await withLifecycleLock(paths, () => stopDashboard(context, paths));
     } else if (command === "restart") {
       await withLifecycleLock(paths, async () => {
+        const preparedStart = await prepareStart(options);
         if (await stopDashboard(context, paths, { quiet: true })) {
-          await startDashboard(options, context, paths);
+          await startDashboard(options, context, paths, preparedStart);
         }
       });
     } else if (command === "logs") {
@@ -692,12 +859,16 @@ export async function runLifecycleChild(args, context) {
     return;
   }
   const target = join(context.packageRoot, "src", "server", "index.ts");
-  const child = spawn(process.execPath, [context.tsxCli, target], {
+  const child = spawn(
+    process.execPath,
+    [context.tsxCli, target, "--lifecycle-instance", args[1]],
+    {
     cwd: context.packageRoot,
     detached: false,
     env: process.env,
     stdio: "inherit"
-  });
+    }
+  );
   let stopping = false;
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.once(signal, () => {

@@ -551,6 +551,8 @@ describe("agent-coordination-dashboard CLI", () => {
     "http://localhost:4319#",
     "http://2130706433:4319",
     "http://127.1:4319",
+    "http://localhost:04319",
+    "http://localhost:00080",
     "http://user:sentinel-secret@localhost:4319"
   ])("rejects unsafe dashboard URL %s with usage exit 64", async (url) => {
     const result = await runCli(["doctor", "--stack-json", "--url", url]);
@@ -559,6 +561,23 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("--url must be a loopback HTTP URL");
     expect(result.stderr).not.toContain("sentinel-secret");
+  });
+
+  it.each([
+    { label: "loopback", extraArgs: [] },
+    { label: "local-interface", extraArgs: ["--local-interface-url"] }
+  ])("accepts a canonical explicit default port through the $label URL parser", async ({ extraArgs }) => {
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      "http://127.0.0.1:80",
+      ...extraArgs
+    ]);
+
+    expect(result.status).not.toBe(64);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({ component: "agent-coordination-dashboard" });
   });
 
   it("keeps lifecycle local-interface diagnostics constrained to this machine", async () => {
