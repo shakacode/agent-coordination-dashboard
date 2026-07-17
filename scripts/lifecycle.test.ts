@@ -16,7 +16,8 @@ import {
   ownedEndpointCoversCandidateBind,
   processGroupInventoryHasLiveProcesses,
   probeHostsForBindHost,
-  readLifecycleLogTail
+  readLifecycleLogTail,
+  resolvedLocalhostIsLoopback
 } from "../bin/lifecycle.js";
 
 async function runLifecycle(
@@ -220,6 +221,12 @@ const supportsIpv6WildcardIpv4 = await (async () => {
 })();
 
 describe("portable dashboard lifecycle", () => {
+  it("requires localhost to resolve to loopback before lifecycle startup", () => {
+    expect(resolvedLocalhostIsLoopback("192.168.7.26")).toBe(false);
+    expect(resolvedLocalhostIsLoopback("127.0.0.2")).toBe(true);
+    expect(resolvedLocalhostIsLoopback("::1")).toBe(true);
+  });
+
   it("only treats IPv6 wildcard binds as covering IPv4 when dual-stack support was recorded", () => {
     expect(bindHostCoversProbeHost("::", "::1")).toBe(true);
     expect(bindHostCoversProbeHost("::", "127.0.0.1")).toBe(false);
@@ -959,6 +966,30 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it("rejects a FIFO protected environment file without blocking", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const envFile = join(root, "dashboard.env");
+    const mkfifo = spawn("mkfifo", [envFile], { stdio: "ignore" });
+    const [mkfifoStatus] = (await once(mkfifo, "exit")) as [number | null, NodeJS.Signals | null];
+    expect(mkfifoStatus).toBe(0);
+
+    try {
+      const result = await runLifecycle(
+        ["start", "--config-env-file", envFile],
+        root,
+        {},
+        process.cwd(),
+        2_000
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("regular file");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 10_000);
 
   it("decodes double-quoted protected environment escapes in one pass", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

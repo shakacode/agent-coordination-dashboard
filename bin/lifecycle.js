@@ -420,7 +420,10 @@ function parseEnvLine(line, lineNumber) {
 async function readProtectedEnv(envFile, required) {
   let handle;
   try {
-    handle = await open(envFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    handle = await open(
+      envFile,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+    );
   } catch (error) {
     if (isFileNotFound(error) && !required) return {};
     if (isFileNotFound(error)) throw new Error("Configured environment file does not exist.");
@@ -891,6 +894,11 @@ function normalizeAddress(host) {
   return new URL(`http://[${value}]`).hostname.slice(1, -1);
 }
 
+export function resolvedLocalhostIsLoopback(address) {
+  return (isIP(address) === 4 && address.startsWith("127.")) ||
+    (isIP(address) === 6 && normalizeAddress(address) === "::1");
+}
+
 function isIpv6LinkLocal(address) {
   if (isIP(address) !== 6) return false;
   const firstHextet = Number.parseInt(normalizeAddress(address).split(":")[0], 16);
@@ -899,8 +907,7 @@ function isIpv6LinkLocal(address) {
 
 function isLocalBindAddress(address) {
   if (address === "0.0.0.0" || address === "::") return true;
-  if (isIP(address) === 4 && address.startsWith("127.")) return true;
-  if (isIP(address) === 6 && normalizeAddress(address) === "::1") return true;
+  if (resolvedLocalhostIsLoopback(address)) return true;
   return Object.values(networkInterfaces())
     .flatMap((addresses) => addresses || [])
     .some((candidate) => {
@@ -1054,8 +1061,7 @@ function runtimeEndpointMetadataIsCoherent(runtime) {
   }
   if (runtime.bind_address === undefined) return true;
   if (runtime.bind_host === "localhost") {
-    return (isIP(runtime.bind_address) === 4 && runtime.bind_address.startsWith("127.")) ||
-      (isIP(runtime.bind_address) === 6 && normalizeAddress(runtime.bind_address) === "::1");
+    return resolvedLocalhostIsLoopback(runtime.bind_address);
   }
   return normalizeAddress(runtime.bind_address) === normalizeAddress(runtime.bind_host);
 }
@@ -1341,6 +1347,9 @@ async function prepareStart(options) {
     );
   }
   const bindAddress = bindHost === "localhost" ? (await lookup(bindHost)).address : bindHost;
+  if (bindHost === "localhost" && !resolvedLocalhostIsLoopback(bindAddress)) {
+    throw new Error("localhost must resolve to an IPv4 or IPv6 loopback address.");
+  }
   if (!isLocalBindAddress(bindAddress)) {
     throw new Error("HOST must be a loopback address or an IP address assigned to this machine.");
   }
