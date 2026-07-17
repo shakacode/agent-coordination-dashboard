@@ -1165,9 +1165,11 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
     await unlink(paths.runtimeFile);
   }
 
-  const { bindAddress, bindHost, bindIpv4Coverage, childEnv, port, probeHost, url } = preparedStart || await prepareStart(options);
-  if (await portIsListening(port, probeHost)) {
-    throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
+  const { bindAddress, bindHost, bindIpv4Coverage, childEnv, port, url } = preparedStart || await prepareStart(options);
+  for (const host of probeHostsForBindHost(bindHost, bindAddress)) {
+    if (await portIsListening(port, host)) {
+      throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
+    }
   }
 
   const logHandle = preparedLogHandle || await openLifecycleLogForAppend(paths);

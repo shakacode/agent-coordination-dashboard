@@ -489,6 +489,64 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
+  it.runIf(Boolean(lanIpv4))(
+    "preflights a wildcard start against a non-loopback local listener before spawning",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const baseline = await lifecycleProcessIds();
+      const unrelated = createNetServer((socket) => {
+        socket.on("error", () => {});
+        socket.end("still-running");
+      });
+      unrelated.listen(0, lanIpv4 as string);
+      await once(unrelated, "listening");
+      const address = unrelated.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected an unrelated TCP address.");
+      }
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        envFile,
+        `HOST=0.0.0.0\nPORT=${address.port}\nALLOWED_HOSTS=${lanIpv4}\n`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+
+        expect(started.status).toBe(1);
+        expect(started.stderr).toContain(`Port ${address.port} is already in use`);
+        expect(started.stderr).toContain("nothing was stopped");
+        expect(started.stderr).not.toContain("startup health check");
+        await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readFile(join(lifecycleDir, "dashboard.log"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        expect(await lifecycleProcessIds()).toEqual(baseline);
+        expect(unrelated.listening).toBe(true);
+        await expect(new Promise<string>((resolveResponse, rejectResponse) => {
+          const socket = createConnection({ host: lanIpv4 as string, port: address.port });
+          let response = "";
+          socket.on("data", (chunk) => {
+            response += String(chunk);
+          });
+          socket.on("end", () => resolveResponse(response));
+          socket.on("error", rejectResponse);
+        })).resolves.toBe("still-running");
+      } finally {
+        await cleanupLifecycle(root);
+        await cleanupNewLifecycleProcesses(baseline);
+        await new Promise<void>((resolveClose) => unrelated.close(() => resolveClose()));
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
+
   it("canonicalizes expanded IPv6 ALLOWED_HOSTS entries for the child host guard", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort("::1");
