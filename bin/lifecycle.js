@@ -1448,6 +1448,33 @@ async function reportStatus(context, paths) {
   process.exitCode = 1;
 }
 
+export async function readLifecycleLogTail(handle, maxBytes = 1024 * 1024) {
+  let retryAfterShortRead = false;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const stats = await handle.stat();
+    const length = Math.min(stats.size, maxBytes);
+    if (length === 0) {
+      if (retryAfterShortRead && attempt < 2) continue;
+      return { contents: Buffer.alloc(0), truncated: false };
+    }
+
+    const contents = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(contents, 0, length, stats.size - length);
+    if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > length) {
+      throw new Error("Lifecycle log read returned an invalid byte count.");
+    }
+    if (bytesRead === length) {
+      return { contents, truncated: stats.size > maxBytes };
+    }
+    if (attempt === 2) {
+      return { contents: contents.subarray(0, bytesRead), truncated: false };
+    }
+    retryAfterShortRead = true;
+  }
+
+  throw new Error("Lifecycle log read retry state was invalid.");
+}
+
 async function printLogs(paths) {
   const handle = await openLifecycleLogForRead(paths);
   if (!handle) {
@@ -1455,13 +1482,9 @@ async function printLogs(paths) {
     return;
   }
   try {
-    const stats = await handle.stat();
-    const maxBytes = 1024 * 1024;
-    const length = Math.min(stats.size, maxBytes);
-    const buffer = Buffer.alloc(length);
-    if (length > 0) await handle.read(buffer, 0, length, stats.size - length);
-    if (stats.size > maxBytes) process.stdout.write("[showing the last 1 MiB of lifecycle logs]\n");
-    process.stdout.write(buffer.toString("utf8"));
+    const tail = await readLifecycleLogTail(handle);
+    if (tail.truncated) process.stdout.write("[showing the last 1 MiB of lifecycle logs]\n");
+    process.stdout.write(tail.contents.toString("utf8"));
   } finally {
     await handle.close();
   }

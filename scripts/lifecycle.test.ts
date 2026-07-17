@@ -14,7 +14,8 @@ import {
   bindHostCoversProbeHost,
   installLifecycleLogWriter,
   ownedEndpointCoversCandidateBind,
-  probeHostsForBindHost
+  probeHostsForBindHost,
+  readLifecycleLogTail
 } from "../bin/lifecycle.js";
 
 async function runLifecycle(
@@ -295,6 +296,79 @@ describe("portable dashboard lifecycle", () => {
       await handle.close();
       await rm(root, { force: true, recursive: true });
     }
+  });
+
+  it("retries the lifecycle log tail from the post-rollover position after a short read", async () => {
+    const maxBytes = 32;
+    const rolledOverLog = Buffer.from("new rollover log\n");
+    const readPositions: number[] = [];
+    let statCalls = 0;
+    const handle = {
+      async stat() {
+        statCalls += 1;
+        if (statCalls === 1) return { size: maxBytes * 2 };
+        if (statCalls === 2) return { size: 0 };
+        return { size: rolledOverLog.length };
+      },
+      async read(buffer: Buffer, offset: number, length: number, position: number) {
+        readPositions.push(position);
+        if (readPositions.length === 1) return { buffer, bytesRead: 0 };
+        const bytesRead = rolledOverLog.copy(buffer, offset, position, position + length);
+        return { buffer, bytesRead };
+      }
+    };
+
+    const tail = await readLifecycleLogTail(handle, maxBytes);
+
+    expect(readPositions).toEqual([maxBytes, 0]);
+    expect(tail.contents.toString("utf8")).toBe("new rollover log\n");
+    expect(tail.contents.includes(0)).toBe(false);
+    expect(tail.truncated).toBe(false);
+  });
+
+  it("returns exactly the stable last 1 MiB of an oversized lifecycle log", async () => {
+    const maxBytes = 1024 * 1024;
+    const discardedPrefix = Buffer.from("discarded prefix\n");
+    const expectedTail = Buffer.alloc(maxBytes, "x");
+    expectedTail.write("tail-start");
+    expectedTail.write("tail-end\n", expectedTail.length - "tail-end\n".length);
+    const source = Buffer.concat([discardedPrefix, expectedTail]);
+    const handle = {
+      async stat() {
+        return { size: source.length };
+      },
+      async read(buffer: Buffer, offset: number, length: number, position: number) {
+        const bytesRead = source.copy(buffer, offset, position, position + length);
+        return { buffer, bytesRead };
+      }
+    };
+
+    const tail = await readLifecycleLogTail(handle, maxBytes);
+
+    expect(tail.contents).toEqual(expectedTail);
+    expect(tail.truncated).toBe(true);
+  });
+
+  it("returns only bytes read when lifecycle log rollover never stabilizes", async () => {
+    const partialContents = Buffer.from("ok");
+    let readCount = 0;
+    const handle = {
+      async stat() {
+        return { size: 8 };
+      },
+      async read(buffer: Buffer, offset: number) {
+        readCount += 1;
+        const bytesRead = partialContents.copy(buffer, offset);
+        return { buffer, bytesRead };
+      }
+    };
+
+    const tail = await readLifecycleLogTail(handle, 8);
+
+    expect(readCount).toBe(3);
+    expect(tail.contents).toEqual(partialContents);
+    expect(tail.contents.includes(0)).toBe(false);
+    expect(tail.truncated).toBe(false);
   });
 
   it("hard-bounds single and burst writes shared by lifecycle stdout and stderr", async () => {

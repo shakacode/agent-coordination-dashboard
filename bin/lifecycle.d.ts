@@ -27,3 +27,15 @@ export function probeHostsForBindHost(
   ipv6WildcardCoversIpv4?: boolean,
   interfaces?: Record<string, Array<{ address: string; family: string | number }> | undefined>
 ): string[];
+export function readLifecycleLogTail(
+  handle: {
+    stat: () => Promise<{ size: number }>;
+    read: (
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number
+    ) => Promise<{ bytesRead: number }>;
+  },
+  maxBytes?: number
+): Promise<{ contents: Buffer; truncated: boolean }>;
