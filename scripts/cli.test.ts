@@ -8,9 +8,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createDashboardApp } from "../src/server/app";
 
-async function unusedPort(): Promise<number> {
+async function unusedPort(host = "127.0.0.1"): Promise<number> {
   const server = createNetServer();
-  server.listen(0, "127.0.0.1");
+  server.listen(0, host);
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") {
@@ -72,6 +72,11 @@ async function runExecutable(
 async function runCli(args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return runExecutable("bin/agent-coordination-dashboard.js", args);
 }
+
+const supportsSecondaryIpv4Loopback = await unusedPort("127.0.0.2").then(
+  () => true,
+  () => false
+);
 
 describe("agent-coordination-dashboard CLI", () => {
   it("preserves legacy server-mode invalid-argument exit 1", async () => {
@@ -580,23 +585,26 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ component: "agent-coordination-dashboard" });
   });
 
-  it("recognizes canonical URLs throughout the IPv4 loopback range for lifecycle diagnostics", async () => {
-    const port = await unusedPort();
-    const result = await runCli([
-      "doctor",
-      "--stack-json",
-      "--url",
-      `http://127.0.0.2:${port}`,
-      "--local-interface-url"
-    ]);
+  it.runIf(supportsSecondaryIpv4Loopback)(
+    "recognizes canonical URLs throughout the IPv4 loopback range for lifecycle diagnostics",
+    async () => {
+      const port = await unusedPort();
+      const result = await runCli([
+        "doctor",
+        "--stack-json",
+        "--url",
+        `http://127.0.0.2:${port}`,
+        "--local-interface-url"
+      ]);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      component: "agent-coordination-dashboard",
-      status: "degraded"
-    });
-  });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        component: "agent-coordination-dashboard",
+        status: "degraded"
+      });
+    }
+  );
 
   it("still rejects noncanonical IPv4 loopback spelling for lifecycle diagnostics", async () => {
     const result = await runCli([

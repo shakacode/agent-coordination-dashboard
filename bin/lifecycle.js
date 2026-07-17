@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { createConnection, isIP } from "node:net";
+import { createConnection, createServer, isIP } from "node:net";
 import { homedir, networkInterfaces } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -18,6 +18,7 @@ const LOCK_IDENTITY_RECHECK_MS = 250;
 const PROCESS_IDENTITY_ATTEMPTS = 3;
 const PROCESS_IDENTITY_RETRY_MS = 25;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
+const MAX_LIFECYCLE_LOG_BYTES = 8 * 1024 * 1024;
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
 const SUPPORTED_LIFECYCLE_PLATFORMS = new Set(["darwin", "linux"]);
 
@@ -220,6 +221,10 @@ async function readRuntime(runtimeFile) {
           parsed.bind_port > 65535)) ||
       (parsed.bind_address !== undefined &&
         (typeof parsed.bind_address !== "string" || isIP(parsed.bind_address) === 0)) ||
+      (parsed.bind_ipv4_coverage !== undefined &&
+        (typeof parsed.bind_ipv4_coverage !== "boolean" ||
+          (parsed.bind_ipv4_coverage && parsed.bind_host !== "::"))) ||
+      !runtimeEndpointMetadataIsCoherent(parsed) ||
       ((parsed.pgid !== undefined || parsed.process_birth_marker !== undefined) &&
         (!Number.isInteger(parsed.pgid) ||
           parsed.pgid <= 1 ||
@@ -361,6 +366,7 @@ async function validateLifecycleLogHandle(handle) {
   if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
     throw new Error("Lifecycle log file must be owned by the current user.");
   }
+  return stats;
 }
 
 async function openLifecycleLogForAppend(paths) {
@@ -381,8 +387,11 @@ async function openLifecycleLogForAppend(paths) {
     throw lifecycleLogOpenError(error);
   }
   try {
-    await validateLifecycleLogHandle(handle);
+    const stats = await validateLifecycleLogHandle(handle);
     await handle.chmod(0o600);
+    if (stats.size > MAX_LIFECYCLE_LOG_BYTES) {
+      await handle.truncate(0);
+    }
     return handle;
   } catch (error) {
     await handle.close();
@@ -586,17 +595,77 @@ function isLocalBindAddress(address) {
     });
 }
 
-function bindHostCoversProbeHost(bindHost, probeHost) {
+export function bindHostCoversProbeHost(bindHost, probeHost, ipv6WildcardCoversIpv4 = false) {
   const probeFamily = isIP(probeHost);
   if (bindHost === "0.0.0.0") return probeFamily === 4;
-  if (bindHost === "::") return probeFamily === 6;
+  if (bindHost === "::") return probeFamily === 6 || (probeFamily === 4 && ipv6WildcardCoversIpv4);
   return normalizeAddress(bindHost) === normalizeAddress(probeHost);
+}
+
+async function ipv6WildcardCoversIpv4() {
+  const server = createServer();
+  try {
+    server.listen(0, "::");
+    await once(server, "listening");
+    const address = server.address();
+    return Boolean(
+      address &&
+      typeof address !== "string" &&
+      await portIsListening(address.port, "127.0.0.1")
+    );
+  } catch {
+    return false;
+  } finally {
+    if (server.listening) {
+      await new Promise((resolveClose) => server.close(() => resolveClose()));
+    }
+  }
+}
+
+function runtimeEndpointMetadataIsCoherent(runtime) {
+  if (runtime.bind_host === undefined && runtime.bind_port === undefined && runtime.bind_address === undefined) {
+    return true;
+  }
+  if (runtime.bind_host === undefined || runtime.bind_port === undefined) return false;
+
+  let runtimeUrl;
+  try {
+    runtimeUrl = new URL(runtime.url);
+  } catch {
+    return false;
+  }
+  if (
+    runtimeUrl.protocol !== "http:" ||
+    runtimeUrl.username ||
+    runtimeUrl.password ||
+    runtimeUrl.search ||
+    runtimeUrl.hash ||
+    runtimeUrl.pathname !== "/" ||
+    runtimeUrl.origin !== runtime.url ||
+    Number(runtimeUrl.port || 80) !== runtime.bind_port
+  ) {
+    return false;
+  }
+
+  const advertisedHost = runtimeUrl.hostname.startsWith("[")
+    ? runtimeUrl.hostname.slice(1, -1)
+    : runtimeUrl.hostname;
+  if (normalizeAddress(advertisedHost) !== normalizeAddress(probeHostForBindHost(runtime.bind_host))) {
+    return false;
+  }
+  if (runtime.bind_address === undefined) return true;
+  if (runtime.bind_host === "localhost") {
+    return (isIP(runtime.bind_address) === 4 && runtime.bind_address.startsWith("127.")) ||
+      (isIP(runtime.bind_address) === 6 && normalizeAddress(runtime.bind_address) === "::1");
+  }
+  return normalizeAddress(runtime.bind_address) === normalizeAddress(runtime.bind_host);
 }
 
 function runtimeBindEndpoint(runtime) {
   if (runtime.bind_host !== undefined && runtime.bind_port !== undefined) {
     return {
       address: runtime.bind_address || runtime.bind_host,
+      ipv6WildcardCoversIpv4: runtime.bind_ipv4_coverage === true,
       host: runtime.bind_host,
       port: runtime.bind_port
     };
@@ -605,6 +674,7 @@ function runtimeBindEndpoint(runtime) {
   const hostname = runtimeUrl.hostname;
   return {
     address: hostname.startsWith("[") ? hostname.slice(1, -1) : hostname,
+    ipv6WildcardCoversIpv4: false,
     host: hostname.startsWith("[") ? hostname.slice(1, -1) : hostname,
     port: Number(runtimeUrl.port || 80)
   };
@@ -874,6 +944,7 @@ async function prepareStart(options) {
   }
   childEnv.HOST = bindAddress;
   const probeHost = probeHostForBindHost(bindHost);
+  const bindIpv4Coverage = bindHost === "::" && await ipv6WildcardCoversIpv4();
   if (childEnv.ALLOWED_HOSTS !== undefined) {
     childEnv.ALLOWED_HOSTS = [...new Set([
       ...allowedHosts.map(canonicalizeAllowedHost).filter(Boolean),
@@ -882,6 +953,7 @@ async function prepareStart(options) {
   }
   return {
     bindAddress,
+    bindIpv4Coverage,
     bindHost,
     childEnv,
     port,
@@ -909,7 +981,11 @@ async function preflightRestartEndpoint(preparedStart, context, paths) {
     if (await portIsListening(preparedStart.port, host)) {
       if (
         currentEndpoint?.port === preparedStart.port &&
-        bindHostCoversProbeHost(currentEndpoint.address, host)
+        bindHostCoversProbeHost(
+          currentEndpoint.address,
+          host,
+          currentEndpoint.ipv6WildcardCoversIpv4
+        )
       ) {
         continue;
       }
@@ -940,7 +1016,7 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
     await unlink(paths.runtimeFile);
   }
 
-  const { bindAddress, bindHost, childEnv, port, probeHost, url } = preparedStart || await prepareStart(options);
+  const { bindAddress, bindHost, bindIpv4Coverage, childEnv, port, probeHost, url } = preparedStart || await prepareStart(options);
   if (await portIsListening(port, probeHost)) {
     throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
   }
@@ -975,6 +1051,7 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
       schema_version: LIFECYCLE_SCHEMA_VERSION,
       bind_address: bindAddress,
       bind_host: bindHost,
+      bind_ipv4_coverage: bindIpv4Coverage,
       bind_port: port,
       pid: child.pid,
       pgid: child.pid,
