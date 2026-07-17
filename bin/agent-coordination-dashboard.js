@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   dashboardHostsForInterfaceAddress,
+  isNonLinkLocalInterfaceAddress,
   localSourceAddressForDashboardHost
 } from "./interface-address.js";
 
@@ -128,6 +129,7 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
     .flatMap((addresses) => addresses || [])
     .find((address) => {
       try {
+        if (!isNonLinkLocalInterfaceAddress(address.address)) return false;
         const { urlHost } = dashboardHostsForInterfaceAddress(address);
         return new URL(`http://${urlHost}`).hostname.toLowerCase() === parsed.hostname.toLowerCase();
       } catch {
@@ -138,6 +140,8 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
     throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
   }
   return {
+    // The forced loopback source is security-bearing: the dashboard must not
+    // infer a same-machine writer merely because the destination IP is local.
     localAddress: dashboardHostsForInterfaceAddress(matchingAddress).localAddress,
     url: parsed.origin
   };

@@ -11,8 +11,19 @@ const restoreLifecycleLogWriter = lifecycleInstanceIndex >= 0 &&
 const config = readConfig();
 const app = await createDashboardApp(config);
 
-const server = app.listen(config.port, config.host, () => {
+const server = app.listen(config.port, config.host);
+server.once("listening", () => {
   console.log(`agent-coordination-dashboard listening on http://${config.host}:${config.port}`);
+});
+server.once("error", (error: NodeJS.ErrnoException) => {
+  const reason = error.code || error.message || "unknown error";
+  process.stderr.write(
+    `agent-coordination-dashboard could not listen on http://${config.host}:${config.port}: ${reason}\n`,
+    () => {
+      restoreLifecycleLogWriter?.();
+      process.exit(1);
+    }
+  );
 });
 server.once("close", () => {
   restoreLifecycleLogWriter?.();

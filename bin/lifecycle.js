@@ -24,6 +24,7 @@ const PROCESS_IDENTITY_ATTEMPTS = 3;
 const PROCESS_IDENTITY_RETRY_MS = 25;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const MAX_LIFECYCLE_LOG_BYTES = 8 * 1024 * 1024;
+const MAX_LIFECYCLE_LOG_STARTUP_TAIL_BYTES = 1024 * 1024;
 const LIFECYCLE_LOG_ROLLOVER_MARKER = "[lifecycle log reset after exceeding 8 MiB]\n";
 const LIFECYCLE_LOG_FAILURE_MARKER = "[lifecycle log enforcement failed; stopping dashboard]\n";
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
@@ -558,6 +559,17 @@ function writeBoundedLifecycleLogChunk(fd, chunk, maxBytes) {
   resetLifecycleLogWithTail(fd, chunk, maxBytes);
 }
 
+async function resetOversizedLifecycleLog(handle, size, maxBytes) {
+  const markerBytes = Math.min(Buffer.byteLength(LIFECYCLE_LOG_ROLLOVER_MARKER), maxBytes);
+  const tailLength = Math.min(size, maxBytes - markerBytes, MAX_LIFECYCLE_LOG_STARTUP_TAIL_BYTES);
+  const tail = Buffer.alloc(tailLength);
+  const { bytesRead } = await handle.read(tail, 0, tailLength, size - tailLength);
+  if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > tailLength) {
+    throw new Error("Lifecycle log read returned an invalid byte count.");
+  }
+  resetLifecycleLogWithTail(handle.fd, tail.subarray(0, bytesRead), maxBytes);
+}
+
 function lifecycleLogBuffer(chunk, encoding) {
   if (typeof chunk === "string") return Buffer.from(chunk, encoding);
   if (Buffer.isBuffer(chunk)) return chunk;
@@ -645,7 +657,7 @@ async function openLifecycleLogForAppend(paths) {
       paths.logFile,
       fsConstants.O_CREAT |
         fsConstants.O_APPEND |
-        fsConstants.O_WRONLY |
+        fsConstants.O_RDWR |
         fsConstants.O_NOFOLLOW |
         fsConstants.O_NONBLOCK,
       0o600
@@ -657,7 +669,7 @@ async function openLifecycleLogForAppend(paths) {
     const stats = await validateLifecycleLogHandle(handle);
     await handle.chmod(0o600);
     if (stats.size > MAX_LIFECYCLE_LOG_BYTES) {
-      await handle.truncate(0);
+      await resetOversizedLifecycleLog(handle, stats.size, MAX_LIFECYCLE_LOG_BYTES);
     }
     return handle;
   } catch (error) {
@@ -784,16 +796,20 @@ async function processIsZombie(pid) {
 }
 
 async function processCommand(pid) {
-  const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "command="], {
-    env: { ...process.env, LC_ALL: "C" },
-    stdio: ["ignore", "pipe", "ignore"]
-  });
-  let output = "";
-  child.stdout.on("data", (chunk) => {
-    if (output.length < 64 * 1024) output += String(chunk);
-  });
-  const [status] = await once(child, "exit");
-  return status === 0 ? output.trim() : "";
+  try {
+    const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "command="], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      if (output.length < 64 * 1024) output += String(chunk);
+    });
+    const [status] = await once(child, "exit");
+    return status === 0 ? output.trim() : "";
+  } catch {
+    return "";
+  }
 }
 
 function processGroupExists(pgid) {
@@ -890,6 +906,7 @@ async function runtimeOwnership(runtime, context) {
   const pgid = runtime.pgid;
   if (!Number.isInteger(pgid) || !runtime.process_birth_marker) return "stopped";
   if (!processGroupExists(pgid)) return "stopped";
+  if (!(await processGroupHasLiveProcesses(pgid))) return "stopped";
   const commands = await processGroupCommands(pgid);
   if (!commands) return "unowned";
   const serverEntrypoint = runtime.server_entrypoint ||
@@ -1122,6 +1139,15 @@ function runtimeBindEndpoint(runtime) {
     host: hostname.startsWith("[") ? hostname.slice(1, -1) : hostname,
     port: Number(runtimeUrl.port || 80)
   };
+}
+
+function runtimeServiceUrl(runtime) {
+  if (runtime.bind_host !== "localhost" || !runtime.bind_address || !runtime.bind_port) {
+    return runtime.url;
+  }
+  return new URL(
+    `http://${formatUrlHost(runtime.bind_address)}:${runtime.bind_port}`
+  ).origin;
 }
 
 function validateLifecycleHost(value) {
@@ -1434,8 +1460,9 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
     const ownership = await runtimeOwnership(current, context);
     if (ownership === "owned" || ownership === "orphaned_owned") {
       process.stdout.write(`Dashboard is already running at ${current.url}.\n`);
-      if (await serviceIsHealthy(current.url)) {
-        await reportCoordinationDiagnostics(context.executablePath, current.url);
+      const serviceUrl = runtimeServiceUrl(current);
+      if (await serviceIsHealthy(serviceUrl)) {
+        await reportCoordinationDiagnostics(context.executablePath, serviceUrl);
       } else {
         process.stderr.write(`Dashboard process is running, but its health check failed at ${current.url}.\n`);
         process.exitCode = 1;
@@ -1527,9 +1554,10 @@ async function reportStatus(context, paths) {
     process.exitCode = 2;
     return;
   }
-  if (await serviceIsHealthy(runtime.url)) {
+  const serviceUrl = runtimeServiceUrl(runtime);
+  if (await serviceIsHealthy(serviceUrl)) {
     process.stdout.write(`Dashboard is running at ${runtime.url}.\n`);
-    await reportCoordinationDiagnostics(context.executablePath, runtime.url);
+    await reportCoordinationDiagnostics(context.executablePath, serviceUrl);
     return;
   }
   process.stderr.write(`Dashboard process is running, but its health check failed at ${runtime.url}.\n`);
@@ -1584,16 +1612,17 @@ async function openDashboard(context, paths) {
   if (!new Set(["owned", "orphaned_owned"]).has(ownership)) {
     throw new Error("Dashboard is not running as an owned lifecycle process.");
   }
-  if (!(await serviceIsHealthy(runtime.url))) {
+  const serviceUrl = runtimeServiceUrl(runtime);
+  if (!(await serviceIsHealthy(serviceUrl))) {
     throw new Error("Dashboard health check failed; nothing was opened.");
   }
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
-  const child = spawn(opener, [runtime.url], { detached: true, stdio: "ignore" });
+  const child = spawn(opener, [serviceUrl], { detached: true, stdio: "ignore" });
   const [status] = await once(child, "exit").catch(() => [null]);
   if (status !== 0) {
     throw new Error("Dashboard URL opener could not open the dashboard URL.");
   }
-  process.stdout.write(`Opened ${runtime.url}.\n`);
+  process.stdout.write(`Opened ${serviceUrl}.\n`);
 }
 
 export async function runLifecycleCommand(command, args, context) {

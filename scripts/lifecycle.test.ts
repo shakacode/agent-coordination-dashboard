@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { once } from "node:events";
 import { constants as fsConstants, fstatSync, writeSync as fsWriteSync } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer as createNetServer, isIP } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -321,6 +321,50 @@ describe("portable dashboard lifecycle", () => {
     expect(() => assertSupportedLifecyclePlatform("darwin")).not.toThrow();
     expect(() => assertSupportedLifecyclePlatform("linux")).not.toThrow();
   });
+
+  it("reports a direct server bind failure without an unhandled error stack", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-server-bind-test-"));
+    const listener = createNetServer();
+    listener.listen(0, "127.0.0.1");
+    await once(listener, "listening");
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP test address.");
+    const result = spawnSync(
+      process.execPath,
+      [resolve("node_modules/tsx/dist/cli.mjs"), resolve("src/server/index.ts")],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          AGENT_COORD_API_TOKEN: "",
+          AGENT_COORD_API_URL: "",
+          AGENT_COORD_TOKEN: "",
+          AGENT_COORD_STATE_ROOT: join(root, "coordination-state"),
+          DASHBOARD_REFRESH_MS: "0",
+          DASHBOARD_SETTINGS_PATH: join(root, "settings.json"),
+          HOST: "127.0.0.1",
+          PORT: String(address.port)
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5_000
+      }
+    );
+
+    try {
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(
+        `agent-coordination-dashboard could not listen on http://127.0.0.1:${address.port}: EADDRINUSE`
+      );
+      expect(result.stderr).not.toContain("Emitted 'error' event");
+      expect(result.stderr).not.toContain("node:events");
+    } finally {
+      await new Promise<void>((resolveClose) => listener.close(() => resolveClose()));
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 10_000);
 
   it("fails closed when Linux process-group state inventory is unavailable", () => {
     expect(processGroupInventoryHasLiveProcesses(null)).toBe(true);
@@ -1363,13 +1407,26 @@ describe("portable dashboard lifecycle", () => {
       const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
       const port = await unusedPort(alternateLoopback);
       const configDir = join(root, "config", "agent-coordination-dashboard");
+      const openerDir = join(root, "opener-bin");
+      const openedUrlFile = join(root, "opened-url.txt");
       const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
       const envFile = join(configDir, "env");
-      const unrelated = createNetServer();
+      const unrelated = createHttpServer((_request, response) => {
+        response.writeHead(503, { connection: "close", "content-type": "text/plain" });
+        response.end("unrelated service");
+      });
       const alternateUrl = `http://${isIP(alternateLoopback) === 6 ? `[${alternateLoopback}]` : alternateLoopback}:${port}`;
-      await mkdir(configDir, { recursive: true });
+      await Promise.all([mkdir(configDir, { recursive: true }), mkdir(openerDir)]);
       await writeFile(envFile, `HOST=${alternateLoopback}\nPORT=${port}\n`, "utf8");
       await chmod(envFile, 0o600);
+      for (const opener of ["open", "xdg-open"]) {
+        await writeFile(
+          join(openerDir, opener),
+          '#!/bin/sh\nprintf "%s" "$1" > "$OPEN_CAPTURE"\n',
+          "utf8"
+        );
+        await chmod(join(openerDir, opener), 0o700);
+      }
 
       try {
         const started = await runLifecycle(["start"], root);
@@ -1390,8 +1447,18 @@ describe("portable dashboard lifecycle", () => {
         unrelated.listen(port, resolvedLocalhost);
         await once(unrelated, "listening");
 
+        const status = await runLifecycle(["status"], root);
+        const opened = await runLifecycle(["open"], root, {
+          OPEN_CAPTURE: openedUrlFile,
+          PATH: `${openerDir}:/usr/bin:/bin`
+        });
         const restarted = await runLifecycle(["restart"], root);
 
+        expect(status.status).toBe(0);
+        expect(status.stdout).toContain(`Dashboard is running at http://localhost:${port}.`);
+        expect(status.stderr).toBe("");
+        expect(opened.status).toBe(0);
+        expect(await readFile(openedUrlFile, "utf8")).toBe(alternateUrl);
         expect(restarted.status).toBe(1);
         expect(restarted.stderr).toContain(`Port ${port} is already in use`);
         expect(restarted.stderr).toContain("nothing was stopped");
@@ -2231,6 +2298,88 @@ setTimeout(() => { process.exitCode = 1; }, 2000).unref();
     20_000
   );
 
+  it(
+    "treats a known zombie-only lifecycle process group as stopped",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const runtimePath = join(lifecycleDir, "runtime.json");
+      const holderScript = join(root, "zombie-only-holder.mjs");
+      const zombiePidFile = join(root, "zombie.pid");
+      const releaseFile = join(root, "release-holder");
+      const instanceId = "b".repeat(32);
+      let zombiePid: number | undefined;
+      await mkdir(lifecycleDir, { recursive: true });
+      await chmod(lifecycleDir, 0o700);
+      await writeFile(
+        holderScript,
+        `import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+  detached: true,
+  stdio: "ignore"
+});
+writeFileSync(process.argv[2], String(child.pid));
+const waitArray = new Int32Array(new SharedArrayBuffer(4));
+while (!existsSync(process.argv[3])) Atomics.wait(waitArray, 0, 0, 25);
+child.once("exit", () => { process.exitCode = 0; });
+setTimeout(() => { process.exitCode = 1; }, 2000).unref();
+`,
+        "utf8"
+      );
+      const holder = spawn(process.execPath, [holderScript, zombiePidFile, releaseFile], {
+        stdio: "ignore"
+      });
+
+      try {
+        const zombieDeadline = Date.now() + 5_000;
+        let identity: { birthMarker: string; state: string } | undefined;
+        while (Date.now() < zombieDeadline) {
+          zombiePid = Number(await readFile(zombiePidFile, "utf8").catch(() => "")) || undefined;
+          if (zombiePid) {
+            identity = await portableProcessIdentity(zombiePid).catch(() => undefined);
+            if (identity?.state.startsWith("Z")) break;
+          }
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        }
+        expect(zombiePid).toBeTypeOf("number");
+        expect(identity?.state.startsWith("Z")).toBe(true);
+        await writeFile(runtimePath, `${JSON.stringify({
+          schema_version: 1,
+          pid: zombiePid,
+          pgid: zombiePid,
+          instance_id: instanceId,
+          process_birth_marker: identity?.birthMarker,
+          started_at: new Date().toISOString(),
+          url: "http://127.0.0.1:1",
+          log_file: join(lifecycleDir, "dashboard.log")
+        }, null, 2)}\n`, "utf8");
+        await chmod(runtimePath, 0o600);
+
+        const status = await runLifecycle(["status"], root);
+
+        expect(status.status).toBe(3);
+        expect(status.stdout).toContain("Dashboard is stopped (stale lifecycle metadata remains).");
+        expect(status.stderr).toBe("");
+
+        const stopped = await runLifecycle(["stop"], root);
+        expect(stopped.status).toBe(0);
+        expect(stopped.stdout).toContain("Dashboard is already stopped.");
+        await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        const holderExit = once(holder, "exit").catch(() => []);
+        await writeFile(releaseFile, "release\n", "utf8").catch(() => {});
+        await Promise.race([
+          holderExit,
+          new Promise((resolveTimeout) => setTimeout(resolveTimeout, 3_000))
+        ]);
+        if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
+
   it("fails closed when an orphaned server group's process inventory is unavailable", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort();
@@ -2280,6 +2429,36 @@ setTimeout(() => { process.exitCode = 1; }, 2000).unref();
       await rm(root, { force: true, recursive: true });
     }
   }, 30_000);
+
+  it("degrades safely when a legacy runtime command cannot invoke ps", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const missingBinDir = join(root, "missing-bin");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const envFile = join(configDir, "env");
+    await Promise.all([mkdir(configDir, { recursive: true }), mkdir(missingBinDir)]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as Record<string, unknown>;
+      delete runtime.pgid;
+      delete runtime.process_birth_marker;
+      await writeFile(runtimePath, `${JSON.stringify(runtime, null, 2)}\n`, "utf8");
+
+      const status = await runLifecycle(["status"], root, { PATH: missingBinDir });
+
+      expect(status.status).toBe(2);
+      expect(status.stderr).toContain("does not identify an owned process");
+      expect(status.stderr).not.toContain("spawn ps");
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
 
   it("serializes simultaneous starts across a transient process identity lookup failure", async () => {
     const baseline = await lifecycleProcessIds();
@@ -2517,7 +2696,7 @@ exec "$REAL_PS" "$@"
     }
   }, 20_000);
 
-  it("caps an oversized lifecycle log through the validated descriptor before restart", async () => {
+  it("marks and retains the newest tail when capping an oversized log before restart", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort();
     const configDir = join(root, "config", "agent-coordination-dashboard");
@@ -2525,6 +2704,9 @@ exec "$REAL_PS" "$@"
     const runtimePath = join(lifecycleDir, "runtime.json");
     const logFile = join(lifecycleDir, "dashboard.log");
     const envFile = join(configDir, "env");
+    const cap = 8 * 1024 * 1024;
+    const rolloverMarker = "[lifecycle log reset after exceeding 8 MiB]";
+    const retainedTail = "newest retained pre-start tail\n";
     await mkdir(configDir, { recursive: true });
     await writeFile(envFile, `PORT=${port}\n`, "utf8");
     await chmod(envFile, 0o600);
@@ -2533,15 +2715,24 @@ exec "$REAL_PS" "$@"
       const started = await runLifecycle(["start"], root);
       expect(started.status).toBe(0);
       const originalPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
-      await truncate(logFile, 8 * 1024 * 1024 + 1);
+      await writeFile(
+        logFile,
+        Buffer.concat([
+          Buffer.alloc(cap + 1 - Buffer.byteLength(retainedTail), "x"),
+          Buffer.from(retainedTail)
+        ])
+      );
 
       const restarted = await runLifecycle(["restart"], root);
       const replacementPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+      const cappedContents = await readFile(logFile, "utf8");
 
       expect(restarted.status).toBe(0);
       expect(restarted.stderr).toBe("");
       expect(replacementPid).not.toBe(originalPid);
-      expect((await stat(logFile)).size).toBeLessThan(8 * 1024 * 1024);
+      expect((await stat(logFile)).size).toBeLessThanOrEqual(cap);
+      expect(cappedContents).toContain(rolloverMarker);
+      expect(cappedContents).toContain(retainedTail);
     } finally {
       await cleanupLifecycle(root);
       await rm(root, { force: true, recursive: true });
