@@ -163,6 +163,7 @@ describe("portable dashboard lifecycle", () => {
 
   it.each([
     { host: "::1", urlHost: "[::1]" },
+    { host: "0:0:0:0:0:0:0:1", urlHost: "[::1]" },
     { host: "localhost", urlHost: "localhost" }
   ])("uses the configured $host loopback host for lifecycle probes", async ({ host, urlHost }) => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
@@ -185,6 +186,11 @@ describe("portable dashboard lifecycle", () => {
       const status = await runLifecycle(["status"], root);
       expect(status.status).toBe(0);
       expect(status.stdout).toContain(`Dashboard is running at http://${urlHost}:${port}.`);
+      const runtime = JSON.parse(await readFile(
+        join(root, "state", "agent-coordination-dashboard", "runtime.json"),
+        "utf8"
+      )) as { url: string };
+      expect(runtime.url).toBe(`http://${urlHost}:${port}`);
     } finally {
       await cleanupLifecycle(root);
       await rm(root, { force: true, recursive: true });
@@ -209,6 +215,33 @@ describe("portable dashboard lifecycle", () => {
       expect(started.stderr).toContain("HOST must be localhost or an IPv4 or IPv6 address");
       await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       expect(await portIsListening(port)).toBe(false);
+      expect(await lifecycleProcessIds()).toEqual(baseline);
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
+  it("rejects a scoped IPv6 bind before spawning or writing runtime artifacts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(envFile, "HOST=fe80::1%lo0\nPORT=4317\n", "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(1);
+      expect(started.stdout).toBe("");
+      expect(started.stderr).toContain("IPv6 zone identifiers are not supported");
+      await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(lifecycleDir, "dashboard.log"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
       expect(await lifecycleProcessIds()).toEqual(baseline);
     } finally {
       await cleanupLifecycle(root);

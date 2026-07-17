@@ -449,7 +449,11 @@ function probeHostForBindHost(host) {
 
 function validateLifecycleHost(value) {
   const host = String(value || "127.0.0.1").trim();
-  if (host !== "localhost" && isIP(host) === 0) {
+  const addressFamily = isIP(host);
+  if (addressFamily === 6 && host.includes("%")) {
+    throw new Error("IPv6 zone identifiers are not supported in HOST.");
+  }
+  if (host !== "localhost" && addressFamily === 0) {
     throw new Error("HOST must be localhost or an IPv4 or IPv6 address (including wildcard addresses).");
   }
   return host;
@@ -673,7 +677,7 @@ async function prepareStart(options) {
     childEnv,
     port,
     probeHost,
-    url: `http://${formatUrlHost(probeHost)}:${port}`
+    url: new URL(`http://${formatUrlHost(probeHost)}:${port}`).origin
   };
 }
 
