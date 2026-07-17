@@ -13,6 +13,8 @@ const LOCK_RETRY_MS = 50;
 const LOCK_STALE_MS = 2_000;
 const LOCK_TIMEOUT_MS = 30_000;
 const LOCK_IDENTITY_RECHECK_MS = 250;
+const PROCESS_IDENTITY_ATTEMPTS = 3;
+const PROCESS_IDENTITY_RETRY_MS = 25;
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
 
 class LifecycleUsageError extends Error {}
@@ -78,7 +80,7 @@ async function reapStaleLock(paths, instanceId, verifiedOwners) {
       throw error;
     }
   }
-  if (entries.length !== 1 || !/^(?:owner|reap-[a-f0-9]{32})\.json$/.test(entries[0])) {
+  if (entries.length !== 1 || !/^(?:owner(?:-[a-f0-9]{32})?|reap-[a-f0-9]{32})\.json$/.test(entries[0])) {
     throw new Error("Lifecycle lock directory contains unexpected files.");
   }
   if (entries[0].startsWith("reap-")) {
@@ -102,6 +104,9 @@ async function reapStaleLock(paths, instanceId, verifiedOwners) {
     if ((verifiedOwners.get(ownerKey) || 0) > Date.now()) return false;
     const currentBirthMarker = await processBirthMarker(owner.pid);
     if (!currentBirthMarker) {
+      if (!processExists(owner.pid)) {
+        return await removeClaimedLock(paths, entries[0], instanceId);
+      }
       throw new Error("Lifecycle lock owner identity could not be verified; lock preserved for manual inspection.");
     }
     if (currentBirthMarker === owner.process_birth_marker) {
@@ -129,7 +134,7 @@ async function acquireLifecycleLock(paths) {
       await mkdir(paths.lockDir, { mode: 0o700 });
       created = true;
       await chmod(paths.lockDir, 0o700);
-      const ownerPath = join(paths.lockDir, "owner.json");
+      const ownerPath = join(paths.lockDir, `owner-${instanceId}.json`);
       const handle = await open(ownerPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
       try {
         await handle.writeFile(`${JSON.stringify({
@@ -305,7 +310,7 @@ function processExists(pid) {
   }
 }
 
-async function processBirthMarker(pid) {
+async function processBirthMarkerOnce(pid) {
   if (process.platform === "linux") {
     try {
       const stat = await readFile(`/proc/${pid}/stat`, "utf8");
@@ -316,17 +321,30 @@ async function processBirthMarker(pid) {
     }
   }
 
-  const child = spawn("ps", ["-p", String(pid), "-o", "lstart="], {
-    env: { ...process.env, LC_ALL: "C" },
-    stdio: ["ignore", "pipe", "ignore"]
-  });
-  let output = "";
-  child.stdout.on("data", (chunk) => {
-    if (output.length < 1024) output += String(chunk);
-  });
-  const [status] = await once(child, "exit");
-  const startedAt = output.trim();
-  return status === 0 && startedAt ? `ps:${startedAt}` : null;
+  try {
+    const child = spawn("ps", ["-p", String(pid), "-o", "lstart="], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      if (output.length < 1024) output += String(chunk);
+    });
+    const [status] = await once(child, "exit");
+    const startedAt = output.trim();
+    return status === 0 && startedAt ? `ps:${startedAt}` : null;
+  } catch {
+    return null;
+  }
+}
+
+async function processBirthMarker(pid) {
+  for (let attempt = 1; attempt <= PROCESS_IDENTITY_ATTEMPTS; attempt += 1) {
+    const marker = await processBirthMarkerOnce(pid);
+    if (marker) return marker;
+    if (attempt < PROCESS_IDENTITY_ATTEMPTS) await delay(PROCESS_IDENTITY_RETRY_MS);
+  }
+  return null;
 }
 
 async function processCommand(pid) {

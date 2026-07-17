@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 async function runLifecycle(
@@ -32,6 +33,19 @@ async function runLifecycle(
   });
   const [status] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
   return { status, stdout, stderr };
+}
+
+async function executableOnPath(command: string): Promise<string> {
+  for (const directory of (process.env.PATH || "").split(delimiter)) {
+    const candidate = resolve(directory || ".", command);
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // Continue to the next PATH entry.
+    }
+  }
+  throw new Error(`Could not resolve ${command} on PATH.`);
 }
 
 async function unusedPort(host = "127.0.0.1"): Promise<number> {
@@ -490,12 +504,38 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
-  it("serializes simultaneous start commands around one owned process", async () => {
+  it("serializes simultaneous starts across a transient process identity lookup failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const baseline = await lifecycleProcessIds();
     const port = await unusedPort();
+    const realPs = await executableOnPath("ps");
     const configDir = join(root, "config", "agent-coordination-dashboard");
-    await mkdir(configDir, { recursive: true });
+    const fakeBinDir = join(root, "fake-bin");
+    const psCounterDir = join(root, "ps-counters");
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(fakeBinDir, { recursive: true }),
+      mkdir(psCounterDir, { recursive: true })
+    ]);
+    const fakePs = join(fakeBinDir, "ps");
+    await writeFile(
+      fakePs,
+      `#!/bin/sh
+if [ "$4" = "lstart=" ]; then
+  counter="$PS_COUNTER_DIR/$2"
+  while ! mkdir "$counter.lock" 2>/dev/null; do sleep 0.01; done
+  count=0
+  if [ -f "$counter.count" ]; then read -r count < "$counter.count"; fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$counter.count"
+  rmdir "$counter.lock"
+  if [ "$count" -eq 2 ]; then exit 1; fi
+fi
+exec "$REAL_PS" "$@"
+`,
+      "utf8"
+    );
+    await chmod(fakePs, 0o700);
     const envFile = join(configDir, "env");
     await writeFile(
       envFile,
@@ -505,8 +545,16 @@ describe("portable dashboard lifecycle", () => {
     await chmod(envFile, 0o600);
 
     try {
-      const starts = await Promise.all(Array.from({ length: 4 }, () => runLifecycle(["start"], root)));
-      expect(starts.every((result) => result.status === 0)).toBe(true);
+      const starts = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          runLifecycle(["start"], root, {
+            PATH: `${fakeBinDir}:${process.env.PATH}`,
+            PS_COUNTER_DIR: psCounterDir,
+            REAL_PS: realPs
+          })
+        )
+      );
+      expect(starts.filter((result) => result.status !== 0)).toEqual([]);
       expect(starts.filter((result) => result.stdout.includes("Dashboard started at")).length).toBe(1);
       expect(starts.filter((result) => result.stdout.includes("Dashboard is already running")).length).toBe(3);
 
