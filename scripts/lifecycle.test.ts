@@ -345,7 +345,7 @@ describe("portable dashboard lifecycle", () => {
 
     const tail = await readLifecycleLogTail(handle, maxBytes);
 
-    expect(tail.contents).toEqual(expectedTail);
+    expect(tail.contents.equals(expectedTail)).toBe(true);
     expect(tail.truncated).toBe(true);
   });
 
