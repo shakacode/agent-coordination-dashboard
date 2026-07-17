@@ -589,6 +589,33 @@ async function processBirthMarker(pid) {
   return null;
 }
 
+async function processIsZombie(pid) {
+  if (process.platform === "linux") {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+      if (fields[0]) return fields[0] === "Z";
+    } catch {
+      // Fall through to the portable ps state below.
+    }
+  }
+
+  try {
+    const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "stat="], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      if (output.length < 1024) output += String(chunk);
+    });
+    const [status] = await once(child, "exit");
+    return status === 0 && /^Z/.test(output.trim());
+  } catch {
+    return false;
+  }
+}
+
 async function processCommand(pid) {
   const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "command="], {
     env: { ...process.env, LC_ALL: "C" },
@@ -646,10 +673,12 @@ async function runtimeOwnership(runtime, context) {
       const currentBirthMarker = await processBirthMarker(runtime.pid);
       if (!currentBirthMarker || currentBirthMarker !== runtime.process_birth_marker) return "unowned";
     }
-    const command = await processCommand(runtime.pid);
-    const marker = `__lifecycle-serve --instance ${runtime.instance_id}`;
-    const wrapperEntrypoint = runtime.wrapper_entrypoint || context.executablePath;
-    return command.includes(wrapperEntrypoint) && command.includes(marker) ? "owned" : "unowned";
+    if (!(await processIsZombie(runtime.pid))) {
+      const command = await processCommand(runtime.pid);
+      const marker = `__lifecycle-serve --instance ${runtime.instance_id}`;
+      const wrapperEntrypoint = runtime.wrapper_entrypoint || context.executablePath;
+      return command.includes(wrapperEntrypoint) && command.includes(marker) ? "owned" : "unowned";
+    }
   }
 
   const pgid = runtime.pgid;
@@ -1092,7 +1121,8 @@ async function preflightRestartEndpoint(preparedStart, context, paths) {
   }
   if (
     currentEndpoint?.port === preparedStart.port &&
-    normalizeAddress(currentEndpoint.host) === normalizeAddress(preparedStart.bindHost)
+    normalizeAddress(currentEndpoint.host) === normalizeAddress(preparedStart.bindHost) &&
+    normalizeAddress(currentEndpoint.address) === normalizeAddress(preparedStart.bindAddress)
   ) {
     return;
   }

@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import { once } from "node:events";
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
-import { createConnection, createServer as createNetServer } from "node:net";
+import { createConnection, createServer as createNetServer, isIP } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -107,6 +108,15 @@ function processExists(pid: number): boolean {
   }
 }
 
+async function linuxProcessIdentity(pid: number): Promise<{ birthMarker: string; state: string }> {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+  if (fields.length < 20 || !/^\d+$/.test(fields[19])) {
+    throw new Error(`Could not parse Linux process identity for ${pid}.`);
+  }
+  return { birthMarker: `linux:${fields[19]}`, state: fields[0] };
+}
+
 function processGroupExists(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
@@ -171,6 +181,12 @@ async function cleanupLifecycle(root: string): Promise<void> {
 const lanIpv4 = Object.values(networkInterfaces())
   .flatMap((addresses) => addresses || [])
   .find((address) => address.family === "IPv4" && !address.internal)?.address;
+const resolvedLocalhost = (await lookup("localhost")).address;
+const alternateLoopback = isIP(resolvedLocalhost) === 6 ? "127.0.0.1" : "::1";
+const supportsAlternateLoopback = await unusedPort(alternateLoopback).then(
+  () => true,
+  () => false
+);
 const supportsSecondaryIpv4Loopback = await unusedPort("127.0.0.2").then(
   () => true,
   () => false
@@ -921,6 +937,60 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 30_000);
 
+  it.runIf(supportsAlternateLoopback)(
+    "preserves a same-port localhost dashboard when DNS resolves to an occupied different loopback",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort(alternateLoopback);
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+      const envFile = join(configDir, "env");
+      const unrelated = createNetServer();
+      const alternateUrl = `http://${isIP(alternateLoopback) === 6 ? `[${alternateLoopback}]` : alternateLoopback}:${port}`;
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `HOST=${alternateLoopback}\nPORT=${port}\n`, "utf8");
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as {
+          bind_address: string;
+          bind_host: string;
+          pid: number;
+          url: string;
+        };
+        const originalPid = runtime.pid;
+        runtime.bind_address = alternateLoopback;
+        runtime.bind_host = "localhost";
+        runtime.url = `http://localhost:${port}`;
+        const recordedRuntime = `${JSON.stringify(runtime, null, 2)}\n`;
+        await writeFile(runtimePath, recordedRuntime, "utf8");
+        await writeFile(envFile, `HOST=localhost\nPORT=${port}\n`, "utf8");
+        unrelated.listen(port, resolvedLocalhost);
+        await once(unrelated, "listening");
+
+        const restarted = await runLifecycle(["restart"], root);
+
+        expect(restarted.status).toBe(1);
+        expect(restarted.stderr).toContain(`Port ${port} is already in use`);
+        expect(restarted.stderr).toContain("nothing was stopped");
+        expect(await readFile(runtimePath, "utf8")).toBe(recordedRuntime);
+        expect(processExists(originalPid)).toBe(true);
+        await expect(fetch(`${alternateUrl}/api/health`).then((response) => response.json()))
+          .resolves.toMatchObject({ ok: true });
+        expect(unrelated.listening).toBe(true);
+      } finally {
+        if (unrelated.listening) {
+          await new Promise<void>((resolveClose) => unrelated.close(() => resolveClose()));
+        }
+        await cleanupLifecycle(root);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    30_000
+  );
+
   it("rejects inconsistent runtime endpoint metadata before restarting an owned dashboard", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const originalPort = await unusedPort();
@@ -1515,6 +1585,109 @@ describe("portable dashboard lifecycle", () => {
       }
     },
     30_000
+  );
+
+  it.runIf(process.platform === "linux")(
+    "falls through a test-owned zombie wrapper to its marked live server group",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const runtimePath = join(lifecycleDir, "runtime.json");
+      const wrapperScript = join(root, "zombie-wrapper.mjs");
+      const holderScript = join(root, "zombie-holder.mjs");
+      const wrapperPidFile = join(root, "wrapper.pid");
+      const releaseFile = join(root, "release-holder");
+      const serverEntrypoint = resolve("src/server/index.ts");
+      const instanceId = "a".repeat(32);
+      const port = await unusedPort();
+      let wrapperPid: number | undefined;
+      await mkdir(lifecycleDir, { recursive: true });
+      await chmod(lifecycleDir, 0o700);
+      await writeFile(
+        wrapperScript,
+        `import { spawn } from "node:child_process";
+const server = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", process.argv[2], "--lifecycle-instance", process.argv[3]], {
+  stdio: "ignore"
+});
+server.unref();
+`,
+        "utf8"
+      );
+      await writeFile(
+        holderScript,
+        `import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const child = spawn(process.execPath, [process.argv[2], process.argv[3], process.argv[4]], {
+  detached: true,
+  stdio: "ignore"
+});
+writeFileSync(process.argv[5], String(child.pid));
+const waitArray = new Int32Array(new SharedArrayBuffer(4));
+while (!existsSync(process.argv[6])) Atomics.wait(waitArray, 0, 0, 25);
+try { process.kill(-child.pid, "SIGKILL"); } catch {}
+child.once("exit", () => { process.exitCode = 0; });
+setTimeout(() => { process.exitCode = 1; }, 2000).unref();
+`,
+        "utf8"
+      );
+      const holder = spawn(
+        process.execPath,
+        [holderScript, wrapperScript, serverEntrypoint, instanceId, wrapperPidFile, releaseFile],
+        { stdio: "ignore" }
+      );
+
+      try {
+        const zombieDeadline = Date.now() + 5_000;
+        let identity: { birthMarker: string; state: string } | undefined;
+        while (Date.now() < zombieDeadline) {
+          const pidText = await readFile(wrapperPidFile, "utf8").catch(() => "");
+          if (pidText) {
+            wrapperPid = Number(pidText);
+            identity = await linuxProcessIdentity(wrapperPid).catch(() => undefined);
+            if (identity?.state === "Z") break;
+          }
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        }
+        expect(wrapperPid).toBeTypeOf("number");
+        expect(identity?.state).toBe("Z");
+        await writeFile(runtimePath, `${JSON.stringify({
+          schema_version: 1,
+          pid: wrapperPid,
+          pgid: wrapperPid,
+          instance_id: instanceId,
+          process_birth_marker: identity?.birthMarker,
+          server_entrypoint: serverEntrypoint,
+          started_at: new Date().toISOString(),
+          url: `http://127.0.0.1:${port}`,
+          log_file: join(lifecycleDir, "dashboard.log"),
+          wrapper_entrypoint: wrapperScript
+        }, null, 2)}\n`, "utf8");
+        await chmod(runtimePath, 0o600);
+
+        const status = await runLifecycle(["status"], root);
+
+        expect(status.status).toBe(1);
+        expect(status.stderr).toContain("process is running, but its health check failed");
+        expect(status.stderr).not.toContain("does not identify an owned process");
+      } finally {
+        const holderExit = once(holder, "exit").catch(() => []);
+        await writeFile(releaseFile, "release\n", "utf8").catch(() => {});
+        await Promise.race([
+          holderExit,
+          new Promise((resolveTimeout) => setTimeout(resolveTimeout, 3_000))
+        ]);
+        if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+        if (wrapperPid && processGroupExists(wrapperPid)) {
+          try {
+            process.kill(-wrapperPid, "SIGKILL");
+          } catch {
+            // The test-owned group may have disappeared during holder cleanup.
+          }
+        }
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
   );
 
   it("fails closed when an orphaned server group's process inventory is unavailable", async () => {
