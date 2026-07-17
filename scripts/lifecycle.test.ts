@@ -329,10 +329,10 @@ describe("portable dashboard lifecycle", () => {
       expect(started.status).toBe(0);
       expect(started.stdout).toContain(`Dashboard started at http://127.0.0.1:${port}.`);
 
-      const browserResponse = await fetch(`http://127.0.0.1:${port}/`);
+      const browserResponse = await fetch(`http://127.0.0.1:${port}/api/settings`);
       expect(browserResponse.status).toBe(200);
 
-      const configuredHostResponse = await fetch(`http://127.0.0.1:${port}/`, {
+      const configuredHostResponse = await fetch(`http://127.0.0.1:${port}/api/settings`, {
         headers: { host: `dashboard.example.test:${port}` }
       });
       expect(configuredHostResponse.status).toBe(200);
