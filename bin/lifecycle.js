@@ -1501,7 +1501,7 @@ async function openDashboard(context, paths) {
   }
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   const child = spawn(opener, [runtime.url], { detached: true, stdio: "ignore" });
-  const [status] = await once(child, "exit");
+  const [status] = await once(child, "exit").catch(() => [null]);
   if (status !== 0) {
     throw new Error("Dashboard URL opener could not open the dashboard URL.");
   }

@@ -1861,6 +1861,17 @@ describe("portable dashboard lifecycle", () => {
       expect(rejectedOpen.stdout).not.toContain("Opened ");
       expect(rejectedOpen.stderr).toContain("could not open the dashboard URL");
 
+      const missingOpenerDir = join(root, "missing-opener-bin");
+      await mkdir(missingOpenerDir);
+      await symlink(await executableOnPath("ps"), join(missingOpenerDir, "ps"));
+      const missingOpen = await runLifecycle(["open"], root, {
+        PATH: missingOpenerDir
+      });
+      expect(missingOpen.status).toBe(1);
+      expect(missingOpen.stdout).not.toContain("Opened ");
+      expect(missingOpen.stderr).toContain("could not open the dashboard URL");
+      expect(missingOpen.stderr).not.toContain("spawn ");
+
       const firstStop = await runLifecycle(["stop"], root);
       expect(firstStop.status).toBe(0);
       expect(firstStop.stdout).toContain("Dashboard stopped.");
