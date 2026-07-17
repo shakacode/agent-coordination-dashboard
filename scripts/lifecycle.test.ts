@@ -1309,6 +1309,16 @@ describe("portable dashboard lifecycle", () => {
       }
       expect(openedUrl).toBe(`http://127.0.0.1:${port}`);
 
+      for (const opener of ["open", "xdg-open"]) {
+        await writeFile(join(openerDir, opener), "#!/bin/sh\nexit 7\n", "utf8");
+      }
+      const rejectedOpen = await runLifecycle(["open"], root, {
+        PATH: `${openerDir}:/usr/bin:/bin`
+      });
+      expect(rejectedOpen.status).toBe(1);
+      expect(rejectedOpen.stdout).not.toContain("Opened ");
+      expect(rejectedOpen.stderr).toContain("could not open the dashboard URL");
+
       const firstStop = await runLifecycle(["stop"], root);
       expect(firstStop.status).toBe(0);
       expect(firstStop.stdout).toContain("Dashboard stopped.");
@@ -1347,7 +1357,7 @@ describe("portable dashboard lifecycle", () => {
     const fakePs = join(fakeBinDir, "ps");
     await writeFile(
       fakePs,
-      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PS_ARGUMENTS_LOG\"\nprintf '%s\\n' \"$LC_ALL\" >> \"$PS_LOCALE_LOG\"\nexec \"$REAL_PS\" \"$@\"\n",
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PS_ARGUMENTS_LOG\"\nprintf '%s\\n' \"$LC_ALL\" >> \"$PS_LOCALE_LOG\"\nif [ \"$*\" = \"-ww -axo pgid=,command=\" ]; then\n  dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\\000' x\n  printf '\\n'\nfi\nexec \"$REAL_PS\" \"$@\"\n",
       "utf8"
     );
     await chmod(fakePs, 0o700);
@@ -1542,6 +1552,38 @@ exec "$REAL_PS" "$@"
     }
   }, 60_000);
 
+  it("rejects a symlinked lifecycle state directory without modifying its target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const stateHome = join(root, "state");
+    const lifecycleDir = join(stateHome, "agent-coordination-dashboard");
+    const harmlessTarget = join(root, "harmless-state-target");
+    const envFile = join(configDir, "env");
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(stateHome, { recursive: true }),
+      mkdir(harmlessTarget, { mode: 0o755 })
+    ]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    await symlink(harmlessTarget, lifecycleDir);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+
+      expect(started.status).toBe(1);
+      expect(started.stderr).toContain("Lifecycle state path is not a protected directory");
+      expect((await stat(harmlessTarget)).mode & 0o777).toBe(0o755);
+      await expect(access(join(harmlessTarget, "runtime.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(harmlessTarget, "dashboard.log"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await portIsListening(port)).toBe(false);
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("does not follow or chmod a symlinked lifecycle log when starting", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const baseline = await lifecycleProcessIds();
@@ -1675,6 +1717,42 @@ exec "$REAL_PS" "$@"
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it.each(["symlink", "fifo"])(
+    "rejects a %s runtime metadata file without following or blocking",
+    async (fixture) => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const runtimeFile = join(lifecycleDir, "runtime.json");
+      await mkdir(lifecycleDir, { recursive: true });
+      if (fixture === "symlink") {
+        const harmlessTarget = join(root, "harmless-runtime-target.json");
+        await writeFile(harmlessTarget, JSON.stringify({
+          schema_version: 1,
+          pid: 999_999_999,
+          instance_id: "0".repeat(32),
+          url: "http://127.0.0.1:4319"
+        }), "utf8");
+        await chmod(harmlessTarget, 0o600);
+        await symlink(harmlessTarget, runtimeFile);
+      } else {
+        const mkfifo = spawn("mkfifo", [runtimeFile], { stdio: "ignore" });
+        const [mkfifoStatus] = (await once(mkfifo, "exit")) as [number | null, NodeJS.Signals | null];
+        expect(mkfifoStatus).toBe(0);
+      }
+
+      try {
+        const status = await runLifecycle(["status"], root, {}, process.cwd(), 2_000);
+
+        expect(status.status).toBe(1);
+        expect(status.stdout).toBe("");
+        expect(status.stderr).toContain("Dashboard lifecycle metadata is unreadable or invalid");
+      } finally {
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    10_000
+  );
 
   it("rejects a non-regular lifecycle log with a clear error", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

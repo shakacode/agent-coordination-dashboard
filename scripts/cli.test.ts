@@ -334,6 +334,36 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
+  it("preserves an observed local-interface HTTP status when the body fails mid-stream", async () => {
+    const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"ok":', () => res.destroy());
+    });
+
+    try {
+      const result = await runCli([
+        "doctor",
+        "--stack-json",
+        "--url",
+        baseUrl,
+        "--local-interface-url"
+      ]);
+
+      expect(result.status).toBe(2);
+      const contract = JSON.parse(result.stdout) as DoctorContract;
+      expect(contract.checks.find((check) => check.id === "dashboard.health")).toEqual({
+        id: "dashboard.health",
+        status: "failed",
+        summary: "Dashboard health payload is malformed",
+        details: { url: baseUrl, http_status: 200 },
+        guidance: "Inspect or upgrade the dashboard service, then rerun doctor."
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("does not accept an unexpected success status as service health", async () => {
     const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
       res.statusCode = 201;

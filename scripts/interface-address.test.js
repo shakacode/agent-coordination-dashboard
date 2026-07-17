@@ -5,10 +5,17 @@ import {
 } from "../bin/interface-address.js";
 
 describe("dashboardHostsForInterfaceAddress", () => {
-  it("treats numeric network-interface family 6 as IPv6", () => {
-    expect(dashboardHostsForInterfaceAddress({ address: "::1", family: 6 })).toEqual({
+  it.each([6, "IPv6"])("treats network-interface family %s as IPv6", (family) => {
+    expect(dashboardHostsForInterfaceAddress({ address: "2001:db8::1", family })).toEqual({
       localAddress: "::1",
-      urlHost: "[::1]"
+      urlHost: "[2001:db8::1]"
+    });
+  });
+
+  it.each([4, "IPv4"])("treats network-interface family %s as IPv4", (family) => {
+    expect(dashboardHostsForInterfaceAddress({ address: "192.0.2.10", family })).toEqual({
+      localAddress: "127.0.0.1",
+      urlHost: "192.0.2.10"
     });
   });
 });

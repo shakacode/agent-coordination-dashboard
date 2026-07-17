@@ -233,11 +233,15 @@ async function fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress)
           finish(() => resolveRequest({ response: resultResponse, error: "malformed" }));
         }
       });
-      response.once("error", () => finish(() => rejectRequest(new Error("unreachable"))));
+      response.once("error", () => {
+        finish(() => resolveRequest({ response: resultResponse, error: "malformed" }));
+      });
     });
     const timeout = setTimeout(() => {
-      request.destroy();
-      finish(() => rejectRequest(new Error("timeout")));
+      finish(() => {
+        request.destroy();
+        rejectRequest(new Error("timeout"));
+      });
     }, remainingMs);
     request.once("error", () => finish(() => rejectRequest(new Error("unreachable"))));
     request.end();

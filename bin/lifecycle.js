@@ -141,8 +141,7 @@ async function reapStaleLock(paths, instanceId, verifiedOwners) {
 }
 
 async function acquireLifecycleLock(paths) {
-  await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
-  await chmod(paths.stateDir, 0o700);
+  await ensureLifecycleStateDir(paths);
   const instanceId = randomBytes(16).toString("hex");
   const ownerBirthMarker = await processBirthMarker(process.pid);
   if (!ownerBirthMarker) {
@@ -202,9 +201,74 @@ function isFileNotFound(error) {
   return error && typeof error === "object" && error.code === "ENOENT";
 }
 
-async function readRuntime(runtimeFile) {
+function lifecycleStateDirError(error) {
+  if (
+    error &&
+    typeof error === "object" &&
+    new Set(["EEXIST", "ELOOP", "ENOTDIR"]).has(error.code)
+  ) {
+    return new Error("Lifecycle state path is not a protected directory.");
+  }
+  return error;
+}
+
+async function ensureLifecycleStateDir(paths) {
   try {
-    const parsed = JSON.parse(await readFile(runtimeFile, "utf8"));
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw lifecycleStateDirError(error);
+  }
+
+  let handle;
+  try {
+    handle = await open(
+      paths.stateDir,
+      fsConstants.O_RDONLY |
+        fsConstants.O_DIRECTORY |
+        fsConstants.O_NOFOLLOW |
+        fsConstants.O_NONBLOCK
+    );
+  } catch (error) {
+    throw lifecycleStateDirError(error);
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isDirectory()) {
+      throw new Error("Lifecycle state path is not a protected directory.");
+    }
+    if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+      throw new Error("Lifecycle state directory is not owned by the current user.");
+    }
+    await handle.chmod(0o700);
+    const finalStats = await handle.stat();
+    if (!finalStats.isDirectory() || (finalStats.mode & 0o777) !== 0o700) {
+      throw new Error("Lifecycle state directory must use mode 0700.");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readRuntime(runtimeFile) {
+  let handle;
+  try {
+    handle = await open(
+      runtimeFile,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+    );
+  } catch (error) {
+    if (isFileNotFound(error)) return null;
+    throw new Error("Dashboard lifecycle metadata is unreadable or invalid.");
+  }
+  try {
+    const stats = await handle.stat();
+    if (
+      !stats.isFile() ||
+      (typeof process.getuid === "function" && stats.uid !== process.getuid())
+    ) {
+      throw new Error("invalid");
+    }
+    const parsed = JSON.parse(await handle.readFile("utf8"));
     if (
       parsed?.schema_version !== LIFECYCLE_SCHEMA_VERSION ||
       !Number.isInteger(parsed.pid) ||
@@ -235,15 +299,15 @@ async function readRuntime(runtimeFile) {
       throw new Error("invalid");
     }
     return parsed;
-  } catch (error) {
-    if (isFileNotFound(error)) return null;
+  } catch {
     throw new Error("Dashboard lifecycle metadata is unreadable or invalid.");
+  } finally {
+    await handle.close();
   }
 }
 
 async function writeRuntime(paths, runtime) {
-  await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
-  await chmod(paths.stateDir, 0o700);
+  await ensureLifecycleStateDir(paths);
   const temporary = `${paths.runtimeFile}.${process.pid}.tmp`;
   let complete = false;
   let ownsTemporary = false;
@@ -370,8 +434,7 @@ async function validateLifecycleLogHandle(handle) {
 }
 
 async function openLifecycleLogForAppend(paths) {
-  await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
-  await chmod(paths.stateDir, 0o700);
+  await ensureLifecycleStateDir(paths);
   let handle;
   try {
     handle = await open(
@@ -516,17 +579,24 @@ async function processGroupCommands(pgid) {
       env: { ...process.env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "ignore"]
     });
-    let output = "";
+    const commands = [];
+    let pending = "";
+    const collectLine = (line) => {
+      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      if (match && Number(match[1]) === pgid) commands.push(match[2]);
+    };
     child.stdout.on("data", (chunk) => {
-      if (output.length < 1024 * 1024) output += String(chunk);
+      pending += String(chunk);
+      let newlineIndex;
+      while ((newlineIndex = pending.indexOf("\n")) >= 0) {
+        collectLine(pending.slice(0, newlineIndex));
+        pending = pending.slice(newlineIndex + 1);
+      }
     });
-    const [status] = await once(child, "exit");
+    const [status] = await once(child, "close");
     if (status !== 0) return null;
-    return output
-      .split("\n")
-      .map((line) => line.match(/^\s*(\d+)\s+(.*)$/))
-      .filter((match) => match && Number(match[1]) === pgid)
-      .map((match) => match[2]);
+    if (pending) collectLine(pending);
+    return commands;
   } catch {
     return null;
   }
@@ -1141,8 +1211,10 @@ async function openDashboard(context, paths) {
   }
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   const child = spawn(opener, [runtime.url], { detached: true, stdio: "ignore" });
-  await once(child, "spawn");
-  child.unref();
+  const [status] = await once(child, "exit");
+  if (status !== 0) {
+    throw new Error("Dashboard URL opener could not open the dashboard URL.");
+  }
   process.stdout.write(`Opened ${runtime.url}.\n`);
 }
 
