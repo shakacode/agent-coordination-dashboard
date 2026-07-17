@@ -197,6 +197,32 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
+  it("restarts the exact owned IPv6 wildcard endpoint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort("::1");
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(envFile, `HOST=::\nPORT=${port}\nALLOWED_HOSTS=dashboard.example.test\n`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const originalPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+
+      const restarted = await runLifecycle(["restart"], root);
+      const replacementPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+
+      expect(restarted.status).toBe(0);
+      expect(replacementPid).not.toBe(originalPid);
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
   it("rejects a hostname bind before spawning a lifecycle process", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const baseline = await lifecycleProcessIds();
@@ -246,6 +272,63 @@ describe("portable dashboard lifecycle", () => {
     } finally {
       await cleanupLifecycle(root);
       await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
+  it.each([
+    { label: "missing", allowedHosts: null },
+    { label: "blank", allowedHosts: "   " },
+    { label: "invalid", allowedHosts: "bad host" },
+    { label: "catch-all", allowedHosts: "*" },
+    { label: "expanded IPv6 wildcard", allowedHosts: "0:0:0:0:0:0:0:0" }
+  ])("rejects $label wildcard ALLOWED_HOSTS before spawning", async ({ allowedHosts }) => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    const allowedHostsLine = allowedHosts === null ? "" : `ALLOWED_HOSTS=${allowedHosts}\n`;
+    await writeFile(envFile, `HOST=0.0.0.0\nPORT=${port}\n${allowedHostsLine}`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(1);
+      expect(started.stderr).toContain("specific hostnames or IP addresses");
+      await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(lifecycleDir, "dashboard.log"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await lifecycleProcessIds()).toEqual(baseline);
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
+  it("accepts explicit hostname and IP wildcard ALLOWED_HOSTS entries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      envFile,
+      `HOST=0.0.0.0\nPORT=${port}\nALLOWED_HOSTS=dashboard.example.test,192.0.2.1,::1\n`,
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      expect(started.stdout).toContain(`Dashboard started at http://127.0.0.1:${port}.`);
+    } finally {
+      await cleanupLifecycle(root);
       await rm(root, { force: true, recursive: true });
     }
   }, 20_000);
@@ -334,7 +417,31 @@ describe("portable dashboard lifecycle", () => {
     { label: "invalid syntax", fixture: "invalid", message: "invalid syntax on line 1" },
     { label: "unsafe mode", fixture: "mode", message: "must use mode 0600" },
     { label: "invalid port", fixture: "port", message: "must be an integer" },
-    { label: "wildcard host without allowed hosts", fixture: "wildcard", message: "ALLOWED_HOSTS is required" }
+    {
+      label: "wildcard host without allowed hosts",
+      fixture: "wildcard_missing",
+      message: "specific hostnames or IP addresses"
+    },
+    {
+      label: "wildcard host with blank allowed hosts",
+      fixture: "wildcard_blank",
+      message: "specific hostnames or IP addresses"
+    },
+    {
+      label: "wildcard host with invalid allowed hosts",
+      fixture: "wildcard_invalid",
+      message: "specific hostnames or IP addresses"
+    },
+    {
+      label: "wildcard host with catch-all allowed hosts",
+      fixture: "wildcard_catchall",
+      message: "specific hostnames or IP addresses"
+    },
+    {
+      label: "wildcard host with expanded IPv6 wildcard allowed hosts",
+      fixture: "wildcard_expanded_ipv6",
+      message: "specific hostnames or IP addresses"
+    }
   ])("keeps the running dashboard intact when restart configuration has $label", async ({ fixture, message }) => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort();
@@ -363,8 +470,17 @@ describe("portable dashboard lifecycle", () => {
         await writeFile(envFile, "not an assignment\n", "utf8");
       } else if (fixture === "mode") {
         await chmod(envFile, 0o400);
-      } else if (fixture === "wildcard") {
-        await writeFile(envFile, `HOST=0.0.0.0\nPORT=${port}\n`, "utf8");
+      } else if (fixture.startsWith("wildcard_")) {
+        const allowedHosts = fixture === "wildcard_missing"
+          ? ""
+          : `ALLOWED_HOSTS=${fixture === "wildcard_blank"
+            ? "   "
+            : fixture === "wildcard_invalid"
+              ? "bad host"
+              : fixture === "wildcard_expanded_ipv6"
+                ? "0:0:0:0:0:0:0:0"
+                : "*"}\n`;
+        await writeFile(envFile, `HOST=0.0.0.0\nPORT=${port}\n${allowedHosts}`, "utf8");
       } else {
         await writeFile(envFile, "PORT=not-a-port\n", "utf8");
       }
@@ -381,6 +497,169 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   }, 60_000);
+
+  it("preflights an occupied replacement endpoint before restarting the owned dashboard", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const originalPort = await unusedPort();
+    const unrelated = createNetServer();
+    unrelated.listen(0, "127.0.0.1");
+    await once(unrelated, "listening");
+    const unrelatedAddress = unrelated.address();
+    if (!unrelatedAddress || typeof unrelatedAddress === "string") {
+      throw new Error("Expected an unrelated TCP address.");
+    }
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(envFile, `PORT=${originalPort}\n`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const originalRuntime = await readFile(runtimePath, "utf8");
+      const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+      await writeFile(envFile, `PORT=${unrelatedAddress.port}\n`, "utf8");
+
+      const restarted = await runLifecycle(["restart"], root);
+      const runtimeAfterRestart = await readFile(runtimePath, "utf8").catch(() => "");
+      const originalStillAlive = processExists(originalPid);
+      const originalStillHealthy = await fetch(`http://127.0.0.1:${originalPort}/api/health`)
+        .then(async (response) => {
+          const payload = await response.json() as { ok?: boolean };
+          return payload.ok === true;
+        }, () => false);
+      const unrelatedStillListening = unrelated.listening;
+
+      await writeFile(envFile, `PORT=${originalPort}\n`, "utf8");
+      if (!runtimeAfterRestart) {
+        const recovered = await runLifecycle(["start"], root);
+        expect(recovered.status).toBe(0);
+      }
+      const beforeSameEndpointRestart = JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number };
+      const sameEndpointRestart = await runLifecycle(["restart"], root);
+      const afterSameEndpointRestart = JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number };
+
+      expect(restarted.status).toBe(1);
+      expect(restarted.stderr).toContain(`Port ${unrelatedAddress.port} is already in use`);
+      expect(restarted.stderr).toContain("nothing was stopped");
+      expect(runtimeAfterRestart).toBe(originalRuntime);
+      expect(originalStillAlive).toBe(true);
+      expect(originalStillHealthy).toBe(true);
+      expect(unrelatedStillListening).toBe(true);
+      expect(sameEndpointRestart.status).toBe(0);
+      expect(afterSameEndpointRestart.pid).not.toBe(beforeSameEndpointRestart.pid);
+    } finally {
+      await cleanupLifecycle(root);
+      await new Promise<void>((resolve) => unrelated.close(() => resolve()));
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 30_000);
+
+  it.runIf(process.platform === "darwin" && Boolean(lanIpv4))(
+    "preflights a same-port LAN-specific listener before restarting to a wildcard endpoint",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const unrelated = createNetServer();
+      unrelated.listen(0, lanIpv4 as string);
+      await once(unrelated, "listening");
+      const unrelatedAddress = unrelated.address();
+      if (!unrelatedAddress || typeof unrelatedAddress === "string") {
+        throw new Error("Expected an unrelated TCP address.");
+      }
+      const originalPort = unrelatedAddress.port;
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `PORT=${originalPort}\n`, "utf8");
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        const originalRuntime = await readFile(runtimePath, "utf8");
+        const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+        await writeFile(
+          envFile,
+          `HOST=0.0.0.0\nPORT=${unrelatedAddress.port}\nALLOWED_HOSTS=dashboard.example.test\n`,
+          "utf8"
+        );
+
+        const restarted = await runLifecycle(["restart"], root);
+
+        expect(restarted.status).toBe(1);
+        expect(restarted.stderr).toContain(`Port ${unrelatedAddress.port} is already in use`);
+        expect(restarted.stderr).toContain("nothing was stopped");
+        expect(await readFile(runtimePath, "utf8")).toBe(originalRuntime);
+        expect(processExists(originalPid)).toBe(true);
+        await expect(fetch(`http://127.0.0.1:${originalPort}/api/health`).then((response) => response.json()))
+          .resolves.toMatchObject({ ok: true });
+        expect(unrelated.listening).toBe(true);
+      } finally {
+        await cleanupLifecycle(root);
+        await new Promise<void>((resolve) => unrelated.close(() => resolve()));
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    30_000
+  );
+
+  it.runIf(Boolean(lanIpv4))(
+    "allows owned same-port wildcard, LAN, and localhost bind-host transitions",
+    async () => {
+      const host = lanIpv4 as string;
+      const cases = [
+        {
+          current: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`,
+          replacement: `HOST=${host}\n`
+        },
+        {
+          current: `HOST=${host}\n`,
+          replacement: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`
+        },
+        {
+          current: "HOST=localhost\n",
+          replacement: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`
+        },
+        {
+          current: `HOST=0.0.0.0\nALLOWED_HOSTS=${host}\n`,
+          replacement: "HOST=localhost\n"
+        }
+      ];
+
+      for (const fixture of cases) {
+        const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+        const port = await unusedPort(fixture.current.includes("HOST=localhost") ? "localhost" : "127.0.0.1");
+        const configDir = join(root, "config", "agent-coordination-dashboard");
+        const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+        const envFile = join(configDir, "env");
+        await mkdir(configDir, { recursive: true });
+        await writeFile(envFile, `${fixture.current}PORT=${port}\n`, "utf8");
+        await chmod(envFile, 0o600);
+
+        try {
+          const started = await runLifecycle(["start"], root);
+          expect(started.status).toBe(0);
+          const originalPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+          await writeFile(envFile, `${fixture.replacement}PORT=${port}\n`, "utf8");
+
+          const restarted = await runLifecycle(["restart"], root);
+          const replacementPid = (JSON.parse(await readFile(runtimePath, "utf8")) as { pid: number }).pid;
+          const status = await runLifecycle(["status"], root);
+
+          expect(restarted.status).toBe(0);
+          expect(replacementPid).not.toBe(originalPid);
+          expect(status.status).toBe(0);
+        } finally {
+          await cleanupLifecycle(root);
+          await rm(root, { force: true, recursive: true });
+        }
+      }
+    },
+    40_000
+  );
 
   it("reports stale metadata and removes it on an idempotent stop", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

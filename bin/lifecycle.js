@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { once } from "node:events";
 import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createConnection, isIP } from "node:net";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 const LIFECYCLE_SCHEMA_VERSION = 1;
@@ -203,6 +204,15 @@ async function readRuntime(runtimeFile) {
       typeof parsed.instance_id !== "string" ||
       !/^[a-f0-9]{32}$/.test(parsed.instance_id) ||
       typeof parsed.url !== "string" ||
+      ((parsed.bind_host !== undefined || parsed.bind_port !== undefined) &&
+        (typeof parsed.bind_host !== "string" ||
+          (parsed.bind_host !== "localhost" && isIP(parsed.bind_host) === 0) ||
+          (isIP(parsed.bind_host) === 6 && parsed.bind_host.includes("%")) ||
+          !Number.isInteger(parsed.bind_port) ||
+          parsed.bind_port < 1 ||
+          parsed.bind_port > 65535)) ||
+      (parsed.bind_address !== undefined &&
+        (typeof parsed.bind_address !== "string" || isIP(parsed.bind_address) === 0)) ||
       ((parsed.pgid !== undefined || parsed.process_birth_marker !== undefined) &&
         (!Number.isInteger(parsed.pgid) ||
           parsed.pgid <= 1 ||
@@ -447,6 +457,49 @@ function probeHostForBindHost(host) {
   return host;
 }
 
+function probeHostsForBindHost(host, bindAddress = probeHostForBindHost(host)) {
+  const probeHosts = new Set([host === "localhost" ? bindAddress : probeHostForBindHost(host)]);
+  if (host !== "0.0.0.0" && host !== "::") return [...probeHosts];
+
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses || []) {
+      const isIpv4 = address.family === "IPv4" || address.family === 4;
+      if (host === "0.0.0.0" ? isIpv4 : true) probeHosts.add(address.address);
+    }
+  }
+  return [...probeHosts];
+}
+
+function normalizeAddress(host) {
+  const value = host.toLowerCase();
+  if (isIP(value) !== 6) return value;
+  return new URL(`http://[${value}]`).hostname.slice(1, -1);
+}
+
+function bindHostCoversProbeHost(bindHost, probeHost) {
+  const probeFamily = isIP(probeHost);
+  if (bindHost === "0.0.0.0") return probeFamily === 4;
+  if (bindHost === "::") return probeFamily === 6;
+  return normalizeAddress(bindHost) === normalizeAddress(probeHost);
+}
+
+function runtimeBindEndpoint(runtime) {
+  if (runtime.bind_host !== undefined && runtime.bind_port !== undefined) {
+    return {
+      address: runtime.bind_address || runtime.bind_host,
+      host: runtime.bind_host,
+      port: runtime.bind_port
+    };
+  }
+  const runtimeUrl = new URL(runtime.url);
+  const hostname = runtimeUrl.hostname;
+  return {
+    address: hostname.startsWith("[") ? hostname.slice(1, -1) : hostname,
+    host: hostname.startsWith("[") ? hostname.slice(1, -1) : hostname,
+    port: Number(runtimeUrl.port || 80)
+  };
+}
+
 function validateLifecycleHost(value) {
   const host = String(value || "127.0.0.1").trim();
   const addressFamily = isIP(host);
@@ -457,6 +510,19 @@ function validateLifecycleHost(value) {
     throw new Error("HOST must be localhost or an IPv4 or IPv6 address (including wildcard addresses).");
   }
   return host;
+}
+
+function isSpecificAllowedHost(value) {
+  const host = value.trim().toLowerCase();
+  const addressFamily = isIP(host);
+  if (addressFamily > 0) {
+    return !new Set(["0.0.0.0", "::"]).has(normalizeAddress(host)) && !host.includes("%");
+  }
+  if (!host || host === "*" || host.length > 253 || /^[0-9.]+$/.test(host)) return false;
+  const hostname = host.endsWith(".") ? host.slice(0, -1) : host;
+  return hostname.split(".").every((label) =>
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+  );
 }
 
 function formatUrlHost(host) {
@@ -665,20 +731,56 @@ async function prepareStart(options) {
     throw new Error("PORT in the environment file must be an integer from 1 through 65535.");
   }
   const bindHost = validateLifecycleHost(childEnv.HOST);
-  const allowedHosts = String(childEnv.ALLOWED_HOSTS || "")
-    .split(",")
-    .some((host) => host.trim());
-  if (new Set(["0.0.0.0", "::"]).has(bindHost) && !allowedHosts) {
-    throw new Error("ALLOWED_HOSTS is required when HOST binds all interfaces.");
+  const allowedHosts = String(childEnv.ALLOWED_HOSTS || "").split(",");
+  if (
+    new Set(["0.0.0.0", "::"]).has(bindHost) &&
+    !allowedHosts.every(isSpecificAllowedHost)
+  ) {
+    throw new Error(
+      "ALLOWED_HOSTS must contain only specific hostnames or IP addresses when HOST binds all interfaces."
+    );
   }
-  childEnv.HOST = bindHost;
+  const bindAddress = bindHost === "localhost" ? (await lookup(bindHost)).address : bindHost;
+  childEnv.HOST = bindAddress;
   const probeHost = probeHostForBindHost(bindHost);
   return {
+    bindAddress,
+    bindHost,
     childEnv,
     port,
     probeHost,
     url: new URL(`http://${formatUrlHost(probeHost)}:${port}`).origin
   };
+}
+
+async function preflightRestartEndpoint(preparedStart, context, paths) {
+  const current = await readRuntime(paths.runtimeFile);
+  let currentEndpoint = null;
+  if (current) {
+    const ownership = await runtimeOwnership(current, context);
+    if (ownership === "owned" || ownership === "orphaned_owned") {
+      currentEndpoint = runtimeBindEndpoint(current);
+    }
+  }
+  if (
+    currentEndpoint?.port === preparedStart.port &&
+    normalizeAddress(currentEndpoint.host) === normalizeAddress(preparedStart.bindHost)
+  ) {
+    return;
+  }
+  for (const host of probeHostsForBindHost(preparedStart.bindHost, preparedStart.bindAddress)) {
+    if (await portIsListening(preparedStart.port, host)) {
+      if (
+        currentEndpoint?.port === preparedStart.port &&
+        bindHostCoversProbeHost(currentEndpoint.address, host)
+      ) {
+        continue;
+      }
+      throw new Error(
+        `Port ${preparedStart.port} is already in use by a process this lifecycle does not own; nothing was stopped.`
+      );
+    }
+  }
 }
 
 async function startDashboard(options, context, paths, preparedStart = null) {
@@ -701,7 +803,7 @@ async function startDashboard(options, context, paths, preparedStart = null) {
     await unlink(paths.runtimeFile);
   }
 
-  const { childEnv, port, probeHost, url } = preparedStart || await prepareStart(options);
+  const { bindAddress, bindHost, childEnv, port, probeHost, url } = preparedStart || await prepareStart(options);
   if (await portIsListening(port, probeHost)) {
     throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
   }
@@ -737,6 +839,9 @@ async function startDashboard(options, context, paths, preparedStart = null) {
   try {
     await writeRuntime(paths, {
       schema_version: LIFECYCLE_SCHEMA_VERSION,
+      bind_address: bindAddress,
+      bind_host: bindHost,
+      bind_port: port,
       pid: child.pid,
       pgid: child.pid,
       instance_id: instanceId,
@@ -840,6 +945,7 @@ export async function runLifecycleCommand(command, args, context) {
     } else if (command === "restart") {
       await withLifecycleLock(paths, async () => {
         const preparedStart = await prepareStart(options);
+        await preflightRestartEndpoint(preparedStart, context, paths);
         if (await stopDashboard(context, paths, { quiet: true })) {
           await startDashboard(options, context, paths, preparedStart);
         }
