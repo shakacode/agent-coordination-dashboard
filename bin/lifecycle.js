@@ -339,6 +339,77 @@ async function readProtectedEnv(envFile, required) {
   }
 }
 
+function lifecycleLogOpenError(error) {
+  if (error && typeof error === "object" && error.code === "ELOOP") {
+    return new Error("Lifecycle log file must be a regular file, not a symlink.");
+  }
+  if (
+    error &&
+    typeof error === "object" &&
+    new Set(["EISDIR", "ENODEV", "ENXIO"]).has(error.code)
+  ) {
+    return new Error("Lifecycle log file must be a regular file.");
+  }
+  return error;
+}
+
+async function validateLifecycleLogHandle(handle) {
+  const stats = await handle.stat();
+  if (!stats.isFile()) {
+    throw new Error("Lifecycle log file must be a regular file.");
+  }
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    throw new Error("Lifecycle log file must be owned by the current user.");
+  }
+}
+
+async function openLifecycleLogForAppend(paths) {
+  await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+  await chmod(paths.stateDir, 0o700);
+  let handle;
+  try {
+    handle = await open(
+      paths.logFile,
+      fsConstants.O_CREAT |
+        fsConstants.O_APPEND |
+        fsConstants.O_WRONLY |
+        fsConstants.O_NOFOLLOW |
+        fsConstants.O_NONBLOCK,
+      0o600
+    );
+  } catch (error) {
+    throw lifecycleLogOpenError(error);
+  }
+  try {
+    await validateLifecycleLogHandle(handle);
+    await handle.chmod(0o600);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function openLifecycleLogForRead(paths) {
+  let handle;
+  try {
+    handle = await open(
+      paths.logFile,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+    );
+  } catch (error) {
+    if (isFileNotFound(error)) return null;
+    throw lifecycleLogOpenError(error);
+  }
+  try {
+    await validateLifecycleLogHandle(handle);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
 function parseCommandOptions(command, args, paths) {
   if (!new Set(["start", "restart"]).has(command)) {
     if (args.length > 0) throw new LifecycleUsageError(`${command} does not accept options.`);
@@ -849,7 +920,7 @@ async function preflightRestartEndpoint(preparedStart, context, paths) {
   }
 }
 
-async function startDashboard(options, context, paths, preparedStart = null) {
+async function startDashboard(options, context, paths, preparedStart = null, preparedLogHandle = null) {
   const current = await readRuntime(paths.runtimeFile);
   if (current) {
     const ownership = await runtimeOwnership(current, context);
@@ -874,10 +945,7 @@ async function startDashboard(options, context, paths, preparedStart = null) {
     throw new Error(`Port ${port} is already in use by a process this lifecycle does not own; nothing was stopped.`);
   }
 
-  await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
-  await chmod(paths.stateDir, 0o700);
-  const logHandle = await open(paths.logFile, fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY, 0o600);
-  await chmod(paths.logFile, 0o600);
+  const logHandle = preparedLogHandle || await openLifecycleLogForAppend(paths);
   const instanceId = randomBytes(16).toString("hex");
   const child = spawn(
     process.execPath,
@@ -892,7 +960,7 @@ async function startDashboard(options, context, paths, preparedStart = null) {
   try {
     await once(child, "spawn");
   } finally {
-    await logHandle.close();
+    if (!preparedLogHandle) await logHandle.close();
   }
   if (!child.pid) throw new Error("Dashboard process did not receive a process id.");
   const childBirthMarker = await processBirthMarker(child.pid);
@@ -958,15 +1026,10 @@ async function reportStatus(context, paths) {
 }
 
 async function printLogs(paths) {
-  let handle;
-  try {
-    handle = await open(paths.logFile, fsConstants.O_RDONLY);
-  } catch (error) {
-    if (isFileNotFound(error)) {
-      process.stdout.write("No lifecycle logs are available yet.\n");
-      return;
-    }
-    throw error;
+  const handle = await openLifecycleLogForRead(paths);
+  if (!handle) {
+    process.stdout.write("No lifecycle logs are available yet.\n");
+    return;
   }
   try {
     const stats = await handle.stat();
@@ -1010,8 +1073,13 @@ export async function runLifecycleCommand(command, args, context) {
       await withLifecycleLock(paths, async () => {
         const preparedStart = await prepareStart(options);
         await preflightRestartEndpoint(preparedStart, context, paths);
-        if (await stopDashboard(context, paths, { quiet: true })) {
-          await startDashboard(options, context, paths, preparedStart);
+        const logHandle = await openLifecycleLogForAppend(paths);
+        try {
+          if (await stopDashboard(context, paths, { quiet: true })) {
+            await startDashboard(options, context, paths, preparedStart, logHandle);
+          }
+        } finally {
+          await logHandle.close();
         }
       });
     } else if (command === "logs") {

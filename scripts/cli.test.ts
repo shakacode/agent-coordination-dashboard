@@ -580,6 +580,38 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ component: "agent-coordination-dashboard" });
   });
 
+  it("recognizes canonical URLs throughout the IPv4 loopback range for lifecycle diagnostics", async () => {
+    const port = await unusedPort();
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      `http://127.0.0.2:${port}`,
+      "--local-interface-url"
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      component: "agent-coordination-dashboard",
+      status: "degraded"
+    });
+  });
+
+  it("still rejects noncanonical IPv4 loopback spelling for lifecycle diagnostics", async () => {
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      "http://127.1:4319",
+      "--local-interface-url"
+    ]);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("address assigned to this machine");
+  });
+
   it("keeps lifecycle local-interface diagnostics constrained to this machine", async () => {
     const result = await runCli([
       "doctor",

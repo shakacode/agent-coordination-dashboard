@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -13,7 +13,8 @@ async function runLifecycle(
   args: string[],
   root: string,
   extraEnv: NodeJS.ProcessEnv = {},
-  cwd = process.cwd()
+  cwd = process.cwd(),
+  timeoutMs = 0
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const child = spawn(process.execPath, [resolve("bin/agent-coordination-dashboard.js"), ...args], {
     cwd,
@@ -33,7 +34,9 @@ async function runLifecycle(
   child.stderr.on("data", (chunk) => {
     stderr += String(chunk);
   });
+  const timeout = timeoutMs > 0 ? setTimeout(() => child.kill("SIGKILL"), timeoutMs) : null;
   const [status] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  if (timeout) clearTimeout(timeout);
   return { status, stdout, stderr };
 }
 
@@ -148,6 +151,10 @@ async function cleanupLifecycle(root: string): Promise<void> {
 const lanIpv4 = Object.values(networkInterfaces())
   .flatMap((addresses) => addresses || [])
   .find((address) => address.family === "IPv4" && !address.internal)?.address;
+const supportsSecondaryIpv4Loopback = await unusedPort("127.0.0.2").then(
+  () => true,
+  () => false
+);
 
 describe("portable dashboard lifecycle", () => {
   it("rejects unsupported lifecycle platforms through the shared public-command guard", () => {
@@ -190,10 +197,13 @@ describe("portable dashboard lifecycle", () => {
       const started = await runLifecycle(["start"], root);
       expect(started.status).toBe(0);
       expect(started.stdout).toContain(`Dashboard started at http://${urlHost}:${port}.`);
+      expect(started.stdout).toContain("Coordination diagnostics are healthy.");
+      expect(started.stderr).toBe("");
 
       const status = await runLifecycle(["status"], root);
       expect(status.status).toBe(0);
       expect(status.stdout).toContain(`Dashboard is running at http://${urlHost}:${port}.`);
+      expect(status.stderr).toBe("");
       const runtime = JSON.parse(await readFile(
         join(root, "state", "agent-coordination-dashboard", "runtime.json"),
         "utf8"
@@ -204,6 +214,41 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   }, 20_000);
+
+  it.runIf(supportsSecondaryIpv4Loopback)(
+    "keeps start and status diagnostics healthy on a secondary IPv4 loopback address",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const host = "127.0.0.2";
+      const port = await unusedPort(host);
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      await mkdir(configDir, { recursive: true });
+      const envFile = join(configDir, "env");
+      await writeFile(
+        envFile,
+        `HOST=${host}\nPORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        expect(started.stdout).toContain(`Dashboard started at http://${host}:${port}.`);
+        expect(started.stdout).toContain("Coordination diagnostics are healthy.");
+        expect(started.stderr).toBe("");
+
+        const status = await runLifecycle(["status"], root);
+        expect(status.status).toBe(0);
+        expect(status.stdout).toContain(`Dashboard is running at http://${host}:${port}.`);
+        expect(status.stderr).toBe("");
+      } finally {
+        await cleanupLifecycle(root);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
 
   it("restarts the exact owned IPv6 wildcard endpoint", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
@@ -1359,6 +1404,176 @@ exec "$REAL_PS" "$@"
       }
     }
   }, 60_000);
+
+  it("does not follow or chmod a symlinked lifecycle log when starting", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const logFile = join(lifecycleDir, "dashboard.log");
+    const harmlessTarget = join(root, "harmless-target.txt");
+    const targetContents = "harmless target contents\n";
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(lifecycleDir, { recursive: true })
+    ]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    await writeFile(harmlessTarget, targetContents, "utf8");
+    await chmod(harmlessTarget, 0o644);
+    await symlink(harmlessTarget, logFile);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+
+      expect(started.status).toBe(1);
+      expect(started.stdout).toBe("");
+      expect(started.stderr).toContain("Lifecycle log file must be a regular file, not a symlink");
+      expect(await readFile(harmlessTarget, "utf8")).toBe(targetContents);
+      expect((await stat(harmlessTarget)).mode & 0o777).toBe(0o644);
+      await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await lifecycleProcessIds()).toEqual(baseline);
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
+  it("keeps the running dashboard intact when restart finds a symlinked lifecycle log", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const logFile = join(lifecycleDir, "dashboard.log");
+    const runtimeFile = join(lifecycleDir, "runtime.json");
+    const harmlessTarget = join(root, "harmless-target.txt");
+    const targetContents = "harmless target contents\n";
+    await mkdir(configDir, { recursive: true });
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const originalRuntime = await readFile(runtimeFile, "utf8");
+      const originalPid = (JSON.parse(originalRuntime) as { pid: number }).pid;
+      await writeFile(harmlessTarget, targetContents, "utf8");
+      await chmod(harmlessTarget, 0o644);
+      await unlink(logFile);
+      await symlink(harmlessTarget, logFile);
+
+      const restarted = await runLifecycle(["restart"], root);
+
+      expect(restarted.status).toBe(1);
+      expect(restarted.stderr).toContain("Lifecycle log file must be a regular file, not a symlink");
+      expect(await readFile(runtimeFile, "utf8")).toBe(originalRuntime);
+      expect(processExists(originalPid)).toBe(true);
+      await expect(fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json()))
+        .resolves.toMatchObject({ ok: true });
+      expect(await readFile(harmlessTarget, "utf8")).toBe(targetContents);
+      expect((await stat(harmlessTarget)).mode & 0o777).toBe(0o644);
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 30_000);
+
+  it("does not read a symlinked lifecycle log", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const logFile = join(lifecycleDir, "dashboard.log");
+    const harmlessTarget = join(root, "harmless-target.txt");
+    const targetContents = "sentinel harmless target contents\n";
+    await mkdir(lifecycleDir, { recursive: true });
+    await writeFile(harmlessTarget, targetContents, "utf8");
+    await chmod(harmlessTarget, 0o644);
+    await symlink(harmlessTarget, logFile);
+
+    try {
+      const logs = await runLifecycle(["logs"], root);
+
+      expect(logs.status).toBe(1);
+      expect(logs.stdout).toBe("");
+      expect(logs.stderr).toContain("Lifecycle log file must be a regular file, not a symlink");
+      expect(logs.stderr).not.toContain("sentinel harmless target contents");
+      expect(await readFile(harmlessTarget, "utf8")).toBe(targetContents);
+      expect((await stat(harmlessTarget)).mode & 0o777).toBe(0o644);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a non-regular lifecycle log with a clear error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const logFile = join(lifecycleDir, "dashboard.log");
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(logFile, { recursive: true })
+    ]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      const logs = await runLifecycle(["logs"], root);
+
+      expect(started.status).toBe(1);
+      expect(started.stderr).toContain("Lifecycle log file must be a regular file");
+      expect(logs.status).toBe(1);
+      expect(logs.stdout).toBe("");
+      expect(logs.stderr).toContain("Lifecycle log file must be a regular file");
+      expect(await lifecycleProcessIds()).toEqual(baseline);
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
+  it("rejects a FIFO lifecycle log without blocking", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const baseline = await lifecycleProcessIds();
+    const port = await unusedPort();
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+    const envFile = join(configDir, "env");
+    const logFile = join(lifecycleDir, "dashboard.log");
+    await Promise.all([
+      mkdir(configDir, { recursive: true }),
+      mkdir(lifecycleDir, { recursive: true })
+    ]);
+    await writeFile(envFile, `PORT=${port}\n`, "utf8");
+    await chmod(envFile, 0o600);
+    const mkfifo = spawn("mkfifo", [logFile], { stdio: "ignore" });
+    const [mkfifoStatus] = (await once(mkfifo, "exit")) as [number | null, NodeJS.Signals | null];
+    expect(mkfifoStatus).toBe(0);
+
+    try {
+      const started = await runLifecycle(["start"], root, {}, process.cwd(), 2_000);
+      const logs = await runLifecycle(["logs"], root, {}, process.cwd(), 2_000);
+
+      expect(started.status).toBe(1);
+      expect(started.stderr).toContain("Lifecycle log file must be a regular file");
+      expect(logs.status).toBe(1);
+      expect(logs.stdout).toBe("");
+      expect(logs.stderr).toContain("Lifecycle log file must be a regular file");
+      expect(await lifecycleProcessIds()).toEqual(baseline);
+    } finally {
+      await cleanupLifecycle(root);
+      await cleanupNewLifecycleProcesses(baseline);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 10_000);
 
   it("terminates the detached process when runtime metadata cannot be persisted", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

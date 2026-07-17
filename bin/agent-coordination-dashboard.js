@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +117,9 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
     !hasCanonicalHttpOriginSpelling(rawUrl, parsed)
   ) {
     throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
+  }
+  if (isIP(parsed.hostname) === 4 && parsed.hostname.startsWith("127.")) {
+    return { localAddress: parsed.hostname, url: parsed.origin };
   }
   const matchingAddress = Object.values(networkInterfaces())
     .flatMap((addresses) => addresses || [])
