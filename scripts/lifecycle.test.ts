@@ -6,6 +6,7 @@ import { createConnection, createServer as createNetServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { assertSupportedLifecyclePlatform, bindHostCoversProbeHost } from "../bin/lifecycle.js";
 
@@ -14,9 +15,10 @@ async function runLifecycle(
   root: string,
   extraEnv: NodeJS.ProcessEnv = {},
   cwd = process.cwd(),
-  timeoutMs = 0
+  timeoutMs = 0,
+  executablePath = resolve("bin/agent-coordination-dashboard.js")
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, [resolve("bin/agent-coordination-dashboard.js"), ...args], {
+  const child = spawn(process.execPath, [executablePath, ...args], {
     cwd,
     env: {
       ...process.env,
@@ -38,6 +40,24 @@ async function runLifecycle(
   const [status] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
   if (timeout) clearTimeout(timeout);
   return { status, stdout, stderr };
+}
+
+async function writeRelocatedLifecycleExecutable(root: string): Promise<string> {
+  const packageRoot = join(root, "relocated-package");
+  const executablePath = join(packageRoot, "bin", "agent-coordination-dashboard.js");
+  await mkdir(join(packageRoot, "bin"), { recursive: true });
+  await writeFile(
+    executablePath,
+    `import { runLifecycleCommand } from ${JSON.stringify(pathToFileURL(resolve("bin/lifecycle.js")).href)};
+await runLifecycleCommand(process.argv[2], process.argv.slice(3), {
+  executablePath: ${JSON.stringify(executablePath)},
+  packageRoot: ${JSON.stringify(packageRoot)},
+  tsxCli: ${JSON.stringify(resolve("node_modules/tsx/dist/cli.mjs"))}
+});
+`,
+    "utf8"
+  );
+  return executablePath;
 }
 
 async function executableOnPath(command: string): Promise<string> {
@@ -1419,6 +1439,76 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   }, 30_000);
+
+  it.each([
+    { label: "live wrapper", orphanWrapper: false },
+    { label: "orphaned server group", orphanWrapper: true }
+  ])(
+    "preserves $label ownership after the package installation path changes",
+    async ({ orphanWrapper }) => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort();
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+      const envFile = join(configDir, "env");
+      const relocatedExecutable = await writeRelocatedLifecycleExecutable(root);
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `PORT=${port}\n`, "utf8");
+      await chmod(envFile, 0o600);
+      let pgid: number | undefined;
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(0);
+        const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as {
+          pgid: number;
+          pid: number;
+          server_entrypoint: string;
+          wrapper_entrypoint: string;
+        };
+        pgid = runtime.pgid;
+        expect(runtime.wrapper_entrypoint).toBe(resolve("bin/agent-coordination-dashboard.js"));
+        expect(runtime.server_entrypoint).toBe(resolve("src/server/index.ts"));
+        if (orphanWrapper) {
+          process.kill(runtime.pid, "SIGKILL");
+          const wrapperDeadline = Date.now() + 2_000;
+          while (processExists(runtime.pid) && Date.now() < wrapperDeadline) {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+          }
+          expect(processExists(runtime.pid)).toBe(false);
+          expect(processGroupExists(runtime.pgid)).toBe(true);
+          expect(await portIsListening(port)).toBe(true);
+        }
+
+        const stopped = await runLifecycle(
+          ["stop"],
+          root,
+          {},
+          process.cwd(),
+          0,
+          relocatedExecutable
+        );
+
+        expect(stopped.status).toBe(0);
+        expect(stopped.stderr).toBe("");
+        expect(stopped.stdout).toContain("Dashboard stopped.");
+        expect(processGroupExists(runtime.pgid)).toBe(false);
+        expect(await portIsListening(port)).toBe(false);
+        await expect(readFile(runtimePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await cleanupLifecycle(root);
+        if (pgid && processGroupExists(pgid)) {
+          try {
+            process.kill(-pgid, "SIGKILL");
+          } catch {
+            // The exact lifecycle process group may have exited between inspection and cleanup.
+          }
+        }
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    30_000
+  );
 
   it("fails closed when an orphaned server group's process inventory is unavailable", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));

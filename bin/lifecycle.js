@@ -276,6 +276,11 @@ async function readRuntime(runtimeFile) {
       typeof parsed.instance_id !== "string" ||
       !/^[a-f0-9]{32}$/.test(parsed.instance_id) ||
       typeof parsed.url !== "string" ||
+      ((parsed.wrapper_entrypoint !== undefined || parsed.server_entrypoint !== undefined) &&
+        (typeof parsed.wrapper_entrypoint !== "string" ||
+          !isAbsolute(parsed.wrapper_entrypoint) ||
+          typeof parsed.server_entrypoint !== "string" ||
+          !isAbsolute(parsed.server_entrypoint))) ||
       ((parsed.bind_host !== undefined || parsed.bind_port !== undefined) &&
         (typeof parsed.bind_host !== "string" ||
           (parsed.bind_host !== "localhost" && isIP(parsed.bind_host) === 0) ||
@@ -610,7 +615,8 @@ async function runtimeOwnership(runtime, context) {
     }
     const command = await processCommand(runtime.pid);
     const marker = `__lifecycle-serve --instance ${runtime.instance_id}`;
-    return command.includes(context.executablePath) && command.includes(marker) ? "owned" : "unowned";
+    const wrapperEntrypoint = runtime.wrapper_entrypoint || context.executablePath;
+    return command.includes(wrapperEntrypoint) && command.includes(marker) ? "owned" : "unowned";
   }
 
   const pgid = runtime.pgid;
@@ -618,7 +624,8 @@ async function runtimeOwnership(runtime, context) {
   if (!processGroupExists(pgid)) return "stopped";
   const commands = await processGroupCommands(pgid);
   if (!commands) return "unowned";
-  const serverEntrypoint = join(context.packageRoot, "src", "server", "index.ts");
+  const serverEntrypoint = runtime.server_entrypoint ||
+    join(context.packageRoot, "src", "server", "index.ts");
   const instanceMarker = `--lifecycle-instance ${runtime.instance_id}`;
   return commands.some((command) => command.includes(serverEntrypoint) && command.includes(instanceMarker))
     ? "orphaned_owned"
@@ -1136,9 +1143,11 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
       pgid: child.pid,
       instance_id: instanceId,
       process_birth_marker: childBirthMarker,
+      server_entrypoint: join(context.packageRoot, "src", "server", "index.ts"),
       started_at: new Date().toISOString(),
       url,
-      log_file: paths.logFile
+      log_file: paths.logFile,
+      wrapper_entrypoint: context.executablePath
     });
   } catch (error) {
     await terminateDetachedGroup(child.pid);
