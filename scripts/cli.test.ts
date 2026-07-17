@@ -867,6 +867,7 @@ describe("agent-coordination-dashboard CLI", () => {
     await mkdir(join(packageRoot, "bin"), { recursive: true });
     await Promise.all([
       copyFile("bin/agent-coordination-dashboard.js", executable),
+      copyFile("bin/interface-address.js", join(packageRoot, "bin", "interface-address.js")),
       writeFile(
         join(packageRoot, "package.json"),
         JSON.stringify({
@@ -925,6 +926,7 @@ describe("agent-coordination-dashboard CLI", () => {
     ]);
     await Promise.all([
       copyFile("bin/agent-coordination-dashboard.js", join(packageRoot, "bin", "agent-coordination-dashboard.js")),
+      copyFile("bin/interface-address.js", join(packageRoot, "bin", "interface-address.js")),
       writeFile(join(packageRoot, "package.json"), '{"type":"module"}\n', "utf8"),
       writeFile(
         join(fakeTsxRoot, "package.json"),

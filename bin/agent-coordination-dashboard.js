@@ -6,6 +6,7 @@ import { request as httpRequest } from "node:http";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dashboardHostsForInterfaceAddress } from "./interface-address.js";
 
 const HELP = `Usage: agent-coordination-dashboard [--demo]
        agent-coordination-dashboard doctor --stack-json [--deep] [--url <loopback-http-url>]
@@ -120,8 +121,8 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
     .flatMap((addresses) => addresses || [])
     .find((address) => {
       try {
-        const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
-        return new URL(`http://${host}`).hostname.toLowerCase() === parsed.hostname.toLowerCase();
+        const { urlHost } = dashboardHostsForInterfaceAddress(address);
+        return new URL(`http://${urlHost}`).hostname.toLowerCase() === parsed.hostname.toLowerCase();
       } catch {
         return false;
       }
@@ -130,7 +131,7 @@ function parseLocalInterfaceDashboardUrl(rawUrl) {
     throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
   }
   return {
-    localAddress: matchingAddress.family === "IPv6" ? "::1" : "127.0.0.1",
+    localAddress: dashboardHostsForInterfaceAddress(matchingAddress).localAddress,
     url: parsed.origin
   };
 }

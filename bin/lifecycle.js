@@ -373,7 +373,7 @@ async function processBirthMarkerOnce(pid) {
   }
 
   try {
-    const child = spawn("ps", ["-p", String(pid), "-o", "lstart="], {
+    const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "lstart="], {
       env: { ...process.env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -399,7 +399,7 @@ async function processBirthMarker(pid) {
 }
 
 async function processCommand(pid) {
-  const child = spawn("ps", ["-p", String(pid), "-o", "command="], {
+  const child = spawn("ps", ["-ww", "-p", String(pid), "-o", "command="], {
     stdio: ["ignore", "pipe", "ignore"]
   });
   let output = "";
@@ -421,7 +421,7 @@ function processGroupExists(pgid) {
 
 async function processGroupCommands(pgid) {
   try {
-    const child = spawn("ps", ["-axo", "pgid=,command="], {
+    const child = spawn("ps", ["-ww", "-axo", "pgid=,command="], {
       env: { ...process.env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -487,6 +487,21 @@ function normalizeAddress(host) {
   const value = host.toLowerCase();
   if (isIP(value) !== 6) return value;
   return new URL(`http://[${value}]`).hostname.slice(1, -1);
+}
+
+function isLocalBindAddress(address) {
+  if (address === "0.0.0.0" || address === "::") return true;
+  if (isIP(address) === 4 && address.startsWith("127.")) return true;
+  if (isIP(address) === 6 && normalizeAddress(address) === "::1") return true;
+  return Object.values(networkInterfaces())
+    .flatMap((addresses) => addresses || [])
+    .some((candidate) => {
+      try {
+        return normalizeAddress(candidate.address) === normalizeAddress(address);
+      } catch {
+        return false;
+      }
+    });
 }
 
 function bindHostCoversProbeHost(bindHost, probeHost) {
@@ -743,6 +758,13 @@ async function prepareStart(options) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT in the environment file must be an integer from 1 through 65535.");
   }
+  const refreshValue = childEnv.DASHBOARD_REFRESH_MS?.trim();
+  if (refreshValue) {
+    const refreshIntervalMs = Number(refreshValue);
+    if (!Number.isFinite(refreshIntervalMs) || refreshIntervalMs < 0) {
+      throw new Error("DASHBOARD_REFRESH_MS must be a non-negative number.");
+    }
+  }
   const bindHost = validateLifecycleHost(childEnv.HOST);
   const allowedHosts = String(childEnv.ALLOWED_HOSTS || "").split(",");
   if (
@@ -754,6 +776,9 @@ async function prepareStart(options) {
     );
   }
   const bindAddress = bindHost === "localhost" ? (await lookup(bindHost)).address : bindHost;
+  if (!isLocalBindAddress(bindAddress)) {
+    throw new Error("HOST must be a loopback address or an IP address assigned to this machine.");
+  }
   childEnv.HOST = bindAddress;
   const probeHost = probeHostForBindHost(bindHost);
   return {

@@ -486,6 +486,16 @@ describe("portable dashboard lifecycle", () => {
     { label: "unsafe mode", fixture: "mode", message: "must use mode 0600" },
     { label: "invalid port", fixture: "port", message: "must be an integer" },
     {
+      label: "invalid refresh interval",
+      fixture: "refresh",
+      message: "DASHBOARD_REFRESH_MS must be a non-negative number"
+    },
+    {
+      label: "unassigned IP host",
+      fixture: "unassigned_host",
+      message: "HOST must be a loopback address or an IP address assigned to this machine"
+    },
+    {
       label: "wildcard host without allowed hosts",
       fixture: "wildcard_missing",
       message: "specific hostnames or IP addresses"
@@ -538,6 +548,10 @@ describe("portable dashboard lifecycle", () => {
         await writeFile(envFile, "not an assignment\n", "utf8");
       } else if (fixture === "mode") {
         await chmod(envFile, 0o400);
+      } else if (fixture === "refresh") {
+        await writeFile(envFile, `PORT=${port}\nDASHBOARD_REFRESH_MS=Infinity\n`, "utf8");
+      } else if (fixture === "unassigned_host") {
+        await writeFile(envFile, `HOST=192.0.2.10\nPORT=${port}\n`, "utf8");
       } else if (fixture.startsWith("wildcard_")) {
         const allowedHosts = fixture === "wildcard_missing"
           ? ""
@@ -1015,20 +1029,35 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 20_000);
 
-  it("recovers and stops the owned server group after the lifecycle wrapper is killed", async () => {
+  it("uses wide process inventory to recover and stop the owned server group", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
     const port = await unusedPort();
     const configDir = join(root, "config", "agent-coordination-dashboard");
+    const fakeBinDir = join(root, "fake-bin");
+    const psArgumentsLog = join(root, "ps-arguments.log");
     const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
     const envFile = join(configDir, "env");
+    const realPs = await executableOnPath("ps");
     let pgid: number | undefined;
-    await mkdir(configDir, { recursive: true });
+    await Promise.all([mkdir(configDir, { recursive: true }), mkdir(fakeBinDir, { recursive: true })]);
     await writeFile(
       envFile,
       `PORT=${port}\nAGENT_COORD_STATE_ROOT=${join(root, "coordination-state")}\n`,
       "utf8"
     );
     await chmod(envFile, 0o600);
+    const fakePs = join(fakeBinDir, "ps");
+    await writeFile(
+      fakePs,
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PS_ARGUMENTS_LOG\"\nexec \"$REAL_PS\" \"$@\"\n",
+      "utf8"
+    );
+    await chmod(fakePs, 0o700);
+    const fakePsEnv = {
+      PATH: `${fakeBinDir}:${process.env.PATH}`,
+      PS_ARGUMENTS_LOG: psArgumentsLog,
+      REAL_PS: realPs
+    };
 
     try {
       const started = await runLifecycle(["start"], root);
@@ -1039,6 +1068,8 @@ describe("portable dashboard lifecycle", () => {
         pid: number;
       };
       pgid = runtime.pgid || runtime.pid;
+      const ownedStatus = await runLifecycle(["status"], root, fakePsEnv);
+      expect(ownedStatus.status).toBe(0);
       process.kill(runtime.pid, "SIGKILL");
       const wrapperDeadline = Date.now() + 2_000;
       while (processExists(runtime.pid) && Date.now() < wrapperDeadline) {
@@ -1049,9 +1080,12 @@ describe("portable dashboard lifecycle", () => {
       expect(processGroupExists(pgid)).toBe(true);
       expect(await portIsListening(port)).toBe(true);
 
-      const status = await runLifecycle(["status"], root);
+      const status = await runLifecycle(["status"], root, fakePsEnv);
       expect(status.status).toBe(0);
       expect(status.stdout).toContain(`Dashboard is running at http://127.0.0.1:${port}.`);
+      const psArguments = (await readFile(psArgumentsLog, "utf8")).trim().split("\n");
+      expect(psArguments.some((line) => /^-ww -p \d+ -o command=$/.test(line))).toBe(true);
+      expect(psArguments).toContain("-ww -axo pgid=,command=");
 
       const repeatedStart = await runLifecycle(["start"], root);
       expect(repeatedStart.status).toBe(0);
@@ -1147,8 +1181,8 @@ describe("portable dashboard lifecycle", () => {
       await writeFile(
         fakePs,
         `#!/bin/sh
-if [ "$4" = "lstart=" ]; then
-  counter="$PS_COUNTER_DIR/$2"
+if [ "$5" = "lstart=" ]; then
+  counter="$PS_COUNTER_DIR/$3"
   while ! mkdir "$counter.lock" 2>/dev/null; do sleep 0.01; done
   count=0
   if [ -f "$counter.count" ]; then read -r count < "$counter.count"; fi
@@ -1156,7 +1190,7 @@ if [ "$4" = "lstart=" ]; then
   printf '%s\\n' "$count" > "$counter.count"
   rmdir "$counter.lock"
   if [ "$count" -eq 2 ]; then
-    printf '%s\\n' "$2" >> "$PS_FAILURE_LOG"
+    printf '%s\\n' "$3" >> "$PS_FAILURE_LOG"
     exit 1
   fi
 fi
