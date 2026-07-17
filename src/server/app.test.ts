@@ -124,12 +124,14 @@ describe("dashboard app import endpoint", () => {
       serveFrontend: false,
       machineInterfaces: {
         ethernet: [{ address: "192.168.7.26" }],
-        bridge: [{ address: "fe80::1" }]
+        bridge: [{ address: "fe80::1" }],
+        link: [{ address: "169.254.42.7" }]
       }
     };
     const localApp = await createDashboardApp(testConfig(root), appOptions);
     const remoteApp = await createDashboardApp(testConfig(root), appOptions);
     const linkLocalApp = await createDashboardApp(testConfig(root), appOptions);
+    const ipv4LinkLocalApp = await createDashboardApp(testConfig(root), appOptions);
     const localBaseUrl = await listenServer(createServer((req, res) => {
       Object.defineProperty(req.socket, "remoteAddress", { value: "::ffff:192.168.7.26" });
       localApp(req, res);
@@ -141,6 +143,10 @@ describe("dashboard app import endpoint", () => {
     const linkLocalBaseUrl = await listenServer(createServer((req, res) => {
       Object.defineProperty(req.socket, "remoteAddress", { value: "fe80::1" });
       linkLocalApp(req, res);
+    }).listen(0, "127.0.0.1"));
+    const ipv4LinkLocalBaseUrl = await listenServer(createServer((req, res) => {
+      Object.defineProperty(req.socket, "remoteAddress", { value: "169.254.42.7" });
+      ipv4LinkLocalApp(req, res);
     }).listen(0, "127.0.0.1"));
     const writes = [
       { method: "PUT", path: "/api/settings", body: {} },
@@ -167,6 +173,8 @@ describe("dashboard app import endpoint", () => {
       expect(remote.status, `${write.path} should keep LAN peers read-only`).toBe(403);
       const linkLocal = await fetch(`${linkLocalBaseUrl}${write.path}`, request);
       expect(linkLocal.status, `${write.path} should keep link-local peers read-only`).toBe(403);
+      const ipv4LinkLocal = await fetch(`${ipv4LinkLocalBaseUrl}${write.path}`, request);
+      expect(ipv4LinkLocal.status, `${write.path} should keep IPv4 link-local peers read-only`).toBe(403);
     }
   });
 

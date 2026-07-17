@@ -56,4 +56,13 @@ describe("isMachineLocalAddress", () => {
       })).toBe(false);
     }
   );
+
+  it.each(["169.254.42.7", "::ffff:169.254.42.7", "::ffff:a9fe:2a07"])(
+    "rejects IPv4 link-local peer %s even when an interface has the same address",
+    (address) => {
+      expect(isMachineLocalAddress(address, {
+        link: [{ address: "169.254.42.7" }]
+      })).toBe(false);
+    }
+  );
 });

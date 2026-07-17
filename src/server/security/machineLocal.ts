@@ -3,8 +3,13 @@ import { networkInterfaces } from "node:os";
 
 export type MachineInterfaceMap = Record<string, ReadonlyArray<{ address: string }> | undefined>;
 
+function canonicalIpv4Address(address: string): string | undefined {
+  if (address.startsWith("169.254.")) return undefined;
+  return `ipv4:${address}`;
+}
+
 function canonicalAddress(address: string): string | undefined {
-  if (isIP(address) === 4) return `ipv4:${address}`;
+  if (isIP(address) === 4) return canonicalIpv4Address(address);
   if (isIP(address) !== 6) return undefined;
   try {
     const normalized = new URL(`http://[${address}]`).hostname.slice(1, -1);
@@ -14,7 +19,7 @@ function canonicalAddress(address: string): string | undefined {
     if (!mapped) return `ipv6:${normalized}`;
     const high = Number.parseInt(mapped[1], 16);
     const low = Number.parseInt(mapped[2], 16);
-    return `ipv4:${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+    return canonicalIpv4Address(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
   } catch {
     return undefined;
   }
