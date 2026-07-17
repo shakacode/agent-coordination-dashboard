@@ -507,6 +507,8 @@ describe("portable dashboard lifecycle", () => {
   it("serializes simultaneous starts across a transient process identity lookup failure", async () => {
     const baseline = await lifecycleProcessIds();
     const realPs = await executableOnPath("ps");
+    const usesLinuxProcIdentity = process.platform === "linux" && await access(`/proc/${process.pid}/stat`)
+      .then(() => true, () => false);
     for (let iteration = 1; iteration <= 10; iteration += 1) {
       const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
       const port = await unusedPort();
@@ -566,7 +568,7 @@ exec "$REAL_PS" "$@"
         });
         expect(starts.filter((result) => result.stdout.includes("Dashboard started at")).length).toBe(1);
         expect(starts.filter((result) => result.stdout.includes("Dashboard is already running")).length).toBe(3);
-        expect(await readFile(psFailureLog, "utf8")).toMatch(/\d/);
+        if (!usesLinuxProcIdentity) expect(await readFile(psFailureLog, "utf8")).toMatch(/\d/);
 
         const status = await runLifecycle(["status"], root);
         expect(status.status).toBe(0);
