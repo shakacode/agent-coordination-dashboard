@@ -1475,6 +1475,9 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
   }
 
   const { bindAddress, bindHost, bindIpv4Coverage, childEnv, port, url } = preparedStart || await prepareStart(options);
+  const serviceUrl = bindHost === "localhost"
+    ? new URL(`http://${formatUrlHost(bindAddress)}:${port}`).origin
+    : url;
   const preparedBind = { bindAddress, bindHost, bindIpv4Coverage, port };
   await preflightCandidateBind(preparedBind);
   await preflightCandidateProbes(preparedBind);
@@ -1527,13 +1530,13 @@ async function startDashboard(options, context, paths, preparedStart = null, pre
     throw error;
   }
 
-  if (!(await waitForHealthy(url, child.pid))) {
+  if (!(await waitForHealthy(serviceUrl, child.pid))) {
     await terminateDetachedGroup(child.pid);
     await unlink(paths.runtimeFile).catch(() => {});
     throw new Error("Dashboard failed its startup health check; inspect lifecycle logs.");
   }
   process.stdout.write(`Dashboard started at ${url}.\n`);
-  await reportCoordinationDiagnostics(context.executablePath, url, { reportHealthy: true });
+  await reportCoordinationDiagnostics(context.executablePath, serviceUrl, { reportHealthy: true });
 }
 
 async function reportStatus(context, paths) {
