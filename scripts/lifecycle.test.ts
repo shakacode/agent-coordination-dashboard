@@ -746,6 +746,41 @@ describe("portable dashboard lifecycle", () => {
   }, 20_000);
 
   it.each([
+    "169.254.23.42",
+    "::ffff:169.254.23.42",
+    "::ffff:a9fe:172a"
+  ])(
+    "rejects IPv4 link-local bind %s before spawning or writing runtime artifacts",
+    async (host) => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const baseline = await lifecycleProcessIds();
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const lifecycleDir = join(root, "state", "agent-coordination-dashboard");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(envFile, `HOST=${host}\nPORT=4317\n`, "utf8");
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root);
+        expect(started.status).toBe(1);
+        expect(started.stdout).toBe("");
+        expect(started.stderr).toContain("IPv4 link-local HOST addresses are not supported");
+        await expect(readFile(join(lifecycleDir, "runtime.json"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readFile(join(lifecycleDir, "dashboard.log"), "utf8"))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        expect(await lifecycleProcessIds()).toEqual(baseline);
+      } finally {
+        await cleanupLifecycle(root);
+        await cleanupNewLifecycleProcesses(baseline);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
+
+  it.each([
     { label: "missing", allowedHosts: null },
     { label: "blank", allowedHosts: "   " },
     { label: "invalid", allowedHosts: "bad host" },

@@ -13,6 +13,7 @@ import { request as httpRequest } from "node:http";
 import { createConnection, createServer, isIP } from "node:net";
 import { homedir, networkInterfaces } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { isNonLinkLocalInterfaceAddress } from "./interface-address.js";
 
 const LIFECYCLE_SCHEMA_VERSION = 1;
 const START_TIMEOUT_MS = 10_000;
@@ -1158,6 +1159,9 @@ function validateLifecycleHost(value) {
   }
   if (addressFamily === 6 && isIpv6LinkLocal(host)) {
     throw new Error("IPv6 link-local HOST addresses require scope identifiers and are not supported.");
+  }
+  if (addressFamily > 0 && !isNonLinkLocalInterfaceAddress(host)) {
+    throw new Error("IPv4 link-local HOST addresses are not supported.");
   }
   if (host !== "localhost" && addressFamily === 0) {
     throw new Error("HOST must be localhost or an IPv4 or IPv6 address (including wildcard addresses).");
