@@ -209,6 +209,9 @@ const lanIpv4 = Object.values(networkInterfaces())
   .flatMap((addresses) => addresses || [])
   .find((address) => address.family === "IPv4" && !address.internal)?.address;
 const resolvedLocalhost = (await lookup("localhost")).address;
+const localhostAddresses = await lookup("localhost", { all: true });
+const supportsDualStackLocalhost = localhostAddresses.some((address) => address.family === 4) &&
+  localhostAddresses.some((address) => address.family === 6);
 const alternateLoopback = isIP(resolvedLocalhost) === 6 ? "127.0.0.1" : "::1";
 const supportsAlternateLoopback = await unusedPort(alternateLoopback).then(
   () => true,
@@ -1466,6 +1469,47 @@ describe("portable dashboard lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   }, 20_000);
+
+  it.runIf(process.platform === "linux" && supportsDualStackLocalhost)(
+    "keeps doctor healthy when a localhost lifecycle URL resolves to the other loopback family",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+      const port = await unusedPort("::1");
+      const configDir = join(root, "config", "agent-coordination-dashboard");
+      const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+      const envFile = join(configDir, "env");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        envFile,
+        `HOST=localhost\nPORT=${port}\nALLOWED_HOSTS=dashboard.example.test\n`,
+        "utf8"
+      );
+      await chmod(envFile, 0o600);
+
+      try {
+        const started = await runLifecycle(["start"], root, { NODE_OPTIONS: "--dns-result-order=ipv6first" });
+        expect(started.status).toBe(0);
+        const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as {
+          bind_address: string;
+          url: string;
+        };
+        expect(runtime.bind_address).toBe("::1");
+
+        const diagnosed = await runLifecycle(
+          ["doctor", "--stack-json", "--deep", "--url", runtime.url],
+          root,
+          { NODE_OPTIONS: "--dns-result-order=ipv4first" }
+        );
+
+        expect(diagnosed.status).toBe(0);
+        expect(JSON.parse(diagnosed.stdout)).toMatchObject({ status: "healthy" });
+      } finally {
+        await cleanupLifecycle(root);
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+    20_000
+  );
 
   it.runIf(supportsAlternateLoopback)(
     "preserves a same-port localhost dashboard when DNS resolves to an occupied different loopback",

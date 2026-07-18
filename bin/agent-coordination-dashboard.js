@@ -252,6 +252,13 @@ async function fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress)
   });
 }
 
+function alternateLocalhostDoctorUrls(url) {
+  const parsed = new URL(url);
+  if (parsed.hostname !== "localhost") return [];
+  const port = parsed.port ? `:${parsed.port}` : "";
+  return [`http://127.0.0.1${port}`, `http://[::1]${port}`];
+}
+
 async function fetchDoctorJson(url, path, deadline, localAddress = null) {
   if (localAddress) {
     return await fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress);
@@ -289,6 +296,18 @@ async function fetchDoctorJson(url, path, deadline, localAddress = null) {
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("timeout");
+    }
+    // A lifecycle start may bind localhost to one loopback family while a later
+    // DNS lookup selects the other. Keep the public localhost probe local and
+    // bounded by trying the concrete loopback families after that lookup fails.
+    for (const alternateUrl of alternateLocalhostDoctorUrls(url)) {
+      try {
+        return await fetchDoctorJson(alternateUrl, path, deadline);
+      } catch (alternateError) {
+        if (alternateError instanceof Error && alternateError.message === "timeout") {
+          throw alternateError;
+        }
+      }
     }
     throw new Error("unreachable");
   } finally {
