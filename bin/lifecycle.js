@@ -1424,7 +1424,8 @@ async function prepareStart(options) {
   if (childEnv.ALLOWED_HOSTS !== undefined) {
     childEnv.ALLOWED_HOSTS = [...new Set([
       ...allowedHosts.map(canonicalizeAllowedHost).filter(Boolean),
-      canonicalizeAllowedHost(probeHost)
+      canonicalizeAllowedHost(probeHost),
+      ...(bindHost === "localhost" ? [canonicalizeAllowedHost(bindAddress)] : [])
     ])].join(",");
   }
   return {

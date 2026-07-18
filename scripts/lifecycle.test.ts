@@ -1401,6 +1401,37 @@ describe("portable dashboard lifecycle", () => {
     }
   }, 30_000);
 
+  it("allows the concrete localhost bind address when an explicit allowlist is configured", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const port = await unusedPort(resolvedLocalhost);
+    const configDir = join(root, "config", "agent-coordination-dashboard");
+    const runtimePath = join(root, "state", "agent-coordination-dashboard", "runtime.json");
+    const envFile = join(configDir, "env");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      envFile,
+      `HOST=localhost\nPORT=${port}\nALLOWED_HOSTS=dashboard.example.test\n`,
+      "utf8"
+    );
+    await chmod(envFile, 0o600);
+
+    try {
+      const started = await runLifecycle(["start"], root);
+      expect(started.status).toBe(0);
+      const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as {
+        bind_address: string;
+        url: string;
+      };
+      const concreteUrl = `http://${isIP(runtime.bind_address) === 6 ? `[${runtime.bind_address}]` : runtime.bind_address}:${port}`;
+
+      expect(runtime.url).toBe(`http://localhost:${port}`);
+      await expect(fetch(`${concreteUrl}/api/settings`)).resolves.toMatchObject({ status: 200 });
+    } finally {
+      await cleanupLifecycle(root);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 20_000);
+
   it.runIf(supportsAlternateLoopback)(
     "preserves a same-port localhost dashboard when DNS resolves to an occupied different loopback",
     async () => {
