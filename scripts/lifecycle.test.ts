@@ -396,6 +396,46 @@ describe("portable dashboard lifecycle", () => {
     }
   });
 
+  it("retains the newest prior tail when a live write rolls over the lifecycle log", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-dashboard-lifecycle-test-"));
+    const logFile = join(root, "dashboard.log");
+    const priorContents = Buffer.from(
+      `discarded-prefix-${"x".repeat(78)}-newest-prior-tail\n`
+    );
+    const chunk = Buffer.from("new-live-log-line\n");
+    const maxBytes = 128;
+    const rolloverMarker = Buffer.from("[lifecycle log reset after exceeding 8 MiB]\n");
+    const tailCapacity = maxBytes - rolloverMarker.length;
+    const expectedTail = Buffer.concat([priorContents, chunk]).subarray(-tailCapacity);
+    await writeFile(logFile, priorContents);
+    const handle = await open(
+      logFile,
+      fsConstants.O_APPEND | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW
+    );
+    const directWrite = (value: string | Uint8Array) => {
+      const buffer = typeof value === "string"
+        ? Buffer.from(value)
+        : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+      fsWriteSync(handle.fd, buffer);
+      return true;
+    };
+    const stream = {
+      fd: handle.fd,
+      write: directWrite
+    } as unknown as NonNullable<Parameters<typeof installLifecycleLogWriter>[0]>;
+    const restore = installLifecycleLogWriter(stream, stream, maxBytes);
+
+    try {
+      expect(stream.write(chunk)).toBe(true);
+      expect(await readFile(logFile)).toEqual(Buffer.concat([rolloverMarker, expectedTail]));
+      expect((await stat(logFile)).size).toBe(maxBytes);
+    } finally {
+      restore();
+      await handle.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("retries the lifecycle log tail from the post-rollover position after a short read", async () => {
     const maxBytes = 32;
     const rolledOverLog = Buffer.from("new rollover log\n");
@@ -474,7 +514,7 @@ describe("portable dashboard lifecycle", () => {
     const logFile = join(root, "dashboard.log");
     const handle = await open(
       logFile,
-      fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+      fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW,
       0o600
     );
     const directWrite = (
@@ -2893,7 +2933,10 @@ exec "$REAL_PS" "$@"
 
       const logs = await runLifecycle(["logs"], root);
       expect(logs.status).toBe(0);
-      expect(logs.stdout).toContain(rolloverMarker);
+      expect(logs.stdout).toContain("[showing the last 1 MiB of lifecycle logs]");
+      expect(logs.stdout).toContain(
+        `agent-coordination-dashboard listening on http://127.0.0.1:${port}`
+      );
       expect(logs.stdout).not.toContain(secretSentinel);
       expect(logs.stderr).toBe("");
 

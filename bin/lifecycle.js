@@ -6,6 +6,7 @@ import {
   constants as fsConstants,
   fstatSync as fsFstatSync,
   ftruncateSync as fsFtruncateSync,
+  readSync as fsReadSync,
   writeSync as fsWriteSync
 } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink } from "node:fs/promises";
@@ -549,15 +550,42 @@ function resetLifecycleLogWithTail(fd, chunk, maxBytes) {
   writeAllToLifecycleLog(fd, tail);
 }
 
+function readLifecycleLogTailSync(fd, size, maxBytes) {
+  const tailLength = Math.min(size, maxBytes);
+  const tail = Buffer.allocUnsafe(tailLength);
+  let offset = 0;
+  while (offset < tailLength) {
+    const bytesRead = fsReadSync(
+      fd,
+      tail,
+      offset,
+      tailLength - offset,
+      size - tailLength + offset
+    );
+    if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > tailLength - offset) {
+      throw new Error("Lifecycle log read returned an invalid byte count.");
+    }
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return tail.subarray(0, offset);
+}
+
 function writeBoundedLifecycleLogChunk(fd, chunk, maxBytes) {
   const stats = validateLifecycleLogStats(fsFstatSync(fd));
   if (stats.size + chunk.length <= maxBytes) {
     writeAllToLifecycleLog(fd, chunk);
     return;
   }
-  // Rollover discards the previous log and any oldest bytes from an oversized
-  // chunk. Only the fixed marker and newest chunk suffix are retained.
-  resetLifecycleLogWithTail(fd, chunk, maxBytes);
+  const markerBytes = Math.min(Buffer.byteLength(LIFECYCLE_LOG_ROLLOVER_MARKER), maxBytes);
+  const tailCapacity = maxBytes - markerBytes;
+  const chunkTail = chunk.subarray(Math.max(0, chunk.length - tailCapacity));
+  const priorTail = readLifecycleLogTailSync(
+    fd,
+    stats.size,
+    tailCapacity - chunkTail.length
+  );
+  resetLifecycleLogWithTail(fd, Buffer.concat([priorTail, chunkTail]), maxBytes);
 }
 
 async function resetOversizedLifecycleLog(handle, size, maxBytes) {

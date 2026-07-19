@@ -29,5 +29,6 @@ export function dashboardHostsForInterfaceAddress(address) {
 }
 
 export function localSourceAddressForDashboardHost(host) {
+  if (host === "[::1]") return "::1";
   return isIP(host) === 4 && host.startsWith("127.") ? "127.0.0.1" : null;
 }

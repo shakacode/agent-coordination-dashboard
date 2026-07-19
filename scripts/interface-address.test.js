@@ -42,6 +42,10 @@ describe("isNonLinkLocalInterfaceAddress", () => {
 });
 
 describe("localSourceAddressForDashboardHost", () => {
+  it("uses the canonical IPv6 loopback source for a bracketed loopback host", () => {
+    expect(localSourceAddressForDashboardHost("[::1]")).toBe("::1");
+  });
+
   it("uses the canonical IPv4 loopback source for the full 127/8 range", () => {
     expect(localSourceAddressForDashboardHost("127.0.0.1")).toBe("127.0.0.1");
     expect(localSourceAddressForDashboardHost("127.0.0.2")).toBe("127.0.0.1");
