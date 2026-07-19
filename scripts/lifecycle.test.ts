@@ -403,10 +403,11 @@ describe("portable dashboard lifecycle", () => {
       `discarded-prefix-${"x".repeat(78)}-newest-prior-tail\n`
     );
     const chunk = Buffer.from("new-live-log-line\n");
+    const appendedChunks = [Buffer.from("a"), Buffer.from("b"), Buffer.from("c")];
     const maxBytes = 128;
     const rolloverMarker = Buffer.from("[lifecycle log reset after exceeding 8 MiB]\n");
-    const tailCapacity = maxBytes - rolloverMarker.length;
-    const expectedTail = Buffer.concat([priorContents, chunk]).subarray(-tailCapacity);
+    const retainedTailCapacity = Math.floor(maxBytes / 2);
+    const expectedTail = Buffer.concat([priorContents, chunk]).subarray(-retainedTailCapacity);
     await writeFile(logFile, priorContents);
     const handle = await open(
       logFile,
@@ -427,8 +428,15 @@ describe("portable dashboard lifecycle", () => {
 
     try {
       expect(stream.write(chunk)).toBe(true);
-      expect(await readFile(logFile)).toEqual(Buffer.concat([rolloverMarker, expectedTail]));
-      expect((await stat(logFile)).size).toBe(maxBytes);
+      const afterRollover = Buffer.concat([rolloverMarker, expectedTail]);
+      expect(await readFile(logFile)).toEqual(afterRollover);
+      expect(afterRollover.length).toBeLessThan(maxBytes);
+
+      for (const appendedChunk of appendedChunks) expect(stream.write(appendedChunk)).toBe(true);
+      expect(await readFile(logFile)).toEqual(Buffer.concat([afterRollover, ...appendedChunks]));
+      expect((await stat(logFile)).size).toBe(
+        afterRollover.length + appendedChunks.reduce((total, value) => total + value.length, 0)
+      );
     } finally {
       restore();
       await handle.close();

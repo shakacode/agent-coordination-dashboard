@@ -26,7 +26,7 @@ const PROCESS_IDENTITY_ATTEMPTS = 3;
 const PROCESS_IDENTITY_RETRY_MS = 25;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const MAX_LIFECYCLE_LOG_BYTES = 8 * 1024 * 1024;
-const MAX_LIFECYCLE_LOG_STARTUP_TAIL_BYTES = 1024 * 1024;
+const MAX_LIFECYCLE_LOG_RETAINED_TAIL_BYTES = 1024 * 1024;
 const LIFECYCLE_LOG_ROLLOVER_MARKER = "[lifecycle log reset after exceeding 8 MiB]\n";
 const LIFECYCLE_LOG_FAILURE_MARKER = "[lifecycle log enforcement failed; stopping dashboard]\n";
 const API_ENV_KEYS = ["AGENT_COORD_API_URL", "AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"];
@@ -578,19 +578,29 @@ function writeBoundedLifecycleLogChunk(fd, chunk, maxBytes) {
     return;
   }
   const markerBytes = Math.min(Buffer.byteLength(LIFECYCLE_LOG_ROLLOVER_MARKER), maxBytes);
-  const tailCapacity = maxBytes - markerBytes;
-  const chunkTail = chunk.subarray(Math.max(0, chunk.length - tailCapacity));
+  const maximumTailCapacity = maxBytes - markerBytes;
+  // Keep a useful recent-history window without refilling the file to its hard
+  // cap on every rollover. A larger current chunk remains whole when possible;
+  // an oversized chunk still keeps the maximum suffix.
+  const retainedTailCapacity = Math.min(
+    maximumTailCapacity,
+    Math.max(
+      chunk.length,
+      Math.min(MAX_LIFECYCLE_LOG_RETAINED_TAIL_BYTES, Math.floor(maxBytes / 2))
+    )
+  );
+  const chunkTail = chunk.subarray(Math.max(0, chunk.length - retainedTailCapacity));
   const priorTail = readLifecycleLogTailSync(
     fd,
     stats.size,
-    tailCapacity - chunkTail.length
+    retainedTailCapacity - chunkTail.length
   );
   resetLifecycleLogWithTail(fd, Buffer.concat([priorTail, chunkTail]), maxBytes);
 }
 
 async function resetOversizedLifecycleLog(handle, size, maxBytes) {
   const markerBytes = Math.min(Buffer.byteLength(LIFECYCLE_LOG_ROLLOVER_MARKER), maxBytes);
-  const tailLength = Math.min(size, maxBytes - markerBytes, MAX_LIFECYCLE_LOG_STARTUP_TAIL_BYTES);
+  const tailLength = Math.min(size, maxBytes - markerBytes, MAX_LIFECYCLE_LOG_RETAINED_TAIL_BYTES);
   const tail = Buffer.alloc(tailLength);
   const { bytesRead } = await handle.read(tail, 0, tailLength, size - tailLength);
   if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > tailLength) {
