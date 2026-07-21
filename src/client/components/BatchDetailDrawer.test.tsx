@@ -1,10 +1,39 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { BatchCompletionReport, DashboardModel } from "../../shared/types";
+import type { BatchBlocker, BatchCompletionReport, BatchRecord, DashboardModel } from "../../shared/types";
 import { buildCoordinationView } from "../coordinationView";
 import { BatchDetailDrawer } from "./BatchDetailDrawer";
 
 const NOW = "2026-07-21T12:00:00.000Z";
+
+/** Build a batch card from a blocked batch (a dead lane makes the tier "blocked"). */
+function cardFrom(overrides: Partial<BatchRecord>) {
+  const model: DashboardModel = {
+    generatedAt: NOW,
+    stateRoot: "/state",
+    targetRepos: ["repo/dashboard"],
+    agents: [],
+    events: [],
+    batchOperations: [],
+    qaValidations: [],
+    healthItems: [],
+    warnings: [],
+    workItems: [],
+    batches: [
+      {
+        schemaVersion: 1,
+        batchId: "b1",
+        repo: "repo/dashboard",
+        objective: "Ship the release.",
+        createdAt: "2026-07-21T10:00:00.000Z",
+        lanes: [{ name: "l1", owner: "o", targets: ["1"], dependsOn: [], status: "blocked", liveness: "dead", blockedOn: [] }],
+        path: "batches/b1.json",
+        ...overrides
+      }
+    ]
+  };
+  return buildCoordinationView(model, NOW).batchCards[0];
+}
 
 function cardWith(completion?: BatchCompletionReport) {
   const model: DashboardModel = {
@@ -67,5 +96,39 @@ describe("BatchDetailDrawer completion report", () => {
     expect(screen.getByText(/Audit verdicts, completion reports, and final reports are not emitted/)).toBeInTheDocument();
     // Absent metrics stay as the em-dash placeholder, never fabricated.
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+});
+
+describe("BatchDetailDrawer merge authority (#81)", () => {
+  it("renders the declared merge authority tag", () => {
+    render(<BatchDetailDrawer card={cardFrom({ mergeAuthority: "auto" })} onClose={() => {}} />);
+    expect(screen.getByText("merge: auto")).toBeInTheDocument();
+  });
+
+  it("degrades the merge authority tag when undeclared", () => {
+    render(<BatchDetailDrawer card={cardFrom({})} onClose={() => {}} />);
+    expect(screen.getByText("merge: —")).toBeInTheDocument();
+  });
+});
+
+describe("BatchDetailDrawer structured blocker (#83)", () => {
+  const blocker: BatchBlocker = {
+    message: "Lane l2 needs merge authority to land #4760.",
+    decisions: ["Approve auto-merge for l2", "Or take over l2 manually"],
+    recommendedReply: "Approved — auto-merge l2 when gates pass."
+  };
+
+  it("renders the structured message, decisions, and recommended reply when present", () => {
+    render(<BatchDetailDrawer card={cardFrom({ blocker })} onClose={() => {}} />);
+    expect(screen.getByText("Lane l2 needs merge authority to land #4760.")).toBeInTheDocument();
+    expect(screen.getByText("Approve auto-merge for l2")).toBeInTheDocument();
+    expect(screen.getByText("Approved — auto-merge l2 when gates pass.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Approve recommended/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Structured blocker decisions and a recommended reply are not emitted/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the not-emitted note when no structured blocker is present", () => {
+    render(<BatchDetailDrawer card={cardFrom({})} onClose={() => {}} />);
+    expect(screen.getByText(/Structured blocker decisions and a recommended reply are not emitted/)).toBeInTheDocument();
   });
 });

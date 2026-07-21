@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSummary, DashboardModel, WorkItem } from "../shared/types";
-import { ABSENT, buildCoordinationView, canonicalHostName, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
+import { ABSENT, aggregateUsage, buildCoordinationView, canonicalHostName, formatTokens, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
 import type { OperatorRow } from "./operatorRows";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -212,6 +212,92 @@ describe("buildCoordinationView", () => {
     expect(card.completion).toBeUndefined();
     expect(card.tokensTotal).toBe(ABSENT);
     expect(card.cost).toBe(ABSENT);
+  });
+
+  it("leaves lane route undefined when neither the lane nor its work item declares one (#80)", () => {
+    const card = view.batchCards[0];
+    expect(card.lanes[0].route).toBeUndefined();
+    expect(card.lanes[1].route).toBeUndefined();
+  });
+
+  it("surfaces route from the lane manifest, falling back to the work item (#80)", () => {
+    const base = model.batches[0];
+    const routed: DashboardModel = {
+      ...model,
+      workItems: [
+        ...model.workItems,
+        workItem({ id: "repo/dashboard#201", repo: "repo/dashboard", target: "201", type: "pull_request", schedulingState: "in_process", route: "claude-opus-4.6/high" }),
+        workItem({ id: "repo/dashboard#202", repo: "repo/dashboard", target: "202", type: "pull_request", schedulingState: "in_process", route: "gpt-5.6-sol/high" })
+      ],
+      batches: [
+        {
+          ...base,
+          lanes: [
+            { ...base.lanes[0], route: "gpt-5.6-sol/xhigh" },
+            { ...base.lanes[1] }
+          ]
+        }
+      ]
+    };
+    const card = buildCoordinationView(routed, NOW).batchCards[0];
+    expect(card.lanes[0].route).toBe("gpt-5.6-sol/xhigh"); // lane manifest route wins
+    expect(card.lanes[1].route).toBe("gpt-5.6-sol/high"); // falls back to the work item's route
+  });
+
+  it("surfaces the declared batch merge authority, degrading when absent (#81)", () => {
+    expect(view.batchCards[0].mergeAuth).toBe(ABSENT);
+    const withAuth: DashboardModel = { ...model, batches: [{ ...model.batches[0], mergeAuthority: "auto" }] };
+    expect(buildCoordinationView(withAuth, NOW).batchCards[0].mergeAuth).toBe("auto");
+  });
+
+  it("aggregates batch tokens and cost from observed per-lane usage (#79)", () => {
+    const withUsage: DashboardModel = {
+      ...model,
+      workItems: [
+        ...model.workItems,
+        workItem({ id: "repo/dashboard#201", repo: "repo/dashboard", target: "201", type: "pull_request", schedulingState: "in_process", usage: [{ model: "gpt-5.6-sol", tokensIn: 1_000_000, tokensOut: 500_000, costUsd: 4 }] }),
+        workItem({ id: "repo/dashboard#202", repo: "repo/dashboard", target: "202", type: "pull_request", schedulingState: "in_process", usage: [{ model: "claude-opus-4.6", tokensIn: 400_000, tokensOut: 190_000, costUsd: 3.3 }] })
+      ]
+    };
+    const card = buildCoordinationView(withUsage, NOW).batchCards[0];
+    expect(card.tokensTotal).toBe("2.09M"); // (1.5M + 0.59M)
+    expect(card.cost).toBe("$7.30"); // 4 + 3.3
+  });
+
+  it("prefers a completion report's metrics over the live usage rollup (#79)", () => {
+    const withBoth: DashboardModel = {
+      ...model,
+      workItems: [
+        ...model.workItems,
+        workItem({ id: "repo/dashboard#201", repo: "repo/dashboard", target: "201", type: "pull_request", schedulingState: "in_process", usage: [{ model: "gpt-5.6-sol", tokensIn: 10, tokensOut: 5 }] })
+      ],
+      batches: [
+        {
+          ...model.batches[0],
+          completion: {
+            state: { live: "adf0c47a" },
+            audit: { verdict: "clean", author: "justin808 · v1 durable" },
+            receipts: [{ label: "receipt-v1" }],
+            tokensTotal: "2.09M",
+            cost: "$7.30"
+          }
+        }
+      ]
+    };
+    const card = buildCoordinationView(withBoth, NOW).batchCards[0];
+    expect(card.tokensTotal).toBe("2.09M");
+    expect(card.cost).toBe("$7.30");
+  });
+
+  it("formats token counts and never fabricates usage (#79)", () => {
+    expect(formatTokens(2_090_000)).toBe("2.09M");
+    expect(formatTokens(1200)).toBe("1.2K");
+    expect(formatTokens(940)).toBe("940");
+    expect(aggregateUsage(undefined)).toBeUndefined();
+    expect(aggregateUsage([])).toBeUndefined();
+    const totals = aggregateUsage([{ model: "m", tokensIn: 10, tokensOut: 5 }]);
+    expect(totals?.tokensTotal).toBe("15");
+    expect(totals?.cost).toBeUndefined(); // no costUsd → cost omitted, never $0.00
   });
 
   it("derives a manifest lane's state from its status when no operator row exists", () => {

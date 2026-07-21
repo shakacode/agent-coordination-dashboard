@@ -1194,6 +1194,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         batchSignals,
         github,
         provenance,
+        route: heartbeat?.route || claim?.route,
+        usage: heartbeat?.usage || claim?.usage,
         schedulingState,
         warnings,
         selected: false

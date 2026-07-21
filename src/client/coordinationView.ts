@@ -5,6 +5,7 @@ import type {
   BatchRecord,
   DashboardModel,
   Liveness,
+  ModelUsage,
   WorkItem
 } from "../shared/types";
 import { displayAttribution } from "../shared/attribution";
@@ -484,7 +485,7 @@ function buildLaneView(
     age: representative?.lastActivityAge || ABSENT,
     note,
     noteColor: BLOCKED_LANE_STATES.has(state) ? "var(--block)" : STUCK_LANE_STATES.has(state) ? "var(--warn)" : "var(--mut)",
-    route: undefined,
+    route: lane.route || workItem?.route,
     where: displayAttribution(lane.host, ""),
     row: representative,
     workItem
@@ -514,6 +515,58 @@ function convoStatusFor(tier: BatchTier): { label: string; color: string; hint: 
   }
 }
 
+/** Compact token count, e.g. 2_090_000 -> "2.09M", 1200 -> "1.2K". */
+export function formatTokens(total: number): string {
+  if (total >= 1_000_000) return `${(total / 1_000_000).toFixed(2)}M`;
+  if (total >= 1_000) return `${(total / 1_000).toFixed(1)}K`;
+  return `${total}`;
+}
+
+/** USD cost, e.g. 7.3 -> "$7.30". */
+export function formatCost(total: number): string {
+  return `$${total.toFixed(2)}`;
+}
+
+export interface UsageTotals {
+  tokens: number;
+  tokensTotal: string;
+  cost?: string;
+}
+
+/**
+ * Sum observed per-model usage into display totals. Returns undefined when the
+ * list is empty so batches/items with no reported usage degrade rather than
+ * showing a fabricated zero. Cost is omitted unless at least one entry carried it.
+ */
+export function aggregateUsage(usage: ModelUsage[] | undefined): UsageTotals | undefined {
+  if (!usage || usage.length === 0) return undefined;
+  let tokens = 0;
+  let cost = 0;
+  let sawCost = false;
+  for (const entry of usage) {
+    tokens += entry.tokensIn + entry.tokensOut;
+    if (entry.costUsd !== undefined) {
+      sawCost = true;
+      cost += entry.costUsd;
+    }
+  }
+  return { tokens, tokensTotal: formatTokens(tokens), cost: sawCost ? formatCost(cost) : undefined };
+}
+
+/** Roll a batch's per-lane usage up into total tokens/cost, deduping shared work items. */
+function aggregateBatchUsage(lanes: LaneView[]): { tokensTotal?: string; cost?: string } {
+  const seen = new Set<string>();
+  const merged: ModelUsage[] = [];
+  for (const lane of lanes) {
+    const item = lane.workItem;
+    if (!item?.usage || seen.has(item.id)) continue;
+    seen.add(item.id);
+    merged.push(...item.usage);
+  }
+  const totals = aggregateUsage(merged);
+  return { tokensTotal: totals?.tokensTotal, cost: totals?.cost };
+}
+
 export function buildBatchCard(
   batch: BatchRecord,
   operation: BatchOperation | undefined,
@@ -534,6 +587,7 @@ export function buildBatchCard(
   const convo = convoStatusFor(tier);
   const host = batch.lanes.find((lane) => lane.host)?.host;
   const completion = batch.completion;
+  const usageRollup = aggregateBatchUsage(lanes);
   const latestLaneActivity = lanes
     .map((lane) => lane.row?.lastActivityAt)
     .filter((value): value is string => Boolean(value))
@@ -545,7 +599,7 @@ export function buildBatchCard(
     repo: displayAttribution(batch.repo || batch.path),
     thread: batch.lanes.find((lane) => lane.threadHandle)?.threadHandle,
     coordinator: ABSENT,
-    mergeAuth: ABSENT,
+    mergeAuth: batch.mergeAuthority || ABSENT,
     objective: batch.objective,
     launchPrompt: batch.launchPrompt,
     promptSaved: Boolean(batch.launchPrompt),
@@ -568,8 +622,8 @@ export function buildBatchCard(
     donePct: `${Math.round((done / total) * 100)}%`,
     runPct: `${Math.round((running / total) * 100)}%`,
     qa: operation ? `${operation.qa.passed}/${operation.qa.total}` : ABSENT,
-    tokensTotal: metric(completion?.tokensTotal),
-    cost: metric(completion?.cost),
+    tokensTotal: metric(completion?.tokensTotal ?? usageRollup.tokensTotal),
+    cost: metric(completion?.cost ?? usageRollup.cost),
     lanes,
     completion,
     operation,

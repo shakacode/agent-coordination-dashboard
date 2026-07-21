@@ -785,4 +785,94 @@ describe("readCoordinationState", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(state.warnings).toEqual([]);
   });
+
+  it("parses telemetry/provenance fields (route, usage, merge authority, blocker) when present", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-telemetry-"));
+    await mkdir(join(root, "claims", "repo", "app"), { recursive: true });
+    await mkdir(join(root, "heartbeats"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+
+    await writeFile(
+      join(root, "claims", "repo", "app", "10.json"),
+      JSON.stringify({
+        repo: "repo/app",
+        target: "10",
+        agent_id: "worker-a",
+        status: "active",
+        route: { model: "gpt-5.6-sol", effort: "xhigh" },
+        usage: [{ model: "gpt-5.6-sol", tokens_in: 1000000, tokens_out: 500000, cost_usd: 4 }]
+      })
+    );
+    await writeFile(
+      join(root, "heartbeats", "worker-a.json"),
+      JSON.stringify({
+        agent_id: "worker-a",
+        repo: "repo/app",
+        target: "10",
+        status: "in_progress",
+        route: "claude-opus-4.6/high",
+        usage: [
+          { model: "claude-opus-4.6", tokens_in: 400000, tokens_out: 190000 },
+          { model: "dropped", tokens_in: 5 } // missing tokens_out → never fabricated
+        ],
+        updated_at: "2026-06-17T19:50:00Z",
+        expires_at: "2026-06-17T20:05:00Z"
+      })
+    );
+    await writeFile(
+      join(root, "batches", "batch-1.json"),
+      JSON.stringify({
+        batch_id: "batch-1",
+        repo: "repo/app",
+        merge_authority: "auto_merge_when_gates_pass",
+        blocker: {
+          message: "Lane l2 needs merge authority.",
+          decisions: ["Approve auto-merge", ""],
+          recommended_reply: "Approved."
+        },
+        lanes: [{ name: "l1", owner: "worker-a", targets: ["10"], route: { model: "gpt-5.6-sol", effort: "xhigh" } }]
+      })
+    );
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.claims[0].route).toBe("gpt-5.6-sol/xhigh");
+    expect(state.claims[0].usage).toEqual([{ model: "gpt-5.6-sol", tokensIn: 1000000, tokensOut: 500000, costUsd: 4 }]);
+    expect(state.heartbeats[0].route).toBe("claude-opus-4.6/high");
+    // The incomplete usage entry is dropped, not zero-filled.
+    expect(state.heartbeats[0].usage).toEqual([{ model: "claude-opus-4.6", tokensIn: 400000, tokensOut: 190000 }]);
+    expect(state.batches[0].mergeAuthority).toBe("auto");
+    expect(state.batches[0].blocker).toEqual({ message: "Lane l2 needs merge authority.", decisions: ["Approve auto-merge"], recommendedReply: "Approved." });
+    expect(state.batches[0].lanes[0].route).toBe("gpt-5.6-sol/xhigh");
+  });
+
+  it("captures merge authority from the launch prompt and degrades unobserved telemetry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-telemetry-absent-"));
+    await mkdir(join(root, "claims", "repo", "app"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+
+    await writeFile(
+      join(root, "claims", "repo", "app", "11.json"),
+      JSON.stringify({ repo: "repo/app", target: "11", agent_id: "worker-b", status: "active" })
+    );
+    await writeFile(
+      join(root, "batches", "batch-2.json"),
+      JSON.stringify({
+        batch_id: "batch-2",
+        repo: "repo/app",
+        launch_prompt: "Use $pr-batch.\nmerge_authority: ask.\nGo.",
+        usage: "not-an-array",
+        blocker: { decisions: ["x"] }, // no message → not a valid blocker
+        lanes: [{ name: "l1", owner: "worker-b", targets: ["11"] }]
+      })
+    );
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    expect(state.claims[0].route).toBeUndefined();
+    expect(state.claims[0].usage).toBeUndefined();
+    expect(state.batches[0].mergeAuthority).toBe("ask"); // recovered from the launch prompt
+    expect(state.batches[0].blocker).toBeUndefined();
+    expect(state.batches[0].lanes[0].route).toBeUndefined();
+  });
 });

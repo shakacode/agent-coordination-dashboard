@@ -4,13 +4,15 @@ import { normalizeBatchReservations, normalizeBatchTargets } from "../../shared/
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
 import { displayAttribution } from "../../shared/attribution";
 import type {
+  BatchBlocker,
   BatchCompletionReport,
   BatchEvent,
   BatchRecord,
   ClaimRecord,
   CoordinationSourceStatus,
   CoordinationWarning,
-  HeartbeatRecord
+  HeartbeatRecord,
+  ModelUsage
 } from "../../shared/types";
 
 interface RawState {
@@ -391,6 +393,90 @@ function prUrlFrom(raw: Record<string, unknown>): string | undefined {
   return stringValue(raw.pr_url) || stringValue(raw.prUrl) || stringValue(raw.pull_request_url) || undefined;
 }
 
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const result = Number(value);
+    return Number.isFinite(result) && result >= 0 ? result : undefined;
+  }
+  return undefined;
+}
+
+/** Parse a bound model+effort route from a string `route` or a `{ model, effort }` object. */
+function routeFrom(raw: Record<string, unknown>): string | undefined {
+  const route = raw.route;
+  if (typeof route === "string") {
+    return route.trim() || undefined;
+  }
+  if (route && typeof route === "object" && !Array.isArray(route)) {
+    const record = route as Record<string, unknown>;
+    const model = stringValue(record.model).trim();
+    const effort = stringValue(record.effort).trim();
+    if (model && effort) return `${model}/${effort}`;
+    return model || undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Parse per-model token/cost usage. Each entry needs a model and both token
+ * counts; incomplete entries are dropped so the dashboard never shows a
+ * fabricated zero. Returns undefined when no trustworthy entry survives.
+ */
+function usageFrom(raw: Record<string, unknown>): ModelUsage[] | undefined {
+  if (!Array.isArray(raw.usage)) return undefined;
+  const entries = raw.usage.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const model = stringValue(record.model).trim();
+    const tokensIn = finiteNonNegativeNumber(record.tokensIn ?? record.tokens_in);
+    const tokensOut = finiteNonNegativeNumber(record.tokensOut ?? record.tokens_out);
+    if (!model || tokensIn === undefined || tokensOut === undefined) return [];
+    const costUsd = finiteNonNegativeNumber(record.costUsd ?? record.cost_usd);
+    return [{ model, tokensIn, tokensOut, ...(costUsd !== undefined ? { costUsd } : {}) } satisfies ModelUsage];
+  });
+  return entries.length > 0 ? entries : undefined;
+}
+
+/** Map a declared merge-authority value onto the dashboard's `ask` | `auto` axis. */
+function normalizeMergeAuthority(value: string | undefined): "ask" | "auto" | undefined {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized.includes("auto")) return "auto";
+  if (normalized === "ask") return "ask";
+  return undefined;
+}
+
+/**
+ * Read the batch merge authority from an explicit field, falling back to the
+ * `merge_authority:` declaration the pr-batch launch prompt already carries.
+ */
+function mergeAuthorityFrom(raw: Record<string, unknown>): "ask" | "auto" | undefined {
+  const direct = normalizeMergeAuthority(stringValue(raw.merge_authority) || stringValue(raw.mergeAuthority));
+  if (direct) return direct;
+  const match = stringValue(raw.launch_prompt).match(/merge_authority:\s*([A-Za-z_]+)/i);
+  return match ? normalizeMergeAuthority(match[1]) : undefined;
+}
+
+/** Parse a structured operator blocker; requires a message, keeps decisions/reply when present. */
+function normalizeBatchBlocker(value: unknown): BatchBlocker | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const message = stringValue(raw.message).trim();
+  if (!message) return undefined;
+  const decisions = Array.isArray(raw.decisions)
+    ? raw.decisions.map((entry) => stringValue(entry).trim()).filter((entry) => entry !== "")
+    : [];
+  const recommendedReply = stringValue(raw.recommended_reply ?? raw.recommendedReply).trim();
+  return {
+    message,
+    decisions,
+    ...(recommendedReply ? { recommendedReply } : {})
+  };
+}
+
 function repoFromClaimPath(path: string): string {
   const parts = path.split("/");
   return parts.length >= 4 ? `${parts[1]}/${parts[2]}` : "";
@@ -428,6 +514,8 @@ function normalizeClaim(raw: Record<string, unknown>, path: string): ClaimRecord
     batchId: stringValue(raw.batch_id) || undefined,
     branch: stringValue(raw.branch) || undefined,
     prUrl: prUrlFrom(raw),
+    route: routeFrom(raw),
+    usage: usageFrom(raw),
     generation: finiteNonNegativeDecimalInteger(raw.generation ?? raw.claim_generation),
     status: raw.status === "released" ? "released" : raw.status === "active" ? "active" : "unknown",
     claimedAt: stringValue(raw.claimed_at) || undefined,
@@ -453,6 +541,8 @@ function normalizeHeartbeat(raw: Record<string, unknown>, path: string, now: Dat
     batchId: stringValue(raw.batch_id) || undefined,
     branch: stringValue(raw.branch) || undefined,
     prUrl: prUrlFrom(raw),
+    route: routeFrom(raw),
+    usage: usageFrom(raw),
     status: stringValue(raw.status, "unknown"),
     updatedAt,
     expiresAt,
@@ -491,8 +581,10 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
     createdAt: stringValue(raw.created_at) || undefined,
     createdByMachine: stringValue(raw.created_by_machine) || undefined,
     launchPrompt: stringValue(raw.launch_prompt) || undefined,
+    mergeAuthority: mergeAuthorityFrom(raw),
     updatedAt: stringValue(raw.updated_at) || undefined,
     completion: normalizeBatchCompletion(raw.completion),
+    blocker: normalizeBatchBlocker(raw.blocker),
     path,
     lanes: lanes.map((laneRaw) => {
       const lane = laneRaw as Record<string, unknown>;
@@ -515,7 +607,8 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
         host: hostFrom(lane),
         operator: operatorFrom(lane),
         branch: stringValue(lane.branch) || undefined,
-        prUrl: prUrlFrom(lane)
+        prUrl: prUrlFrom(lane),
+        route: routeFrom(lane)
       };
     })
   };

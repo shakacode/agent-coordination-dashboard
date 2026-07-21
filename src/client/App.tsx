@@ -838,9 +838,10 @@ export function App() {
     );
   };
   const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline.repo, itemTimeline.target) : undefined;
-  const selectedBatchTitle = selectedRow?.row.batchId
-    ? view.batchCards.find((card) => card.id === selectedRow.row.batchId)?.title
+  const selectedRowBatchCard = selectedRow?.row.batchId
+    ? view.batchCards.find((card) => card.id === selectedRow.row.batchId)
     : undefined;
+  const selectedBatchTitle = selectedRowBatchCard?.title;
 
   const showItem = Boolean(itemRoute && itemRouteInScope);
 
@@ -1034,6 +1035,7 @@ export function App() {
       {selectedRow && (
         <JobDetailDrawer
           batchTitle={selectedBatchTitle}
+          mergeAuth={selectedRowBatchCard?.mergeAuth}
           commandActionsDisabled={localWritesDisabled}
           onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(selectedRow.workItem!, annotation)}
           onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(selectedRow.workItem!)}

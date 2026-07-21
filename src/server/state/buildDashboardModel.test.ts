@@ -73,6 +73,40 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
   });
 
+  it("carries model+effort route and per-model usage onto the work item, preferring the heartbeat (#79/#80)", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-06-17T20:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [{ ...claim, route: "gpt-5.6-sol/xhigh", usage: [{ model: "gpt-5.6-sol", tokensIn: 10, tokensOut: 5 }] }],
+      heartbeats: [{ ...heartbeat, route: "claude-opus-4.6/high", usage: [{ model: "claude-opus-4.6", tokensIn: 400000, tokensOut: 190000, costUsd: 3.3 }] }],
+      batches: [],
+      events: [],
+      githubItems: [],
+      warnings: []
+    });
+    const item = model.workItems.find((candidate) => candidate.target === claim.target);
+    expect(item?.route).toBe("claude-opus-4.6/high"); // heartbeat wins over the claim
+    expect(item?.usage).toEqual([{ model: "claude-opus-4.6", tokensIn: 400000, tokensOut: 190000, costUsd: 3.3 }]);
+  });
+
+  it("leaves work item route and usage undefined when unobserved (#79/#80)", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-06-17T20:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [claim],
+      heartbeats: [heartbeat],
+      batches: [],
+      events: [],
+      githubItems: [],
+      warnings: []
+    });
+    const item = model.workItems.find((candidate) => candidate.target === claim.target);
+    expect(item?.route).toBeUndefined();
+    expect(item?.usage).toBeUndefined();
+  });
+
   it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {
     const batch = {
       schemaVersion: 1 as const,

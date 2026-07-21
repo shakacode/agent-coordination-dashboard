@@ -1385,6 +1385,52 @@ h1, h2, h3, h4, h5, h6 {
   height: 100%;
 }
 
+.token-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 84px) 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.token-bar-model {
+  font-family: var(--font-heading);
+  color: var(--color-neutral-200);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-neutral-900);
+  overflow: hidden;
+}
+
+.token-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--color-accent);
+}
+
+.token-bar-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-neutral-300);
+  white-space: nowrap;
+}
+
+.recommended-reply {
+  margin-top: 4px;
+}
+
 .need-box {
   margin: 16px 20px;
   padding: 13px 15px;
