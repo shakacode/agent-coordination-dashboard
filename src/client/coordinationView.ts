@@ -104,7 +104,10 @@ export interface LaneView {
   target: string;
   targetColor: string;
   title: string;
+  /** Coordination status label shown to the operator. */
   state: string;
+  /** Derived lifecycle state that drives color and batch tiering. */
+  operatorState: OperatorState;
   stateColor: string;
   age: string;
   note: string;
@@ -153,7 +156,7 @@ export interface BatchCard {
   batch: BatchRecord;
 }
 
-function metric(value: string | null | undefined): string {
+export function metric(value: string | null | undefined): string {
   return value == null || value === "" ? ABSENT : value;
 }
 
@@ -195,18 +198,47 @@ export interface CoordinationView {
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-export function hostColor(host: string | undefined): string {
+/** Normalize a host string to its canonical display name (Codex/Claude), else the trimmed input. */
+export function canonicalHostName(host: string | undefined): string | undefined {
   const normalized = host?.trim().toLowerCase();
-  if (normalized === "codex") return CODEX_COLOR;
-  if (normalized === "claude") return CLAUDE_COLOR;
+  if (!normalized) return undefined;
+  if (normalized === "codex") return "Codex";
+  if (normalized === "claude") return "Claude";
+  return host?.trim();
+}
+
+export function hostColor(host: string | undefined): string {
+  const canonical = canonicalHostName(host);
+  if (canonical === "Codex") return CODEX_COLOR;
+  if (canonical === "Claude") return CLAUDE_COLOR;
   return NEUTRAL_COLOR;
 }
 
 export function devToolForHost(host: string | undefined): string | undefined {
-  const normalized = host?.trim().toLowerCase();
-  if (normalized === "codex") return "Codex CLI";
-  if (normalized === "claude") return "Claude Code";
+  const canonical = canonicalHostName(host);
+  if (canonical === "Codex") return "Codex CLI";
+  if (canonical === "Claude") return "Claude Code";
   return undefined;
+}
+
+const TERMINAL_STATUS_PATTERN = /\b(final|merged|done|closed|complete|completed|released|cancelled)\b/;
+const BLOCKED_STATUS_PATTERN = /\b(block|blocked|blocking|waiting|depends|needs[_\- ]?changes)\b/;
+const STUCK_STATUS_PATTERN = /\b(stuck|stale)\b/;
+const PAUSED_STATUS_PATTERN = /\b(paused?|token[_\- ]?limit|context[_\- ]?limit|context[_\- ]?window)\b/;
+const READY_STATUS_PATTERN = /\b(ready|queued|pending)\b/;
+const RUNNING_STATUS_PATTERN = /\b(running|in[_\- ]?progress|coding|working|started|validating|pr[_\- ]?open|claim|review|implementing|discovery)\b/;
+
+/** Derive a lifecycle state from a lane's coordination status when no live operator row exists. */
+export function laneStatusState(status: string | undefined): OperatorState {
+  const normalized = (status || "").trim().toLowerCase();
+  if (!normalized) return "unknown";
+  if (TERMINAL_STATUS_PATTERN.test(normalized)) return "done";
+  if (PAUSED_STATUS_PATTERN.test(normalized)) return "paused";
+  if (BLOCKED_STATUS_PATTERN.test(normalized)) return "blocked";
+  if (STUCK_STATUS_PATTERN.test(normalized)) return "stale";
+  if (READY_STATUS_PATTERN.test(normalized)) return "ready";
+  if (RUNNING_STATUS_PATTERN.test(normalized)) return "running";
+  return "unknown";
 }
 
 export function stateColor(state: OperatorState | string | undefined): string {
@@ -300,7 +332,7 @@ export function buildHostLegend(agents: AgentSummary[]): HostLegendItem[] {
   for (const agent of agents) {
     const host = agentHost(agent);
     if (!host) continue;
-    const canonical = host.trim().toLowerCase() === "codex" ? "Codex" : host.trim().toLowerCase() === "claude" ? "Claude" : host;
+    const canonical = canonicalHostName(host) ?? host;
     const group = groups.get(canonical) || { live: 0, total: 0 };
     group.total += 1;
     if (agent.liveness === "live") group.live += 1;
@@ -421,7 +453,8 @@ function buildLaneView(
 ): LaneView {
   const lane = batch.lanes[laneIndex];
   const representative = laneRows[0];
-  const state = representative?.operatorState || (lane.blockedOn.length > 0 ? "blocked" : lane.liveness === "dead" ? "dead" : "unknown");
+  const state: OperatorState = representative?.operatorState
+    || (lane.blockedOn.length > 0 ? "blocked" : lane.liveness === "dead" ? "dead" : laneStatusState(lane.status));
   const firstTarget = lane.targets[0];
   const workItem = representative?.target
     ? workItemByKey.get(`${representative.repo}#${representative.target}`)
@@ -446,6 +479,7 @@ function buildLaneView(
     targetColor: hostColor(lane.host || representative?.host),
     title: representative?.title || displayAttribution(lane.status, "Lane"),
     state: displayAttribution(lane.status, state),
+    operatorState: state,
     stateColor: stateColor(state),
     age: representative?.lastActivityAge || ABSENT,
     note,
@@ -491,7 +525,7 @@ export function buildBatchCard(
   const lanes = batch.lanes.map((lane, index) =>
     buildLaneView(batch, index, laneCount, rowsByLane.get(`${batch.batchId} ${lane.name}`) || [], workItemByKey)
   );
-  const laneStates = lanes.map((lane) => (lane.row?.operatorState || "unknown") as OperatorState);
+  const laneStates = lanes.map((lane) => lane.operatorState);
   const tier = batchTierFromLanes(laneStates, operation);
   const tierMeta = BATCH_TIER_META.get(tier)!;
   const done = laneStates.filter((state) => TERMINAL_LANE_STATES.has(state)).length;
@@ -572,7 +606,7 @@ export function buildMachineCards(agents: AgentSummary[], nowMs: number): Machin
       const hostGroups = new Map<string, AgentSummary[]>();
       for (const agent of machineAgents) {
         const host = agentHost(agent) || "unattributed";
-        const canonical = host.trim().toLowerCase() === "codex" ? "Codex" : host.trim().toLowerCase() === "claude" ? "Claude" : host;
+        const canonical = canonicalHostName(host) ?? host;
         const group = hostGroups.get(canonical) || [];
         group.push(agent);
         hostGroups.set(canonical, group);

@@ -4,6 +4,7 @@ import { normalizeBatchReservations, normalizeBatchTargets } from "../../shared/
 import { deriveHeartbeatLiveness } from "../../shared/liveness";
 import { displayAttribution } from "../../shared/attribution";
 import type {
+  BatchCompletionReport,
   BatchEvent,
   BatchRecord,
   ClaimRecord,
@@ -460,6 +461,22 @@ function normalizeHeartbeat(raw: Record<string, unknown>, path: string, now: Dat
   };
 }
 
+/**
+ * Pass a completion report through when it carries the required archive-ready
+ * shape (state.live + audit verdict/author + receipts). Optional fields and
+ * absent metrics ("—"/null) are preserved for the drawer to render.
+ */
+function normalizeBatchCompletion(value: unknown): BatchCompletionReport | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const state = raw.state as Record<string, unknown> | undefined;
+  const audit = raw.audit as Record<string, unknown> | undefined;
+  if (!state || typeof state.live !== "string") return undefined;
+  if (!audit || typeof audit.verdict !== "string" || typeof audit.author !== "string") return undefined;
+  if (!Array.isArray(raw.receipts)) return undefined;
+  return value as BatchCompletionReport;
+}
+
 function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord {
   const batchId = stringValue(raw.batch_id) || targetFromPath(path);
   const lanes = Array.isArray(raw.lanes) ? raw.lanes : [];
@@ -475,6 +492,7 @@ function normalizeBatch(raw: Record<string, unknown>, path: string): BatchRecord
     createdByMachine: stringValue(raw.created_by_machine) || undefined,
     launchPrompt: stringValue(raw.launch_prompt) || undefined,
     updatedAt: stringValue(raw.updated_at) || undefined,
+    completion: normalizeBatchCompletion(raw.completion),
     path,
     lanes: lanes.map((laneRaw) => {
       const lane = laneRaw as Record<string, unknown>;

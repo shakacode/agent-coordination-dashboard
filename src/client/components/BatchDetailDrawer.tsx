@@ -2,12 +2,8 @@ import { useState } from "react";
 import { Clipboard, OctagonPause, X } from "lucide-react";
 import type { BatchCompletionReport, BatchRecord } from "../../shared/types";
 import { displayAttribution } from "../../shared/attribution";
-import { ABSENT, type BatchCard } from "../coordinationView";
+import { ABSENT, metric, type BatchCard } from "../coordinationView";
 import { LinkableValue, LinkChips } from "./reportPrimitives";
-
-function metricOr(value: string | null | undefined): string {
-  return value == null || value === "" ? ABSENT : value;
-}
 
 function verdictColor(verdict: string): string {
   const normalized = verdict.trim().toLowerCase();
@@ -23,8 +19,8 @@ function CompletionSection({ completion }: { completion: BatchCompletionReport }
   const outcomes = completion.outcomes || [];
   const baseline = completion.baseline;
   const entries: Array<{ k: string; v: string; href?: string; mono?: boolean }> = [
-    { k: "State", v: `live ${completion.state?.live ?? ABSENT} · replay ${metricOr(completion.state?.replay)}` },
-    { k: "Usage", v: metricOr(completion.usage) },
+    { k: "State", v: `live ${completion.state?.live ?? ABSENT} · replay ${metric(completion.state?.replay)}` },
+    { k: "Usage", v: metric(completion.usage) },
     ...(baseline ? [{ k: "Baseline", v: baseline.path || baseline.label || ABSENT, href: baseline.href, mono: true }] : []),
     ...(completion.meta || [])
   ];
@@ -119,8 +115,13 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
 
   async function copyPrompt() {
     if (!card.launchPrompt) return;
+    if (!navigator.clipboard) {
+      setCopyLabel("Copy unavailable");
+      window.setTimeout(() => setCopyLabel("Copy prompt"), 1800);
+      return;
+    }
     try {
-      await navigator.clipboard?.writeText(card.launchPrompt);
+      await navigator.clipboard.writeText(card.launchPrompt);
       setCopyLabel("Copied ✓");
     } catch {
       setCopyLabel("Could not copy");
@@ -203,7 +204,7 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
                 ))}
               </div>
             ) : (
-              <p style={{ margin: 0, fontSize: "12.5px", color: "var(--color-neutral-100)" }}>A lane is blocked or its holder is dead. Review the lanes below.</p>
+              <p style={{ margin: 0, fontSize: "12.5px", color: "var(--color-neutral-100)" }}>A lane is blocked or its holder is dead. Close this drawer to inspect the batch's lanes on the board.</p>
             )}
             <p style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--mut)" }}>
               Structured blocker decisions and a recommended reply are not emitted by the coordination protocol yet.

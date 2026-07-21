@@ -4,8 +4,8 @@ import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution } from "../shared/attribution";
 import { effectiveCustody } from "../shared/effectiveCustody";
 import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
-import type { CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
-import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveSettings, type ItemTimelineResponse } from "./api";
+import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
+import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { buildCoordinationView, type BatchCard } from "./coordinationView";
 import type { OperatorRow } from "./operatorRows";
 import { TopBar } from "./components/TopBar";
@@ -17,6 +17,8 @@ import { BatchDetailDrawer } from "./components/BatchDetailDrawer";
 import { ItemPage } from "./components/ItemPage";
 import { HealthTab } from "./components/HealthTab";
 import { PromptDrawer } from "./components/PromptDrawer";
+import { BatchImportPanel } from "./components/BatchImportPanel";
+import { EventHistoryPanel } from "./components/EventHistoryPanel";
 import type { AnnotationAction } from "./components/OperatorActions";
 import type { JobRow } from "./coordinationView";
 import { parseRepoScopeExclusion, SignalGroupList } from "./components/SignalGroups";
@@ -689,10 +691,22 @@ export function App() {
         return;
       }
     }
-    const digits = query.replace(/[^0-9]/g, "");
-    if (!digits) return;
-    const hit = view.jobRows.find((candidate) => String(candidate.row.target || "").replace(/[^0-9]/g, "") === digits)
-      || view.jobRows.find((candidate) => String(candidate.row.target || "").includes(digits));
+    const trimmed = query.trim();
+    const numberMatch = trimmed.match(/(\d+)\s*$/);
+    if (!numberMatch) return;
+    const digits = numberMatch[1];
+    // Everything before the trailing number is treated as an optional repo hint
+    // so a bare number never silently resolves to the wrong repository.
+    const repoHint = trimmed.slice(0, numberMatch.index).replace(/[#\s]+$/, "").trim().toLowerCase();
+    const exact = view.jobRows.filter((candidate) => String(candidate.row.target || "") === digits);
+    let candidates = exact;
+    if (repoHint) {
+      const repoName = (repo: string) => repo.toLowerCase().split("/").pop();
+      const byName = exact.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
+      const byLoose = exact.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
+      candidates = byName.length > 0 ? byName : byLoose.length > 0 ? byLoose : exact;
+    }
+    const hit = candidates[0] || view.jobRows.find((candidate) => String(candidate.row.target || "").includes(digits));
     if (hit) {
       setTab("jobs");
       openRow(hit.row, hit.workItem);
@@ -734,6 +748,25 @@ export function App() {
         }
       } catch (caught: unknown) {
         fenceFailedAction(caught, "Presentation preference update failed");
+      }
+    });
+  }
+
+  async function importBatchManifest(manifest: Partial<BatchRecord>) {
+    if (cachedSnapshotAt || error) throw new Error("Local actions require current coordination data");
+    return enqueueUserAction(async () => {
+      const requestVersion = ++dashboardRequestVersion.current;
+      try {
+        await saveImportedBatchManifest(manifest);
+        const [loadedSettings, loadedDashboard] = await Promise.all([
+          fetchSettings(),
+          fetchDashboard({ fresh: true })
+        ]);
+        if (requestVersion === dashboardRequestVersion.current) {
+          applyFreshDashboard(loadedDashboard, loadedSettings);
+        }
+      } catch (caught: unknown) {
+        fenceFailedAction(caught, "Batch plan import failed");
       }
     });
   }
@@ -978,6 +1011,16 @@ export function App() {
               <summary>PR-batch prompt · {selectedCount} selected</summary>
               <p className="board-intro">Select ready items in the Jobs board, then copy a $pr-batch handoff.</p>
               <PromptDrawer disabled={batchPromptDisabled} prompt={prompt} />
+            </details>
+
+            <details className="reachable-panel" aria-label="Import batch plan">
+              <summary>Import batch plan</summary>
+              <BatchImportPanel disabled={localWritesDisabled} onImportBatch={localWritesDisabled ? undefined : importBatchManifest} />
+            </details>
+
+            <details className="reachable-panel" aria-label="Event history">
+              <summary>Event history · {dashboard.events.length}</summary>
+              <EventHistoryPanel events={dashboard.events} />
             </details>
 
             <details className="reachable-panel" aria-label="Coordination health">

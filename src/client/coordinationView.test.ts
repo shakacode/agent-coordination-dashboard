@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSummary, DashboardModel, WorkItem } from "../shared/types";
-import { ABSENT, buildCoordinationView, hostColor, jobBucketForRow, targetLabel } from "./coordinationView";
+import { ABSENT, buildCoordinationView, canonicalHostName, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
 import type { OperatorRow } from "./operatorRows";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -212,5 +212,47 @@ describe("buildCoordinationView", () => {
     expect(card.completion).toBeUndefined();
     expect(card.tokensTotal).toBe(ABSENT);
     expect(card.cost).toBe(ABSENT);
+  });
+
+  it("derives a manifest lane's state from its status when no operator row exists", () => {
+    // A lane targeting an already-terminal work item produces no synthetic lane
+    // row, so the state must fall back to the manifest status, not "unknown".
+    const doneBatch: DashboardModel = {
+      ...model,
+      workItems: [
+        workItem({
+          id: "repo/dashboard#300", repo: "repo/dashboard", target: "300", type: "pull_request",
+          schedulingState: "started_not_processing", operatorState: "terminal", terminalState: "done",
+          github: { repo: "repo/dashboard", target: "300", type: "pull_request", title: "Merged", url: "https://github.com/repo/dashboard/pull/300", state: "MERGED", labels: [], loadState: "loaded" }
+        })
+      ],
+      batches: [
+        {
+          schemaVersion: 1, batchId: "b2", repo: "repo/dashboard", objective: "Done batch.", createdAt: "2026-07-21T10:00:00.000Z",
+          lanes: [{ name: "l", owner: "o", targets: ["300"], dependsOn: [], status: "final", liveness: "no-heartbeat", blockedOn: [] }],
+          path: "batches/b2.json"
+        }
+      ],
+      batchOperations: []
+    };
+    const card = buildCoordinationView(doneBatch, NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe("done");
+    expect(card.done).toBe(1);
+    expect(card.tier).toBe("archive");
+  });
+
+  it("maps lane status text to a lifecycle state", () => {
+    expect(laneStatusState("final")).toBe("done");
+    expect(laneStatusState("PR-open")).toBe("running");
+    expect(laneStatusState("blocked")).toBe("blocked");
+    expect(laneStatusState("queued")).toBe("ready");
+    expect(laneStatusState("")).toBe("unknown");
+  });
+
+  it("canonicalizes host names once", () => {
+    expect(canonicalHostName("codex")).toBe("Codex");
+    expect(canonicalHostName("CLAUDE")).toBe("Claude");
+    expect(canonicalHostName("  other  ")).toBe("other");
+    expect(canonicalHostName(undefined)).toBeUndefined();
   });
 });

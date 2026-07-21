@@ -714,7 +714,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .triage-card.active {
-  border-color: currentColor;
+  border-color: currentcolor;
 }
 
 .triage-top {
@@ -1471,7 +1471,6 @@ h1, h2, h3, h4, h5, h6 {
 .drawer-pre {
   margin: 0;
   white-space: pre-wrap;
-  word-break: break-word;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.55;
@@ -1482,6 +1481,7 @@ h1, h2, h3, h4, h5, h6 {
   padding: 14px;
   max-height: 320px;
   overflow: auto;
+  overflow-wrap: break-word;
 }
 
 .drawer-objective {
@@ -1805,6 +1805,72 @@ a.where-v:hover {
 .icon-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.import-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.import-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  color: var(--mut);
+  font-size: 12px;
+}
+
+.import-textarea {
+  min-height: 110px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.import-status {
+  margin: 0;
+  color: var(--mut);
+  font-size: 12px;
+}
+
+.event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 140px 160px 140px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--mut);
+  font-size: 12px;
+}
+
+.event-row strong {
+  color: var(--color-neutral-200);
+  font-family: var(--font-heading);
+}
+
+.event-row time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 980px) {
+  .event-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .health-list {
