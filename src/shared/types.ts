@@ -126,6 +126,66 @@ export interface BatchReservation {
   repo?: string;
 }
 
+/** A `{ k, v }` metadata pair. `v` renders as a link when `href` is present. */
+export interface ReportMetaEntry {
+  k: string;
+  v: string;
+  href?: string;
+}
+
+/** A labelled external link, rendered as a chip in outcome rows. */
+export interface ReportLink {
+  label: string;
+  href: string;
+}
+
+/** Independent completed-batch audit. `author` folds version + timestamp. */
+export interface BatchAuditReport {
+  verdict: string;
+  author: string;
+  note?: string;
+}
+
+/** One durable receipt. At least one is required for an archive-ready batch. */
+export interface BatchReceipt {
+  label: string;
+  href?: string;
+  detail?: string;
+}
+
+/**
+ * A per-lane completion outcome. PR/issue lists stay plain text in `result`
+ * unless the producer sends `links`, which render as chips.
+ */
+export interface BatchOutcomeRow {
+  lane: string;
+  route?: string;
+  result?: string;
+  links?: ReportLink[];
+}
+
+/**
+ * The completion / fleet-health report for an archive-ready batch. Required:
+ * `state.live`, `audit`, `receipts` (>= 1). Optional metrics (`usage`,
+ * `state.replay`, `tokensTotal`, `cost`, `duration`) arrive as "—"/null when
+ * unknown and are never omitted, so the dashboard degrades them gracefully.
+ */
+export interface BatchCompletionReport {
+  state: { live: string; replay?: string | null };
+  audit: BatchAuditReport;
+  receipts: BatchReceipt[];
+  baseline?: { label?: string; path: string; href?: string };
+  outcomes?: BatchOutcomeRow[];
+  headline?: string;
+  gates?: string;
+  finalReport?: string;
+  usage?: string | null;
+  tokensTotal?: string | null;
+  cost?: string | null;
+  duration?: string | null;
+  meta?: ReportMetaEntry[];
+}
+
 export interface BatchRecord {
   schemaVersion: number;
   batchId: string;
@@ -139,6 +199,8 @@ export interface BatchRecord {
   launchPrompt?: string;
   lanes: BatchLane[];
   updatedAt?: string;
+  /** Present only for archive-ready batches; see BatchCompletionReport. */
+  completion?: BatchCompletionReport;
   path: string;
 }
 

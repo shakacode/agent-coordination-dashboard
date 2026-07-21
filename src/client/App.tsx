@@ -1,27 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
-import { Plus, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { generatePrBatchPrompt } from "../shared/prompt";
 import { isSelectableWorkItem } from "../shared/workItemSelection";
-import { displayAttribution, firstDisplayAttribution } from "../shared/attribution";
-import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
+import { displayAttribution } from "../shared/attribution";
 import { effectiveCustody } from "../shared/effectiveCustody";
 import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
-import type { BatchOperation, BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
+import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
-import { BatchesTab } from "./components/BatchesTab";
-import { AttentionShell, type DashboardSurface } from "./components/AttentionShell";
-import { HealthTab } from "./components/HealthTab";
+import { buildCoordinationView, type BatchCard } from "./coordinationView";
+import type { OperatorRow } from "./operatorRows";
+import { TopBar } from "./components/TopBar";
+import { DashboardShell, type TabId } from "./components/DashboardShell";
+import type { BatchFilter } from "./components/BatchesBoard";
+import type { JobFilter } from "./components/JobsBoard";
+import { JobDetailDrawer } from "./components/JobDetailDrawer";
+import { BatchDetailDrawer } from "./components/BatchDetailDrawer";
 import { ItemPage } from "./components/ItemPage";
-import type { AnnotationAction } from "./components/OperatorActions";
-import { MachinesTab } from "./components/MachinesTab";
+import { HealthTab } from "./components/HealthTab";
 import { PromptDrawer } from "./components/PromptDrawer";
+import { BatchImportPanel } from "./components/BatchImportPanel";
+import { EventHistoryPanel } from "./components/EventHistoryPanel";
+import type { AnnotationAction } from "./components/OperatorActions";
+import type { JobRow } from "./coordinationView";
 import { parseRepoScopeExclusion, SignalGroupList } from "./components/SignalGroups";
-import {
-  hasStructuredOperatorDeepLink,
-  operatorDeepLinkFromSearchParams,
-  type OperatorDeepLink,
-  type OverviewOperatorFilter
-} from "./operatorRows";
 import { groupWarnings } from "./signalGroups";
 import { canonicalGithubItemUrl } from "./githubUrls";
 
@@ -131,6 +131,9 @@ function isBatch(value: unknown): boolean {
   if (value.reservations !== undefined && (!Array.isArray(value.reservations) || !value.reservations.every((reservation) =>
     isRecord(reservation) && hasStrings(reservation, ["type", "target"]) && hasOptionalStrings(reservation, ["reason", "owner", "laneName", "repo"])
   ))) return false;
+  // Completion is optional presentation data; validate leniently and let the
+  // drawer render defensively so future report shapes survive the cache.
+  if (value.completion !== undefined && (!isRecord(value.completion) || !isRecord(value.completion.state) || !isRecord(value.completion.audit) || !Array.isArray(value.completion.receipts))) return false;
   return true;
 }
 
@@ -257,13 +260,6 @@ function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefin
   return match ? { repo: match[1], target: match[2] } : undefined;
 }
 
-function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord, batches: BatchRecord[]): boolean {
-  if (operation.batchPath) return operation.batchPath === batch.path;
-  if (operation.batchId !== batch.batchId) return false;
-  if (operation.repo) return operation.repo === batch.repo;
-  return batches.filter((candidate) => candidate.batchId === operation.batchId).length === 1;
-}
-
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
   return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
@@ -277,58 +273,10 @@ export function nextActiveSnoozeDelayMs(workItems: WorkItem[], nowMs = Date.now(
   return expiries.length > 0 ? Math.max(0, Math.min(...expiries) - nowMs) : undefined;
 }
 
-function readOperatorDeepLink() {
-  const params = new URLSearchParams(window.location.search);
-  const parsed = operatorDeepLinkFromSearchParams(params);
-  const legacyItem = params.get("item");
-  const itemRoute = itemRouteFromSearchParams(params);
-  const canonicalItem = legacyItem?.match(/^([^/#]+\/[^/#]+)#(\d+)$/);
-  const deepLink = canonicalItem
-    ? { ...parsed, repo: parsed.repo || canonicalItem[1], target: parsed.target || canonicalItem[2] }
-    : legacyItem && /^#?\d+$/.test(legacyItem)
-      ? { ...parsed, target: parsed.target || legacyItem.replace(/^#/, "") }
-    : parsed;
-  const arbitraryLegacyQuery = legacyItem && !itemRoute && !canonicalItem && !/^#?\d+$/.test(legacyItem) ? legacyItem : undefined;
-  return {
-    ...deepLink,
-    query: deepLink.query || arbitraryLegacyQuery
-  };
-}
-
-function hasLegacyFindLink(): boolean {
-  const params = new URLSearchParams(window.location.search);
-  return Boolean((params.get("item") && !itemRouteFromSearchParams(params)) || params.get("q") || params.get("batch") || params.get("lane") || params.get("repo") || params.get("target"));
-}
-
-export function operatorDeepLinkForOverviewFilter(filter: OverviewOperatorFilter, query: string): OperatorDeepLink {
-  return { overviewFilter: filter, query: query || undefined };
-}
-
-function writeOperatorLocation(deepLink: OperatorDeepLink, query: string, mode: "push" | "replace") {
-  const url = new URL(window.location.href);
-  for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q", "item"]) {
-    url.searchParams.delete(key);
-  }
-  const values = {
-    batch: deepLink.batchId,
-    lane: deepLink.laneName,
-    repo: deepLink.repo,
-    target: deepLink.target,
-    operatorFilter: deepLink.overviewFilter,
-    q: query || undefined
-  };
-  for (const [key, value] of Object.entries(values)) {
-    if (value) {
-      url.searchParams.set(key, value);
-    }
-  }
-  window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
-}
-
-function writeItemLocation(route: ItemRoute, mode: "push" | "replace") {
+function writeItemLocation(route: ItemRoute | undefined, mode: "push" | "replace") {
   const url = new URL(window.location.href);
   for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q", "item"]) url.searchParams.delete(key);
-  url.searchParams.set("item", `${route.repo}/${route.target}`);
+  if (route) url.searchParams.set("item", `${route.repo}/${route.target}`);
   window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
@@ -348,6 +296,14 @@ function preserveWorkItemSelections(current: DashboardModel | null, next: Dashbo
   };
 }
 
+function formatClock(date: Date): string {
+  let hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12 || 12;
+  return `${hours}:${minutes} ${ampm}`;
+}
+
 export function App() {
   const initialSnapshot = useMemo(readCachedDashboardSnapshot, []);
   const initialSnapshotRef = useRef(initialSnapshot);
@@ -356,30 +312,32 @@ export function App() {
   const [cachedSnapshotAt, setCachedSnapshotAt] = useState<string | null>(null);
   const [repoDraft, setRepoDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [operatorDeepLink, setOperatorDeepLink] = useState<OperatorDeepLink>(readOperatorDeepLink);
   const [itemRoute, setItemRoute] = useState<ItemRoute | undefined>(() => itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
   const itemRouteInScope = Boolean(itemRoute && settings?.targetRepos.includes(itemRoute.repo));
   const [itemTimeline, setItemTimeline] = useState<ItemTimelineResponse | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
-  const [operatorQuery, setOperatorQuery] = useState(operatorDeepLink.query || "");
-  const [activeSurface, setActiveSurface] = useState<DashboardSurface>(() =>
-    operatorDeepLink.query || hasStructuredOperatorDeepLink(operatorDeepLink) || hasLegacyFindLink() ? "find" : "attention"
-  );
+  const [query, setQuery] = useState("");
+  const [tab, setTab] = useState<TabId>("batches");
+  const [jobFilter, setJobFilter] = useState<JobFilter>("all");
+  const [batchFilter, setBatchFilter] = useState<BatchFilter>("all");
+  const [selectedRow, setSelectedRow] = useState<{ row: OperatorRow; workItem?: WorkItem } | null>(null);
+  const [selectedBatch, setSelectedBatch] = useState<BatchCard | null>(null);
+  const [highlightBatch, setHighlightBatch] = useState<string | null>(null);
+  const [clock, setClock] = useState(() => formatClock(new Date()));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [foregroundLoadInFlight, setForegroundLoadInFlight] = useState(false);
-  const [historyMergedTodayOnly, setHistoryMergedTodayOnly] = useState(false);
-  const [batchDetailScope, setBatchDetailScope] = useState<"events" | "repairs" | "all">("all");
-  const [diagnosticScope, setDiagnosticScope] = useState<"agents" | "health" | "all">("all");
   const currentDataUnavailable = Boolean(cachedSnapshotAt || error || foregroundLoadInFlight);
   const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
   const currentSettingsRef = useRef<DashboardRuntimeSettings | null>(null);
-  const batchOperationsRef = useRef<HTMLDetailsElement>(null);
-  const diagnosticsRef = useRef<HTMLDetailsElement>(null);
-  const warningsRef = useRef<HTMLElement>(null);
+  const warningsRef = useRef<HTMLDetailsElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const highlightTimeout = useRef<number | undefined>(undefined);
   const lastCacheWriteAttemptAt = useRef(0);
+
+  const view = useMemo(() => (dashboard ? buildCoordinationView(dashboard) : null), [dashboard]);
 
   const cacheDashboard = useCallback((nextDashboard: DashboardModel, nextSettings: DashboardRuntimeSettings, background = false) => {
     const attemptedAt = Date.now();
@@ -411,6 +369,11 @@ export function App() {
     document.title = "Agent Coordination Dashboard";
   }, []);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setClock(formatClock(new Date())), 15000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
   const requiredCoordinationUnavailable = Boolean(
     dashboard?.sourceStatus?.some(
       (source) =>
@@ -422,34 +385,8 @@ export function App() {
     () => (batchPromptDisabled ? "" : generatePrBatchPrompt(dashboard?.workItems || [])),
     [batchPromptDisabled, dashboard]
   );
-  const repairBatches = useMemo(() => {
-    if (!dashboard) return [];
-    const stopped = dashboard.batchOperations.filter((operation) => operation.controlStatus !== "running");
-    return dashboard.batches.filter((batch) =>
-      batch.source === "inferred"
-      || !batch.launchPrompt
-      || stopped.some((operation) => operationMatchesBatch(operation, batch, dashboard.batches))
-    );
-  }, [dashboard]);
-  const repairOperations = useMemo(() => (dashboard?.batchOperations || []).filter((operation) =>
-    operation.controlStatus !== "running"
-    && (repairBatches.some((batch) => operationMatchesBatch(operation, batch, dashboard?.batches || []))
-      || !(dashboard?.batches || []).some((batch) => operationMatchesBatch(operation, batch, dashboard?.batches || [])))
-  ), [dashboard, repairBatches]);
-  const orphanRepairOperations = repairOperations.filter((operation) => !repairBatches.some((batch) => operationMatchesBatch(operation, batch, dashboard?.batches || [])));
-  const repairWorkItemIds = useMemo(() => new Set((dashboard?.workItems || []).filter((item) => repairBatches.some((batch) => {
-    if (batch.repo && batch.repo !== item.repo) return false;
-    if (batch.targets?.some((target) => target.target === item.target && (target.repo || batch.repo) === item.repo)) return true;
-    if (batch.repo) {
-      return batch.lanes.some((lane) => lane.targets.includes(item.target))
-        && item.batchSignals?.some((signal) => signal.batchId === batch.batchId);
-    }
-    return repoLessBatchLaneMatchesWorkItem(batch, batch.batchId, item, dashboard?.workItems || []);
-  })).map((item) => item.id)), [dashboard, repairBatches]);
-  const repairBatchCount = dashboard
-    ? repairBatches.length
-      + orphanRepairOperations.length
-    : 0;
+  const selectedCount = dashboard?.workItems.filter((item) => item.selected && isSelectableWorkItem(item)).length || 0;
+
   function beginUserAction() {
     userActionInFlightCount.current += 1;
     setIsRefreshing(true);
@@ -513,6 +450,8 @@ export function App() {
       if (scopeChanged) {
         setDashboard(null);
         setCachedSnapshotAt(null);
+        setSelectedRow(null);
+        setSelectedBatch(null);
       }
       const initialSnapshot = initialSnapshotRef.current;
       initialSnapshotRef.current = undefined;
@@ -561,19 +500,8 @@ export function App() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("item") && !itemRouteFromSearchParams(params)) {
-      writeOperatorLocation(operatorDeepLink, operatorQuery, "replace");
-    }
-  }, []);
-
-  useEffect(() => {
     function restoreLocation() {
-      const nextDeepLink = readOperatorDeepLink();
       setItemRoute(itemRouteFromSearchParams(new URLSearchParams(window.location.search)));
-      setOperatorDeepLink(nextDeepLink);
-      setOperatorQuery(nextDeepLink.query || "");
-      setActiveSurface(nextDeepLink.query || hasStructuredOperatorDeepLink(nextDeepLink) || hasLegacyFindLink() ? "find" : "attention");
     }
     window.addEventListener("popstate", restoreLocation);
     return () => window.removeEventListener("popstate", restoreLocation);
@@ -619,20 +547,17 @@ export function App() {
     if (!itemRoute || !settings || settings.targetRepos.includes(itemRoute.repo)) {
       return;
     }
-    const nextDeepLink = { query: operatorQuery || undefined };
     setItemRoute(undefined);
     setItemTimeline(null);
     setItemError(null);
-    setOperatorDeepLink(nextDeepLink);
-    setActiveSurface("find");
-    writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
-  }, [itemRoute, operatorQuery, settings]);
+    writeItemLocation(undefined, "replace");
+  }, [itemRoute, settings]);
 
   useEffect(() => {
     function openFind(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setActiveSurface("find");
+        searchInputRef.current?.focus();
       }
     }
     window.addEventListener("keydown", openFind);
@@ -659,6 +584,8 @@ export function App() {
     const timeoutId = window.setTimeout(() => void loadDashboard(), Math.min(delay, 2_147_483_647));
     return () => window.clearTimeout(timeoutId);
   }, [dashboard, loadDashboard, settings?.refreshIntervalMs]);
+
+  useEffect(() => () => window.clearTimeout(highlightTimeout.current), []);
 
   async function persistRepos(nextRepos: string[]) {
     if (cachedSnapshotAt || error) return;
@@ -713,50 +640,10 @@ export function App() {
     });
   }
 
-  function updateOperatorQuery(query: string) {
-    const githubUrl = canonicalGithubItemUrl(query);
-    const item = githubUrl && dashboard?.workItems.find((candidate) => {
-      const { claim, heartbeat } = effectiveCustody(candidate);
-      return [candidate.github?.url, claim?.prUrl, heartbeat?.prUrl]
-        .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl)?.toLowerCase() === githubUrl.toLowerCase());
-    });
-    if (item) {
-      setOperatorQuery(query);
-      const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
-      const nextDeepLink = startingUniversalSearch
-        ? { query: query || undefined }
-        : { ...operatorDeepLink, query: query || undefined };
-      setOperatorDeepLink(nextDeepLink);
-      writeOperatorLocation(nextDeepLink, query, "replace");
-      openItem(item);
-      return;
-    }
-    setOperatorQuery(query);
-    const startingUniversalSearch = activeSurface === "find" && hasStructuredOperatorDeepLink(operatorDeepLink);
-    const nextDeepLink = startingUniversalSearch
-      ? { query: query || undefined }
-      : { ...operatorDeepLink, query: query || undefined };
-    setOperatorDeepLink(nextDeepLink);
-    writeOperatorLocation(nextDeepLink, query, "replace");
-  }
-
-  function openSurface(surface: DashboardSurface) {
-    const nextDeepLink = { query: operatorQuery || undefined };
-    if (itemRoute) {
-      setItemRoute(undefined);
-      setItemTimeline(null);
-      setItemError(null);
-    }
-    if (itemRoute || (surface !== "find" && hasStructuredOperatorDeepLink(operatorDeepLink))) {
-      setOperatorDeepLink(nextDeepLink);
-      writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
-    }
-    setHistoryMergedTodayOnly(false);
-    setActiveSurface(surface);
-  }
-
-  function openItem(item: WorkItem) {
+  function openItem(item: { repo: string; target: string }) {
     const route = { repo: item.repo, target: item.target };
+    setSelectedRow(null);
+    setSelectedBatch(null);
     setItemRoute(route);
     setItemTimeline(null);
     setItemError(null);
@@ -764,61 +651,77 @@ export function App() {
   }
 
   function closeItem() {
-    const nextDeepLink = { query: operatorQuery || undefined };
     setItemRoute(undefined);
     setItemTimeline(null);
     setItemError(null);
-    setActiveSurface("find");
-    setOperatorDeepLink(nextDeepLink);
-    writeOperatorLocation(nextDeepLink, operatorQuery, "push");
+    writeItemLocation(undefined, "push");
   }
 
-  function clearOperatorConstraints() {
-    const nextDeepLink = { query: operatorQuery || undefined };
-    setOperatorDeepLink(nextDeepLink);
-    writeOperatorLocation(nextDeepLink, operatorQuery, "replace");
+  function openRow(row: OperatorRow, workItem?: WorkItem) {
+    setSelectedBatch(null);
+    setSelectedRow({ row, workItem });
   }
 
-  function showMergedToday() {
-    setOperatorQuery("");
-    setHistoryMergedTodayOnly(true);
-    setActiveSurface("history");
+  function openBatchCard(card: BatchCard) {
+    setSelectedRow(null);
+    setSelectedBatch(card);
   }
 
-  function openDetails(details: RefObject<HTMLDetailsElement | null>) {
-    if (details.current) {
-      details.current.open = true;
-      details.current.scrollIntoView?.({ block: "start" });
+  function openBatchById(batchId: string) {
+    setSelectedRow(null);
+    setSelectedBatch(null);
+    setTab("batches");
+    setBatchFilter("all");
+    setHighlightBatch(batchId);
+    window.clearTimeout(highlightTimeout.current);
+    highlightTimeout.current = window.setTimeout(() => setHighlightBatch(null), 2600);
+  }
+
+  function submitSearch() {
+    if (!view) return;
+    const githubUrl = canonicalGithubItemUrl(query);
+    if (githubUrl) {
+      const match = dashboard?.workItems.find((candidate) => {
+        const { claim, heartbeat } = effectiveCustody(candidate);
+        return [candidate.github?.url, claim?.prUrl, heartbeat?.prUrl]
+          .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl)?.toLowerCase() === githubUrl.toLowerCase());
+      });
+      if (match) {
+        openItem(match);
+        return;
+      }
+    }
+    const trimmed = query.trim();
+    const numberMatch = trimmed.match(/(\d+)\s*$/);
+    if (!numberMatch) return;
+    const digits = numberMatch[1];
+    // Everything before the trailing number is treated as an optional repo hint
+    // so a bare number never silently resolves to the wrong repository.
+    const repoHint = trimmed.slice(0, numberMatch.index).replace(/[#\s]+$/, "").trim().toLowerCase();
+    const exact = view.jobRows.filter((candidate) => String(candidate.row.target || "") === digits);
+    let candidates = exact;
+    if (repoHint) {
+      const repoName = (repo: string) => repo.toLowerCase().split("/").pop();
+      const byName = exact.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
+      const byLoose = exact.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
+      candidates = byName.length > 0 ? byName : byLoose.length > 0 ? byLoose : exact;
+    }
+    const hit = candidates[0] || view.jobRows.find((candidate) => String(candidate.row.target || "").includes(digits));
+    if (hit) {
+      setTab("jobs");
+      openRow(hit.row, hit.workItem);
     }
   }
 
-  function openBatchDetails(scope: "events" | "repairs" | "all") {
-    setBatchDetailScope(scope);
-    openDetails(batchOperationsRef);
-  }
-
-  function openDiagnostics(scope: "agents" | "health" | "all") {
-    setDiagnosticScope(scope);
-    openDetails(diagnosticsRef);
-  }
-
-  function showAllWorkItems() {
-    const nextDeepLink: OperatorDeepLink = {};
-    setOperatorQuery("");
-    setOperatorDeepLink(nextDeepLink);
-    setActiveSurface("find");
-    writeOperatorLocation(nextDeepLink, "", "replace");
+  function toggleSelectRow(jobRow: JobRow) {
+    if (jobRow.workItem) toggleWorkItem(jobRow.workItem.id);
   }
 
   function revealWarnings() {
-    if (!warningsRef.current) {
-      openDiagnostics("health");
-      return;
+    if (warningsRef.current) {
+      warningsRef.current.open = true;
+      warningsRef.current.scrollIntoView?.({ block: "start" });
     }
-    warningsRef.current.querySelectorAll("details").forEach((details) => {
-      details.open = true;
-    });
-    warningsRef.current.scrollIntoView?.({ block: "start" });
   }
 
   function fenceFailedAction(caught: unknown, fallback: string): never {
@@ -891,15 +794,12 @@ export function App() {
     return <main className="app-shell error-state">{error}</main>;
   }
 
-  if (!dashboard || !settings) {
+  if (!dashboard || !settings || !view) {
     return <DashboardLoadingSkeleton />;
   }
 
   const localWritesDisabled = currentDataUnavailable;
 
-  // Repo-scope exclusion notices are normal steady-state operator scoping.
-  // They render as one compact affordance on the target-repositories row, so
-  // every warning surface works from the remaining fleet signals instead.
   const repoScopeExclusions = dashboard.warnings.flatMap((warning) => {
     const exclusion = parseRepoScopeExclusion(warning);
     return exclusion ? [exclusion] : [];
@@ -910,7 +810,6 @@ export function App() {
   const sourceFailures = (dashboard.sourceStatus || []).filter((source) =>
     ["auth_error", "unreachable"].includes(source.status)
   );
-  const coordinationSourceError = sourceFailures.length > 0;
   const failedResources = new Set(sourceFailures.map((source) => source.resource));
   const hasAuthenticationFailure = sourceFailures.some((source) => source.status === "auth_error");
   const requiredResources = REQUIRED_COORDINATION_RESOURCES;
@@ -922,22 +821,11 @@ export function App() {
     new Set(sourceFailures.flatMap((source) => (source.httpStatus === undefined ? [] : [source.httpStatus])))
   );
   const degradedHttpStatus = failedHttpStatuses.length === 1 ? failedHttpStatuses[0] : undefined;
-  const failedSourceDetails = (resources: readonly CoordinationResource[]) =>
-    sourceFailures
-      .filter((source) => resources.includes(source.resource))
-      .map((source) => `${source.resource}: ${source.status}${source.httpStatus ? ` (${source.httpStatus})` : ""}`)
-      .join("; ");
-  const coordinationCount = (count: number, resources: readonly CoordinationResource[]) =>
-    resources.some((resource) => failedResources.has(resource)) ? "—" : String(count);
-  const agentSources = ["claims", "heartbeats", "events"] as const;
-  const eventSources = ["events"] as const;
+  const coordinationSourceError = sourceFailures.length > 0;
   const healthSources = ["claims", "heartbeats", "batches", "events"] as const;
-  const unavailableSources = (resources: readonly CoordinationResource[]) =>
-    resources.filter((resource) => failedResources.has(resource));
+  const unavailableHealthSources = healthSources.filter((resource) => failedResources.has(resource));
   const warningsHeading = warningLabel === "warnings" ? "Warnings" : "Notices";
   const warningGroups = groupWarnings(fleetWarnings);
-  const visibleWarningGroups = warningGroups.slice(0, 3);
-  const overflowWarningGroups = warningGroups.slice(3);
   const renderWarning = (warning: CoordinationWarning) => {
     const repo = displayAttribution(warning.repo);
     const target = displayAttribution(warning.target);
@@ -950,60 +838,36 @@ export function App() {
     );
   };
   const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline.repo, itemTimeline.target) : undefined;
+  const selectedBatchTitle = selectedRow?.row.batchId
+    ? view.batchCards.find((card) => card.id === selectedRow.row.batchId)?.title
+    : undefined;
+
+  const showItem = Boolean(itemRoute && itemRouteInScope);
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <h1>Agent Coordination Dashboard</h1>
-          <p>
-            {coordinationSourceError ? (
-              <span className="source-chip source-chip-error">{dashboard.stateRoot}</span>
-            ) : (
-              dashboard.stateRoot
-            )}{" "}
-            {!itemRoute && <>· <button className="inline-count" onClick={showAllWorkItems} type="button">
-              {dashboard.trulyOpenCountStatus === "unknown" || dashboard.trulyOpenCount === undefined ? "UNKNOWN" : dashboard.trulyOpenCount} lanes truly open
-            </button></>}
-          </p>
-        </div>
-        <div className="summary-strip">
-          {!itemRoute && <>
-            <button className="summary-count" disabled={dashboard.agents.length === 0 || agentSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("agents")} title={failedSourceDetails(agentSources) || undefined} type="button">
-              {coordinationCount(dashboard.agents.length, agentSources)} agents
-            </button>
-            <button className="summary-count" disabled={dashboard.events.length === 0 || eventSources.some((resource) => failedResources.has(resource))} onClick={() => openBatchDetails("events")} title={failedSourceDetails(eventSources) || undefined} type="button">
-              {coordinationCount(dashboard.events.length, eventSources)} events
-            </button>
-            <button className="summary-count" disabled={dashboard.healthItems.length === 0 || healthSources.some((resource) => failedResources.has(resource))} onClick={() => openDiagnostics("health")} title={failedSourceDetails(healthSources) || undefined} type="button">
-              {coordinationCount(dashboard.healthItems.length, healthSources)} health
-            </button>
-          </>}
-          <button className="summary-count" disabled={fleetWarnings.length === 0} onClick={revealWarnings} type="button">
-            {fleetWarnings.length} {warningLabel}
-          </button>
-          <span>{new Date(dashboard.generatedAt).toLocaleTimeString()}</span>
-          <button
-            aria-label="Refresh dashboard"
-            className="icon-button"
-            disabled={isRefreshing}
-            onClick={() => void loadDashboard()}
-            title="Refresh"
-            type="button"
-          >
-            <RefreshCw size={16} aria-hidden="true" />
-          </button>
-        </div>
-      </header>
+      <TopBar
+        clock={clock}
+        hostLegend={view.hostLegend}
+        onQueryChange={setQuery}
+        onQuerySubmit={submitSearch}
+        onRefresh={() => void loadDashboard()}
+        onRevealWarnings={revealWarnings}
+        query={query}
+        refreshing={isRefreshing}
+        searchInputRef={searchInputRef}
+        warningCount={fleetWarnings.length}
+        warningLabel={warningLabel}
+      />
 
       {cachedSnapshotAt && !error ? (
-        <section aria-label="Last-known dashboard snapshot" className="snapshot-banner" role="status">
+        <section aria-label="Last-known dashboard snapshot" className="banner banner-snapshot" role="status">
           <strong>Showing last-known snapshot</strong>
           <span>Refreshing current coordination data · saved {new Date(cachedSnapshotAt).toLocaleString()}</span>
         </section>
       ) : null}
       {error ? (
-        <section aria-label="Dashboard refresh failed" className="snapshot-banner snapshot-banner-error" role="alert">
+        <section aria-label="Dashboard refresh failed" className="banner banner-error" role="alert">
           <strong>Current coordination data could not be loaded</strong>
           <span>{error}. Showing the last available dashboard snapshot; local write controls are disabled until current data loads.</span>
         </section>
@@ -1047,7 +911,7 @@ export function App() {
         </section>
       )}
 
-      <details className="repo-filter" aria-label="Target repositories">
+      <details className="repo-scope" aria-label="Target repositories">
         <summary>
           <span>Target repositories</span>
           <span>
@@ -1055,7 +919,7 @@ export function App() {
             {excludedRecordCount > 0 ? ` · ${excludedRecordCount} ${excludedRecordCount === 1 ? "record" : "records"} excluded` : ""}
           </span>
         </summary>
-        <div className="repo-filter-body">
+        <div className="repo-scope-body">
           <div className="repo-chips">
             {settings.targetRepos.map((repo) => (
               <span className="repo-chip" key={repo}>
@@ -1067,7 +931,7 @@ export function App() {
                   title={`Remove ${repo}`}
                   type="button"
                 >
-                  <X size={14} aria-hidden="true" />
+                  ✕
                 </button>
               </span>
             ))}
@@ -1075,19 +939,18 @@ export function App() {
           <form className="repo-add-form" onSubmit={addRepo}>
             <input
               aria-label="Add target repository"
+              className="input"
               disabled={localWritesDisabled}
               name="targetRepository"
               onChange={(event) => setRepoDraft(event.target.value)}
               placeholder="owner/repo"
               value={repoDraft}
             />
-            <button aria-label="Add repository" disabled={isRefreshing || localWritesDisabled} title="Add repository" type="submit">
-              <Plus size={16} aria-hidden="true" />
-            </button>
+            <button aria-label="Add repository" className="btn btn-secondary" disabled={isRefreshing || localWritesDisabled} title="Add repository" type="submit">＋</button>
           </form>
         </div>
         {repoScopeExclusions.length > 0 && (
-          <div aria-label="Records excluded by repository scope" className="repo-filter-body" role="note">
+          <div aria-label="Records excluded by repository scope" className="repo-scope-body" role="note">
             <span>
               Excluded by scope: {repoScopeExclusions.map((exclusion) => `${exclusion.count} ${exclusion.label}`).join(" · ")}
             </span>
@@ -1096,40 +959,9 @@ export function App() {
         )}
       </details>
 
-      {fleetWarnings.length > 0 && (
-        <section className="warnings-panel" aria-label={`Coordination ${warningLabel}`} ref={warningsRef}>
-          <div className="warnings-panel-summary">
-            <span className="warnings-heading">{warningsHeading}</span>
-            <button className="inline-count" onClick={revealWarnings} type="button">
-              {fleetWarnings.length} {warningLabel}
-            </button>
-          </div>
-          <SignalGroupList
-            ariaLabel={`Coordination ${warningLabel} grouped by type`}
-            groups={visibleWarningGroups}
-            renderItem={renderWarning}
-          />
-          {overflowWarningGroups.length > 0 && (
-            <details className="warnings-overflow">
-              <summary>
-                {overflowWarningGroups.length} more {overflowWarningGroups.length === 1 ? "type" : "types"}
-              </summary>
-              <SignalGroupList groups={overflowWarningGroups} renderItem={renderWarning} />
-            </details>
-          )}
-        </section>
-      )}
-
-      <div className="dashboard-layout">
-        <section className="content-region">
-          <nav className="surface-nav" aria-label="Dashboard surfaces">
-            {(["attention", "now", "find", "history"] as const).map((surface) => (
-              <button className={activeSurface === surface ? "active" : ""} key={surface} onClick={() => openSurface(surface)} type="button">
-                {surface[0].toUpperCase()}{surface.slice(1)}
-              </button>
-            ))}
-          </nav>
-          {itemRoute && itemRouteInScope ? itemTimeline ? (
+      {showItem ? (
+        <div className="app-width">
+          {itemTimeline ? (
             <>
               {itemError ? <p className="item-timeline-warning" role="alert">Coordination data: UNKNOWN — stale timeline refresh failed: {itemError}</p> : null}
               <ItemPage
@@ -1142,68 +974,84 @@ export function App() {
             </>
           ) : itemError ? (
             <p className="empty-state">Work item timeline: UNKNOWN — {itemError}</p>
-          ) : <p className="empty-state">Loading work item timeline…</p> : <AttentionShell
-            commandActionsDisabled={localWritesDisabled}
-            items={dashboard.workItems}
-            deepLink={operatorDeepLink}
-            historyMergedTodayOnly={historyMergedTodayOnly}
-            mergeTimeStatus={dashboard.githubMergeTimeStatus || "unavailable"}
-            now={dashboard.generatedAt}
-            onAnnotate={localWritesDisabled ? undefined : mutateAnnotation}
-            onClearAnnotation={localWritesDisabled ? undefined : (item) => mutateAnnotation(item)}
-            onQueryChange={updateOperatorQuery}
-            onOpenBatchOperations={() => openBatchDetails(operatorDeepLink.overviewFilter === "batch_repair" ? "repairs" : "all")}
-            onOpenItem={openItem}
-            onClearDeepLink={clearOperatorConstraints}
-            onShowMergedToday={showMergedToday}
-            onSurfaceChange={openSurface}
-            onToggle={toggleWorkItem}
-            query={operatorQuery}
-            repairBatchCount={repairBatchCount}
-            repairWorkItemIds={repairWorkItemIds}
+          ) : (
+            <p className="empty-state">Loading work item timeline…</p>
+          )}
+        </div>
+      ) : (
+        <>
+          <DashboardShell
+            batchFilter={batchFilter}
+            highlightBatchId={highlightBatch}
+            jobFilter={jobFilter}
+            onOpenBatch={openBatchCard}
+            onOpenRow={openRow}
+            onSetBatchFilter={setBatchFilter}
+            onSetJobFilter={setJobFilter}
+            onSetTab={setTab}
+            onToggleSelect={localWritesDisabled ? undefined : toggleSelectRow}
             selectionDisabled={batchPromptDisabled}
-            surface={activeSurface}
-          />}
-          {!itemRoute && <details className="prompt-drawer-shell">
-            <summary>PR-batch prompt</summary>
-            <PromptDrawer disabled={batchPromptDisabled} prompt={prompt} />
-          </details>}
-          {!itemRoute && <details className="secondary-tools" ref={batchOperationsRef}>
-            <summary>{batchDetailScope === "events" ? "Event records" : batchDetailScope === "repairs" ? "Batch repairs" : "Batch operations"}</summary>
-            {batchDetailScope === "events" ? (
-              <>
-                <button className="secondary-action" onClick={() => setBatchDetailScope("all")} type="button">Show all batch operations</button>
-                <section aria-label="Event records" className="event-list">
-                  {dashboard.events.map((event) => {
-                    const repo = displayAttribution(event.repo);
-                    const target = displayAttribution(event.target);
-                    return <article className="event-row" key={`${event.path}:${event.eventId}`}><strong>{event.type}</strong><span>{repo}{target === "unattributed" ? "" : `#${target}`}</span><span>{displayAttribution(event.batchId, "unbatched")}</span><span>{firstDisplayAttribution([event.laneName, event.agentId])}</span><time>{event.timestamp || event.path}</time></article>;
-                  })}
-                </section>
-              </>
-            ) : (
-              <BatchesTab
-                batches={batchDetailScope === "repairs" ? repairBatches : dashboard.batches}
-                events={batchDetailScope === "repairs" ? dashboard.events.filter((event) => repairBatches.some((batch) => event.batchPath ? event.batchPath === batch.path : event.batchId === batch.batchId && Boolean(event.repo && event.repo === batch.repo))) : dashboard.events}
-                localWritesDisabled={localWritesDisabled}
-                onImportBatch={localWritesDisabled ? undefined : importBatchManifest}
-                onRequestStop={localWritesDisabled ? undefined : stopBatch}
-                operations={batchDetailScope === "repairs" ? repairOperations : dashboard.batchOperations}
-              />
+            tab={tab}
+            view={view}
+          />
+
+          <div className="app-width">
+            {fleetWarnings.length > 0 && (
+              <details className="reachable-panel" aria-label={`Coordination ${warningLabel}`} ref={warningsRef}>
+                <summary>{warningsHeading} · {fleetWarnings.length}</summary>
+                <SignalGroupList
+                  ariaLabel={`Coordination ${warningLabel} grouped by type`}
+                  groups={warningGroups}
+                  renderItem={renderWarning}
+                />
+              </details>
             )}
-            {batchDetailScope === "repairs" && orphanRepairOperations.length > 0 ? (
-              <section aria-label="Orphan repair operations" className="event-list">
-                {orphanRepairOperations.map((operation) => <article className="event-row" key={`${operation.batchPath || operation.repo || "unscoped"}:${operation.batchId}`}><strong>{operation.controlStatus}</strong><span>{displayAttribution(operation.repo || operation.batchPath)}</span><span>{displayAttribution(operation.batchId)}</span><span>{operation.eventCount} events</span><time>{operation.latestEventAt || "time unavailable"}</time></article>)}
-              </section>
-            ) : null}
-          </details>}
-          {!itemRoute && <details className="secondary-tools" ref={diagnosticsRef}>
-            <summary>{diagnosticScope === "agents" ? "Agents" : diagnosticScope === "health" ? "Health" : "Machines and health"}</summary>
-            {diagnosticScope !== "health" ? <MachinesTab agents={dashboard.agents} unavailableSources={unavailableSources(agentSources)} /> : null}
-            {diagnosticScope !== "agents" ? <HealthTab items={dashboard.healthItems} unavailableSources={unavailableSources(healthSources)} /> : null}
-          </details>}
-        </section>
-      </div>
+
+            <details className="reachable-panel" aria-label="PR-batch prompt">
+              <summary>PR-batch prompt · {selectedCount} selected</summary>
+              <p className="board-intro">Select ready items in the Jobs board, then copy a $pr-batch handoff.</p>
+              <PromptDrawer disabled={batchPromptDisabled} prompt={prompt} />
+            </details>
+
+            <details className="reachable-panel" aria-label="Import batch plan">
+              <summary>Import batch plan</summary>
+              <BatchImportPanel disabled={localWritesDisabled} onImportBatch={localWritesDisabled ? undefined : importBatchManifest} />
+            </details>
+
+            <details className="reachable-panel" aria-label="Event history">
+              <summary>Event history · {dashboard.events.length}</summary>
+              <EventHistoryPanel events={dashboard.events} />
+            </details>
+
+            <details className="reachable-panel" aria-label="Coordination health">
+              <summary>Health · {dashboard.healthItems.length}</summary>
+              <HealthTab items={dashboard.healthItems} unavailableSources={unavailableHealthSources} />
+            </details>
+          </div>
+        </>
+      )}
+
+      {selectedRow && (
+        <JobDetailDrawer
+          batchTitle={selectedBatchTitle}
+          commandActionsDisabled={localWritesDisabled}
+          onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(selectedRow.workItem!, annotation)}
+          onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(selectedRow.workItem!)}
+          onClose={() => setSelectedRow(null)}
+          onOpenBatch={openBatchById}
+          onOpenTimeline={(item) => openItem(item)}
+          row={selectedRow.row}
+          workItem={selectedRow.workItem}
+        />
+      )}
+      {selectedBatch && (
+        <BatchDetailDrawer
+          card={selectedBatch}
+          localWritesDisabled={localWritesDisabled}
+          onClose={() => setSelectedBatch(null)}
+          onRequestStop={localWritesDisabled ? undefined : stopBatch}
+        />
+      )}
     </main>
   );
 }
