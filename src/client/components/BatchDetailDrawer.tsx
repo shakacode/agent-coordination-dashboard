@@ -1,8 +1,98 @@
 import { useState } from "react";
 import { Clipboard, OctagonPause, X } from "lucide-react";
-import type { BatchRecord } from "../../shared/types";
+import type { BatchCompletionReport, BatchRecord } from "../../shared/types";
 import { displayAttribution } from "../../shared/attribution";
 import { ABSENT, type BatchCard } from "../coordinationView";
+import { LinkableValue, LinkChips } from "./reportPrimitives";
+
+function metricOr(value: string | null | undefined): string {
+  return value == null || value === "" ? ABSENT : value;
+}
+
+function verdictColor(verdict: string): string {
+  const normalized = verdict.trim().toLowerCase();
+  if (normalized.includes("clean") || normalized.includes("pass")) return "var(--ok)";
+  if (normalized.includes("finding") || normalized.includes("fail")) return "var(--bad)";
+  return "var(--info)";
+}
+
+function CompletionSection({ completion }: { completion: BatchCompletionReport }) {
+  const audit = completion.audit;
+  const auditColor = verdictColor(audit?.verdict || "");
+  const receipts = completion.receipts || [];
+  const outcomes = completion.outcomes || [];
+  const baseline = completion.baseline;
+  const entries: Array<{ k: string; v: string; href?: string; mono?: boolean }> = [
+    { k: "State", v: `live ${completion.state?.live ?? ABSENT} · replay ${metricOr(completion.state?.replay)}` },
+    { k: "Usage", v: metricOr(completion.usage) },
+    ...(baseline ? [{ k: "Baseline", v: baseline.path || baseline.label || ABSENT, href: baseline.href, mono: true }] : []),
+    ...(completion.meta || [])
+  ];
+
+  return (
+    <div className="drawer-section">
+      <div className="drawer-kicker">Completed-batch audit</div>
+      <div className="convo-status" style={{ background: `color-mix(in srgb, ${auditColor} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${auditColor} 42%, transparent)` }}>
+        <span className="status-badge" style={{ background: `color-mix(in srgb, ${auditColor} 18%, transparent)`, color: auditColor, borderColor: `color-mix(in srgb, ${auditColor} 45%, transparent)` }}>audit {audit?.verdict || ABSENT}</span>
+        <div className="convo-status-main">
+          <div className="convo-status-hint">by {audit?.author || ABSENT}</div>
+          {audit?.note && <div className="need-body" style={{ marginTop: "6px" }}>{audit.note}</div>}
+        </div>
+      </div>
+
+      <div className="where-grid" style={{ marginTop: "12px" }}>
+        {entries.map((entry) => (
+          <div key={entry.k} style={{ display: "contents" }}>
+            <span className="where-k">{entry.k}</span>
+            <LinkableValue className={entry.mono ? "where-v mono" : "where-v"} href={entry.href} value={entry.v} />
+          </div>
+        ))}
+      </div>
+
+      {receipts.length > 0 && (
+        <>
+          <div className="drawer-kicker" style={{ margin: "12px 0 6px" }}>Receipts</div>
+          <div className="receipt-list">
+            {receipts.map((receipt, index) => (
+              <div className="receipt-row" key={`${receipt.label}:${index}`}>
+                <LinkableValue className="where-v" href={receipt.href} value={receipt.label} />
+                {receipt.detail && <span className="convo-status-hint">{receipt.detail}</span>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {outcomes.length > 0 && (
+        <>
+          <div className="drawer-kicker" style={{ margin: "12px 0 6px" }}>Outcomes</div>
+          <table className="table">
+            <thead><tr><th>Lane</th><th>Route</th><th>Result</th></tr></thead>
+            <tbody>
+              {outcomes.map((outcome, index) => (
+                <tr key={`${outcome.lane}:${index}`}>
+                  <td className="mono">{outcome.lane}</td>
+                  <td>{outcome.route || ABSENT}</td>
+                  <td>{outcome.result || ""}{outcome.links && outcome.links.length > 0 ? <> <LinkChips links={outcome.links} /></> : null}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {completion.headline && <p className="need-body" style={{ marginTop: "10px" }}>{completion.headline}</p>}
+      {completion.gates && <p className="convo-status-hint" style={{ marginTop: "8px" }}>{completion.gates}</p>}
+
+      {completion.finalReport && (
+        <>
+          <div className="drawer-kicker" style={{ margin: "12px 0 6px" }}>Final report</div>
+          <pre className="drawer-pre">{completion.finalReport}</pre>
+        </>
+      )}
+    </div>
+  );
+}
 
 export interface BatchDetailDrawerProps {
   card: BatchCard;
@@ -121,12 +211,16 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
           </div>
         )}
 
-        <div className="drawer-section">
-          <div className="drawer-kicker">Completed-batch audit</div>
-          <p style={{ margin: 0, fontSize: "12.5px", color: "var(--mut)" }}>
-            Audit verdicts, completion reports, and final reports are not emitted by the coordination protocol yet.
-          </p>
-        </div>
+        {card.completion ? (
+          <CompletionSection completion={card.completion} />
+        ) : (
+          <div className="drawer-section">
+            <div className="drawer-kicker">Completed-batch audit</div>
+            <p style={{ margin: 0, fontSize: "12.5px", color: "var(--mut)" }}>
+              Audit verdicts, completion reports, and final reports are not emitted by the coordination protocol yet.
+            </p>
+          </div>
+        )}
 
         {card.objective && (
           <div className="drawer-section">

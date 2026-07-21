@@ -1,5 +1,6 @@
 import type {
   AgentSummary,
+  BatchCompletionReport,
   BatchOperation,
   BatchRecord,
   DashboardModel,
@@ -147,8 +148,13 @@ export interface BatchCard {
   tokensTotal: string;
   cost: string;
   lanes: LaneView[];
+  completion?: BatchCompletionReport;
   operation?: BatchOperation;
   batch: BatchRecord;
+}
+
+function metric(value: string | null | undefined): string {
+  return value == null || value === "" ? ABSENT : value;
 }
 
 export interface AgentCard {
@@ -493,6 +499,7 @@ export function buildBatchCard(
   const total = laneCount || 1;
   const convo = convoStatusFor(tier);
   const host = batch.lanes.find((lane) => lane.host)?.host;
+  const completion = batch.completion;
   const latestLaneActivity = lanes
     .map((lane) => lane.row?.lastActivityAt)
     .filter((value): value is string => Boolean(value))
@@ -509,7 +516,7 @@ export function buildBatchCard(
     launchPrompt: batch.launchPrompt,
     promptSaved: Boolean(batch.launchPrompt),
     started: startedLabel(batch.createdAt),
-    duration: durationLabel(batch.createdAt, nowMs),
+    duration: completion?.duration != null && completion.duration !== "" ? completion.duration : durationLabel(batch.createdAt, nowMs),
     host,
     hostColor: hostColor(host),
     machine: batch.createdByMachine,
@@ -527,9 +534,10 @@ export function buildBatchCard(
     donePct: `${Math.round((done / total) * 100)}%`,
     runPct: `${Math.round((running / total) * 100)}%`,
     qa: operation ? `${operation.qa.passed}/${operation.qa.total}` : ABSENT,
-    tokensTotal: ABSENT,
-    cost: ABSENT,
+    tokensTotal: metric(completion?.tokensTotal),
+    cost: metric(completion?.cost),
     lanes,
+    completion,
     operation,
     batch
   };

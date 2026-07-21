@@ -181,4 +181,36 @@ describe("buildCoordinationView", () => {
     expect(targetLabel({ target: "42", type: "pull_request", title: "x" } as OperatorRow)).toBe("PR #42");
     expect(targetLabel({ target: "42", type: "issue", title: "x" } as OperatorRow)).toBe("Issue #42");
   });
+
+  it("passes a completion report through and prefers its metrics", () => {
+    const withCompletion: DashboardModel = {
+      ...model,
+      batches: [
+        {
+          ...model.batches[0],
+          completion: {
+            state: { live: "adf0c47a", replay: "—" },
+            audit: { verdict: "clean", author: "justin808 · v1 durable" },
+            receipts: [{ label: "receipt-v1" }],
+            tokensTotal: "2.09M",
+            cost: "$7.30",
+            duration: "5h 1m",
+            usage: null
+          }
+        }
+      ]
+    };
+    const card = buildCoordinationView(withCompletion, NOW).batchCards[0];
+    expect(card.completion?.audit.verdict).toBe("clean");
+    expect(card.tokensTotal).toBe("2.09M");
+    expect(card.cost).toBe("$7.30");
+    expect(card.duration).toBe("5h 1m");
+  });
+
+  it("keeps degraded metrics when there is no completion report", () => {
+    const card = view.batchCards[0];
+    expect(card.completion).toBeUndefined();
+    expect(card.tokensTotal).toBe(ABSENT);
+    expect(card.cost).toBe(ABSENT);
+  });
 });

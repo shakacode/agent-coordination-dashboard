@@ -129,6 +129,9 @@ function isBatch(value: unknown): boolean {
   if (value.reservations !== undefined && (!Array.isArray(value.reservations) || !value.reservations.every((reservation) =>
     isRecord(reservation) && hasStrings(reservation, ["type", "target"]) && hasOptionalStrings(reservation, ["reason", "owner", "laneName", "repo"])
   ))) return false;
+  // Completion is optional presentation data; validate leniently and let the
+  // drawer render defensively so future report shapes survive the cache.
+  if (value.completion !== undefined && (!isRecord(value.completion) || !isRecord(value.completion.state) || !isRecord(value.completion.audit) || !Array.isArray(value.completion.receipts))) return false;
   return true;
 }
 

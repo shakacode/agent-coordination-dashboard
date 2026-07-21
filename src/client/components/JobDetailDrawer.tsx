@@ -5,6 +5,7 @@ import { ABSENT, devToolForHost, hostColor, stateColor, targetLabel } from "../c
 import type { OperatorRow } from "../operatorRows";
 import { safeGithubUrl } from "../operatorRows";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
+import { LinkableValue } from "./reportPrimitives";
 
 export interface JobDetailDrawerProps {
   row: OperatorRow;
@@ -20,6 +21,12 @@ export interface JobDetailDrawerProps {
 
 const NEUTRAL = "var(--color-neutral-200)";
 
+function branchTreeUrl(repo: string, branch: string | undefined): string | undefined {
+  if (!branch) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return undefined;
+  return `https://github.com/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export function JobDetailDrawer({
   row,
   workItem,
@@ -34,14 +41,14 @@ export function JobDetailDrawer({
   const color = stateColor(row.operatorState);
   const need = workItem?.attention?.label || (row.blockedOn.length > 0 ? `Blocked on ${row.blockedOn.join(", ")}` : "");
   const githubUrl = safeGithubUrl(row.url);
-  const where: Array<{ k: string; v: string; color?: string }> = [
+  const where: Array<{ k: string; v: string; color?: string; href?: string }> = [
     { k: "Host", v: displayAttribution(row.host, "UNKNOWN"), color: hostColor(row.host) },
     { k: "Dev tool", v: devToolForHost(row.host) || "UNKNOWN" },
     { k: "Route", v: ABSENT },
     { k: "Machine", v: displayAttribution(row.machineId, "UNKNOWN") },
     { k: "User", v: displayAttribution(row.operator, "UNKNOWN") },
     { k: "Batch", v: batchTitle || (row.batchId ? displayAttribution(row.batchId) : "unbatched") },
-    { k: "Branch", v: displayAttribution(row.branch, "UNKNOWN") },
+    { k: "Branch", v: displayAttribution(row.branch, "UNKNOWN"), href: branchTreeUrl(row.repo, row.branch) },
     { k: "Phase", v: displayAttribution(row.activityStatus, "UNKNOWN") },
     { k: "Merge auth", v: ABSENT },
     { k: "Chat handle", v: displayAttribution(row.threadHandle, "UNKNOWN") }
@@ -69,7 +76,7 @@ export function JobDetailDrawer({
             {where.map((entry) => (
               <div key={entry.k} style={{ display: "contents" }}>
                 <span className="where-k">{entry.k}</span>
-                <span className="where-v" style={{ color: entry.color || NEUTRAL }}>{entry.v}</span>
+                <LinkableValue className="where-v" href={entry.href} style={{ color: entry.color || (entry.href ? "var(--color-accent)" : NEUTRAL) }} value={entry.v} />
               </div>
             ))}
           </div>
