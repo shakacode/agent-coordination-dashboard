@@ -454,8 +454,10 @@ function normalizeMergeAuthority(value: string | undefined): "ask" | "auto" | un
  * `merge_authority:` declaration the pr-batch launch prompt already carries.
  */
 function mergeAuthorityFrom(raw: Record<string, unknown>): "ask" | "auto" | undefined {
-  const direct = normalizeMergeAuthority(stringValue(raw.merge_authority) || stringValue(raw.mergeAuthority));
-  if (direct) return direct;
+  // An explicit field wins — even an unrecognized value like "none" (authority
+  // revoked) degrades to `—` rather than scraping a stale launch-prompt value.
+  const explicit = stringValue(raw.merge_authority) || stringValue(raw.mergeAuthority);
+  if (explicit) return normalizeMergeAuthority(explicit);
   const match = stringValue(raw.launch_prompt).match(/merge_authority:\s*([A-Za-z_]+)/i);
   return match ? normalizeMergeAuthority(match[1]) : undefined;
 }

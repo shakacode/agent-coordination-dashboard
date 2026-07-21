@@ -875,4 +875,26 @@ describe("readCoordinationState", () => {
     expect(state.batches[0].blocker).toBeUndefined();
     expect(state.batches[0].lanes[0].route).toBeUndefined();
   });
+
+  it("honors an explicit merge authority of none instead of scraping the launch prompt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-state-merge-none-"));
+    await mkdir(join(root, "claims"), { recursive: true });
+    await mkdir(join(root, "heartbeats"), { recursive: true });
+    await mkdir(join(root, "batches"), { recursive: true });
+    await writeFile(
+      join(root, "batches", "batch-none.json"),
+      JSON.stringify({
+        batch_id: "batch-none",
+        repo: "repo/app",
+        merge_authority: "none", // authority explicitly revoked
+        launch_prompt: "Use $pr-batch.\nmerge_authority: auto_merge_when_gates_pass.\nGo.",
+        lanes: [{ name: "l1", owner: "w", targets: ["1"] }]
+      })
+    );
+
+    const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
+
+    // An explicit unrecognized value degrades to — and never scrapes the stale prompt value.
+    expect(state.batches[0].mergeAuthority).toBeUndefined();
+  });
 });

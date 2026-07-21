@@ -872,6 +872,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             reservation.repo ? targetRepoSet.has(reservation.repo) : !unsafeMetadata
           ),
           launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
+          // Free-text blocker (message/decisions/reply) can name another repo; redact like objective/launchPrompt.
+          blocker: unsafeMetadata ? undefined : batch.blocker,
           source: batch.source || "manifest",
           lanes
         }
@@ -912,6 +914,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             targets,
             reservations,
             launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
+            // Free-text blocker (message/decisions/reply) can name another repo; redact like objective/launchPrompt.
+            blocker: unsafeMetadata ? undefined : batch.blocker,
             source: batch.source || "manifest",
             lanes
           }

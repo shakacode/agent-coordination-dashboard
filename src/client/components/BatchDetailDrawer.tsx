@@ -230,7 +230,6 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
                       <span className="drawer-kicker" style={{ margin: "12px 0 6px" }}>Recommended reply</span>
                       <button
                         className="btn btn-secondary"
-                        disabled={localWritesDisabled}
                         onClick={() => void copyReply(blocker.recommendedReply!)}
                         style={{ fontSize: "11.5px", padding: "4px 11px" }}
                         type="button"

@@ -107,6 +107,39 @@ describe("buildDashboardModel", () => {
     expect(item?.usage).toBeUndefined();
   });
 
+  it("redacts a blocker on a batch with out-of-scope metadata, keeping it for a fully in-scope batch (#83)", () => {
+    const blocker = { message: "Lane needs authority.", decisions: ["Approve"], recommendedReply: "Approved." };
+    const apiPreview = { ...preview, repo: "repo-b/api", target: "34", type: "pull_request" as const, title: "API PR", url: "https://github.com/repo-b/api/pull/34" };
+    const lanes = [{ name: "api-pr", owner: "worker-b", targets: ["34"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [] }];
+
+    // batch.repo is out of scope, retained only via the in-scope per-target repo → unsafe metadata.
+    const mixed = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [{ schemaVersion: 1, batchId: "batch-mixed", repo: "repo-a/app", targets: [{ type: "pull_request", target: "12", repo: "repo-a/app" }, { type: "pull_request", target: "34", repo: "repo-b/api" }], blocker, path: "batches/batch-mixed.json", lanes }],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+    expect(mixed.batches[0].blocker).toBeUndefined();
+
+    const scoped = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [{ schemaVersion: 1, batchId: "batch-scoped", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], blocker, path: "batches/batch-scoped.json", lanes }],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+    expect(scoped.batches[0].blocker).toEqual(blocker);
+  });
+
   it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {
     const batch = {
       schemaVersion: 1 as const,
