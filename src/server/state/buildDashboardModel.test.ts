@@ -138,6 +138,20 @@ describe("buildDashboardModel", () => {
       now: new Date("2026-06-17T20:00:00Z")
     });
     expect(scoped.batches[0].blocker).toEqual(blocker);
+
+    // Even a fully in-scope batch redacts a blocker whose own text names another repo.
+    const leakyBlocker = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [{ schemaVersion: 1, batchId: "batch-leaky", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], blocker: { message: "Waiting on https://github.com/other-org/other-repo/pull/5 to merge.", decisions: ["Approve"], recommendedReply: "Approved." }, path: "batches/batch-leaky.json", lanes }],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+    expect(leakyBlocker.batches[0].blocker).toBeUndefined();
   });
 
   it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {

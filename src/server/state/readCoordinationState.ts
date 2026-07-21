@@ -440,12 +440,15 @@ function usageFrom(raw: Record<string, unknown>): ModelUsage[] | undefined {
   return entries.length > 0 ? entries : undefined;
 }
 
-/** Map a declared merge-authority value onto the dashboard's `ask` | `auto` axis. */
+/**
+ * Map a declared merge-authority value onto the dashboard's `ask` | `auto` axis.
+ * Only known values map; anything else (e.g. `none`, `auto_deny`) degrades to `—`
+ * rather than being caught by a loose substring match.
+ */
 function normalizeMergeAuthority(value: string | undefined): "ask" | "auto" | undefined {
   const normalized = (value || "").trim().toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized.includes("auto")) return "auto";
   if (normalized === "ask") return "ask";
+  if (normalized === "auto" || normalized.startsWith("auto_merge")) return "auto";
   return undefined;
 }
 

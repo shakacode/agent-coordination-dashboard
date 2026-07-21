@@ -1035,7 +1035,7 @@ export function App() {
       {selectedRow && (
         <JobDetailDrawer
           batchTitle={selectedBatchTitle}
-          mergeAuth={selectedRowBatchCard?.mergeAuth}
+          mergeAuth={selectedRowBatchCard?.batch.mergeAuthority}
           commandActionsDisabled={localWritesDisabled}
           onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(selectedRow.workItem!, annotation)}
           onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(selectedRow.workItem!)}

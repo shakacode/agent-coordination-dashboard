@@ -219,8 +219,8 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
                 <p className="need-body" style={{ margin: "0 0 10px" }}>{blocker.message}</p>
                 {blocker.decisions.length > 0 && (
                   <div className="decision-list">
-                    {blocker.decisions.map((decision) => (
-                      <div key={decision}><span style={{ color: "var(--block)", flex: "none" }}>•</span><span>{decision}</span></div>
+                    {blocker.decisions.map((decision, index) => (
+                      <div key={`${index}-${decision}`}><span style={{ color: "var(--block)", flex: "none" }}>•</span><span>{decision}</span></div>
                     ))}
                   </div>
                 )}

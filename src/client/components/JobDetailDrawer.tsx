@@ -11,8 +11,8 @@ export interface JobDetailDrawerProps {
   row: OperatorRow;
   workItem?: WorkItem;
   batchTitle?: string;
-  /** Resolved batch merge authority ("ask" | "auto"), when the batch card carries one. */
-  mergeAuth?: string;
+  /** Declared batch merge authority, when the batch carries one; degrades to `—` otherwise. */
+  mergeAuth?: "ask" | "auto";
   onClose: () => void;
   onOpenBatch?: (batchId: string) => void;
   onOpenTimeline?: (item: WorkItem) => void;

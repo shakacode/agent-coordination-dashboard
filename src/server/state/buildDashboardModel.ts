@@ -420,7 +420,14 @@ function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): 
     ]),
     ...repoRefsFromText(batch.objective),
     ...repoRefsFromText(batch.launchPrompt),
-    ...repoRefsFromPrompt(batch.launchPrompt)
+    ...repoRefsFromPrompt(batch.launchPrompt),
+    ...(batch.blocker
+      ? [
+          ...highConfidenceRepoRefsFromMessage(batch.blocker.message),
+          ...batch.blocker.decisions.flatMap((decision) => highConfidenceRepoRefsFromMessage(decision)),
+          ...highConfidenceRepoRefsFromMessage(batch.blocker.recommendedReply)
+        ]
+      : [])
   ].filter((repo): repo is string => Boolean(repo));
 
   return explicitRepos.some((repo) => !targetRepoSet.has(repo));
