@@ -289,6 +289,32 @@ describe("buildCoordinationView", () => {
     expect(card.cost).toBe("$7.30");
   });
 
+  it("falls back to the live usage rollup when a completion report degrades metrics to — (#79)", () => {
+    const degraded: DashboardModel = {
+      ...model,
+      workItems: [
+        ...model.workItems,
+        workItem({ id: "repo/dashboard#201", repo: "repo/dashboard", target: "201", type: "pull_request", schedulingState: "in_process", usage: [{ model: "gpt-5.6-sol", tokensIn: 1_000_000, tokensOut: 500_000, costUsd: 4 }] }),
+        workItem({ id: "repo/dashboard#202", repo: "repo/dashboard", target: "202", type: "pull_request", schedulingState: "in_process", usage: [{ model: "claude-opus-4.6", tokensIn: 400_000, tokensOut: 190_000, costUsd: 3.3 }] })
+      ],
+      batches: [
+        {
+          ...model.batches[0],
+          completion: {
+            state: { live: "adf0c47a" },
+            audit: { verdict: "clean", author: "justin808 · v1 durable" },
+            receipts: [{ label: "receipt-v1" }],
+            tokensTotal: ABSENT, // producer signaled "unknown" per the contract
+            cost: null
+          }
+        }
+      ]
+    };
+    const card = buildCoordinationView(degraded, NOW).batchCards[0];
+    expect(card.tokensTotal).toBe("2.09M"); // live rollup used, not the "—" from the report
+    expect(card.cost).toBe("$7.30");
+  });
+
   it("formats token counts and never fabricates usage (#79)", () => {
     expect(formatTokens(2_090_000)).toBe("2.09M");
     expect(formatTokens(1200)).toBe("1.2K");

@@ -55,6 +55,11 @@ describe("JobDetailDrawer provenance rows", () => {
     expect(screen.queryByText(/Token and cost accounting is not emitted/)).not.toBeInTheDocument();
   });
 
+  it("shows the manifest lane route when the work item has none (#80)", () => {
+    render(<JobDetailDrawer row={row} workItem={workItem()} route="gpt-5.6-sol/xhigh" onClose={() => {}} />);
+    expect(screen.getByText("gpt-5.6-sol/xhigh")).toBeInTheDocument();
+  });
+
   it("degrades route, merge authority, and tokens to the em-dash placeholder when absent (#79/#80/#81)", () => {
     render(<JobDetailDrawer row={row} onClose={() => {}} />);
     expect(screen.getByText(/Token and cost accounting is not emitted by the coordination protocol yet/)).toBeInTheDocument();

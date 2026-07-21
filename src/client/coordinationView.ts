@@ -622,8 +622,10 @@ export function buildBatchCard(
     donePct: `${Math.round((done / total) * 100)}%`,
     runPct: `${Math.round((running / total) * 100)}%`,
     qa: operation ? `${operation.qa.passed}/${operation.qa.total}` : ABSENT,
-    tokensTotal: metric(completion?.tokensTotal ?? usageRollup.tokensTotal),
-    cost: metric(completion?.cost ?? usageRollup.cost),
+    // A completion report may signal "unknown" as "—"/null (per BatchCompletionReport);
+    // in that case fall back to the live per-lane usage rollup rather than showing "—".
+    tokensTotal: metric(completion?.tokensTotal && completion.tokensTotal !== ABSENT ? completion.tokensTotal : usageRollup.tokensTotal),
+    cost: metric(completion?.cost && completion.cost !== ABSENT ? completion.cost : usageRollup.cost),
     lanes,
     completion,
     operation,

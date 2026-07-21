@@ -13,6 +13,8 @@ export interface JobDetailDrawerProps {
   batchTitle?: string;
   /** Declared batch merge authority, when the batch carries one; degrades to `—` otherwise. */
   mergeAuth?: "ask" | "auto";
+  /** Lane manifest route, for the common manifest-only case where the work item has none. */
+  route?: string;
   onClose: () => void;
   onOpenBatch?: (batchId: string) => void;
   onOpenTimeline?: (item: WorkItem) => void;
@@ -41,10 +43,10 @@ function TokensByModel({ usage }: { usage: ModelUsage[] }) {
         </span>
       </div>
       <div className="token-bars">
-        {usage.map((entry) => {
+        {usage.map((entry, index) => {
           const tokens = entry.tokensIn + entry.tokensOut;
           return (
-            <div className="token-bar-row" key={entry.model}>
+            <div className="token-bar-row" key={`${index}-${entry.model}`}>
               <span className="token-bar-model" title={entry.model}>{entry.model}</span>
               <span className="token-bar-track">
                 <span className="token-bar-fill" style={{ width: `${Math.max(3, Math.round((tokens / maxTokens) * 100))}%` }} />
@@ -65,6 +67,7 @@ export function JobDetailDrawer({
   workItem,
   batchTitle,
   mergeAuth,
+  route,
   onClose,
   onOpenBatch,
   onOpenTimeline,
@@ -78,7 +81,7 @@ export function JobDetailDrawer({
   const where: Array<{ k: string; v: string; color?: string; href?: string }> = [
     { k: "Host", v: displayAttribution(row.host, "UNKNOWN"), color: hostColor(row.host) },
     { k: "Dev tool", v: devToolForHost(row.host) || "UNKNOWN" },
-    { k: "Route", v: workItem?.route || ABSENT },
+    { k: "Route", v: route || workItem?.route || ABSENT },
     { k: "Machine", v: displayAttribution(row.machineId, "UNKNOWN") },
     { k: "User", v: displayAttribution(row.operator, "UNKNOWN") },
     { k: "Batch", v: batchTitle || (row.batchId ? displayAttribution(row.batchId) : "unbatched") },
