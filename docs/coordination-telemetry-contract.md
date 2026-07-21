@@ -181,6 +181,39 @@ Recommended event types:
 - `qa.validation_passed`
 - `qa.validation_failed`
 
+### Proposed Producer Lifecycle Events
+
+The producer contract requires lifecycle events to be emitted automatically
+when `batch_id` is known:
+
+- `claim.acquired`: agent, target, branch, and generation/instance metadata.
+- `claim.released`: final status, `release_mode`, and handoff fields.
+- `phase.changed`: old and new phase, emitted only for a transition rather than
+  for every heartbeat.
+
+These events must remain append-only and best-effort. A lifecycle event write
+failure must not fail the claim operation that triggered it.
+
+The producer contract also defines these typed operator-signal events and their
+required values:
+
+- `help_requested`: reason is `blocked-user-input`, `question`, or `permission`.
+- `escalation_requested`: from-route, to-route, and evidence summary.
+- `error`: severity is `P0`, `P1`, `P2`, or `P3`, plus category and a short
+  description.
+- `human_intervention`: kind is `takeover`, `supersede`, `manual-fix`, or
+  `drain`.
+
+Before batch closeout, producers must check every lane for missing lifecycle
+events and report each per-lane gap. A batch with gaps is not
+telemetry-complete. This contract does not prescribe a CLI command or storage
+schema for that check.
+
+These producer requirements are proposed behavior pending their source
+implementation. The dashboard currently reads available events and reports
+health warnings; it does not emit these events or enforce closeout
+completeness.
+
 ## Batch Stop And Restart
 
 When a coordinator decides a running batch should stop before restart, append a
