@@ -8,9 +8,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createDashboardApp } from "../src/server/app";
 
-async function unusedPort(): Promise<number> {
+async function unusedPort(host = "127.0.0.1"): Promise<number> {
   const server = createNetServer();
-  server.listen(0, "127.0.0.1");
+  server.listen(0, host);
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") {
@@ -72,6 +72,11 @@ async function runExecutable(
 async function runCli(args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return runExecutable("bin/agent-coordination-dashboard.js", args);
 }
+
+const supportsSecondaryIpv4Loopback = await unusedPort("127.0.0.2").then(
+  () => true,
+  () => false
+);
 
 describe("agent-coordination-dashboard CLI", () => {
   it("preserves legacy server-mode invalid-argument exit 1", async () => {
@@ -329,6 +334,36 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
+  it("preserves an observed local-interface HTTP status when the body fails mid-stream", async () => {
+    const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"ok":', () => res.destroy());
+    });
+
+    try {
+      const result = await runCli([
+        "doctor",
+        "--stack-json",
+        "--url",
+        baseUrl,
+        "--local-interface-url"
+      ]);
+
+      expect(result.status).toBe(2);
+      const contract = JSON.parse(result.stdout) as DoctorContract;
+      expect(contract.checks.find((check) => check.id === "dashboard.health")).toEqual({
+        id: "dashboard.health",
+        status: "failed",
+        summary: "Dashboard health payload is malformed",
+        details: { url: baseUrl, http_status: 200 },
+        guidance: "Inspect or upgrade the dashboard service, then rerun doctor."
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("does not accept an unexpected success status as service health", async () => {
     const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
       res.statusCode = 201;
@@ -416,7 +451,10 @@ describe("agent-coordination-dashboard CLI", () => {
     }
   });
 
-  it("cancels a streaming redirect body and exits within the doctor deadline", async () => {
+  it.each([
+    { label: "public loopback", extraArgs: [] },
+    { label: "lifecycle local-interface", extraArgs: ["--local-interface-url"] }
+  ])("cancels a streaming redirect body through the $label path", async ({ extraArgs }) => {
     const { baseUrl, server } = await listenDoctorFixture((_req, res) => {
       res.statusCode = 302;
       res.setHeader("location", `${baseUrl}/redirected-health`);
@@ -425,7 +463,7 @@ describe("agent-coordination-dashboard CLI", () => {
     });
     const child = spawn(
       process.execPath,
-      ["bin/agent-coordination-dashboard.js", "doctor", "--stack-json", "--url", baseUrl],
+      ["bin/agent-coordination-dashboard.js", "doctor", "--stack-json", "--url", baseUrl, ...extraArgs],
       { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] }
     );
     let stdout = "";
@@ -548,6 +586,8 @@ describe("agent-coordination-dashboard CLI", () => {
     "http://localhost:4319#",
     "http://2130706433:4319",
     "http://127.1:4319",
+    "http://localhost:04319",
+    "http://localhost:00080",
     "http://user:sentinel-secret@localhost:4319"
   ])("rejects unsafe dashboard URL %s with usage exit 64", async (url) => {
     const result = await runCli(["doctor", "--stack-json", "--url", url]);
@@ -556,6 +596,72 @@ describe("agent-coordination-dashboard CLI", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("--url must be a loopback HTTP URL");
     expect(result.stderr).not.toContain("sentinel-secret");
+  });
+
+  it.each([
+    { label: "loopback", extraArgs: [] },
+    { label: "local-interface", extraArgs: ["--local-interface-url"] }
+  ])("accepts a canonical explicit default port through the $label URL parser", async ({ extraArgs }) => {
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      "http://127.0.0.1:80",
+      ...extraArgs
+    ]);
+
+    expect(result.status).not.toBe(64);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({ component: "agent-coordination-dashboard" });
+  });
+
+  it.runIf(supportsSecondaryIpv4Loopback)(
+    "recognizes canonical URLs throughout the IPv4 loopback range for lifecycle diagnostics",
+    async () => {
+      const port = await unusedPort();
+      const result = await runCli([
+        "doctor",
+        "--stack-json",
+        "--url",
+        `http://127.0.0.2:${port}`,
+        "--local-interface-url"
+      ]);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        component: "agent-coordination-dashboard",
+        status: "degraded"
+      });
+    }
+  );
+
+  it("still rejects noncanonical IPv4 loopback spelling for lifecycle diagnostics", async () => {
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      "http://127.1:4319",
+      "--local-interface-url"
+    ]);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("address assigned to this machine");
+  });
+
+  it("keeps lifecycle local-interface diagnostics constrained to this machine", async () => {
+    const result = await runCli([
+      "doctor",
+      "--stack-json",
+      "--url",
+      "http://192.0.2.10:4319",
+      "--local-interface-url"
+    ]);
+
+    expect(result.status).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("address assigned to this machine");
   });
 
   it("accepts an IPv6 loopback dashboard URL", async () => {
@@ -831,6 +937,7 @@ describe("agent-coordination-dashboard CLI", () => {
     await mkdir(join(packageRoot, "bin"), { recursive: true });
     await Promise.all([
       copyFile("bin/agent-coordination-dashboard.js", executable),
+      copyFile("bin/interface-address.js", join(packageRoot, "bin", "interface-address.js")),
       writeFile(
         join(packageRoot, "package.json"),
         JSON.stringify({
@@ -889,6 +996,7 @@ describe("agent-coordination-dashboard CLI", () => {
     ]);
     await Promise.all([
       copyFile("bin/agent-coordination-dashboard.js", join(packageRoot, "bin", "agent-coordination-dashboard.js")),
+      copyFile("bin/interface-address.js", join(packageRoot, "bin", "interface-address.js")),
       writeFile(join(packageRoot, "package.json"), '{"type":"module"}\n', "utf8"),
       writeFile(
         join(fakeTsxRoot, "package.json"),
@@ -931,7 +1039,7 @@ describe("agent-coordination-dashboard CLI", () => {
     } finally {
       await rm(root, { force: true, recursive: true });
     }
-  });
+  }, 10_000);
 
   it("stops the normal server cleanly when the launcher is terminated", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-dashboard-cli-test-"));

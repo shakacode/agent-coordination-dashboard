@@ -43,6 +43,75 @@ npx agent-coordination-dashboard
 This repository is package-ready only: these steps do not publish to npm,
 create a Git tag, or change registry state.
 
+## Detached lifecycle commands
+
+The packaged CLI can manage a detached local dashboard on supported macOS and
+Linux hosts without tmux, private dotfiles, or an interactive shell:
+
+```bash
+npx agent-coordination-dashboard start
+npx agent-coordination-dashboard status
+npx agent-coordination-dashboard logs
+npx agent-coordination-dashboard open
+npx agent-coordination-dashboard restart
+npx agent-coordination-dashboard stop
+```
+
+Each `start` or `restart` reloads the optional protected environment file at
+`~/.config/agent-coordination-dashboard/env`. When the file exists, it must be
+a regular file owned by the current user with mode `0600`:
+
+```bash
+mkdir -p ~/.config/agent-coordination-dashboard
+touch ~/.config/agent-coordination-dashboard/env
+chmod 600 ~/.config/agent-coordination-dashboard/env
+```
+
+Use `--config-env-file <path>` on `start` or `restart` to load another protected
+file. The lifecycle CLI deliberately does not call this flag `--env-file`:
+current Node.js runtimes reserve that option and may consume it before the
+dashboard CLI can validate it.
+
+The child process receives explicit empty values for the coordination API URL
+and token variables before values from the protected file are applied. Removing
+API settings from the file and restarting therefore returns the dashboard to
+filesystem mode instead of inheriting stale credentials. Lifecycle children
+always run with `NODE_ENV=production`. Tokens are passed only in the child
+environment; they are not stored in lifecycle metadata or command arguments.
+Lifecycle metadata and logs live under
+`~/.local/state/agent-coordination-dashboard/` with user-only permissions.
+
+Lifecycle `HOST` must be `localhost` or an IPv4 or IPv6 address, including the
+`0.0.0.0` and `::` wildcard addresses. A `restart` validates the protected file,
+`PORT`, and `HOST` before stopping the running dashboard, so invalid replacement
+configuration leaves the existing service intact.
+Wildcard `HOST` values require an `ALLOWED_HOSTS` list containing only specific
+hostnames or IP addresses; blank and catch-all entries are rejected.
+
+`start`, `stop`, and `restart` are idempotent. The CLI records an instance marker
+and verifies the owned process group before signaling it, so a listener it does
+not own is reported but never terminated. If the lifecycle wrapper exits while
+its marked server remains healthy, status and stop retain safe control of that
+group. Mutating lifecycle commands share a
+user-only lock, so simultaneous starts cannot race into an unowned listener; a
+lock left by a dead command is recovered without signaling that command's
+process. Startup probes the configured bind host, including IPv6 loopback, and
+waits for `/api/health`; lifecycle status then reuses
+`doctor --stack-json --deep` to report coordination health. A healthy server
+with degraded coordination remains running and is reported as degraded rather
+than being mistaken for a failed start. For a specific IP address assigned to
+the local machine, lifecycle diagnostics connect from a loopback source address;
+the dashboard's machine-local `/api/doctor` boundary remains unchanged.
+
+Write routes recognize a same-machine peer from the kernel-reported TCP source
+address, not from forwarded headers. Exact non-link-local interface matching is
+not application authentication: it cannot compensate for a host or network that
+permits source-address spoofing, or for a proxy that makes remote clients appear
+local. Keep `HOST` on loopback on shared or untrusted networks. If a non-loopback
+bind is required, use host firewall or equivalent access controls so untrusted
+traffic cannot reach the dashboard. `/api/doctor` and foreground cache bypass
+remain loopback-only.
+
 ## Component diagnostics
 
 The installed command owns a read-only machine contract for stack-wide health
@@ -91,7 +160,8 @@ The server binds to `127.0.0.1` by default because it exposes private local
 coordination metadata. Set `HOST=0.0.0.0` only when you intentionally want to
 make it reachable from another machine on the network, and set `ALLOWED_HOSTS`
 to the exact hostnames or IP addresses you will use in the browser.
-Changing target repositories through the UI remains loopback-only.
+Changing target repositories through the UI uses the same exact same-machine
+socket-peer boundary described above; other network peers remain read-only.
 
 To read from the HTTP coordination backend instead of the local filesystem
 state root, set the same API variables used by `agent-coord`:
@@ -177,7 +247,9 @@ Work items show three scheduling states:
 
 The dashboard does not launch Codex agents, edit code, merge PRs, resolve
 reviews, or mutate claims or heartbeats. Coordination-state writes are limited
-to explicit loopback-only actions:
+to explicit actions whose socket peer is loopback or exactly matches a
+non-link-local address currently assigned to the dashboard machine. Other LAN
+and remote peers remain read-only:
 
 - Save an imported batch plan to `batches/<batch-id>.json`.
 - Append a `batch.stop_requested` event to `events/batches/<batch-id>.jsonl`.
@@ -186,9 +258,10 @@ A stop request is a coordination/audit signal so a batch can be restarted
 cleanly; it does not kill processes or release claims by itself.
 
 Dismiss and snooze actions never write coordination state. They are
-presentation-only annotations, accepted from loopback clients and persisted in
-`annotations.json` beside the dashboard settings file. Active snoozes expire
-automatically; dismissals remain until an operator clears them.
+presentation-only annotations, accepted from loopback or exact non-link-local
+same-machine interface peers and persisted in `annotations.json` beside the
+dashboard settings file. Active snoozes expire automatically; dismissals remain
+until an operator clears them.
 
 ## Configuration
 
@@ -203,6 +276,11 @@ automatically; dismissals remain until an operator clears them.
 | `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling; dashboard read cache is capped at 5s |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
+
+The protected lifecycle environment file rejects `NODE_OPTIONS`, and detached
+lifecycle children do not inherit it from the launching shell. Lifecycle-managed
+dashboards do not support Node runtime options through `NODE_OPTIONS`, keeping
+restart behavior independent of the caller's working directory.
 
 Target repositories are edited in the dashboard and persisted across restarts.
 `TARGET_REPOS` accepts a comma-separated list only as the first-run fallback

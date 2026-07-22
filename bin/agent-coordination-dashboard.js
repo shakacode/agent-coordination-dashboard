@@ -2,11 +2,24 @@
 
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  dashboardHostsForInterfaceAddress,
+  isNonLinkLocalInterfaceAddress,
+  localSourceAddressForDashboardHost
+} from "./interface-address.js";
 
 const HELP = `Usage: agent-coordination-dashboard [--demo]
        agent-coordination-dashboard doctor --stack-json [--deep] [--url <loopback-http-url>]
+       agent-coordination-dashboard start [--config-env-file <path>]
+       agent-coordination-dashboard stop
+       agent-coordination-dashboard restart [--config-env-file <path>]
+       agent-coordination-dashboard status
+       agent-coordination-dashboard logs
+       agent-coordination-dashboard open
 
 Start the dashboard server using local coordination state.
 
@@ -15,6 +28,9 @@ Options:
   --stack-json Emit the versioned component diagnostic contract.
   --url URL    Probe a loopback HTTP dashboard URL (default http://127.0.0.1:4319).
   --deep       Include coordination resource diagnostics.
+  --config-env-file PATH
+               Load a protected environment file before start or restart
+               (default ~/.config/agent-coordination-dashboard/env).
   -h, --help   Show this help.
 `;
 
@@ -50,6 +66,13 @@ function exitForStatus(status) {
   return status === "failed" ? 2 : status === "degraded" ? 1 : 0;
 }
 
+function hasCanonicalHttpOriginSpelling(rawUrl, parsed) {
+  const normalizedRaw = rawUrl.endsWith("/") ? rawUrl.slice(0, -1) : rawUrl;
+  const allowedSpellings = [parsed.origin];
+  if (!parsed.port) allowedSpellings.push(`${parsed.origin}:80`);
+  return allowedSpellings.some((spelling) => normalizedRaw.toLowerCase() === spelling.toLowerCase());
+}
+
 function parseDashboardUrl(rawUrl) {
   const exactLoopbackUrl = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?\/?$/i;
   // Check the raw spelling before URL parsing because WHATWG URL normalizes
@@ -72,11 +95,56 @@ function parseDashboardUrl(rawUrl) {
     parsed.password ||
     parsed.search ||
     parsed.hash ||
-    parsed.pathname !== "/"
+    parsed.pathname !== "/" ||
+    !hasCanonicalHttpOriginSpelling(rawUrl, parsed)
   ) {
     throw new Error("--url must be a loopback HTTP URL without credentials, query, fragment, or endpoint path.");
   }
   return parsed.origin;
+}
+
+function parseLocalInterfaceDashboardUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
+  }
+  if (
+    parsed.protocol !== "http:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.pathname !== "/" ||
+    !hasCanonicalHttpOriginSpelling(rawUrl, parsed)
+  ) {
+    throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
+  }
+  const loopbackSource = localSourceAddressForDashboardHost(parsed.hostname);
+  if (loopbackSource) {
+    return { localAddress: loopbackSource, url: parsed.origin };
+  }
+  const matchingAddress = Object.values(networkInterfaces())
+    .flatMap((addresses) => addresses || [])
+    .find((address) => {
+      try {
+        if (!isNonLinkLocalInterfaceAddress(address.address)) return false;
+        const { urlHost } = dashboardHostsForInterfaceAddress(address);
+        return new URL(`http://${urlHost}`).hostname.toLowerCase() === parsed.hostname.toLowerCase();
+      } catch {
+        return false;
+      }
+    });
+  if (!matchingAddress) {
+    throw new Error("--url must name an HTTP URL for an address assigned to this machine.");
+  }
+  return {
+    // The forced loopback source is security-bearing: the dashboard must not
+    // infer a same-machine writer merely because the destination IP is local.
+    localAddress: dashboardHostsForInterfaceAddress(matchingAddress).localAddress,
+    url: parsed.origin
+  };
 }
 
 async function readBoundedJson(response) {
@@ -109,7 +177,92 @@ async function readBoundedJson(response) {
   }
 }
 
-async function fetchDoctorJson(url, path, deadline) {
+async function fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress) {
+  // Keep this raw localAddress reader's redirect, timeout, size, and JSON rules aligned with the bounded fetch path.
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) throw new Error("timeout");
+  return await new Promise((resolveRequest, rejectRequest) => {
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const targetUrl = new URL(path, url);
+    const loopbackHost = localAddress.includes(":") ? `[${localAddress}]` : localAddress;
+    const request = httpRequest(targetUrl, {
+      headers: {
+        accept: "application/json",
+        host: `${loopbackHost}:${targetUrl.port || "80"}`
+      },
+      localAddress,
+      method: "GET"
+    }, (response) => {
+      const resultResponse = { status: response.statusCode || 0 };
+      if (resultResponse.status >= 300 && resultResponse.status < 400) {
+        response.destroy();
+        finish(() => resolveRequest({ response: resultResponse, error: "redirect" }));
+        return;
+      }
+      if (resultResponse.status !== 200) {
+        response.destroy();
+        finish(() => resolveRequest({ response: resultResponse }));
+        return;
+      }
+      const contentLength = Number(response.headers["content-length"]);
+      if (Number.isFinite(contentLength) && contentLength > MAX_DOCTOR_BODY_BYTES) {
+        response.destroy();
+        finish(() => resolveRequest({ response: resultResponse, error: "oversized" }));
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        if (settled) return;
+        size += chunk.length;
+        if (size > MAX_DOCTOR_BODY_BYTES) {
+          response.destroy();
+          finish(() => resolveRequest({ response: resultResponse, error: "oversized" }));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.once("end", () => {
+        if (settled) return;
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          finish(() => resolveRequest({ response: resultResponse, payload }));
+        } catch {
+          finish(() => resolveRequest({ response: resultResponse, error: "malformed" }));
+        }
+      });
+      response.once("error", () => {
+        finish(() => resolveRequest({ response: resultResponse, error: "malformed" }));
+      });
+    });
+    const timeout = setTimeout(() => {
+      finish(() => {
+        request.destroy();
+        rejectRequest(new Error("timeout"));
+      });
+    }, remainingMs);
+    request.once("error", () => finish(() => rejectRequest(new Error("unreachable"))));
+    request.end();
+  });
+}
+
+function alternateLocalhostDoctorUrls(url) {
+  const parsed = new URL(url);
+  if (parsed.hostname !== "localhost") return [];
+  const port = parsed.port ? `:${parsed.port}` : "";
+  return [`http://127.0.0.1${port}`, `http://[::1]${port}`];
+}
+
+async function fetchDoctorJson(url, path, deadline, localAddress = null) {
+  if (localAddress) {
+    return await fetchDoctorJsonFromLocalSource(url, path, deadline, localAddress);
+  }
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) {
     throw new Error("timeout");
@@ -143,6 +296,18 @@ async function fetchDoctorJson(url, path, deadline) {
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("timeout");
+    }
+    // A lifecycle start may bind localhost to one loopback family while a later
+    // DNS lookup selects the other. Keep the public localhost probe local and
+    // bounded by trying the concrete loopback families after that lookup fails.
+    for (const alternateUrl of alternateLocalhostDoctorUrls(url)) {
+      try {
+        return await fetchDoctorJson(alternateUrl, path, deadline);
+      } catch (alternateError) {
+        if (alternateError instanceof Error && alternateError.message === "timeout") {
+          throw alternateError;
+        }
+      }
     }
     throw new Error("unreachable");
   } finally {
@@ -179,10 +344,10 @@ async function packageContractCheck() {
   );
 }
 
-async function serviceHealthCheck(url, deadline) {
+async function serviceHealthCheck(url, deadline, localAddress) {
   let result;
   try {
-    result = await fetchDoctorJson(url, "/api/health", deadline);
+    result = await fetchDoctorJson(url, "/api/health", deadline, localAddress);
   } catch (error) {
     const timedOut = error instanceof Error && error.message === "timeout";
     return doctorCheck(
@@ -256,10 +421,10 @@ function normalizeResourceEvidence(payload) {
   return { resources, malformed };
 }
 
-async function resourceEvidenceCheck(url, deadline) {
+async function resourceEvidenceCheck(url, deadline, localAddress) {
   let result;
   try {
-    result = await fetchDoctorJson(url, "/api/doctor", deadline);
+    result = await fetchDoctorJson(url, "/api/doctor", deadline, localAddress);
   } catch (error) {
     const timedOut = error instanceof Error && error.message === "timeout";
     return doctorCheck(
@@ -325,9 +490,9 @@ async function runDoctor(options) {
   const deadline = Date.now() + DOCTOR_TIMEOUT_MS;
   const checks = [
     await packageContractCheck(),
-    await serviceHealthCheck(options.url, deadline),
+    await serviceHealthCheck(options.url, deadline, options.localAddress),
     options.deep
-      ? await resourceEvidenceCheck(options.url, deadline)
+      ? await resourceEvidenceCheck(options.url, deadline, options.localAddress)
       : doctorCheck(
           "dashboard.resources",
           "skipped",
@@ -351,6 +516,7 @@ function parseDoctorArgs(doctorArgs) {
   let deep = false;
   let url = "http://127.0.0.1:4319";
   let urlSeen = false;
+  let localInterfaceUrl = false;
   for (let index = 0; index < doctorArgs.length; index += 1) {
     const arg = doctorArgs[index];
     if (arg === "--stack-json" && !stackJson) {
@@ -365,12 +531,18 @@ function parseDoctorArgs(doctorArgs) {
       url = value;
       urlSeen = true;
       index += 1;
+    } else if (arg === "--local-interface-url" && !localInterfaceUrl) {
+      localInterfaceUrl = true;
     } else {
       throw new Error("Unknown or repeated doctor option.");
     }
   }
   if (!stackJson) {
     throw new Error("doctor requires --stack-json.");
+  }
+  if (localInterfaceUrl) {
+    const parsed = parseLocalInterfaceDashboardUrl(url);
+    return { deep, ...parsed };
   }
   return { deep, url: parseDashboardUrl(url) };
 }
@@ -381,6 +553,18 @@ if (args[0] === "doctor") {
   } catch (error) {
     usage(error instanceof Error ? error.message : "Invalid doctor arguments.");
   }
+} else if (args[0] === "__lifecycle-serve") {
+  const { runLifecycleChild } = await import("./lifecycle.js");
+  await runLifecycleChild(args.slice(1), {
+    packageRoot,
+    tsxCli: fileURLToPath(import.meta.resolve("tsx/cli"))
+  });
+} else if (["start", "stop", "restart", "status", "logs", "open"].includes(args[0])) {
+  const { runLifecycleCommand } = await import("./lifecycle.js");
+  await runLifecycleCommand(args[0], args.slice(1), {
+    executablePath: fileURLToPath(import.meta.url),
+    packageRoot
+  });
 } else {
   const unknownArgs = args.filter((arg) => arg !== "--demo");
   const demoCount = args.filter((arg) => arg === "--demo").length;

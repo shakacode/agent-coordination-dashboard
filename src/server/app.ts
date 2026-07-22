@@ -11,6 +11,7 @@ import { applyDashboardHistoryWindow, createOpenGitHubItemsCache } from "./dashb
 import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubLoadResult, type GitHubTargetReference } from "./github/githubClient";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
+import { isMachineLocalAddress, type MachineInterfaceMap } from "./security/machineLocal";
 import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
 import { applyAnnotations, createAnnotationStore } from "./annotations";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
@@ -59,6 +60,7 @@ interface CreateDashboardAppOptions {
   serveFrontend?: boolean;
   loadOpenGitHubItems?: LoadOpenGitHubItems;
   loadGitHubTargets?: LoadGitHubTargets;
+  machineInterfaces?: MachineInterfaceMap;
 }
 
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
@@ -506,7 +508,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   app.put("/api/settings", async (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isMachineLocalAddress(req.socket.remoteAddress, options.machineInterfaces)) {
       res.status(403).json({
         error: "Settings can only be changed from the machine running the dashboard. Remote viewers have read-only access."
       });
@@ -525,7 +527,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   async function writeAnnotation(req: express.Request, res: express.Response, remove = false) {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isMachineLocalAddress(req.socket.remoteAddress, options.machineInterfaces)) {
       res.status(403).json({
         error: "Annotations can only be changed from the machine running the dashboard. Remote viewers have read-only access."
       });
@@ -561,7 +563,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   app.delete("/api/annotations", (req, res) => void writeAnnotation(req, res, true));
 
   app.post("/api/batches/import", async (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isMachineLocalAddress(req.socket.remoteAddress, options.machineInterfaces)) {
       res.status(403).json({
         error: "Batch plans can only be imported from the machine running the dashboard. Remote viewers have read-only access."
       });
@@ -585,7 +587,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   app.post("/api/batches/stop", async (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isMachineLocalAddress(req.socket.remoteAddress, options.machineInterfaces)) {
       res.status(403).json({
         error: "Batch stop requests can only be sent from the machine running the dashboard. Remote viewers have read-only access."
       });
