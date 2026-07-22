@@ -838,9 +838,12 @@ export function App() {
     );
   };
   const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline.repo, itemTimeline.target) : undefined;
-  const selectedBatchTitle = selectedRow?.row.batchId
-    ? view.batchCards.find((card) => card.id === selectedRow.row.batchId)?.title
+  const selectedRowBatchCard = selectedRow?.row.batchId
+    ? view.batchCards.find((card) => card.id === selectedRow.row.batchId)
     : undefined;
+  const selectedBatchTitle = selectedRowBatchCard?.title;
+  // Manifest-only lane route: surface it in the drawer when the work item has none.
+  const selectedRowLaneRoute = selectedRowBatchCard?.lanes.find((lane) => lane.row?.id === selectedRow?.row.id)?.route;
 
   const showItem = Boolean(itemRoute && itemRouteInScope);
 
@@ -1034,6 +1037,8 @@ export function App() {
       {selectedRow && (
         <JobDetailDrawer
           batchTitle={selectedBatchTitle}
+          mergeAuth={selectedRowBatchCard?.batch.mergeAuthority}
+          route={selectedRowLaneRoute}
           commandActionsDisabled={localWritesDisabled}
           onAnnotate={localWritesDisabled ? undefined : (annotation) => mutateAnnotation(selectedRow.workItem!, annotation)}
           onClearAnnotation={localWritesDisabled ? undefined : () => mutateAnnotation(selectedRow.workItem!)}

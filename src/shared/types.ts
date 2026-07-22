@@ -66,6 +66,10 @@ export interface ClaimRecord {
   batchId?: string;
   branch?: string;
   prUrl?: string;
+  /** Bound model + effort route (e.g. "gpt-5.6-sol/xhigh"), when observed. */
+  route?: string;
+  /** Per-model token/cost usage, when the agent reported it. */
+  usage?: ModelUsage[];
   /** Compare-and-swap generation, when the coordination backend supplied one. */
   generation?: number;
   status: ClaimStatus;
@@ -87,6 +91,10 @@ export interface HeartbeatRecord {
   batchId?: string;
   branch?: string;
   prUrl?: string;
+  /** Bound model + effort route (e.g. "gpt-5.6-sol/xhigh"), when observed. */
+  route?: string;
+  /** Per-model token/cost usage, when the agent reported it. */
+  usage?: ModelUsage[];
   status: string;
   updatedAt: string;
   expiresAt: string;
@@ -107,6 +115,8 @@ export interface BatchLane {
   operator?: string;
   branch?: string;
   prUrl?: string;
+  /** Bound model + effort route (e.g. "gpt-5.6-sol/xhigh"), when observed. */
+  route?: string;
 }
 
 export interface BatchTarget {
@@ -124,6 +134,17 @@ export interface BatchReservation {
   owner?: string;
   laneName?: string;
   repo?: string;
+}
+
+/**
+ * Per-model token usage and estimated cost for one work item or agent. Present
+ * only when the protocol observed usage; the dashboard never fabricates zeros.
+ */
+export interface ModelUsage {
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd?: number;
 }
 
 /** A `{ k, v }` metadata pair. `v` renders as a link when `href` is present. */
@@ -186,6 +207,18 @@ export interface BatchCompletionReport {
   meta?: ReportMetaEntry[];
 }
 
+/**
+ * A structured operator blocker, persisted when a supervisor blocks on operator
+ * authority. `decisions` enumerate what the operator must decide; the optional
+ * `recommendedReply` is a ready-to-approve response. Absent for unblocked
+ * batches, where the drawer falls back to lane `blockedOn` dependencies.
+ */
+export interface BatchBlocker {
+  message: string;
+  decisions: string[];
+  recommendedReply?: string;
+}
+
 export interface BatchRecord {
   schemaVersion: number;
   batchId: string;
@@ -197,10 +230,14 @@ export interface BatchRecord {
   createdAt?: string;
   createdByMachine?: string;
   launchPrompt?: string;
+  /** Declared batch merge authority, when captured from the manifest/launch prompt. */
+  mergeAuthority?: "ask" | "auto";
   lanes: BatchLane[];
   updatedAt?: string;
   /** Present only for archive-ready batches; see BatchCompletionReport. */
   completion?: BatchCompletionReport;
+  /** Present only while a batch is blocked on operator authority. */
+  blocker?: BatchBlocker;
   path: string;
 }
 
@@ -312,6 +349,10 @@ export interface WorkItem {
   batchSignals?: BatchWorkSignal[];
   github?: GitHubPreview;
   provenance?: OperatorRowProvenance;
+  /** Bound model + effort route (e.g. "gpt-5.6-sol/xhigh"), when observed. */
+  route?: string;
+  /** Per-model token/cost usage, when the agent reported it. */
+  usage?: ModelUsage[];
   schedulingState: SchedulingState;
   /**
    * Dashboard-only presentation state. It is derived from read-only

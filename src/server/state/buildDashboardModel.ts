@@ -420,7 +420,14 @@ function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): 
     ]),
     ...repoRefsFromText(batch.objective),
     ...repoRefsFromText(batch.launchPrompt),
-    ...repoRefsFromPrompt(batch.launchPrompt)
+    ...repoRefsFromPrompt(batch.launchPrompt),
+    ...(batch.blocker
+      ? [
+          ...highConfidenceRepoRefsFromMessage(batch.blocker.message),
+          ...batch.blocker.decisions.flatMap((decision) => highConfidenceRepoRefsFromMessage(decision)),
+          ...highConfidenceRepoRefsFromMessage(batch.blocker.recommendedReply)
+        ]
+      : [])
   ].filter((repo): repo is string => Boolean(repo));
 
   return explicitRepos.some((repo) => !targetRepoSet.has(repo));
@@ -872,6 +879,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             reservation.repo ? targetRepoSet.has(reservation.repo) : !unsafeMetadata
           ),
           launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
+          // Free-text blocker (message/decisions/reply) can name another repo; redact like objective/launchPrompt.
+          blocker: unsafeMetadata ? undefined : batch.blocker,
           source: batch.source || "manifest",
           lanes
         }
@@ -912,6 +921,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             targets,
             reservations,
             launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
+            // Free-text blocker (message/decisions/reply) can name another repo; redact like objective/launchPrompt.
+            blocker: unsafeMetadata ? undefined : batch.blocker,
             source: batch.source || "manifest",
             lanes
           }
@@ -1194,6 +1205,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
         batchSignals,
         github,
         provenance,
+        route: heartbeat?.route || claim?.route,
+        usage: heartbeat?.usage || claim?.usage,
         schedulingState,
         warnings,
         selected: false

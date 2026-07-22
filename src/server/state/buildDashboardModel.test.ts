@@ -73,6 +73,87 @@ describe("buildDashboardModel", () => {
     expect(model.warnings.map((warning) => warning.message)).toContain("GitHub read degraded.");
   });
 
+  it("carries model+effort route and per-model usage onto the work item, preferring the heartbeat (#79/#80)", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-06-17T20:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [{ ...claim, route: "gpt-5.6-sol/xhigh", usage: [{ model: "gpt-5.6-sol", tokensIn: 10, tokensOut: 5 }] }],
+      heartbeats: [{ ...heartbeat, route: "claude-opus-4.6/high", usage: [{ model: "claude-opus-4.6", tokensIn: 400000, tokensOut: 190000, costUsd: 3.3 }] }],
+      batches: [],
+      events: [],
+      githubItems: [],
+      warnings: []
+    });
+    const item = model.workItems.find((candidate) => candidate.target === claim.target);
+    expect(item?.route).toBe("claude-opus-4.6/high"); // heartbeat wins over the claim
+    expect(item?.usage).toEqual([{ model: "claude-opus-4.6", tokensIn: 400000, tokensOut: 190000, costUsd: 3.3 }]);
+  });
+
+  it("leaves work item route and usage undefined when unobserved (#79/#80)", () => {
+    const model = buildDashboardModel({
+      now: new Date("2026-06-17T20:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [claim],
+      heartbeats: [heartbeat],
+      batches: [],
+      events: [],
+      githubItems: [],
+      warnings: []
+    });
+    const item = model.workItems.find((candidate) => candidate.target === claim.target);
+    expect(item?.route).toBeUndefined();
+    expect(item?.usage).toBeUndefined();
+  });
+
+  it("redacts a blocker on a batch with out-of-scope metadata, keeping it for a fully in-scope batch (#83)", () => {
+    const blocker = { message: "Lane needs authority.", decisions: ["Approve"], recommendedReply: "Approved." };
+    const apiPreview = { ...preview, repo: "repo-b/api", target: "34", type: "pull_request" as const, title: "API PR", url: "https://github.com/repo-b/api/pull/34" };
+    const lanes = [{ name: "api-pr", owner: "worker-b", targets: ["34"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [] }];
+
+    // batch.repo is out of scope, retained only via the in-scope per-target repo → unsafe metadata.
+    const mixed = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [{ schemaVersion: 1, batchId: "batch-mixed", repo: "repo-a/app", targets: [{ type: "pull_request", target: "12", repo: "repo-a/app" }, { type: "pull_request", target: "34", repo: "repo-b/api" }], blocker, path: "batches/batch-mixed.json", lanes }],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+    expect(mixed.batches[0].blocker).toBeUndefined();
+
+    const scoped = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [{ schemaVersion: 1, batchId: "batch-scoped", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], blocker, path: "batches/batch-scoped.json", lanes }],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+    expect(scoped.batches[0].blocker).toEqual(blocker);
+
+    // Even a fully in-scope batch redacts a blocker whose own text names another repo.
+    const leakyBlocker = buildDashboardModel({
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      batches: [{ schemaVersion: 1, batchId: "batch-leaky", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], blocker: { message: "Waiting on https://github.com/other-org/other-repo/pull/5 to merge.", decisions: ["Approve"], recommendedReply: "Approved." }, path: "batches/batch-leaky.json", lanes }],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    });
+    expect(leakyBlocker.batches[0].blocker).toBeUndefined();
+  });
+
   it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {
     const batch = {
       schemaVersion: 1 as const,

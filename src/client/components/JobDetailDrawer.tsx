@@ -1,7 +1,7 @@
 import { ExternalLink, MessageSquare, X } from "lucide-react";
-import type { WorkItem } from "../../shared/types";
+import type { ModelUsage, WorkItem } from "../../shared/types";
 import { displayAttribution } from "../../shared/attribution";
-import { ABSENT, devToolForHost, hostColor, stateColor, targetLabel } from "../coordinationView";
+import { ABSENT, aggregateUsage, devToolForHost, formatCost, formatTokens, hostColor, stateColor, targetLabel } from "../coordinationView";
 import type { OperatorRow } from "../operatorRows";
 import { safeGithubUrl } from "../operatorRows";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
@@ -11,6 +11,10 @@ export interface JobDetailDrawerProps {
   row: OperatorRow;
   workItem?: WorkItem;
   batchTitle?: string;
+  /** Declared batch merge authority, when the batch carries one; degrades to `—` otherwise. */
+  mergeAuth?: "ask" | "auto";
+  /** Lane manifest route, for the common manifest-only case where the work item has none. */
+  route?: string;
   onClose: () => void;
   onOpenBatch?: (batchId: string) => void;
   onOpenTimeline?: (item: WorkItem) => void;
@@ -27,10 +31,43 @@ function branchTreeUrl(repo: string, branch: string | undefined): string | undef
   return `https://github.com/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+function TokensByModel({ usage }: { usage: ModelUsage[] }) {
+  const totals = aggregateUsage(usage);
+  const maxTokens = Math.max(...usage.map((entry) => entry.tokensIn + entry.tokensOut), 1);
+  return (
+    <div className="drawer-section">
+      <div className="token-row-head">
+        <span className="drawer-kicker" style={{ margin: 0 }}>Tokens by model</span>
+        <span style={{ fontSize: "12px", color: "var(--color-neutral-300)" }}>
+          {totals?.tokensTotal ?? ABSENT}{totals?.cost ? ` · ${totals.cost}` : ""}
+        </span>
+      </div>
+      <div className="token-bars">
+        {usage.map((entry, index) => {
+          const tokens = entry.tokensIn + entry.tokensOut;
+          return (
+            <div className="token-bar-row" key={`${index}-${entry.model}`}>
+              <span className="token-bar-model" title={entry.model}>{entry.model}</span>
+              <span className="token-bar-track">
+                <span className="token-bar-fill" style={{ width: `${Math.max(3, Math.round((tokens / maxTokens) * 100))}%` }} />
+              </span>
+              <span className="token-bar-value">
+                {formatTokens(tokens)}{entry.costUsd !== undefined ? ` · ${formatCost(entry.costUsd)}` : ""}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function JobDetailDrawer({
   row,
   workItem,
   batchTitle,
+  mergeAuth,
+  route,
   onClose,
   onOpenBatch,
   onOpenTimeline,
@@ -44,13 +81,13 @@ export function JobDetailDrawer({
   const where: Array<{ k: string; v: string; color?: string; href?: string }> = [
     { k: "Host", v: displayAttribution(row.host, "UNKNOWN"), color: hostColor(row.host) },
     { k: "Dev tool", v: devToolForHost(row.host) || "UNKNOWN" },
-    { k: "Route", v: ABSENT },
+    { k: "Route", v: route || workItem?.route || ABSENT },
     { k: "Machine", v: displayAttribution(row.machineId, "UNKNOWN") },
     { k: "User", v: displayAttribution(row.operator, "UNKNOWN") },
     { k: "Batch", v: batchTitle || (row.batchId ? displayAttribution(row.batchId) : "unbatched") },
     { k: "Branch", v: displayAttribution(row.branch, "UNKNOWN"), href: branchTreeUrl(row.repo, row.branch) },
     { k: "Phase", v: displayAttribution(row.activityStatus, "UNKNOWN") },
-    { k: "Merge auth", v: ABSENT },
+    { k: "Merge auth", v: mergeAuth || ABSENT },
     { k: "Chat handle", v: displayAttribution(row.threadHandle, "UNKNOWN") }
   ];
 
@@ -82,15 +119,19 @@ export function JobDetailDrawer({
           </div>
         </div>
 
-        <div className="drawer-section">
-          <div className="token-row-head">
-            <span className="drawer-kicker" style={{ margin: 0 }}>Tokens by model</span>
-            <span style={{ fontSize: "12px", color: "var(--color-neutral-300)" }}>{ABSENT}</span>
+        {workItem?.usage && workItem.usage.length > 0 ? (
+          <TokensByModel usage={workItem.usage} />
+        ) : (
+          <div className="drawer-section">
+            <div className="token-row-head">
+              <span className="drawer-kicker" style={{ margin: 0 }}>Tokens by model</span>
+              <span style={{ fontSize: "12px", color: "var(--color-neutral-300)" }}>{ABSENT}</span>
+            </div>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--mut)" }}>
+              Token and cost accounting is not emitted by the coordination protocol yet.
+            </p>
           </div>
-          <p style={{ margin: 0, fontSize: "12px", color: "var(--mut)" }}>
-            Token and cost accounting is not emitted by the coordination protocol yet.
-          </p>
-        </div>
+        )}
 
         {need && (
           <div className="need-box" style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 45%, transparent)` }}>

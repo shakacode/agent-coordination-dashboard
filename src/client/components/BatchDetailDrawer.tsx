@@ -106,8 +106,10 @@ function stopRepos(batch: BatchRecord): Array<string | undefined> {
 
 export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDisabled = false }: BatchDetailDrawerProps) {
   const [copyLabel, setCopyLabel] = useState("Copy prompt");
+  const [replyLabel, setReplyLabel] = useState("Approve recommended");
   const [stopStatus, setStopStatus] = useState<string | null>(null);
   const stopped = card.operation ? card.operation.controlStatus !== "running" : false;
+  const blocker = card.batch.blocker;
   const decisions = card.batch.lanes
     .filter((lane) => lane.blockedOn.length > 0)
     .map((lane) => `${displayAttribution(lane.name)}: blocked on ${lane.blockedOn.join(", ")}`);
@@ -127,6 +129,21 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
       setCopyLabel("Could not copy");
     }
     window.setTimeout(() => setCopyLabel("Copy prompt"), 1800);
+  }
+
+  async function copyReply(reply: string) {
+    if (!navigator.clipboard) {
+      setReplyLabel("Copy unavailable");
+      window.setTimeout(() => setReplyLabel("Approve recommended"), 1800);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(reply);
+      setReplyLabel("Copied ✓");
+    } catch {
+      setReplyLabel("Could not copy");
+    }
+    window.setTimeout(() => setReplyLabel("Approve recommended"), 1800);
   }
 
   async function requestStop(repo: string | undefined) {
@@ -197,18 +214,49 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
         {card.tier === "blocked" && (
           <div className="drawer-section">
             <div className="drawer-kicker" style={{ color: "var(--block)" }}>Blocker · needs your decision</div>
-            {decisions.length > 0 ? (
-              <div className="decision-list">
-                {decisions.map((decision) => (
-                  <div key={decision}><span style={{ color: "var(--block)", flex: "none" }}>•</span><span>{decision}</span></div>
-                ))}
-              </div>
+            {blocker ? (
+              <>
+                <p className="need-body" style={{ margin: "0 0 10px" }}>{blocker.message}</p>
+                {blocker.decisions.length > 0 && (
+                  <div className="decision-list">
+                    {blocker.decisions.map((decision, index) => (
+                      <div key={`${index}-${decision}`}><span style={{ color: "var(--block)", flex: "none" }}>•</span><span>{decision}</span></div>
+                    ))}
+                  </div>
+                )}
+                {blocker.recommendedReply && (
+                  <div className="recommended-reply">
+                    <div className="token-row-head">
+                      <span className="drawer-kicker" style={{ margin: "12px 0 6px" }}>Recommended reply</span>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => void copyReply(blocker.recommendedReply!)}
+                        style={{ fontSize: "11.5px", padding: "4px 11px" }}
+                        type="button"
+                      >
+                        <Clipboard size={13} aria-hidden="true" /> {replyLabel}
+                      </button>
+                    </div>
+                    <pre className="drawer-pre">{blocker.recommendedReply}</pre>
+                  </div>
+                )}
+              </>
             ) : (
-              <p style={{ margin: 0, fontSize: "12.5px", color: "var(--color-neutral-100)" }}>A lane is blocked or its holder is dead. Close this drawer to inspect the batch's lanes on the board.</p>
+              <>
+                {decisions.length > 0 ? (
+                  <div className="decision-list">
+                    {decisions.map((decision) => (
+                      <div key={decision}><span style={{ color: "var(--block)", flex: "none" }}>•</span><span>{decision}</span></div>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ margin: 0, fontSize: "12.5px", color: "var(--color-neutral-100)" }}>A lane is blocked or its holder is dead. Close this drawer to inspect the batch's lanes on the board.</p>
+                )}
+                <p style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--mut)" }}>
+                  Structured blocker decisions and a recommended reply are not emitted by the coordination protocol yet.
+                </p>
+              </>
             )}
-            <p style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--mut)" }}>
-              Structured blocker decisions and a recommended reply are not emitted by the coordination protocol yet.
-            </p>
           </div>
         )}
 
