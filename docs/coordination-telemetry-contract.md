@@ -184,7 +184,7 @@ Recommended event types:
 ### Blocked Producer Candidate
 
 The semantics in this section describe the exact `agent-coord` candidate at
-`c40f5a7223703053b3b273b13d1025f8718793dd`, based on
+`3f99dd534ad36088dd09a7e85217372c86526081`, based on
 `2313091cfbd918fe65f481f960b9ca107dd7e0f8`. The candidate is blocked by the
 known contract defect below. It is not merged, published, production-final, or
 independently checker-clean.
@@ -219,8 +219,8 @@ snake_case fields:
 | Type | CLI input | Stored field requirements |
 | --- | --- | --- |
 | `help_requested` | `--reason` | `reason`: `blocked-user-input`, `question`, or `permission` |
-| `escalation_requested` | `--from-route`, `--to-route`, `--evidence-summary` | nonempty `from_route`, `to_route`, and `evidence_summary` |
-| `error` | `--severity`, `--category`, `--description` | `severity`: `P0`, `P1`, `P2`, or `P3`; nonempty `category` and `description` |
+| `escalation_requested` | `--from-route`, `--to-route`, `--evidence-summary` | `from_route`, `to_route`, and `evidence_summary` must be nonblank after trimming |
+| `error` | `--severity`, `--category`, `--description` | `severity`: `P0`, `P1`, `P2`, or `P3`; `category` and `description` must be nonblank after trimming |
 | `human_intervention` | `--kind` | `kind`: `takeover`, `supersede`, `manual-fix`, or `drain` |
 
 Those validations are limited to the four named types. Other type names remain
@@ -242,12 +242,21 @@ or incomplete registration/event cases produce explicit gaps and exit status
 names, and ordinary status fields do not substitute for `lane_closed` terminal
 evidence.
 
-Known blocker `ACB-R1-001`: `batch-audit` currently coerces
-`closed_by.machine` with `to_s` while validating a stored terminal event. It
-therefore accepts an Integer machine value even though `state-schema-v2`
-requires `closed_by.machine` to be a string. The candidate must not be described
-as fully fail-closed until that mismatch is fixed and rechecked. No conclusion
-about adjacent `UNKNOWN` cases is implied.
+`ACB-R1-001` is corrected in the current source head: terminal audit validation
+now rejects a non-string `closed_by.machine` as required by `state-schema-v2`.
+It remains independently unclosed because the r4 checker stopped on a later
+finding before replaying the historical proof.
+
+Known blocker `ACB-R4-001`: `require_nonempty_event_field!` currently checks
+`to_s.empty?` without trimming. As a result, the candidate accepts and persists
+whitespace-only `from_route`, `to_route`, `evidence_summary`, `category`, and
+`description` values, contrary to the nonblank contract above.
+
+The r4 checker completed `0/8` historical before/after proofs. The eight exact
+open IDs are `ACB-CHK-001`, `ACB-CHK-002`, `ACB-R1-001`,
+`ACB-MAKER-COMPAT-001`, `ACB-R2-001`, `ACB-R3-001`, `ACB-R3-002`, and
+`ACB-R8-RFC3339-CUTOVER`. These unexecuted replays and `ACB-R4-001` keep the
+candidate blocked, unpublished, and not independently checker-clean.
 
 ## Batch Stop And Restart
 
