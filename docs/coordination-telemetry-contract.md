@@ -18,7 +18,7 @@ layout, see [Coordination Architecture](coordination-architecture.md).
 
 ## Required Identity Fields
 
-Every claim, heartbeat, and batch event should include:
+Every claim and heartbeat should include:
 
 - `agent_id`: stable worker/session id.
 - `machine_id`: short machine label, such as `workstation-1` or `buildbox-a`.
@@ -148,7 +148,7 @@ object per line is easiest to write safely from multiple batch phases.
   "event_id": "batch-20260619-a:lane-a:continued:2026-06-19T20:00:00Z",
   "type": "continued",
   "batch_id": "batch-20260619-a",
-  "lane_name": "lane-a",
+  "lane": "lane-a",
   "agent_id": "worker-a",
   "machine_id": "workstation-1",
   "thread_handle": "codex-thread-abc",
@@ -159,7 +159,7 @@ object per line is easiest to write safely from multiple batch phases.
   "branch": "jg-codex/4010-docs",
   "pr_url": "https://github.com/owner/repo/pull/4010",
   "status": "in_progress",
-  "timestamp": "2026-06-19T20:00:00Z",
+  "at": "2026-06-19T20:00:00Z",
   "message": "Resumed after token-limit pause."
 }
 ```
@@ -181,38 +181,73 @@ Recommended event types:
 - `qa.validation_passed`
 - `qa.validation_failed`
 
-### Proposed Producer Lifecycle Events
+### Blocked Producer Candidate
 
-The producer contract requires lifecycle events to be emitted automatically
-when `batch_id` is known:
+The semantics in this section describe the exact `agent-coord` candidate at
+`c40f5a7223703053b3b273b13d1025f8718793dd`, based on
+`2313091cfbd918fe65f481f960b9ca107dd7e0f8`. The candidate is blocked by the
+known contract defect below. It is not merged, published, production-final, or
+independently checker-clean.
 
-- `claim.acquired`: agent, target, branch, and generation/instance metadata.
-- `claim.released`: final status, `release_mode`, and handoff fields.
-- `phase.changed`: old and new phase, emitted only for a transition rather than
-  for every heartbeat.
+Lifecycle events used by the candidate's completeness audit carry `event_id`,
+`batch_id`, `lane`, `agent_id`, `repo`, `target`, `at`, and `status`, with
+`type` identifying the event. Operator and correlation metadata is optional.
+In particular, `branch`, `generation`, `instance_id`, `release_mode`, and
+handoff details are optional rather than completeness requirements. Events use
+`at`; unlike claims and heartbeats, they do not require `updated_at` or
+`expires_at`.
 
-These events must remain append-only and best-effort. A lifecycle event write
-failure must not fail the claim operation that triggered it.
+When `batch_id` is known, the candidate appends these events on successful
+primary-state changes:
 
-The producer contract also defines these typed operator-signal events and their
-required values:
+- `claim.acquired` has `status: "active"` and is emitted for a new or
+  re-acquired claim, not an ordinary renewal.
+- `claim.released` has `status: "released"` and is emitted when release changes
+  primary state.
+- `phase.changed` carries `old_phase`, `new_phase`, and `phase` equal to
+  `new_phase`, plus the current nonempty heartbeat status. It is emitted only
+  when an established phase changes; the initial phase and same-phase renewal
+  do not emit it.
 
-- `help_requested`: reason is `blocked-user-input`, `question`, or `permission`.
-- `escalation_requested`: from-route, to-route, and evidence summary.
-- `error`: severity is `P0`, `P1`, `P2`, or `P3`, plus category and a short
-  description.
-- `human_intervention`: kind is `takeover`, `supersede`, `manual-fix`, or
-  `drain`.
+Lifecycle emission is append-only and best-effort. An event-backend failure
+warns but does not turn a successful claim, release, or heartbeat mutation into
+a failure.
 
-Before batch closeout, producers must check every lane for missing lifecycle
-events and report each per-lane gap. A batch with gaps is not
-telemetry-complete. This contract does not prescribe a CLI command or storage
-schema for that check.
+Four convenience event types validate CLI flags and store the corresponding
+snake_case fields:
 
-These producer requirements are proposed behavior pending their source
-implementation. The dashboard currently reads available events and reports
-health warnings; it does not emit these events or enforce closeout
-completeness.
+| Type | CLI input | Stored field requirements |
+| --- | --- | --- |
+| `help_requested` | `--reason` | `reason`: `blocked-user-input`, `question`, or `permission` |
+| `escalation_requested` | `--from-route`, `--to-route`, `--evidence-summary` | nonempty `from_route`, `to_route`, and `evidence_summary` |
+| `error` | `--severity`, `--category`, `--description` | `severity`: `P0`, `P1`, `P2`, or `P3`; nonempty `category` and `description` |
+| `human_intervention` | `--kind` | `kind`: `takeover`, `supersede`, `manual-fix`, or `drain` |
+
+Those validations are limited to the four named types. Other type names remain
+compatible with the existing arbitrary `record-event` surface.
+
+The candidate also reserves one append-only `lane_closed` event per registered
+lane. Its terminal value is `done`, `abandoned`, or `superseded`; its
+`closed_by` object identifies the agent and machine. The create-only stable
+reservation makes identical retries idempotent, keeps the first closeout
+authoritative, and rejects a conflicting second terminal record.
+
+`agent-coord batch-audit --batch-id ID [--json]` reads one registered batch and
+its events. For every registered lane target it requires valid
+`claim.acquired`, `phase.changed`, and `claim.released` events, and it requires
+exactly one valid `lane_closed` outcome for the lane. Exit status is `0` only
+when every registered lane is complete; tested missing, malformed, ambiguous,
+or incomplete registration/event cases produce explicit gaps and exit status
+`2`. `--json` changes the rendering, not the result. Release prose, branch
+names, and ordinary status fields do not substitute for `lane_closed` terminal
+evidence.
+
+Known blocker `ACB-R1-001`: `batch-audit` currently coerces
+`closed_by.machine` with `to_s` while validating a stored terminal event. It
+therefore accepts an Integer machine value even though `state-schema-v2`
+requires `closed_by.machine` to be a string. The candidate must not be described
+as fully fail-closed until that mismatch is fixed and rechecked. No conclusion
+about adjacent `UNKNOWN` cases is implied.
 
 ## Batch Stop And Restart
 
