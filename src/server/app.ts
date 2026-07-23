@@ -260,7 +260,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   function explicitlyDeclaredMergedWithoutGitHubTime(model: DashboardModel): boolean {
     const explicitlyMerged = (value: string | undefined) => /(^|[^a-z0-9])merged($|[^a-z0-9])/i.test(value || "");
     return model.workItems.some((item) => {
-      if (item.terminalProvenance?.source !== "declared" || item.github?.mergedAt) return false;
+      if (item.terminalProvenance?.source !== "declared" || item.github?.mergedAt || item.github?.implementationPr?.mergedAt) return false;
       const eventDeclaresMerge = model.events.some((event) =>
         event.repo === item.repo
         && event.target === item.target
@@ -313,17 +313,64 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     });
     const reconciliationPlans = preliminaryModel.workItems.flatMap((item) => {
       const reference = reconciliationReference(item, preliminaryModel);
-      return reference ? [{ workItemId: item.id, item, reference }] : [];
+      if (!reference) return [];
+      const targetReference =
+        reference.target !== item.target
+        && !(item.github?.target === item.target && item.github.loadState === "loaded")
+          ? { repo: item.repo, target: item.target, type: item.type }
+          : undefined;
+      return [{ workItemId: item.id, item, reference, targetReference }];
     });
-    const reconciled = await loadGitHubTargets(reconciliationPlans.map((plan) => plan.reference), { bypassCache: options.bypassGitHubCache });
-    const returnedReferences = reconciled.references || reconciliationPlans.map((plan) => plan.reference);
+    const reconciliationReferences = [
+      ...reconciliationPlans.map((plan) => plan.reference),
+      ...reconciliationPlans.flatMap((plan) => plan.targetReference ? [plan.targetReference] : [])
+    ].filter((reference, index, references) =>
+      references.findIndex((candidate) => githubTargetReferenceKey(candidate) === githubTargetReferenceKey(reference)) === index
+    );
+    const reconciled = await loadGitHubTargets(reconciliationReferences, { bypassCache: options.bypassGitHubCache });
+    const returnedReferences = reconciled.references || reconciliationReferences;
     const resultByReference = new Map(reconciled.items.map((item, index) => [githubTargetReferenceKey(returnedReferences[index]), item]));
     const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
       const result = resultByReference.get(githubTargetReferenceKey(plan.reference));
+      const linkedImplementation =
+        result?.type === "pull_request" && result.target !== plan.item.target
+          ? result
+          : undefined;
+      const coordinatedTargetCandidate =
+        plan.targetReference
+          ? resultByReference.get(githubTargetReferenceKey(plan.targetReference))
+          : linkedImplementation && plan.item.github?.target === plan.item.target
+            ? plan.item.github
+            : undefined;
+      const coordinatedTarget =
+        coordinatedTargetCandidate
+        && (plan.item.type === "unknown" || coordinatedTargetCandidate.type === plan.item.type)
+          ? coordinatedTargetCandidate
+          : undefined;
       const coordinatedType = plan.item.type === "issue" || plan.item.type === "pull_request"
         ? { coordinatedType: plan.item.type }
         : {};
-      return result ? [{ ...result, repo: plan.item.repo, target: plan.item.target, ...coordinatedType }] : [];
+      if (!result) return [];
+      if (linkedImplementation) {
+        const target = coordinatedTarget || plan.item.github || {
+          repo: plan.item.repo,
+          target: plan.item.target,
+          type: plan.item.type,
+          title: "GitHub state unavailable",
+          url: "",
+          state: "UNKNOWN",
+          labels: [],
+          loadState: "unknown" as const
+        };
+        return [{
+          ...target,
+          repo: plan.item.repo,
+          target: plan.item.target,
+          ...coordinatedType,
+          implementationPr: linkedImplementation
+        }];
+      }
+      return [{ ...result, repo: plan.item.repo, target: plan.item.target, ...coordinatedType }];
     });
     const reconciledWorkItemIds = new Set(reconciliationPlans.map((plan) => plan.workItemId));
     const consumedCanonicalIds = new Set(reconciliationPlans.flatMap((plan) => {

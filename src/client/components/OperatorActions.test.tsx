@@ -55,14 +55,42 @@ describe("OperatorActions", () => {
 
   it("offers safe PR, branch, and batch links", () => {
     render(<OperatorActions item={item} />);
-    expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
+    expect(screen.getByRole("link", { name: "Open PR #56" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
     expect(screen.getByRole("link", { name: "Open branch" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/tree/codex%2Factions");
     expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute("href", "/?batch=batch-a&repo=shakacode%2Fdashboard");
   });
 
+  it("opens an issue target's distinct implementation PR by its actual number", () => {
+    render(<OperatorActions item={{
+      ...item,
+      claim: { ...item.claim!, prUrl: undefined },
+      github: {
+        repo: item.repo,
+        target: item.target,
+        type: "issue",
+        title: "Issue target",
+        url: "https://github.com/shakacode/dashboard/issues/47",
+        state: "OPEN",
+        labels: [],
+        loadState: "loaded",
+        implementationPr: {
+          repo: item.repo,
+          target: "91",
+          title: "Implementation",
+          url: "https://github.com/shakacode/dashboard/pull/91",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded"
+        }
+      }
+    }} />);
+
+    expect(screen.getByRole("link", { name: "Open PR #91" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/91");
+  });
+
   it("does not show a resume fallback when a safe PR action is available", () => {
     render(<OperatorActions item={item} resumeAvailable={false} resumeFallbackWhenPrUnavailable />);
-    expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
+    expect(screen.getByRole("link", { name: "Open PR #56" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
     expect(screen.queryByRole("button", { name: "Copy resume prompt" })).not.toBeInTheDocument();
   });
 
@@ -72,7 +100,7 @@ describe("OperatorActions", () => {
     "https://github.com/shakacode/dashboard/pull/56/commits/abc123#diff"
   ])("canonicalizes a safe PR subpage action link: %s", (prUrl) => {
     render(<OperatorActions item={{ ...item, claim: { ...item.claim!, prUrl } }} />);
-    expect(screen.getByRole("link", { name: "Open PR" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
+    expect(screen.getByRole("link", { name: "Open PR #56" })).toHaveAttribute("href", "https://github.com/shakacode/dashboard/pull/56");
   });
 
   it.each([

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSummary, DashboardModel, WorkItem } from "../shared/types";
-import { ABSENT, aggregateUsage, buildCoordinationView, canonicalHostName, formatTokens, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
+import { ABSENT, aggregateUsage, batchIdentity, buildCoordinationView, canonicalHostName, findBatchCard, formatTokens, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
 import type { OperatorRow } from "./operatorRows";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -79,7 +79,7 @@ const model: DashboardModel = {
     }),
     workItem({
       id: "repo/dashboard#15", repo: "repo/dashboard", target: "15", type: "pull_request", schedulingState: "started_not_processing",
-      operatorState: "terminal", terminalState: "done",
+      operatorState: "terminal", terminalState: "done", completedAt: "2026-07-21T11:00:00.000Z",
       github: { repo: "repo/dashboard", target: "15", type: "pull_request", title: "Merged item", url: "https://github.com/repo/dashboard/pull/15", state: "MERGED", labels: [], loadState: "loaded" }
     })
   ],
@@ -142,6 +142,47 @@ describe("buildCoordinationView", () => {
     expect(view.jobCounts.done).toBe(1);
   });
 
+  it("keeps Done today to the local calendar day and sends older or untimed terminal work to History", () => {
+    const terminal = (target: string, completedAt?: string) =>
+      workItem({
+        id: `repo/dashboard#${target}`,
+        repo: "repo/dashboard",
+        target,
+        type: "pull_request",
+        schedulingState: "started_not_processing",
+        operatorState: "terminal",
+        terminalState: "done",
+        completedAt
+      });
+    const bounded = buildCoordinationView({
+      ...model,
+      workItems: [
+        terminal("21", "2026-07-21T03:00:00.000Z"),
+        terminal("22", "2026-07-20T03:00:00.000Z"),
+        terminal("23")
+      ],
+      batches: [],
+      batchOperations: []
+    }, NOW);
+    const bucket = (target: string) => bounded.jobRows.find((row) => row.row.target === target)?.bucket;
+
+    expect(bucket("21")).toBe("done");
+    expect(bucket("22")).toBe("history");
+    expect(bucket("23")).toBe("history");
+  });
+
+  it("uses the local-midnight boundary for Done today", () => {
+    const now = new Date(2026, 6, 21, 12, 0, 0, 0);
+    const atMidnight = new Date(2026, 6, 21, 0, 0, 0, 0).toISOString();
+    const beforeMidnight = new Date(2026, 6, 20, 23, 59, 59, 999).toISOString();
+    const row = (completedAt?: string) => ({ operatorState: "done", completedAt, blockedOn: [] }) as unknown as OperatorRow;
+
+    expect(jobBucketForRow(row(atMidnight), undefined, now.getTime())).toBe("done");
+    expect(jobBucketForRow({ ...row(atMidnight), operatorState: "archived" } as OperatorRow, undefined, now.getTime())).toBe("done");
+    expect(jobBucketForRow(row(beforeMidnight), undefined, now.getTime())).toBe("history");
+    expect(jobBucketForRow(row(), undefined, now.getTime())).toBe("history");
+  });
+
   it("builds a batch card with real lanes, qa, and tier, degrading absent fields", () => {
     expect(view.batchCards).toHaveLength(1);
     const card = view.batchCards[0];
@@ -162,6 +203,55 @@ describe("buildCoordinationView", () => {
     expect(card.lanes[1].stateColor).toBe("var(--block)");
   });
 
+  it("reconciles same-repository manifest and inferred observations into one stable card", () => {
+    const manifest = {
+      ...model.batches[0],
+      source: "manifest" as const,
+      lanes: model.batches[0].lanes.map((lane, index) => index === 0 ? { ...lane, status: "running", blockedOn: [] } : lane)
+    };
+    const inferred = {
+      ...manifest,
+      source: "inferred" as const,
+      updatedAt: "2026-07-21T11:59:59.000Z",
+      path: "inferred-batches/repo__dashboard/b1.json",
+      lanes: manifest.lanes.map((lane, index) => index === 0 ? { ...lane, status: "blocked", blockedOn: ["inferred-only"] } : lane)
+    };
+    const forward = buildCoordinationView({ ...model, batches: [inferred, manifest] }, NOW);
+    const reversed = buildCoordinationView({ ...model, batches: [manifest, inferred] }, NOW);
+
+    expect(forward.batchCards).toHaveLength(1);
+    expect(forward.batchCards[0].batch.source).toBe("manifest");
+    expect(forward.batchCards[0].identity).toBe(batchIdentity(manifest));
+    expect(forward.batchCards[0].lanes[0]).toMatchObject({
+      operatorState: "running",
+      row: undefined
+    });
+    expect(reversed.batchCards[0].identity).toBe(forward.batchCards[0].identity);
+  });
+
+  it("keeps same-ID batches in different repositories distinct and scoped", () => {
+    const first = {
+      ...model.batches[0],
+      source: "manifest" as const,
+      targets: [{ type: "issue" as const, target: "201", repo: "repo/dashboard" }]
+    };
+    const second = {
+      ...first,
+      // Explicit target scope is authoritative over a stale top-level repo.
+      targets: [{ type: "issue" as const, target: "2010", repo: "repo/other" }],
+      path: "batches/other-b1.json",
+      lanes: first.lanes.map((lane) => ({ ...lane, targets: lane.targets.map((target) => `${target}0`) }))
+    };
+    const cards = buildCoordinationView({ ...model, batches: [first, second], batchOperations: [] }, NOW).batchCards;
+
+    expect(cards).toHaveLength(2);
+    expect(new Set(cards.map((card) => card.identity)).size).toBe(2);
+    expect(new Set(cards.map((card) => card.idAttr)).size).toBe(2);
+    expect(findBatchCard(cards, { batchId: "b1" })).toBeUndefined();
+    expect(findBatchCard(cards, { batchId: "b1", repo: "repo/dashboard" })?.batch.path).toBe(first.path);
+    expect(findBatchCard(cards, { batchId: "b1", repo: "repo/other" })?.batch.path).toBe(second.path);
+  });
+
   it("groups agents into machines and collapses dead agents to a count", () => {
     const m1 = view.machines.find((machine) => machine.id === "m1");
     const m5 = view.machines.find((machine) => machine.id === "m5");
@@ -180,6 +270,44 @@ describe("buildCoordinationView", () => {
   it("labels targets by work type", () => {
     expect(targetLabel({ target: "42", type: "pull_request", title: "x" } as OperatorRow)).toBe("PR #42");
     expect(targetLabel({ target: "42", type: "issue", title: "x" } as OperatorRow)).toBe("Issue #42");
+  });
+
+  it("keeps an issue target label separate from its implementation PR label and destination", () => {
+    const linked = buildCoordinationView({
+      ...model,
+      workItems: [workItem({
+        id: "repo/dashboard#45",
+        repo: "repo/dashboard",
+        target: "45",
+        type: "issue",
+        schedulingState: "in_process",
+        github: {
+          repo: "repo/dashboard",
+          target: "45",
+          type: "issue",
+          title: "Coordinated issue",
+          url: "https://github.com/repo/dashboard/issues/45",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "54",
+            title: "Implementation",
+            url: "https://github.com/repo/dashboard/pull/54",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      })],
+      batches: [],
+      batchOperations: []
+    }, NOW).jobRows[0];
+
+    expect(linked.targetLabel).toBe("Issue #45");
+    expect(linked.implementationLabel).toBe("PR #54");
+    expect(linked.implementationUrl).toBe("https://github.com/repo/dashboard/pull/54");
   });
 
   it("passes a completion report through and prefers its metrics", () => {

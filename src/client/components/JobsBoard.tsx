@@ -27,6 +27,14 @@ function JobRowButton({ row, onOpenRow, onToggleSelect, selectionDisabled }: { r
       <div className="job-main">
         <div className="job-title-row">
           <span className="job-target" style={{ color: row.targetColor }}>{row.targetLabel}</span>
+          {row.implementationLabel && (
+            <span
+              className="job-target"
+              title={row.implementationUrl ? `Implementation: ${row.implementationUrl}` : "Implementation pull request"}
+            >
+              {row.implementationLabel}
+            </span>
+          )}
           <span className="job-title">{row.title}</span>
         </div>
         {row.note && <div className="job-note" style={{ color: row.noteColor }}>{row.note}</div>}

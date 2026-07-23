@@ -32,8 +32,8 @@ describe("deriveWorkItems", () => {
       ]
     });
 
-    expect(merged).toMatchObject({ operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/43" }, lastActivityAt: "2026-07-12T11:00:00Z" });
-    expect(closed).toMatchObject({ operatorState: "terminal", terminalState: "closed", terminalProvenance: { source: "github", url: "https://github.com/repo/app/issues/44" }, lastActivityAt: "2026-07-12T10:00:00Z" });
+    expect(merged).toMatchObject({ operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/43" }, completedAt: "2026-07-12T11:00:00Z", lastActivityAt: "2026-07-12T11:00:00Z" });
+    expect(closed).toMatchObject({ operatorState: "terminal", terminalState: "closed", terminalProvenance: { source: "github", url: "https://github.com/repo/app/issues/44" }, completedAt: "2026-07-12T10:00:00Z", lastActivityAt: "2026-07-12T10:00:00Z" });
   });
 
   it("keeps declared terminal state ahead of conflicting GitHub fallback", () => {
@@ -51,6 +51,77 @@ describe("deriveWorkItems", () => {
     expect(item).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "declared" }, lastActivityAt: "2026-07-12T11:30:00Z" });
   });
 
+  it("does not let older terminal telemetry override newer active work", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T11:35:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "in_progress",
+          updatedAt: "2026-07-12T11:30:00Z",
+          expiresAt: "2026-07-12T12:30:00Z",
+          path: "heartbeat.json",
+          liveness: "live"
+        },
+        batchSignals: [{
+          batchId: "older-batch",
+          laneName: "implementation",
+          status: "done",
+          blockedOn: [],
+          updatedAt: "2026-07-12T10:00:00Z"
+        }]
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "running",
+      terminalState: undefined,
+      terminalProvenance: undefined
+    });
+  });
+
+  it("does not let older GitHub completion evidence override newer active telemetry", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T11:35:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        type: "pull_request",
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "in_progress",
+          updatedAt: "2026-07-12T11:30:00Z",
+          expiresAt: "2026-07-12T12:30:00Z",
+          path: "heartbeat.json",
+          liveness: "live"
+        },
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "pull_request",
+          title: "Merged",
+          url: "https://github.com/shakacode/dashboard/pull/43",
+          state: "MERGED",
+          mergedAt: "2026-07-12T11:00:00Z",
+          labels: [],
+          loadState: "loaded"
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "running",
+      terminalState: undefined,
+      completedAt: undefined
+    });
+  });
+
   it("does not guess terminal state when GitHub reconciliation is unknown", () => {
     const [item] = deriveWorkItems({
       now: new Date("2026-07-12T12:00:00Z"),
@@ -58,6 +129,41 @@ describe("deriveWorkItems", () => {
     });
     expect(item.terminalState).toBeUndefined();
     expect(item.terminalProvenance).toBeUndefined();
+  });
+
+  it("uses a loaded merged implementation PR when the coordinated target is unavailable", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "unknown",
+          title: "UNKNOWN",
+          url: "",
+          state: "UNKNOWN",
+          labels: [],
+          loadState: "unknown",
+          implementationPr: {
+            repo: BASE_ITEM.repo,
+            target: "54",
+            title: "Implement issue 43",
+            url: "https://github.com/shakacode/dashboard/pull/54",
+            state: "MERGED",
+            mergedAt: "2026-07-12T11:00:00Z",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      terminalState: "done",
+      completedAt: "2026-07-12T11:00:00Z",
+      terminalProvenance: { source: "github", url: "https://github.com/shakacode/dashboard/pull/54" }
+    });
   });
 
   it("never infers terminal state from a deleted branch alone", () => {

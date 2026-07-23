@@ -7,9 +7,17 @@ import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import type { ItemTimelineResponse } from "./api";
-import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, backgroundRefreshTimeoutMs, nextActiveSnoozeDelayMs } from "./App";
+import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, backgroundRefreshTimeoutMs, batchReferenceFromSearchParams, nextActiveSnoozeDelayMs } from "./App";
 
 const settings: DashboardRuntimeSettings = { targetRepos: ["repo/dashboard"], scopeId: "test-runtime-scope" };
+
+it("parses repository-scoped batch deep links", () => {
+  expect(batchReferenceFromSearchParams(new URLSearchParams("?batch=batch-a&repo=repo%2Fdashboard"))).toEqual({
+    batchId: "batch-a",
+    repo: "repo/dashboard"
+  });
+  expect(batchReferenceFromSearchParams(new URLSearchParams("?repo=repo%2Fdashboard"))).toBeUndefined();
+});
 
 function liveHeartbeat(agentId: string, updatedAt: string, extra: Record<string, unknown> = {}) {
   return {
@@ -316,6 +324,38 @@ describe("App", () => {
     await userEvent.type(search, "46{enter}");
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByText("Needs input work")).toBeInTheDocument();
+  });
+
+  it("uses the target type to disambiguate an issue number from an implementation PR number", async () => {
+    const collisionModel: DashboardModel = {
+      ...model,
+      workItems: model.workItems.map((item, index) => index === 0
+        ? {
+            ...item,
+            github: {
+              ...item.github!,
+              implementationPr: {
+                repo: item.repo,
+                target: "45",
+                title: "Different implementation PR",
+                url: "https://github.com/repo/dashboard/pull/45",
+                state: "OPEN",
+                labels: [],
+                loadState: "loaded"
+              }
+            }
+          }
+        : item)
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(collisionModel)
+    ));
+    render(<App />);
+
+    const search = await screen.findByLabelText("Find PR or issue number");
+    await userEvent.type(search, "Issue #45{enter}");
+    const drawer = await screen.findByRole("dialog", { name: "Issue #45 detail" });
+    expect(within(drawer).getByText("Ready dashboard work")).toBeInTheDocument();
   });
 
   it("opens the custody timeline for a deep-linked item route", async () => {

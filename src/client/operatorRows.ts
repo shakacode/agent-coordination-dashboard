@@ -6,6 +6,7 @@ import type {
   ClaimRecord,
   DashboardModel,
   HeartbeatRecord,
+  GitHubImplementationPullRequest,
   Liveness,
   MetadataProvenance,
   MetadataSource,
@@ -71,6 +72,7 @@ export interface OperatorRow {
   activityStatus: string;
   activityMessage?: string;
   lastActivityAt?: string;
+  completedAt?: string;
   retentionStatus: string;
   githubState?: string;
   schedulingState?: WorkItem["schedulingState"];
@@ -89,6 +91,7 @@ export interface OperatorRow {
   operator?: string;
   branch?: string;
   prUrl?: string;
+  implementationPr?: GitHubImplementationPullRequest;
   metadata: {
     owner: MetadataProvenance;
     thread: MetadataProvenance;
@@ -223,9 +226,13 @@ function normalizeSearch(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function searchTarget(query: string): string | undefined {
-  const match = normalizeSearch(query).match(/^(?:pr|pull request|issue)?\s*#?\s*(\d+)$/);
-  return match?.[1];
+function searchReference(query: string): { target: string; type?: "issue" | "pull_request" } | undefined {
+  const match = normalizeSearch(query).match(/^(?:(pr|pull request|issue)\s*)?#?\s*(\d+)$/);
+  if (!match) return undefined;
+  return {
+    target: match[2],
+    type: match[1] === "issue" ? "issue" : match[1] ? "pull_request" : undefined
+  };
 }
 
 function repoTargetKey(repo: string | undefined, target: string | undefined): string | undefined {
@@ -497,6 +504,10 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.host,
       row.operator,
       row.branch,
+      row.implementationPr?.target ? `pr #${row.implementationPr.target}` : "",
+      row.implementationPr?.title,
+      safeGithubUrl(row.implementationPr?.url),
+      row.implementationPr?.state,
       safeGithubUrl(row.prUrl),
       row.warnings.join(" ")
     ]
@@ -841,11 +852,14 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["event", eventHistoryMetadata?.branch]
   );
   const prUrlMetadata = firstObserved(
-    item.type === "pull_request" ? { state: "missing", source: "github" } : notApplicable(),
+    item.type === "pull_request" || item.github?.implementationPr
+      ? { state: "missing", source: "github" }
+      : notApplicable(),
     ["claim", item.claim?.prUrl],
     ["heartbeat", item.heartbeat?.prUrl],
     ["manifest", lane?.prUrl],
     ["event", eventHistoryMetadata?.prUrl],
+    ["github", item.github?.implementationPr?.url],
     ["github", item.type === "pull_request" ? item.github?.url : undefined]
   );
   const batchId =
@@ -884,6 +898,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
     lastActivityAt: latestLifecycleAt || lastActivityAt,
+    completedAt: item.completedAt,
     lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
     retentionStatus,
     githubState: item.github?.loadState === "loaded" ? item.github.state : UNKNOWN,
@@ -902,6 +917,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     operator: ownerMetadata.value,
     branch: branchMetadata.value,
     prUrl: prUrlMetadata.value,
+    implementationPr: item.github?.implementationPr,
     metadata: {
       owner: ownerMetadata,
       thread: threadMetadata,
@@ -1026,6 +1042,7 @@ function buildLaneRow(
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
     lastActivityAt,
+    completedAt: state === "done" ? transitionEvent?.timestamp : undefined,
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
     retentionStatus,
     githubState: target ? UNKNOWN : undefined,
@@ -1188,9 +1205,20 @@ export function filterOperatorRows(rows: OperatorRow[], query: string, targetRep
   if (!normalized) {
     return rows;
   }
-  const exactTarget = searchTarget(query);
-  const filtered = exactTarget
-    ? rows.filter((row) => row.target === exactTarget || Boolean(safeGithubUrl(row.prUrl)?.endsWith(`/pull/${exactTarget}`)))
+  const exactReference = searchReference(query);
+  const filtered = exactReference
+    ? rows.filter((row) => {
+        if (exactReference.type === "issue") {
+          return row.type === "issue" && row.target === exactReference.target;
+        }
+        const pullRequestMatch =
+          (row.type === "pull_request" && row.target === exactReference.target)
+          || row.implementationPr?.target === exactReference.target
+          || Boolean(safeGithubUrl(row.prUrl)?.endsWith(`/pull/${exactReference.target}`));
+        return exactReference.type === "pull_request"
+          ? pullRequestMatch
+          : row.target === exactReference.target || pullRequestMatch;
+      })
     : rows.filter((row) => row.searchText.includes(normalized));
   return sortRows(filtered, targetRepos);
 }

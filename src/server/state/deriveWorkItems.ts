@@ -45,12 +45,48 @@ function terminalState(statuses: string[]): WorkItemTerminalState | undefined {
   return undefined;
 }
 
+function currentDeclaredTerminal(
+  candidates: Array<{ status?: string; updatedAt?: string }>
+): { state: WorkItemTerminalState; completedAt?: string } | undefined {
+  const timestamped = candidates
+    .map((candidate, index) => ({ ...candidate, index, time: timestamp(candidate.updatedAt) }))
+    .filter((candidate) => candidate.status && candidate.time > 0)
+    .sort((left, right) => {
+      const timeDifference = right.time - left.time;
+      if (timeDifference !== 0) return timeDifference;
+      const terminalDifference =
+        Number(Boolean(terminalState([right.status!]))) - Number(Boolean(terminalState([left.status!])));
+      return terminalDifference || left.index - right.index;
+    });
+  if (timestamped.length > 0) {
+    const state = terminalState([timestamped[0].status!]);
+    return state ? { state, completedAt: timestamped[0].updatedAt } : undefined;
+  }
+  const state = terminalState(candidates.flatMap((candidate) => candidate.status ? [candidate.status] : []));
+  return state ? { state } : undefined;
+}
+
+function latestTimestampedLifecycle(candidates: Array<{ status?: string; updatedAt?: string }>) {
+  return candidates
+    .map((candidate, index) => ({ ...candidate, index, time: timestamp(candidate.updatedAt) }))
+    .filter((candidate): candidate is typeof candidate & { status: string } => Boolean(candidate.status) && candidate.time > 0)
+    .sort((left, right) => right.time - left.time || left.index - right.index)[0];
+}
+
 function githubTerminalState(item: WorkItem): WorkItemTerminalState | undefined {
+  if (item.github?.implementationPr?.loadState === "loaded" && item.github.implementationPr.state.trim().toLowerCase() === "merged") {
+    return "done";
+  }
   if (item.github?.loadState !== "loaded") return undefined;
   const state = item.github.state.trim().toLowerCase();
   if (item.github.type === "pull_request" && state === "merged") return "done";
   if (state === "closed") return "closed";
   return undefined;
+}
+
+function githubCompletedAt(item: WorkItem, state: WorkItemTerminalState | undefined): string | undefined {
+  if (state === "done") return item.github?.implementationPr?.mergedAt || item.github?.mergedAt;
+  return state ? item.github?.closedAt : undefined;
 }
 
 function attention(item: WorkItem, statuses: string[], activityAt: string | undefined, input: DeriveWorkItemsInput) {
@@ -98,7 +134,7 @@ function operatorState(item: WorkItem, terminal: WorkItemTerminalState | undefin
 }
 
 function mayHaveOpenPullRequest(item: WorkItem): boolean {
-  if (item.github?.type === "pull_request") {
+  if (item.github?.type === "pull_request" || item.github?.implementationPr) {
     return item.github.loadState !== "loaded" || item.github.state.toLowerCase() === "open";
   }
   return Boolean(item.claim?.prUrl || item.heartbeat?.prUrl);
@@ -108,6 +144,12 @@ function mayHaveOpenPullRequest(item: WorkItem): boolean {
 export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
   return input.workItems.map((item) => {
     const matchingEvents = (input.events || []).filter((event) => event.repo === item.repo && event.target === item.target);
+    const lifecycleCandidates = [
+      { status: item.heartbeat?.status, updatedAt: item.heartbeat?.updatedAt },
+      { status: item.claim?.status, updatedAt: item.claim?.updatedAt || item.claim?.claimedAt },
+      ...item.batchSignals?.map((signal) => ({ status: signal.status, updatedAt: signal.updatedAt })) || [],
+      ...matchingEvents.map((event) => ({ status: event.status || event.type, updatedAt: event.timestamp }))
+    ];
     const coordinationActivityAt = latestTimestamp([
       item.heartbeat?.updatedAt,
       item.claim?.updatedAt,
@@ -121,11 +163,26 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
       ...item.batchSignals?.map((signal) => signal.status) || [],
       ...matchingEvents.map((event) => event.status || event.type)
     ].filter((value): value is string => Boolean(value));
-    const declaredTerminal = terminalState(statuses);
-    const githubTerminal = declaredTerminal ? undefined : githubTerminalState(item);
+    const declaredTerminalEvidence = currentDeclaredTerminal(lifecycleCandidates);
+    const declaredTerminal = declaredTerminalEvidence?.state;
+    const githubTerminalCandidate = declaredTerminal ? undefined : githubTerminalState(item);
+    const githubCompletionAt = githubCompletedAt(item, githubTerminalCandidate);
+    const latestLifecycle = latestTimestampedLifecycle(lifecycleCandidates);
+    const githubTerminal =
+      githubTerminalCandidate
+      && !(
+        githubCompletionAt
+        && latestLifecycle
+        && latestLifecycle.time > timestamp(githubCompletionAt)
+        && !terminalState([latestLifecycle.status])
+      )
+        ? githubTerminalCandidate
+        : undefined;
     const terminal = declaredTerminal || githubTerminal;
+    const completedAt = declaredTerminalEvidence?.completedAt
+      || githubCompletedAt(item, githubTerminal);
     const activityAt = githubTerminal
-      ? latestTimestamp([coordinationActivityAt, item.github?.mergedAt, item.github?.closedAt])
+      ? latestTimestamp([coordinationActivityAt, item.github?.implementationPr?.mergedAt, item.github?.mergedAt, item.github?.closedAt])
       : coordinationActivityAt;
     const deadPastPresentationTtl = item.heartbeat?.liveness === "dead"
       && input.now.getTime() - timestamp(activityAt) > ARCHIVE_AFTER_MS
@@ -138,8 +195,9 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
       terminalProvenance: terminal
         ? declaredTerminal
           ? { source: "declared" }
-          : { source: "github", url: item.github?.url }
+          : { source: "github", url: item.github?.implementationPr?.url || item.github?.url }
         : undefined,
+      completedAt,
       attention: reason,
       lastActivityAt: activityAt
     };

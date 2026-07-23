@@ -11,7 +11,7 @@ export interface BatchesBoardProps {
   onSetFilter: (filter: BatchFilter) => void;
   onOpenBatch: (card: BatchCard) => void;
   onOpenRow: (row: OperatorRow, workItem?: WorkItem) => void;
-  highlightBatchId?: string | null;
+  highlightBatchIdentity?: string | null;
 }
 
 function LaneRow({ lane, onOpenRow }: { lane: LaneView; onOpenRow: BatchesBoardProps["onOpenRow"] }) {
@@ -49,7 +49,7 @@ function LaneRow({ lane, onOpenRow }: { lane: LaneView; onOpenRow: BatchesBoardP
   );
 }
 
-export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onOpenBatch, onOpenRow, highlightBatchId }: BatchesBoardProps) {
+export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onOpenBatch, onOpenRow, highlightBatchIdentity }: BatchesBoardProps) {
   const filters: Array<{ id: BatchFilter; label: string; hint: string; color: string; pulse: boolean; count: number }> = [
     { id: "all", label: "All batches", hint: "", color: "var(--color-neutral-300)", pulse: false, count: cards.length },
     ...BATCH_TIERS.map((tier) => ({ id: tier.id as BatchFilter, label: tier.label, hint: tier.hint, color: tier.color, pulse: tier.pulse, count: tierCounts[tier.id] }))
@@ -87,7 +87,7 @@ export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onO
       ) : (
         <div className="batch-list">
           {visible.map((card) => (
-            <article className={`batch-card${highlightBatchId === card.id ? " highlight" : ""}`} id={card.idAttr} key={card.id}>
+            <article className={`batch-card${highlightBatchIdentity === card.identity ? " highlight" : ""}`} id={card.idAttr} key={card.identity}>
               <button className="batch-header" onClick={() => onOpenBatch(card)} type="button">
                 <span className={`batch-super-dot${card.superPulse ? " pulse" : ""}`} style={{ background: card.superColor }} title={card.superLabel} />
                 <div className="batch-head-main">
