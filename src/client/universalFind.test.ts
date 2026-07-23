@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DashboardModel, WorkItem } from "../shared/types";
 import { buildCoordinationView } from "./coordinationView";
-import { buildFindResults, exactFindResult, exactJobFindResult } from "./universalFind";
+import { buildFindResults, exactFindResult } from "./universalFind";
 
 const heartbeat = {
   schemaVersion: 1,
@@ -132,7 +132,7 @@ describe("buildFindResults", () => {
   it("prefers the unique exact job even when its containing machine and batch also match", () => {
     const results = buildFindResults(view, "89");
     expect(results.map((result) => result.kind)).toEqual(expect.arrayContaining(["job", "batch", "machine"]));
-    expect(exactJobFindResult(results, "89")).toEqual(expect.objectContaining({
+    expect(exactFindResult(results, "89")).toEqual(expect.objectContaining({
       kind: "job",
       row: expect.objectContaining({ target: "89" })
     }));

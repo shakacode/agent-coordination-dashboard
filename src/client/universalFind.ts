@@ -124,15 +124,6 @@ function resultScore(result: FindResult, query: string): number {
   return result.kind === "job" ? 1 : result.kind === "batch" ? 2 : 3;
 }
 
-export function exactJobFindResult(results: FindResult[], rawQuery: string): Extract<FindResult, { kind: "job" }> | undefined {
-  const query = normalized(canonicalGithubItemUrl(rawQuery) || rawQuery);
-  const matches = results.filter((result): result is Extract<FindResult, { kind: "job" }> =>
-    result.kind === "job"
-    && jobExactValues(result).some((value) => normalized(value) === query)
-  );
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
 export function exactFindResult(results: FindResult[], rawQuery: string): FindResult | undefined {
   const query = normalized(canonicalGithubItemUrl(rawQuery) || rawQuery);
   for (const kind of ["job", "batch", "machine"] as const) {

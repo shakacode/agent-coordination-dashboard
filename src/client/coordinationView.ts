@@ -580,7 +580,9 @@ const LANE_BRANCH_CHARS = (index: number, total: number): string => (index === t
 function laneTargetUrl(batch: BatchRecord, target: string | undefined): string | undefined {
   if (!target) return undefined;
   const candidates = (batch.targets || []).filter((candidate) => candidate.target === target && candidate.url);
-  const scoped = candidates.find((candidate) => !candidate.repo || !batch.repo || candidate.repo === batch.repo);
+  const scoped = batch.repo
+    ? candidates.find((candidate) => !candidate.repo || candidate.repo === batch.repo)
+    : undefined;
   if (scoped) return scoped.url;
   const urls = [...new Set(candidates.map((candidate) => candidate.url))];
   return urls.length === 1 ? urls[0] : undefined;

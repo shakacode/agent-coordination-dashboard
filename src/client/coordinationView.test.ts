@@ -504,6 +504,35 @@ describe("buildCoordinationView", () => {
     expect(card.lanes[0].targetUrl).toBe("https://github.com/repo/other/issues/201");
   });
 
+  it("does not link a repo-less lane target when same-number manifest URLs disagree", () => {
+    const ambiguousBatch = {
+      ...model.batches[0],
+      batchId: "ambiguous-cross-repo-link",
+      repo: undefined,
+      targets: [
+        {
+          type: "issue" as const,
+          target: "201",
+          repo: "repo/dashboard",
+          url: "https://github.com/repo/dashboard/issues/201"
+        },
+        {
+          type: "issue" as const,
+          target: "201",
+          repo: "repo/other",
+          url: "https://github.com/repo/other/issues/201"
+        }
+      ]
+    };
+    const card = buildCoordinationView({
+      ...model,
+      batches: [ambiguousBatch],
+      batchOperations: []
+    }, NOW).batchCards[0];
+
+    expect(card.lanes[0].targetUrl).toBeUndefined();
+  });
+
   it("groups agents into machines and collapses dead agents to a count", () => {
     const m1 = view.machines.find((machine) => machine.id === "m1");
     const m5 = view.machines.find((machine) => machine.id === "m5");
