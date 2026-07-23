@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { BatchBlocker, BatchCompletionReport, BatchRecord, DashboardModel } from "../../shared/types";
 import { buildCoordinationView } from "../coordinationView";
 import { BatchDetailDrawer } from "./BatchDetailDrawer";
@@ -130,5 +131,109 @@ describe("BatchDetailDrawer structured blocker (#83)", () => {
   it("falls back to the not-emitted note when no structured blocker is present", () => {
     render(<BatchDetailDrawer card={cardFrom({})} onClose={() => {}} />);
     expect(screen.getByText(/Structured blocker decisions and a recommended reply are not emitted/)).toBeInTheDocument();
+  });
+});
+
+describe("BatchDetailDrawer lane execution map (#88)", () => {
+  it("keeps mixed-host and legacy lanes navigable with honest chat fallback", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) }
+    });
+    const onOpenRow = vi.fn();
+    const onFind = vi.fn();
+    const card = cardFrom({
+      createdByMachine: "m1",
+      targets: [
+        { type: "issue", target: "87", repo: "repo/dashboard", title: "Machine drill-down", url: "https://github.com/repo/dashboard/issues/87" },
+        { type: "pull_request", target: "88", repo: "repo/dashboard", title: "Batch navigation", url: "https://github.com/repo/dashboard/pull/88" }
+      ],
+      lanes: [
+        {
+          name: "codex-lane",
+          owner: "codex-maker",
+          targets: ["87"],
+          dependsOn: [],
+          status: "running",
+          liveness: "live",
+          blockedOn: [],
+          host: "Codex",
+          threadHandle: "acd-codex-chat",
+          branch: "codex/machines",
+          prUrl: "https://github.com/repo/dashboard/pull/123"
+        },
+        {
+          name: "claude-lane",
+          owner: "claude-maker",
+          targets: ["88"],
+          dependsOn: [],
+          status: "blocked",
+          liveness: "stale",
+          blockedOn: ["review"],
+          host: "Claude",
+          threadHandle: "acd-claude-chat",
+          prUrl: "https://github.com/repo/dashboard/pull/88"
+        },
+        {
+          name: "legacy-lane",
+          owner: "legacy-maker",
+          targets: ["89"],
+          dependsOn: [],
+          status: "running",
+          liveness: "no-heartbeat",
+          blockedOn: []
+        }
+      ]
+    });
+
+    render(
+      <BatchDetailDrawer
+        card={card}
+        onClose={() => {}}
+        onFind={onFind}
+        onOpenRow={onOpenRow}
+      />
+    );
+
+    const map = screen.getByRole("table", { name: "Batch lane execution map" });
+    expect(map).toHaveTextContent("codex-lane");
+    expect(map).toHaveTextContent("Claude");
+    expect(map).toHaveTextContent("machine UNKNOWN");
+    expect(screen.getByRole("link", { name: "Issue #87" })).toHaveAttribute("href", "https://github.com/repo/dashboard/issues/87");
+    expect(screen.getByRole("link", { name: "PR #123" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/123");
+    expect(screen.getByRole("link", { name: "PR #88" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/88");
+    expect(screen.getByRole("link", { name: "codex/machines" })).toHaveAttribute("href", "https://github.com/repo/dashboard/tree/codex/machines");
+    expect(screen.queryByText(/Close this drawer to inspect/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open codex-lane job" }));
+    expect(onOpenRow).toHaveBeenCalledWith(card.lanes[0].row, undefined);
+    await userEvent.click(screen.getByRole("button", { name: "Find chat acd-claude-chat" }));
+    expect(onFind).toHaveBeenCalledWith("acd-claude-chat");
+    await userEvent.click(screen.getByRole("button", { name: "Copy chat acd-codex-chat" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("acd-codex-chat");
+  });
+
+  it("does not brand a GitHub issue URL as a pull request", () => {
+    const card = cardFrom({
+      targets: [
+        { type: "issue", target: "87", repo: "repo/dashboard", url: "https://github.com/repo/dashboard/issues/87" }
+      ],
+      lanes: [{
+        name: "issue-only",
+        owner: "codex-maker",
+        targets: ["87"],
+        dependsOn: [],
+        status: "running",
+        liveness: "live",
+        blockedOn: [],
+        prUrl: "https://github.com/repo/dashboard/issues/999"
+      }]
+    });
+
+    render(<BatchDetailDrawer card={card} onClose={() => {}} />);
+
+    expect(screen.getByRole("link", { name: "Issue #87" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open PR" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Issue #999" })).not.toBeInTheDocument();
   });
 });

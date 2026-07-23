@@ -2,6 +2,7 @@ import { ExternalLink, MessageSquare, X } from "lucide-react";
 import type { ModelUsage, WorkItem } from "../../shared/types";
 import { displayAttribution } from "../../shared/attribution";
 import { ABSENT, aggregateUsage, devToolForHost, formatCost, formatTokens, hostColor, stateColor, targetLabel } from "../coordinationView";
+import { githubBranchUrl } from "../githubUrls";
 import type { OperatorRow } from "../operatorRows";
 import { safeGithubUrl } from "../operatorRows";
 import { OperatorActions, type AnnotationAction } from "./OperatorActions";
@@ -24,12 +25,6 @@ export interface JobDetailDrawerProps {
 }
 
 const NEUTRAL = "var(--color-neutral-200)";
-
-function branchTreeUrl(repo: string, branch: string | undefined): string | undefined {
-  if (!branch) return undefined;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return undefined;
-  return `https://github.com/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`;
-}
 
 function TokensByModel({ usage }: { usage: ModelUsage[] }) {
   const totals = aggregateUsage(usage);
@@ -93,7 +88,7 @@ export function JobDetailDrawer({
           href: implementationUrl
         }]
       : []),
-    { k: "Branch", v: displayAttribution(row.branch, "UNKNOWN"), href: branchTreeUrl(row.repo, row.branch) },
+    { k: "Branch", v: displayAttribution(row.branch, "UNKNOWN"), href: githubBranchUrl(row.repo, row.branch) },
     { k: "Phase", v: displayAttribution(row.activityStatus, "UNKNOWN") },
     { k: "Merge auth", v: mergeAuth || ABSENT },
     { k: "Chat handle", v: displayAttribution(row.threadHandle, "UNKNOWN") }
@@ -164,7 +159,7 @@ export function JobDetailDrawer({
 
         <div className="drawer-foot">
           {row.batchId && onOpenBatch && (
-            <button className="btn btn-primary" style={{ width: "calc(100% - 40px)", margin: "16px 20px 0", justifyContent: "space-between" }} onClick={() => onOpenBatch(row.batchId!, row.batchPath, row.repo)} type="button">
+            <button aria-label={`Open batch ${row.batchId}`} className="btn btn-primary" style={{ width: "calc(100% - 40px)", margin: "16px 20px 0", justifyContent: "space-between" }} onClick={() => onOpenBatch(row.batchId!, row.batchPath, row.repo)} type="button">
               <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><MessageSquare size={14} aria-hidden="true" /> Go to batch</span>
               <span style={{ fontFamily: "var(--font-heading)", fontSize: "12px", opacity: 0.85, maxWidth: "210px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{batchTitle || displayAttribution(row.batchId)} ↗</span>
             </button>

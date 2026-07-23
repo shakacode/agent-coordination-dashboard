@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 // @ts-expect-error App tests inspect the checked-in CSS, while the browser tsconfig intentionally excludes Node types.
 import { readFileSync } from "node:fs";
@@ -185,7 +185,7 @@ describe("App", () => {
     expect(within(nav).getByRole("button", { name: /Jobs/ })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: /Machines/ })).toBeInTheDocument();
     // Host legend aggregates live/total per host (one Codex agent, one Claude agent).
-    const legend = screen.getByLabelText("Host fleet");
+    const legend = screen.getByLabelText("Host fleet filters");
     expect(within(legend).getByText("Codex")).toBeInTheDocument();
     expect(within(legend).getByText("Claude")).toBeInTheDocument();
     expect(within(legend).getAllByText("1 live · 1")).toHaveLength(2);
@@ -320,7 +320,7 @@ describe("App", () => {
 
   it("jumps to a work item's detail drawer when a number is searched", async () => {
     render(<App />);
-    const search = await screen.findByLabelText("Find PR or issue number");
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
     await userEvent.type(search, "46{enter}");
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByText("Needs input work")).toBeInTheDocument();
@@ -328,9 +328,9 @@ describe("App", () => {
 
   it("does not discard an explicit repository hint that matches no candidate", async () => {
     render(<App />);
-    const search = await screen.findByLabelText("Find PR or issue number");
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
     await userEvent.type(search, "other 46{enter}");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await screen.findByText('No matches for "other 46"')).toBeInTheDocument();
   });
 
   it("uses the target type to disambiguate an issue number from an implementation PR number", async () => {
@@ -359,7 +359,7 @@ describe("App", () => {
     ));
     render(<App />);
 
-    const search = await screen.findByLabelText("Find PR or issue number");
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
     await userEvent.type(search, "Issue #45{enter}");
     const drawer = await screen.findByRole("dialog", { name: "Issue #45 detail" });
     expect(within(drawer).getByText("Ready dashboard work")).toBeInTheDocument();
@@ -391,14 +391,213 @@ describe("App", () => {
     ));
     render(<App />);
 
-    const search = await screen.findByLabelText("Find PR or issue number");
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
     await userEvent.type(search, "45{enter}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const results = await screen.findByRole("listbox", { name: "Find results" });
+    expect(within(results).getAllByRole("option")).toHaveLength(2);
+    expect(within(results).getByText("repo/dashboard")).toBeInTheDocument();
+    expect(within(results).getByText("repo/other")).toBeInTheDocument();
 
     await userEvent.clear(search);
     await userEvent.type(search, "other 45{enter}");
     const drawer = await screen.findByRole("dialog", { name: "Issue #45 detail" });
     expect(within(drawer).getByText("Ready other-repository work")).toBeInTheDocument();
+  });
+
+  it("finds batch, machine, agent, branch, host, and thread identities with visible empty states", async () => {
+    const searchableModel: DashboardModel = {
+      ...model,
+      batches: model.batches.map((batch) => ({
+        ...batch,
+        lanes: batch.lanes.map((lane, index) => index === 0
+          ? { ...lane, threadHandle: "HC-A-foundation-kite", branch: "codex/operator-navigation" }
+          : lane)
+      }))
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(searchableModel)
+    ));
+    render(<App />);
+
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.click(search);
+    expect(await screen.findByText("Type to search jobs, batches, machines, chats, branches, hosts, or GitHub items.")).toBeInTheDocument();
+
+    await userEvent.type(search, "HC-A-foundation-kite");
+    const results = await screen.findByRole("listbox", { name: "Find results" });
+    expect(within(results).getAllByText("HC-A-foundation-kite").length).toBeGreaterThan(0);
+    expect(within(results).getAllByText(/m1|machine UNKNOWN/).length).toBeGreaterThan(0);
+    await userEvent.click(within(results).getAllByRole("option")[0]);
+    expect(await screen.findByRole("dialog", { name: /detail/ })).toBeInTheDocument();
+  });
+
+  it("drills from a machine agent into job and batch detail with keyboard-accessible controls", async () => {
+    const claimedWork = {
+      ...model.workItems[0],
+      heartbeat: {
+        ...model.workItems[0].heartbeat!,
+        batchId: "batch-alpha",
+        threadHandle: "acd-operator-nav",
+        operator: "justin"
+      }
+    };
+    const machineModel: DashboardModel = {
+      ...model,
+      agents: model.agents.map((agent, index) => index === 0
+        ? {
+            ...agent,
+            currentWork: [claimedWork],
+            heartbeat: {
+              ...agent.heartbeat!,
+              batchId: "batch-alpha",
+              threadHandle: "acd-operator-nav",
+              operator: "justin"
+            }
+          }
+        : agent),
+      workItems: [claimedWork, ...model.workItems.slice(1)]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(machineModel)
+    ));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /Machines/ }));
+    const agent = await screen.findByRole("button", { name: /Open codex-live job/ });
+    agent.focus();
+    await userEvent.keyboard("{Enter}");
+    const drawer = await screen.findByRole("dialog", { name: "PR #43 detail" });
+    await userEvent.click(within(drawer).getByRole("button", { name: /Open batch batch-alpha/ }));
+    expect(await screen.findByRole("dialog", { name: /Land the telemetry contract with QA.*detail/ })).toBeInTheDocument();
+  });
+
+  it("uses host-family chips as real job and machine filters", async () => {
+    render(<App />);
+    const fleet = await screen.findByLabelText("Host fleet filters");
+    const claude = within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ });
+    await userEvent.click(claude);
+
+    const nav = screen.getByRole("navigation", { name: "Dashboard views" });
+    expect(within(nav).getByRole("button", { name: /Jobs/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByText("Running dashboard work")).not.toBeInTheDocument();
+    expect(screen.getByText("Needs input work")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear fleet filters" })).toBeInTheDocument();
+  });
+
+  it("leaves an item route when a fleet control navigates back to an operator board", async () => {
+    window.history.pushState({}, "", "/?item=repo/dashboard/43");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Work item #43" })).toBeInTheDocument();
+
+    const fleet = await screen.findByLabelText("Host fleet filters");
+    await userEvent.click(within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ }));
+
+    expect(window.location.search).not.toContain("item=");
+    expect(screen.queryByRole("heading", { name: "Work item #43" })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Dashboard views" })
+      .querySelector('[aria-current="page"]')).toHaveTextContent("Jobs");
+  });
+
+  it("leaves an item route when clearing an active fleet filter", async () => {
+    render(<App />);
+    const fleet = await screen.findByLabelText("Host fleet filters");
+    await userEvent.click(within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ }));
+
+    act(() => {
+      window.history.pushState({}, "", "/?item=repo/dashboard/43");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByRole("heading", { name: "Work item #43" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear fleet filters" }));
+    expect(window.location.search).not.toContain("item=");
+    expect(screen.queryByRole("heading", { name: "Work item #43" })).not.toBeInTheDocument();
+  });
+
+  it("tracks and traverses the active universal-find option with the keyboard", async () => {
+    render(<App />);
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "repo/dashboard");
+    const results = await screen.findByRole("listbox", { name: "Find results" });
+    const options = within(results).getAllByRole("option");
+    expect(options.length).toBeGreaterThan(1);
+    expect(options.every((option) => option.parentElement?.getAttribute("role") === "presentation")).toBe(true);
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(options[0]).toHaveFocus();
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[1]).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(options[1]).toHaveFocus();
+    expect(options[1]).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{ArrowUp}");
+    expect(options[0]).toHaveFocus();
+  });
+
+  it("dismisses universal find when navigation continues outside the popover", async () => {
+    render(<App />);
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "repo/dashboard");
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Machines" }));
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+
+    await userEvent.click(search);
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+    const fleet = screen.getByLabelText("Host fleet filters");
+    await userEvent.click(within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ }));
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+  });
+
+  it("dismisses universal find when keyboard activation continues through navigation or fleet controls", async () => {
+    render(<App />);
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "repo/dashboard");
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+
+    const machines = screen.getByRole("button", { name: "Machines" });
+    machines.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+
+    search.focus();
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+    const fleet = screen.getByLabelText("Host fleet filters");
+    const claude = within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ });
+    claude.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+  });
+
+  it("reports matches beyond the visible universal-find result cap", async () => {
+    const bulkItems = Array.from({ length: 30 }, (_, index) => ({
+      ...model.workItems[2],
+      id: `repo/dashboard#${100 + index}`,
+      target: `${100 + index}`,
+      github: {
+        ...model.workItems[2].github!,
+        target: `${100 + index}`,
+        title: `Bulk find item ${index + 1}`,
+        url: `https://github.com/repo/dashboard/issues/${100 + index}`
+      }
+    }));
+    const bulkModel: DashboardModel = {
+      ...model,
+      workItems: bulkItems
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(bulkModel)
+    ));
+    render(<App />);
+
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "bulk find");
+    const results = await screen.findByRole("listbox", { name: "Find results" });
+    expect(within(results).getAllByRole("option")).toHaveLength(24);
+    expect(screen.getByText("6 more matches. Refine your search to narrow the results.")).toBeInTheDocument();
   });
 
   it("opens the custody timeline for a deep-linked item route", async () => {
@@ -449,7 +648,9 @@ describe("App", () => {
     const stylesheet = readFileSync(`${cwd()}/src/client/styles.css`, "utf8");
     expect(stylesheet).toMatch(/@media \(max-width: 980px\)[\s\S]*\.lane-row[\s\S]*grid-template-columns/);
     expect(stylesheet).toMatch(/\.job-title,[\s\S]*overflow-wrap: anywhere/);
-    expect(stylesheet).toMatch(/\.host-legend,[\s\S]*overflow-x: auto/);
+    expect(stylesheet).toMatch(/\.host-legend\s*{[\s\S]*flex-wrap:\s*wrap/);
+    expect(stylesheet).toMatch(/\.topbar-inner\s*{[\s\S]*grid-template/);
+    expect(stylesheet.match(/\.topbar-tools\s*\{[^}]+\}/)?.[0]).toContain("grid-column: 3");
     const srOnlyRule = stylesheet.match(/\.sr-only\s*\{[^}]+\}/)?.[0] || "";
     expect(srOnlyRule).toContain("clip-path: inset(50%)");
     expect(srOnlyRule).not.toMatch(/\n\s*clip:/);

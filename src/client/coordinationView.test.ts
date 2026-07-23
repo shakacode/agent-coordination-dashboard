@@ -119,6 +119,149 @@ describe("buildCoordinationView", () => {
     ]);
   });
 
+  it("groups host surface variants into stable Codex and Claude families", () => {
+    const variantModel: DashboardModel = {
+      ...model,
+      agents: model.agents.map((agent, index) => ({
+        ...agent,
+        heartbeat: agent.heartbeat
+          ? { ...agent.heartbeat, host: index === 0 ? "Codex app" : index === 1 ? "claude-code" : "Codex CLI" }
+          : undefined
+      }))
+    };
+    expect(buildCoordinationView(variantModel, NOW).hostLegend).toEqual([
+      { name: "Codex", color: "var(--codex)", live: 1, total: 2 },
+      { name: "Claude", color: "var(--claude)", live: 0, total: 1 }
+    ]);
+  });
+
+  it("binds machine agent cards to matching job rows without inventing missing custody", () => {
+    const currentWork = model.workItems[0];
+    const machineModel: DashboardModel = {
+      ...model,
+      agents: model.agents.map((agent, index) => index === 0
+        ? {
+            ...agent,
+            currentWork: [currentWork],
+            heartbeat: {
+              ...agent.heartbeat!,
+              batchId: "b1",
+              threadHandle: "acd-machine-chat",
+              operator: "justin"
+            }
+          }
+        : agent)
+    };
+    const agent = buildCoordinationView(machineModel, NOW).machines
+      .find((machine) => machine.id === "m1")?.hosts
+      .flatMap((host) => host.agents)
+      .find((candidate) => candidate.id === "codex-live");
+    expect(agent).toMatchObject({
+      machine: "m1",
+      host: "Codex",
+      target: "repo/dashboard#10",
+      batchId: "b1",
+      threadHandle: "acd-machine-chat",
+      row: expect.objectContaining({ target: "10" }),
+      workItem: expect.objectContaining({ id: "repo/dashboard#10" })
+    });
+  });
+
+  it("does not bind an unattributed machine agent to an arbitrary one of several owned rows", () => {
+    const unattributedHeartbeat = liveHeartbeat("shared-agent", "2026-07-21T11:59:00.000Z", {
+      host: "Codex",
+      machineId: "m1"
+    });
+    const ownedWork = ["401", "402"].map((target) => workItem({
+      id: `repo/dashboard#${target}`,
+      repo: "repo/dashboard",
+      target,
+      type: "issue",
+      schedulingState: "in_process",
+      heartbeat: liveHeartbeat("shared-agent", "2026-07-21T11:59:00.000Z", {
+        host: "Codex",
+        machineId: "m1",
+        repo: "repo/dashboard",
+        target
+      })
+    }));
+    const ambiguousModel: DashboardModel = {
+      ...model,
+      agents: [{
+        agentId: "shared-agent",
+        machineId: "m1",
+        liveness: "live",
+        claims: [],
+        currentWork: [],
+        warnings: [],
+        heartbeat: unattributedHeartbeat
+      }],
+      workItems: ownedWork,
+      batches: [],
+      batchOperations: []
+    };
+
+    const agent = buildCoordinationView(ambiguousModel, NOW).machines[0].hosts[0].agents[0];
+    expect(agent.row).toBeUndefined();
+    expect(agent.workItem).toBeUndefined();
+  });
+
+  it.each([
+    ["repository", { repo: "repo/dashboard" }],
+    ["target", { target: "401" }]
+  ])("does not bind an agent using only an ambiguous %s hint", (_label, identity) => {
+    const ownedWork = ["401", "402"].map((target) => workItem({
+      id: `repo/dashboard#${target}`,
+      repo: "repo/dashboard",
+      target,
+      type: "issue",
+      schedulingState: "in_process",
+      heartbeat: liveHeartbeat("shared-agent", "2026-07-21T11:59:00.000Z", {
+        host: "Codex",
+        machineId: "m1",
+        repo: "repo/dashboard",
+        target
+      })
+    }));
+    if ("target" in identity) {
+      ownedWork[1] = {
+        ...ownedWork[1],
+        id: "repo/other#401",
+        repo: "repo/other",
+        target: "401",
+        heartbeat: {
+          ...ownedWork[1].heartbeat!,
+          repo: "repo/other",
+          target: "401"
+        }
+      };
+    }
+    const ambiguousModel: DashboardModel = {
+      ...model,
+      targetRepos: ["repo/dashboard", "repo/other"],
+      agents: [{
+        agentId: "shared-agent",
+        machineId: "m1",
+        liveness: "live",
+        claims: [],
+        currentWork: [],
+        warnings: [],
+        heartbeat: liveHeartbeat("shared-agent", "2026-07-21T11:59:00.000Z", {
+          host: "Codex",
+          machineId: "m1",
+          ...identity
+        })
+      }],
+      workItems: ownedWork,
+      batches: [],
+      batchOperations: []
+    };
+
+    const agent = buildCoordinationView(ambiguousModel, NOW).machines[0].hosts[0].agents[0];
+    expect(agent.row).toBeUndefined();
+    expect(agent.workItem).toBeUndefined();
+  });
+
   it("routes each work item to its lifecycle bucket", () => {
     expect(byTarget("10")?.bucket).toBe("running");
     expect(byTarget("11")?.bucket).toBe("needs_input");
@@ -193,7 +336,7 @@ describe("buildCoordinationView", () => {
     expect(card.done).toBe(0);
     expect(card.qa).toBe("1/2");
     expect(card.promptSaved).toBe(true);
-    expect(card.thread).toBe("b1-coord");
+    expect(card).not.toHaveProperty("thread");
     // Fields with no coordination backing degrade rather than fabricating values.
     expect(card.tokensTotal).toBe(ABSENT);
     expect(card.cost).toBe(ABSENT);
@@ -201,6 +344,42 @@ describe("buildCoordinationView", () => {
     expect(card.mergeAuth).toBe(ABSENT);
     expect(card.lanes).toHaveLength(2);
     expect(card.lanes[1].stateColor).toBe("var(--block)");
+  });
+
+  it("prefers observed live lane custody over stale manifest metadata", () => {
+    const takeoverWork = workItem({
+      id: "repo/dashboard#201",
+      repo: "repo/dashboard",
+      target: "201",
+      type: "issue",
+      schedulingState: "in_process",
+      heartbeat: liveHeartbeat("takeover-agent", "2026-07-21T11:59:30.000Z", {
+        batchId: "b1",
+        repo: "repo/dashboard",
+        target: "201",
+        host: "Claude",
+        machineId: "m2",
+        threadHandle: "live-takeover-thread",
+        branch: "codex/live-takeover",
+        prUrl: "https://github.com/repo/dashboard/pull/201"
+      })
+    });
+    const card = buildCoordinationView({
+      ...model,
+      workItems: [...model.workItems, takeoverWork]
+    }, NOW).batchCards[0];
+
+    expect(card.lanes[0]).toMatchObject({
+      owner: "takeover-agent",
+      host: "Claude",
+      machine: "m2",
+      threadHandle: "live-takeover-thread",
+      branchName: "codex/live-takeover",
+      prUrl: "https://github.com/repo/dashboard/pull/201"
+    });
+    expect(card).not.toHaveProperty("thread");
+    expect(card.host).toBe("Claude");
+    expect(card.hostColor).toBe("var(--claude)");
   });
 
   it("reconciles same-repository manifest and inferred observations into one stable card", () => {
@@ -300,6 +479,58 @@ describe("buildCoordinationView", () => {
       "unknown-fallback"
     ]));
     expect(cards.map((card) => card.repo)).toEqual(["UNKNOWN", "UNKNOWN"]);
+  });
+
+  it("keeps an unambiguous cross-repository manifest target link available to its lane", () => {
+    const crossRepoBatch = {
+      ...model.batches[0],
+      batchId: "cross-repo-link",
+      repo: "repo/dashboard",
+      targets: [
+        {
+          type: "issue" as const,
+          target: "201",
+          repo: "repo/other",
+          url: "https://github.com/repo/other/issues/201"
+        }
+      ]
+    };
+    const card = buildCoordinationView({
+      ...model,
+      batches: [crossRepoBatch],
+      batchOperations: []
+    }, NOW).batchCards[0];
+
+    expect(card.lanes[0].targetUrl).toBe("https://github.com/repo/other/issues/201");
+  });
+
+  it("does not link a repo-less lane target when same-number manifest URLs disagree", () => {
+    const ambiguousBatch = {
+      ...model.batches[0],
+      batchId: "ambiguous-cross-repo-link",
+      repo: undefined,
+      targets: [
+        {
+          type: "issue" as const,
+          target: "201",
+          repo: "repo/dashboard",
+          url: "https://github.com/repo/dashboard/issues/201"
+        },
+        {
+          type: "issue" as const,
+          target: "201",
+          repo: "repo/other",
+          url: "https://github.com/repo/other/issues/201"
+        }
+      ]
+    };
+    const card = buildCoordinationView({
+      ...model,
+      batches: [ambiguousBatch],
+      batchOperations: []
+    }, NOW).batchCards[0];
+
+    expect(card.lanes[0].targetUrl).toBeUndefined();
   });
 
   it("groups agents into machines and collapses dead agents to a count", () => {
@@ -542,6 +773,8 @@ describe("buildCoordinationView", () => {
   it("canonicalizes host names once", () => {
     expect(canonicalHostName("codex")).toBe("Codex");
     expect(canonicalHostName("CLAUDE")).toBe("Claude");
+    expect(canonicalHostName("Codex app")).toBe("Codex");
+    expect(canonicalHostName("claude-code")).toBe("Claude");
     expect(canonicalHostName("  other  ")).toBe("other");
     expect(canonicalHostName(undefined)).toBeUndefined();
   });

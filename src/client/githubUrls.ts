@@ -26,3 +26,10 @@ export function canonicalPullRequestUrl(value: string): string | undefined {
   if (!canonical) return undefined;
   return new URL(canonical).pathname.split("/").filter(Boolean)[2] === "pull" ? canonical : undefined;
 }
+
+/** Build a GitHub branch URL only from a repository slug and branch-shaped text. */
+export function githubBranchUrl(repo: string, branch: string | undefined): string | undefined {
+  if (!branch) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return undefined;
+  return `https://github.com/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`;
+}
