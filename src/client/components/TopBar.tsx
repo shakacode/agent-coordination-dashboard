@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent, type Ref } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type Ref } from "react";
 import { Copy, RefreshCw, Search, X } from "lucide-react";
 import type { HostLegendItem } from "../coordinationView";
 import type { FindResult } from "../universalFind";
@@ -26,6 +26,8 @@ export interface TopBarProps {
   searchInputRef?: Ref<HTMLInputElement>;
 }
 
+const FIND_RESULT_LIMIT = 24;
+
 export function TopBar({
   hostLegend,
   activeHost,
@@ -50,12 +52,26 @@ export function TopBar({
 }: TopBarProps) {
   const [copied, setCopied] = useState<string | null>(null);
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
+  const searchFormRef = useRef<HTMLFormElement>(null);
+  const visibleFindResults = useMemo(() => findResults.slice(0, FIND_RESULT_LIMIT), [findResults]);
+  const hiddenFindResultCount = findResults.length - visibleFindResults.length;
 
   useEffect(() => {
-    if (!findOpen || !findResults.some((result) => result.id === activeResultId)) {
+    if (!findOpen || !visibleFindResults.some((result) => result.id === activeResultId)) {
       setActiveResultId(null);
     }
-  }, [activeResultId, findOpen, findResults]);
+  }, [activeResultId, findOpen, visibleFindResults]);
+
+  useEffect(() => {
+    if (!findOpen) return;
+    function dismissOutside(event: PointerEvent) {
+      if (event.target && !searchFormRef.current?.contains(event.target as Node)) {
+        onFindDismiss();
+      }
+    }
+    document.addEventListener("pointerdown", dismissOutside);
+    return () => document.removeEventListener("pointerdown", dismissOutside);
+  }, [findOpen, onFindDismiss]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -67,14 +83,14 @@ export function TopBar({
       event.preventDefault();
       onFindDismiss();
     }
-    if (event.key === "ArrowDown" && findResults.length > 0) {
+    if (event.key === "ArrowDown" && visibleFindResults.length > 0) {
       event.preventDefault();
       focusResult(0);
     }
   }
 
   function focusResult(index: number) {
-    const result = findResults[(index + findResults.length) % findResults.length];
+    const result = visibleFindResults[(index + visibleFindResults.length) % visibleFindResults.length];
     if (!result) return;
     setActiveResultId(result.id);
     document.getElementById(`find-result-${encodeURIComponent(result.id)}`)?.focus();
@@ -86,7 +102,7 @@ export function TopBar({
       focusResult(index + (event.key === "ArrowDown" ? 1 : -1));
     } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      focusResult(event.key === "Home" ? 0 : findResults.length - 1);
+      focusResult(event.key === "Home" ? 0 : visibleFindResults.length - 1);
     } else if (event.key === "Escape") {
       event.preventDefault();
       onFindDismiss();
@@ -146,7 +162,7 @@ export function TopBar({
         )}
 
         <div className="topbar-tools">
-          <form className="topbar-search" onSubmit={submit} role="search">
+          <form className="topbar-search" onSubmit={submit} ref={searchFormRef} role="search">
             <Search size={14} aria-hidden="true" />
             <input
               aria-controls="universal-find-results"
@@ -168,45 +184,52 @@ export function TopBar({
                 ) : findResults.length === 0 ? (
                   <p className="find-state" role="status">No matches for &quot;{query.trim()}&quot;</p>
                 ) : (
-                  <div aria-label="Find results" className="find-results" role="listbox">
-                    {findResults.map((result, index) => (
-                      <div className="find-result-row" key={result.id}>
-                        <button
-                          aria-selected={activeResultId === result.id}
-                          className="find-result"
-                          id={`find-result-${encodeURIComponent(result.id)}`}
-                          onClick={() => onFindResult(result)}
-                          onFocus={() => setActiveResultId(result.id)}
-                          onKeyDown={(event) => resultKeyDown(event, index)}
-                          role="option"
-                          type="button"
-                        >
-                          <span className="find-result-kind">{result.kind}</span>
-                          <span className="find-result-main">
-                            <strong>{result.label}</strong>
-                            <span>{result.context}</span>
-                            <span className="find-result-meta">
-                              {result.repo && <span>{result.repo}</span>}
-                              <span>{result.machine ? `machine ${result.machine}` : "machine UNKNOWN"}</span>
-                              {result.host && <span>{result.host}</span>}
-                              {result.threadHandle && <code>{result.threadHandle}</code>}
-                            </span>
-                          </span>
-                        </button>
-                        {result.threadHandle && (
+                  <>
+                    <div aria-label="Find results" className="find-results" role="listbox">
+                      {visibleFindResults.map((result, index) => (
+                        <div className="find-result-row" key={result.id}>
                           <button
-                            aria-label={`Copy chat ${result.threadHandle}`}
-                            className="find-copy"
-                            onClick={() => void copyThread(result)}
+                            aria-selected={activeResultId === result.id}
+                            className="find-result"
+                            id={`find-result-${encodeURIComponent(result.id)}`}
+                            onClick={() => onFindResult(result)}
+                            onFocus={() => setActiveResultId(result.id)}
+                            onKeyDown={(event) => resultKeyDown(event, index)}
+                            role="option"
                             type="button"
                           >
-                            <Copy size={13} aria-hidden="true" />
-                            {copied === result.id ? "Copied" : "Copy"}
+                            <span className="find-result-kind">{result.kind}</span>
+                            <span className="find-result-main">
+                              <strong>{result.label}</strong>
+                              <span>{result.context}</span>
+                              <span className="find-result-meta">
+                                {result.repo && <span>{result.repo}</span>}
+                                <span>{result.machine ? `machine ${result.machine}` : "machine UNKNOWN"}</span>
+                                {result.host && <span>{result.host}</span>}
+                                {result.threadHandle && <code>{result.threadHandle}</code>}
+                              </span>
+                            </span>
                           </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                          {result.threadHandle && (
+                            <button
+                              aria-label={`Copy chat ${result.threadHandle}`}
+                              className="find-copy"
+                              onClick={() => void copyThread(result)}
+                              type="button"
+                            >
+                              <Copy size={13} aria-hidden="true" />
+                              {copied === result.id ? "Copied" : "Copy"}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {hiddenFindResultCount > 0 && (
+                      <p className="find-state" role="status">
+                        {hiddenFindResultCount} more matches. Refine your search to narrow the results.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             )}

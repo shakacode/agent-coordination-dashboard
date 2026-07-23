@@ -336,7 +336,7 @@ describe("buildCoordinationView", () => {
     expect(card.done).toBe(0);
     expect(card.qa).toBe("1/2");
     expect(card.promptSaved).toBe(true);
-    expect(card.thread).toBeUndefined();
+    expect(card).not.toHaveProperty("thread");
     // Fields with no coordination backing degrade rather than fabricating values.
     expect(card.tokensTotal).toBe(ABSENT);
     expect(card.cost).toBe(ABSENT);
@@ -377,7 +377,9 @@ describe("buildCoordinationView", () => {
       branchName: "codex/live-takeover",
       prUrl: "https://github.com/repo/dashboard/pull/201"
     });
-    expect(card.thread).toBeUndefined();
+    expect(card).not.toHaveProperty("thread");
+    expect(card.host).toBe("Claude");
+    expect(card.hostColor).toBe("var(--claude)");
   });
 
   it("reconciles same-repository manifest and inferred observations into one stable card", () => {

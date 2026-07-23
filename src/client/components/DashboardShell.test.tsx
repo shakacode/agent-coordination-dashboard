@@ -7,8 +7,8 @@ import { DashboardShell } from "./DashboardShell";
 const NOW = "2026-07-21T12:00:00.000Z";
 
 describe("DashboardShell fleet filtering", () => {
-  it("does not match a batch by its creator machine when live lane custody is elsewhere", () => {
-    const model: DashboardModel = {
+  function takeoverModel(): DashboardModel {
+    return {
       generatedAt: NOW,
       stateRoot: "/state",
       targetRepos: ["repo/dashboard"],
@@ -59,11 +59,13 @@ describe("DashboardShell fleet filtering", () => {
         path: "batches/batch-alpha.json"
       }]
     };
+  }
 
+  function renderShell(fleetFilter: { host?: string; machine?: string }) {
     render(
       <DashboardShell
         batchFilter="all"
-        fleetFilter={{ machine: "m1" }}
+        fleetFilter={fleetFilter}
         jobFilter="all"
         onFind={vi.fn()}
         onOpenBatch={vi.fn()}
@@ -74,11 +76,43 @@ describe("DashboardShell fleet filtering", () => {
         onSetJobFilter={vi.fn()}
         onSetTab={vi.fn()}
         tab="batches"
-        view={buildCoordinationView(model, NOW)}
+        view={buildCoordinationView(takeoverModel(), NOW)}
       />
     );
+  }
 
+  it("does not match a batch by its creator machine when live lane custody is elsewhere", () => {
+    renderShell({ machine: "m1" });
     expect(screen.getByText("No batches in this view.")).toBeInTheDocument();
     expect(screen.queryByText("Test current custody.")).not.toBeInTheDocument();
+  });
+
+  it("uses observed live lane hosts instead of stale manifest hosts", () => {
+    const model = takeoverModel();
+    model.workItems[0].heartbeat = {
+      ...model.workItems[0].heartbeat!,
+      host: "Claude"
+    };
+    model.batches[0].lanes[0].host = "Codex";
+    const view = buildCoordinationView(model, NOW);
+    const props = {
+      batchFilter: "all" as const,
+      jobFilter: "all" as const,
+      onFind: vi.fn(),
+      onOpenBatch: vi.fn(),
+      onOpenBatchById: vi.fn(),
+      onOpenRow: vi.fn(),
+      onSetBatchFilter: vi.fn(),
+      onSetFleetFilter: vi.fn(),
+      onSetJobFilter: vi.fn(),
+      onSetTab: vi.fn(),
+      tab: "batches" as const,
+      view
+    };
+    const { rerender } = render(<DashboardShell {...props} fleetFilter={{ host: "Codex" }} />);
+
+    expect(screen.getByText("No batches in this view.")).toBeInTheDocument();
+    rerender(<DashboardShell {...props} fleetFilter={{ host: "Claude" }} />);
+    expect(screen.getByText("Test current custody.")).toBeInTheDocument();
   });
 });

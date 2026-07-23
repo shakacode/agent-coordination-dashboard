@@ -535,6 +535,50 @@ describe("App", () => {
     expect(options[0]).toHaveFocus();
   });
 
+  it("dismisses universal find when navigation continues outside the popover", async () => {
+    render(<App />);
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "repo/dashboard");
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Machines" }));
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+
+    await userEvent.click(search);
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+    const fleet = screen.getByLabelText("Host fleet filters");
+    await userEvent.click(within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ }));
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+  });
+
+  it("reports matches beyond the visible universal-find result cap", async () => {
+    const bulkItems = Array.from({ length: 30 }, (_, index) => ({
+      ...model.workItems[2],
+      id: `repo/dashboard#${100 + index}`,
+      target: `${100 + index}`,
+      github: {
+        ...model.workItems[2].github!,
+        target: `${100 + index}`,
+        title: `Bulk find item ${index + 1}`,
+        url: `https://github.com/repo/dashboard/issues/${100 + index}`
+      }
+    }));
+    const bulkModel: DashboardModel = {
+      ...model,
+      workItems: bulkItems
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(bulkModel)
+    ));
+    render(<App />);
+
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "bulk find");
+    const results = await screen.findByRole("listbox", { name: "Find results" });
+    expect(within(results).getAllByRole("option")).toHaveLength(24);
+    expect(screen.getByText("6 more matches. Refine your search to narrow the results.")).toBeInTheDocument();
+  });
+
   it("opens the custody timeline for a deep-linked item route", async () => {
     window.history.pushState({}, "", "/?item=repo/dashboard/43");
     render(<App />);

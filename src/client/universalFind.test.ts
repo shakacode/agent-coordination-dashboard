@@ -159,6 +159,27 @@ describe("buildFindResults", () => {
     }));
   });
 
+  it("uses observed lane host custody for batch find results after a live takeover", () => {
+    const takeoverHeartbeat = {
+      ...heartbeat,
+      host: "Claude",
+      machineId: "m2"
+    };
+    const takeoverView = buildCoordinationView({
+      ...model,
+      agents: [],
+      workItems: [{ ...workItem, heartbeat: takeoverHeartbeat }]
+    }, model.generatedAt);
+
+    expect(buildFindResults(takeoverView, "batch-alpha")).toContainEqual(
+      expect.objectContaining({
+        kind: "batch",
+        host: "Claude",
+        card: expect.objectContaining({ host: "Claude" })
+      })
+    );
+  });
+
   it.each(["repo/other#45", "other#45"])("normalizes compact repository references %s", (query) => {
     const other: WorkItem = {
       ...workItem,

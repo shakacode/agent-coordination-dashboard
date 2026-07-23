@@ -136,7 +136,6 @@ export interface BatchCard {
   idAttr: string;
   title: string;
   repo: string;
-  thread?: string;
   coordinator: string;
   mergeAuth: string;
   objective?: string;
@@ -235,6 +234,15 @@ export function hostColor(host: string | undefined): string {
   if (canonical === "Codex") return CODEX_COLOR;
   if (canonical === "Claude") return CLAUDE_COLOR;
   return NEUTRAL_COLOR;
+}
+
+const OBSERVED_CUSTODY_SOURCES = new Set(["claim", "heartbeat", "event"]);
+
+/** Return a lane row's directly observed host custody, excluding manifest-only fallback metadata. */
+export function observedLaneHost(row: OperatorRow | undefined): string | undefined {
+  const hostMetadata = row?.metadata.host;
+  if (hostMetadata?.state !== "observed" || !OBSERVED_CUSTODY_SOURCES.has(hostMetadata.source)) return undefined;
+  return canonicalHostName(hostMetadata.value);
 }
 
 export function devToolForHost(host: string | undefined): string | undefined {
@@ -725,7 +733,16 @@ export function buildBatchCard(
   const running = laneStates.filter((state) => state === "running" || STUCK_LANE_STATES.has(state)).length;
   const total = laneCount || 1;
   const convo = convoStatusFor(tier);
-  const host = batch.lanes.find((lane) => lane.host)?.host;
+  const observedHosts = new Set(
+    lanes
+      .map((lane) => observedLaneHost(lane.row))
+      .filter((value): value is string => Boolean(value))
+  );
+  const host = observedHosts.size === 1
+    ? observedHosts.values().next().value
+    : observedHosts.size > 1
+      ? undefined
+      : batch.lanes.find((lane) => lane.host)?.host;
   const completion = batch.completion;
   const usageRollup = aggregateBatchUsage(lanes);
   const latestLaneActivity = lanes
@@ -738,7 +755,6 @@ export function buildBatchCard(
     idAttr: `batch-${batchDomToken(batchIdentity(batch))}`,
     title: batchTitle(batch),
     repo: batchDisplayRepository(batch),
-    thread: undefined,
     coordinator: ABSENT,
     mergeAuth: batch.mergeAuthority || ABSENT,
     objective: batch.objective,

@@ -54,7 +54,6 @@ function batchMatches(card: BatchCard, query: string): boolean {
     card.title,
     card.repo,
     card.objective,
-    card.thread,
     card.host,
     card.machine,
     ...card.lanes.flatMap((lane) => [
@@ -116,7 +115,7 @@ function exactValues(result: FindResult): Array<string | undefined> {
   return result.kind === "job"
     ? jobExactValues(result)
     : result.kind === "batch"
-      ? [result.card.id, result.card.thread, result.card.title, result.card.repo]
+      ? [result.card.id, result.card.title, result.card.repo]
       : [result.card.id, result.card.label];
 }
 
@@ -195,8 +194,7 @@ export function buildFindResults(view: CoordinationView, rawQuery: string): Find
       context: `batch ${card.id}`,
       repo: card.repo,
       machine: card.machine || card.lanes.find((lane) => lane.machine)?.machine,
-      host: canonicalHostName(card.host || card.lanes.find((lane) => lane.host)?.host),
-      threadHandle: card.thread,
+      host: canonicalHostName(card.host),
       card
     }));
   const machines: FindResult[] = view.machines
@@ -216,6 +214,5 @@ export function buildFindResults(view: CoordinationView, rawQuery: string): Find
       resultScore(left, query) - resultScore(right, query)
       || left.label.localeCompare(right.label)
       || left.id.localeCompare(right.id)
-    )
-    .slice(0, 24);
+    );
 }

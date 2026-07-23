@@ -1,5 +1,11 @@
 import { useMemo } from "react";
-import { BATCH_TIERS, JOB_BUCKETS, canonicalHostName, type CoordinationView } from "../coordinationView";
+import {
+  BATCH_TIERS,
+  JOB_BUCKETS,
+  canonicalHostName,
+  observedLaneHost,
+  type CoordinationView
+} from "../coordinationView";
 import type { OperatorRow } from "../operatorRows";
 import type { BatchCard, JobRow } from "../coordinationView";
 import type { WorkItem } from "../../shared/types";
@@ -64,8 +70,14 @@ export function DashboardShell({
     }, {} as CoordinationView["jobCounts"]);
     const filteredBatches = view.batchCards.filter((card) => {
       if (!fleetFilter.host && !fleetFilter.machine) return true;
-      const laneMatch = card.lanes.some((lane) => matchesFleet(lane.host, lane.machine));
+      const observedHosts = card.lanes
+        .map((lane) => observedLaneHost(lane.row))
+        .filter((host): host is string => Boolean(host));
+      const laneMatch = card.lanes.some((lane) =>
+        matchesFleet(observedHosts.length > 0 ? observedLaneHost(lane.row) : lane.host, lane.machine)
+      );
       if (laneMatch) return true;
+      if (fleetFilter.host && observedHosts.length > 0) return false;
       if (fleetFilter.machine && card.lanes.some((lane) => Boolean(lane.machine))) return false;
       return matchesFleet(card.host, card.machine);
     });

@@ -209,7 +209,6 @@ export function BatchDetailDrawer({
             <span className="tag tag-outline">{card.repo}</span>
             <span className="tag tag-outline">coord {card.coordinator}</span>
             <span className="tag tag-outline">merge: {card.mergeAuth}</span>
-            {card.thread && <span className="tag tag-outline">{card.thread}</span>}
           </div>
         </div>
 
@@ -240,7 +239,7 @@ export function BatchDetailDrawer({
             <span className="where-k">Creator machine</span>
             <span className="where-v">{card.machine || "UNKNOWN"}</span>
             <span className="where-k">Coordinator thread</span>
-            <span className="where-v">{card.thread || "UNKNOWN"}</span>
+            <span className="where-v">UNKNOWN</span>
           </div>
         </div>
 
