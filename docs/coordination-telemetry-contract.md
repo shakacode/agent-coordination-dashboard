@@ -245,9 +245,9 @@ closeout. Explicit producers may write the same record with
 
 `agent-coord batch-audit --batch-id ID [--json]` reads the registered batch and
 its event trail. Events are attributed by an explicit matching lane, a target
-that is unique among the batch's lanes, or a unique owner whose event target
-belongs to that lane. When the manifest declares a repository, events from
-other repositories are excluded.
+that is unique among the batch's lanes, or a unique owner when the event target
+is absent or belongs to that lane. When the manifest declares a repository,
+events from other repositories are excluded.
 
 For completeness, ordinary lifecycle facts must be schema-version-1 events with
 nonblank, non-`UNKNOWN` string `event_id`, `batch_id`, `agent_id`, and `at`.
