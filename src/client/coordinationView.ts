@@ -104,8 +104,10 @@ export interface JobRow {
 export interface LaneView {
   id: string;
   branch: string;
+  branchName?: string;
   tag: string;
   target: string;
+  targetUrl?: string;
   targetColor: string;
   title: string;
   /** Coordination status label shown to the operator. */
@@ -118,6 +120,11 @@ export interface LaneView {
   noteColor: string;
   route?: string;
   where?: string;
+  owner?: string;
+  machine?: string;
+  host?: string;
+  threadHandle?: string;
+  prUrl?: string;
   row?: OperatorRow;
   workItem?: WorkItem;
 }
@@ -172,6 +179,16 @@ export interface AgentCard {
   color: string;
   work: string;
   beat: string;
+  machine?: string;
+  host?: string;
+  target?: string;
+  repo?: string;
+  batchId?: string;
+  batchPath?: string;
+  threadHandle?: string;
+  operator?: string;
+  row?: OperatorRow;
+  workItem?: WorkItem;
 }
 
 export interface MachineHostGroup {
@@ -208,8 +225,8 @@ export interface CoordinationView {
 export function canonicalHostName(host: string | undefined): string | undefined {
   const normalized = host?.trim().toLowerCase();
   if (!normalized) return undefined;
-  if (normalized === "codex") return "Codex";
-  if (normalized === "claude") return "Claude";
+  if (/^codex(?:\b|[-_])/.test(normalized)) return "Codex";
+  if (/^claude(?:\b|[-_])/.test(normalized)) return "Claude";
   return host?.trim();
 }
 
@@ -537,13 +554,29 @@ function laneRowsIndex(rows: OperatorRow[], batches: BatchRecord[]): Map<string,
   for (const batch of batches) {
     for (const lane of batch.lanes) {
       const key = `${batchIdentity(batch)}\u0000${lane.name}`;
-      index.set(key, rows.filter((row) => row.laneName === lane.name && rowMatchesBatch(row, batch)));
+      index.set(key, rows.filter((row) => {
+        if (!rowMatchesBatch(row, batch)) return false;
+        if (row.laneName === lane.name) return true;
+        if (row.laneName || !row.target || !lane.targets.includes(row.target)) return false;
+        // Legacy custody may omit lane_name. A target is an honest fallback only
+        // when the manifest assigns it to exactly one lane in this batch.
+        return batch.lanes.filter((candidate) => candidate.targets.includes(row.target!)).length === 1;
+      }));
     }
   }
   return index;
 }
 
 const LANE_BRANCH_CHARS = (index: number, total: number): string => (index === total - 1 ? "└" : "├");
+
+function laneTargetUrl(batch: BatchRecord, target: string | undefined): string | undefined {
+  if (!target) return undefined;
+  const candidates = (batch.targets || []).filter((candidate) => candidate.target === target && candidate.url);
+  const scoped = candidates.find((candidate) => !candidate.repo || !batch.repo || candidate.repo === batch.repo);
+  if (scoped) return scoped.url;
+  const urls = [...new Set(candidates.map((candidate) => candidate.url))];
+  return urls.length === 1 ? urls[0] : undefined;
+}
 
 function buildLaneView(
   batch: BatchRecord,
@@ -587,6 +620,13 @@ function buildLaneView(
     noteColor: BLOCKED_LANE_STATES.has(state) ? "var(--block)" : STUCK_LANE_STATES.has(state) ? "var(--warn)" : "var(--mut)",
     route: lane.route || workItem?.route,
     where: displayAttribution(lane.host, ""),
+    branchName: lane.branch || representative?.branch,
+    targetUrl: representative?.url || laneTargetUrl(batch, firstTarget),
+    owner: lane.owner || representative?.agentId,
+    machine: representative?.machineId,
+    host: lane.host || representative?.host,
+    threadHandle: lane.threadHandle || representative?.threadHandle,
+    prUrl: lane.prUrl || representative?.prUrl || representative?.implementationPr?.url,
     row: representative,
     workItem
   };
@@ -749,7 +789,7 @@ function agentWorkLabel(agent: AgentSummary): string {
   return "No active work";
 }
 
-export function buildMachineCards(agents: AgentSummary[], nowMs: number): MachineCard[] {
+export function buildMachineCards(agents: AgentSummary[], nowMs: number, jobRows: JobRow[] = []): MachineCard[] {
   const machineGroups = new Map<string, AgentSummary[]>();
   for (const agent of agents) {
     const machine = agentMachine(agent) || "unassigned";
@@ -774,13 +814,41 @@ export function buildMachineCards(agents: AgentSummary[], nowMs: number): Machin
           const dead = hostAgents.filter((agent) => !MACHINE_LIVE_STATES.has(agent.liveness)).length;
           const cards: AgentCard[] = hostAgents
             .filter((agent) => MACHINE_LIVE_STATES.has(agent.liveness))
-            .map((agent) => ({
-              id: displayAttribution(agent.agentId),
-              state: agent.liveness,
-              color: agent.liveness === "live" ? "var(--ok)" : agent.liveness === "stale" ? "var(--warn)" : "var(--mut)",
-              work: agentWorkLabel(agent),
-              beat: agent.heartbeat ? `beat ${ageLabel(agent.heartbeat.updatedAt, nowMs)} ago` : "no heartbeat"
-            }));
+            .map((agent) => {
+              const currentWork = agent.currentWork[0];
+              const claim = agent.claims.find((candidate) => candidate.status === "active") || agent.claims[0];
+              const repo = currentWork?.repo || agent.heartbeat?.repo || claim?.repo;
+              const target = currentWork?.target || agent.heartbeat?.target || claim?.target;
+              const job = currentWork
+                ? jobRows.find((candidate) => candidate.workItem?.id === currentWork.id)
+                : (() => {
+                    const candidates = jobRows.filter((candidate) =>
+                      candidate.row.agentId === agent.agentId
+                      && (!repo || candidate.row.repo === repo)
+                      && (!target || candidate.row.target === target)
+                    );
+                    return repo || target ? candidates[0] : candidates.length === 1 ? candidates[0] : undefined;
+                  })();
+              const row = job?.row;
+              const workItem = job?.workItem || currentWork;
+              return {
+                id: displayAttribution(agent.agentId),
+                state: agent.liveness,
+                color: agent.liveness === "live" ? "var(--ok)" : agent.liveness === "stale" ? "var(--warn)" : "var(--mut)",
+                work: agentWorkLabel(agent),
+                beat: agent.heartbeat ? `beat ${ageLabel(agent.heartbeat.updatedAt, nowMs)} ago` : "no heartbeat",
+                machine,
+                host: name,
+                repo,
+                target: repo && target ? `${repo}#${target}` : undefined,
+                batchId: row?.batchId || agent.heartbeat?.batchId || claim?.batchId,
+                batchPath: row?.batchPath,
+                threadHandle: row?.threadHandle || agent.heartbeat?.threadHandle || claim?.threadHandle,
+                operator: row?.operator || agent.heartbeat?.operator || claim?.operator,
+                row,
+                workItem
+              };
+            });
           return { name, color: hostColor(name), live, total: hostAgents.length, dead, agents: cards };
         })
         .sort((left, right) => {
@@ -836,7 +904,7 @@ export function buildCoordinationView(dashboard: DashboardModel, now?: Date | st
     return counts;
   }, {} as Record<BatchTier, number>);
 
-  const machines = buildMachineCards(dashboard.agents, nowMs);
+  const machines = buildMachineCards(dashboard.agents, nowMs, jobRows);
 
   return { hostLegend: buildHostLegend(dashboard.agents), jobRows, jobCounts, batchCards, batchTierCounts, machines };
 }

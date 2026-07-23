@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalGithubItemUrl, canonicalPullRequestUrl } from "./githubUrls";
+import { canonicalGithubItemUrl, canonicalPullRequestUrl, githubBranchUrl } from "./githubUrls";
 
 describe("canonicalGithubItemUrl", () => {
   it.each([
@@ -30,5 +30,14 @@ describe("canonicalGithubItemUrl", () => {
     expect(canonicalPullRequestUrl("https://github.com/pull/Repo/issues/47")).toBeUndefined();
     expect(canonicalPullRequestUrl("https://github.com/Owner/pull/issues/47")).toBeUndefined();
     expect(canonicalPullRequestUrl("https://github.com/pull/pull/pull/47")).toBe("https://github.com/pull/pull/pull/47");
+  });
+});
+
+describe("githubBranchUrl", () => {
+  it("encodes a validated repository branch", () => {
+    expect(githubBranchUrl("Owner/Repo", "codex/operator navigation")).toBeUndefined();
+    expect(githubBranchUrl("Owner/Repo", "codex/operator-navigation")).toBe(
+      "https://github.com/Owner/Repo/tree/codex/operator-navigation"
+    );
   });
 });

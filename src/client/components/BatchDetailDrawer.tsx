@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Clipboard, OctagonPause, X } from "lucide-react";
-import type { BatchCompletionReport, BatchRecord } from "../../shared/types";
+import { Clipboard, OctagonPause, Search, X } from "lucide-react";
+import type { BatchCompletionReport, BatchRecord, WorkItem } from "../../shared/types";
 import { displayAttribution } from "../../shared/attribution";
 import { ABSENT, metric, type BatchCard } from "../coordinationView";
+import { canonicalGithubItemUrl, githubBranchUrl } from "../githubUrls";
+import type { OperatorRow } from "../operatorRows";
 import { LinkableValue, LinkChips } from "./reportPrimitives";
 
 function verdictColor(verdict: string): string {
@@ -94,6 +96,8 @@ export interface BatchDetailDrawerProps {
   card: BatchCard;
   onClose: () => void;
   onRequestStop?: (input: { batchId: string; repo?: string; reason?: string }) => Promise<void> | void;
+  onOpenRow?: (row: OperatorRow, workItem?: WorkItem) => void;
+  onFind?: (query: string) => void;
   localWritesDisabled?: boolean;
 }
 
@@ -104,9 +108,17 @@ function stopRepos(batch: BatchRecord): Array<string | undefined> {
   return list.length > 0 ? list : [undefined];
 }
 
-export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDisabled = false }: BatchDetailDrawerProps) {
+export function BatchDetailDrawer({
+  card,
+  onClose,
+  onRequestStop,
+  onOpenRow,
+  onFind,
+  localWritesDisabled = false
+}: BatchDetailDrawerProps) {
   const [copyLabel, setCopyLabel] = useState("Copy prompt");
   const [replyLabel, setReplyLabel] = useState("Approve recommended");
+  const [copiedChat, setCopiedChat] = useState<string | null>(null);
   const [stopStatus, setStopStatus] = useState<string | null>(null);
   const stopped = card.operation ? card.operation.controlStatus !== "running" : false;
   const blocker = card.batch.blocker;
@@ -144,6 +156,17 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
       setReplyLabel("Could not copy");
     }
     window.setTimeout(() => setReplyLabel("Approve recommended"), 1800);
+  }
+
+  async function copyChat(handle: string) {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(handle);
+      setCopiedChat(handle);
+      window.setTimeout(() => setCopiedChat(null), 1600);
+    } catch {
+      setCopiedChat(null);
+    }
   }
 
   async function requestStop(repo: string | undefined) {
@@ -211,6 +234,113 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
           </div>
         </div>
 
+        <div className="drawer-section">
+          <div className="drawer-kicker">Execution ownership</div>
+          <div className="where-grid">
+            <span className="where-k">Creator machine</span>
+            <span className="where-v">{card.machine || "UNKNOWN"}</span>
+            <span className="where-k">Coordinator thread</span>
+            <span className="where-v">{card.thread || "UNKNOWN"}</span>
+          </div>
+        </div>
+
+        <div className="drawer-section batch-lane-map">
+          <div className="drawer-kicker">Lane execution map</div>
+          <div className="batch-lane-table-wrap">
+            <table aria-label="Batch lane execution map" className="table batch-lane-table">
+              <thead>
+                <tr>
+                  <th>Lane / target</th>
+                  <th>Custody</th>
+                  <th>Activity</th>
+                  <th>Links</th>
+                  <th>Chat fallback</th>
+                </tr>
+              </thead>
+              <tbody>
+                {card.lanes.map((lane) => {
+                  const targetUrl = canonicalGithubItemUrl(lane.targetUrl);
+                  const prUrl = canonicalGithubItemUrl(lane.prUrl);
+                  const prTarget = prUrl?.match(/\/pull\/(\d+)$/)?.[1];
+                  const branchUrl = githubBranchUrl(lane.row?.repo || card.repo, lane.branchName);
+                  return (
+                    <tr key={lane.id}>
+                      <td>
+                        <strong className="mono">{lane.tag}</strong>
+                        <LinkableValue
+                          className="lane-map-target"
+                          href={targetUrl}
+                          value={lane.target}
+                        />
+                        {lane.row && onOpenRow && (
+                          <button
+                            aria-label={`Open ${lane.tag} job`}
+                            className="lane-map-action"
+                            onClick={() => onOpenRow(lane.row!, lane.workItem)}
+                            type="button"
+                          >
+                            Open job
+                          </button>
+                        )}
+                      </td>
+                      <td>
+                        <span>{lane.owner || "owner UNKNOWN"}</span>
+                        <span>{lane.host || "host UNKNOWN"}</span>
+                        <span>{lane.machine ? `machine ${lane.machine}` : "machine UNKNOWN"}</span>
+                      </td>
+                      <td>
+                        <span>{lane.state}</span>
+                        <span>{lane.age === ABSENT ? "last activity UNKNOWN" : `${lane.age} ago`}</span>
+                        {lane.note && <span style={{ color: lane.noteColor }}>{lane.note}</span>}
+                      </td>
+                      <td>
+                        {prUrl && prUrl !== targetUrl && (
+                          <LinkableValue className="lane-map-link" href={prUrl} value={prTarget ? `PR #${prTarget}` : "Open PR"} />
+                        )}
+                        {branchUrl && lane.branchName && (
+                          <LinkableValue className="lane-map-link" href={branchUrl} value={lane.branchName} />
+                        )}
+                        {!targetUrl && !prUrl && !branchUrl && <span>links UNKNOWN</span>}
+                      </td>
+                      <td>
+                        {lane.threadHandle ? (
+                          <>
+                            <code>{lane.threadHandle}</code>
+                            <span className="lane-map-chat-actions">
+                              <button
+                                aria-label={`Copy chat ${lane.threadHandle}`}
+                                className="lane-map-action"
+                                onClick={() => void copyChat(lane.threadHandle!)}
+                                type="button"
+                              >
+                                <Clipboard size={12} aria-hidden="true" />
+                                {copiedChat === lane.threadHandle ? "Copied" : "Copy"}
+                              </button>
+                              {onFind && (
+                                <button
+                                  aria-label={`Find chat ${lane.threadHandle}`}
+                                  className="lane-map-action"
+                                  onClick={() => onFind(lane.threadHandle!)}
+                                  type="button"
+                                >
+                                  <Search size={12} aria-hidden="true" />
+                                  Find
+                                </button>
+                              )}
+                            </span>
+                          </>
+                        ) : (
+                          <span>chat UNKNOWN</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {card.tier === "blocked" && (
           <div className="drawer-section">
             <div className="drawer-kicker" style={{ color: "var(--block)" }}>Blocker · needs your decision</div>
@@ -250,7 +380,7 @@ export function BatchDetailDrawer({ card, onClose, onRequestStop, localWritesDis
                     ))}
                   </div>
                 ) : (
-                  <p style={{ margin: 0, fontSize: "12.5px", color: "var(--color-neutral-100)" }}>A lane is blocked or its holder is dead. Close this drawer to inspect the batch's lanes on the board.</p>
+                  <p style={{ margin: 0, fontSize: "12.5px", color: "var(--color-neutral-100)" }}>A lane is blocked or its holder is dead. Lane ownership and navigation are listed in the execution map above.</p>
                 )}
                 <p style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--mut)" }}>
                   Structured blocker decisions and a recommended reply are not emitted by the coordination protocol yet.

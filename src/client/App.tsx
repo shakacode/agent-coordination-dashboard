@@ -2,14 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { generatePrBatchPrompt } from "../shared/prompt";
 import { isSelectableWorkItem } from "../shared/workItemSelection";
 import { displayAttribution } from "../shared/attribution";
-import { effectiveCustody } from "../shared/effectiveCustody";
 import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
 import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
 import { buildCoordinationView, findBatchCard, type BatchCard, type BatchReference } from "./coordinationView";
 import type { OperatorRow } from "./operatorRows";
 import { TopBar } from "./components/TopBar";
-import { DashboardShell, type TabId } from "./components/DashboardShell";
+import { DashboardShell, type FleetFilter, type TabId } from "./components/DashboardShell";
 import type { BatchFilter } from "./components/BatchesBoard";
 import type { JobFilter } from "./components/JobsBoard";
 import { JobDetailDrawer } from "./components/JobDetailDrawer";
@@ -23,7 +22,7 @@ import type { AnnotationAction } from "./components/OperatorActions";
 import type { JobRow } from "./coordinationView";
 import { parseRepoScopeExclusion, SignalGroupList } from "./components/SignalGroups";
 import { groupWarnings } from "./signalGroups";
-import { canonicalGithubItemUrl } from "./githubUrls";
+import { buildFindResults, exactJobFindResult, type FindResult } from "./universalFind";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -327,7 +326,9 @@ export function App() {
   const [itemTimeline, setItemTimeline] = useState<ItemTimelineResponse | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [findOpen, setFindOpen] = useState(false);
   const [tab, setTab] = useState<TabId>("batches");
+  const [fleetFilter, setFleetFilter] = useState<FleetFilter>({});
   const [jobFilter, setJobFilter] = useState<JobFilter>("all");
   const [batchFilter, setBatchFilter] = useState<BatchFilter>("all");
   const [selectedRow, setSelectedRow] = useState<{ row: OperatorRow; workItem?: WorkItem } | null>(null);
@@ -349,6 +350,7 @@ export function App() {
   const lastCacheWriteAttemptAt = useRef(0);
 
   const view = useMemo(() => (dashboard ? buildCoordinationView(dashboard) : null), [dashboard]);
+  const findResults = useMemo(() => (view ? buildFindResults(view, query) : []), [query, view]);
 
   useEffect(() => {
     const reference = initialBatchReference.current;
@@ -579,6 +581,7 @@ export function App() {
     function openFind(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        setFindOpen(true);
         searchInputRef.current?.focus();
       }
     }
@@ -680,11 +683,13 @@ export function App() {
   }
 
   function openRow(row: OperatorRow, workItem?: WorkItem) {
+    setFindOpen(false);
     setSelectedBatch(null);
     setSelectedRow({ row, workItem });
   }
 
   function openBatchCard(card: BatchCard) {
+    setFindOpen(false);
     setSelectedRow(null);
     setSelectedBatch(card);
   }
@@ -692,7 +697,7 @@ export function App() {
   function openBatchById(batchId: string, batchPath?: string, repo?: string) {
     const card = view ? findBatchCard(view.batchCards, { batchId, path: batchPath, repo }) : undefined;
     setSelectedRow(null);
-    setSelectedBatch(null);
+    setSelectedBatch(card || null);
     setTab("batches");
     setBatchFilter("all");
     setHighlightBatch(card?.identity || null);
@@ -700,57 +705,47 @@ export function App() {
     highlightTimeout.current = window.setTimeout(() => setHighlightBatch(null), 2600);
   }
 
-  function submitSearch() {
-    if (!view) return;
-    const githubUrl = canonicalGithubItemUrl(query);
-    if (githubUrl) {
-      const match = dashboard?.workItems.find((candidate) => {
-        const { claim, heartbeat } = effectiveCustody(candidate);
-        return [candidate.github?.url, candidate.github?.implementationPr?.url, claim?.prUrl, heartbeat?.prUrl]
-          .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl)?.toLowerCase() === githubUrl.toLowerCase());
-      });
-      if (match) {
-        openItem(match);
-        return;
-      }
-    }
-    const trimmed = query.trim();
-    const numberMatch = trimmed.match(/(\d+)\s*$/);
-    if (!numberMatch) return;
-    const digits = numberMatch[1];
-    const typedReference = trimmed.match(/^(pr|pull request|issue)\s*#?\s*\d+\s*$/i)?.[1]?.toLowerCase();
-    const requestedType = typedReference === "issue" ? "issue" : typedReference ? "pull_request" : undefined;
-    // Everything before the trailing number is treated as an optional repo hint
-    // so a bare number never silently resolves to the wrong repository.
-    const repoHint = requestedType ? "" : trimmed.slice(0, numberMatch.index).replace(/[#\s]+$/, "").trim().toLowerCase();
-    const matchesNumber = (candidate: JobRow, exactMatch: boolean) => {
-      const targetMatch = String(candidate.row.target || "") === digits;
-      const implementationMatch = candidate.row.implementationPr?.target === digits;
-      const targetPartial = String(candidate.row.target || "").includes(digits);
-      const implementationPartial = Boolean(candidate.row.implementationPr?.target.includes(digits));
-      if (requestedType === "issue") return candidate.row.type === "issue" && (exactMatch ? targetMatch : targetPartial);
-      if (requestedType === "pull_request") {
-        return (candidate.row.type === "pull_request" && (exactMatch ? targetMatch : targetPartial))
-          || (exactMatch ? implementationMatch : implementationPartial);
-      }
-      return exactMatch ? targetMatch || implementationMatch : targetPartial || implementationPartial;
-    };
-    const filterByRepository = (candidates: JobRow[]) => {
-      if (!repoHint) return candidates;
-      const repoName = (repo: string) => repo.toLowerCase().split("/").pop();
-      const byName = candidates.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
-      const byLoose = candidates.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
-      return byName.length > 0 ? byName : byLoose;
-    };
-    const exact = filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, true)));
-    const partial = exact.length === 0
-      ? filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, false)))
-      : [];
-    const hit = exact.length === 1 ? exact[0] : partial.length === 1 ? partial[0] : undefined;
-    if (hit) {
+  function openFindResult(result: FindResult) {
+    if (itemRoute) closeItem();
+    if (result.kind === "job") {
       setTab("jobs");
-      openRow(hit.row, hit.workItem);
+      openRow(result.row, result.workItem);
+      return;
     }
+    if (result.kind === "batch") {
+      setTab("batches");
+      openBatchCard(result.card);
+      return;
+    }
+    setFleetFilter({ machine: result.machine });
+    setTab("machines");
+    setFindOpen(false);
+  }
+
+  function submitSearch() {
+    setFindOpen(true);
+    const exactJob = exactJobFindResult(findResults, query);
+    if (exactJob) openFindResult(exactJob);
+    else if (findResults.length === 1) openFindResult(findResults[0]);
+  }
+
+  function selectHost(host?: string) {
+    if (itemRoute) closeItem();
+    setFleetFilter(host ? { host } : {});
+    setTab("jobs");
+  }
+
+  function selectFleetFilter(filter: FleetFilter) {
+    if (itemRoute) closeItem();
+    setFleetFilter(filter);
+    setTab("jobs");
+  }
+
+  function findFromDrawer(value: string) {
+    setSelectedBatch(null);
+    setQuery(value);
+    setFindOpen(true);
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
   }
 
   function toggleSelectRow(jobRow: JobRow) {
@@ -894,12 +889,24 @@ export function App() {
   return (
     <main className="app-shell">
       <TopBar
+        activeHost={fleetFilter.host}
+        activeMachine={fleetFilter.machine}
         clock={clock}
+        findOpen={findOpen}
+        findResults={findResults}
         hostLegend={view.hostLegend}
-        onQueryChange={setQuery}
+        onClearFleetFilter={() => setFleetFilter({})}
+        onFindDismiss={() => setFindOpen(false)}
+        onFindFocus={() => setFindOpen(true)}
+        onFindResult={openFindResult}
+        onQueryChange={(value) => {
+          setQuery(value);
+          setFindOpen(true);
+        }}
         onQuerySubmit={submitSearch}
         onRefresh={() => void loadDashboard()}
         onRevealWarnings={revealWarnings}
+        onSelectHost={selectHost}
         query={query}
         refreshing={isRefreshing}
         searchInputRef={searchInputRef}
@@ -1029,11 +1036,15 @@ export function App() {
         <>
           <DashboardShell
             batchFilter={batchFilter}
+            fleetFilter={fleetFilter}
             highlightBatchIdentity={highlightBatch}
             jobFilter={jobFilter}
+            onFind={findFromDrawer}
             onOpenBatch={openBatchCard}
+            onOpenBatchById={openBatchById}
             onOpenRow={openRow}
             onSetBatchFilter={setBatchFilter}
+            onSetFleetFilter={selectFleetFilter}
             onSetJobFilter={setJobFilter}
             onSetTab={setTab}
             onToggleSelect={localWritesDisabled ? undefined : toggleSelectRow}
@@ -1098,6 +1109,8 @@ export function App() {
           card={selectedBatch}
           localWritesDisabled={localWritesDisabled}
           onClose={() => setSelectedBatch(null)}
+          onFind={findFromDrawer}
+          onOpenRow={openRow}
           onRequestStop={localWritesDisabled ? undefined : stopBatch}
         />
       )}
