@@ -118,6 +118,40 @@ describe("buildFindResults", () => {
     expect(buildFindResults(view, "definitely-not-observed")).toEqual([]);
   });
 
+  it("finds an observed PR by its preserved declared issue identity", () => {
+    const declaredIssue: WorkItem = {
+      ...workItem,
+      id: "repo/dashboard#202",
+      target: "202",
+      type: "issue",
+      heartbeat: undefined,
+      github: {
+        ...workItem.github!,
+        target: "202",
+        type: "pull_request",
+        coordinatedType: "issue",
+        title: "Observed pull request",
+        url: "https://github.com/repo/dashboard/pull/202"
+      }
+    };
+    const declaredIssueView = buildCoordinationView({
+      ...model,
+      agents: [],
+      workItems: [declaredIssue],
+      batches: []
+    }, model.generatedAt);
+
+    expect(buildFindResults(declaredIssueView, "Issue #202")).toContainEqual(
+      expect.objectContaining({
+        kind: "job",
+        row: expect.objectContaining({
+          target: "202",
+          type: "pull_request"
+        })
+      })
+    );
+  });
+
   it("keeps handle provenance available for copy fallback", () => {
     expect(buildFindResults(view, "acd-chat-kite")).toContainEqual(
       expect.objectContaining({

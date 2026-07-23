@@ -27,6 +27,19 @@ export function canonicalPullRequestUrl(value: string | undefined): string | und
   return new URL(canonical).pathname.split("/").filter(Boolean)[2] === "pull" ? canonical : undefined;
 }
 
+/** Validate that an item URL identifies the supplied structured repository, kind, and target. */
+export function canonicalGithubItemUrlForTarget(
+  value: string | undefined,
+  repo: string,
+  target: string,
+  kind: "issues" | "pull"
+): string | undefined {
+  const canonical = canonicalGithubItemUrl(value);
+  if (!canonical) return undefined;
+  const expected = `https://github.com/${repo}/${kind}/${target}`;
+  return canonical.toLowerCase() === expected.toLowerCase() ? canonical : undefined;
+}
+
 /** Validate that a PR URL identifies the supplied structured repository and target. */
 export function canonicalPullRequestUrlForTarget(
   value: string | undefined,
@@ -35,8 +48,7 @@ export function canonicalPullRequestUrlForTarget(
 ): string | undefined {
   const canonical = canonicalPullRequestUrl(value);
   if (!canonical) return undefined;
-  const expected = `https://github.com/${repo}/pull/${target}`;
-  return canonical.toLowerCase() === expected.toLowerCase() ? canonical : undefined;
+  return canonicalGithubItemUrlForTarget(canonical, repo, target, "pull");
 }
 
 /** Build a GitHub branch URL only from a repository slug and branch-shaped text. */

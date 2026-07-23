@@ -19,6 +19,7 @@ import { isQaEventType } from "../shared/qaEvents";
 import { isOperationalWorkItem } from "../shared/workItemSelection";
 import {
   canonicalGithubItemUrl,
+  canonicalGithubItemUrlForTarget,
   canonicalPullRequestUrl,
   canonicalPullRequestUrlForTarget
 } from "./githubUrls";
@@ -68,6 +69,7 @@ export interface OperatorRow {
   repo: string;
   target?: string;
   type: WorkItemType;
+  declaredType?: WorkItemType;
   title: string;
   url?: string;
   operatorState: OperatorState;
@@ -496,6 +498,8 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.target ? `#${row.target}` : "",
       row.type === "pull_request" && row.target ? `pr #${row.target}` : "",
       row.type === "issue" && row.target ? `issue #${row.target}` : "",
+      row.declaredType === "pull_request" && row.target ? `pr #${row.target}` : "",
+      row.declaredType === "issue" && row.target ? `issue #${row.target}` : "",
       row.title,
       safeGithubUrl(row.url),
       row.operatorState,
@@ -728,8 +732,8 @@ function findSignalLane(item: WorkItem, batches: BatchRecord[]): { batch?: Batch
   };
 }
 
-function workTitle(item: WorkItem): string {
-  return item.github?.title || `${item.type === "pull_request" ? "Pull request" : item.type === "issue" ? "Issue" : "Target"} #${item.target}`;
+function workTitle(item: WorkItem, type = item.type): string {
+  return `${type === "pull_request" ? "Pull request" : type === "issue" ? "Issue" : "Target"} #${item.target}`;
 }
 
 function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): NonNullable<BatchRecord["targets"]>[number] | undefined {
@@ -869,10 +873,12 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
       : undefined;
   const interactiveTargetType =
     observedTargetType || (item.type === "unknown" ? batchTarget?.type || "unknown" : item.type);
-  const observedTargetPrUrl =
-    observedTargetType === "pull_request"
-      ? canonicalPullRequestUrlForTarget(item.github?.url, item.repo, item.target)
+  const observedTargetUrl = observedTargetType === "pull_request"
+    ? canonicalPullRequestUrlForTarget(item.github?.url, item.repo, item.target)
+    : observedTargetType === "issue"
+      ? canonicalGithubItemUrlForTarget(item.github?.url, item.repo, item.target, "issues")
       : undefined;
+  const observedTargetPrUrl = observedTargetType === "pull_request" ? observedTargetUrl : undefined;
   const implementationPr = item.github?.implementationPr;
   const observedImplementationPrUrl =
     implementationPr?.loadState === "loaded"
@@ -919,8 +925,9 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     repo: item.repo,
     target: item.target,
     type: interactiveTargetType,
-    title: item.github?.title || batchTarget?.title || workTitle(item),
-    url: item.github?.url || batchTarget?.url,
+    declaredType: item.type,
+    title: (observedTargetUrl ? item.github?.title : undefined) || batchTarget?.title || workTitle(item, interactiveTargetType),
+    url: observedTargetUrl || batchTarget?.url,
     operatorState: state,
     liveness: isArchivedView ? "none" : item.heartbeat?.liveness || "none",
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
@@ -1242,10 +1249,10 @@ export function filterOperatorRows(rows: OperatorRow[], query: string, targetRep
           if (repo !== exactReference.repo && !repo.endsWith(`/${exactReference.repo}`)) return false;
         }
         if (exactReference.type === "issue") {
-          return row.type === "issue" && row.target === exactReference.target;
+          return (row.type === "issue" || row.declaredType === "issue") && row.target === exactReference.target;
         }
         const pullRequestMatch =
-          (row.type === "pull_request" && row.target === exactReference.target)
+          ((row.type === "pull_request" || row.declaredType === "pull_request") && row.target === exactReference.target)
           || row.implementationPr?.target === exactReference.target
           || Boolean(safeGithubUrl(row.prUrl)?.endsWith(`/pull/${exactReference.target}`));
         return exactReference.type === "pull_request"

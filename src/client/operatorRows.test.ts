@@ -1595,6 +1595,8 @@ describe("operatorRows", () => {
       prUrl: undefined,
       metadata: { prUrl: { state: "not_applicable" } }
     });
+    expect(filterOperatorRows(rows, "Issue #123").map((row) => row.target)).toEqual(["123"]);
+    expect(filterOperatorRows(rows, "PR #124").map((row) => row.target)).toEqual(["124"]);
   });
 
   it("accepts only canonical pull-request URLs across PR metadata sources", () => {
@@ -1863,11 +1865,14 @@ describe("operatorRows", () => {
 
     expect(rowFor("201")).toMatchObject({
       type: "pull_request",
+      title: "Pull request #201",
+      url: undefined,
       prUrl: undefined,
       metadata: { prUrl: { state: "missing", source: "github" } }
     });
     expect(rowFor("202")).toMatchObject({
       type: "pull_request",
+      url: "https://github.com/repo/app/pull/202",
       prUrl: "https://github.com/repo/app/pull/202",
       metadata: {
         prUrl: {
@@ -1938,6 +1943,8 @@ describe("operatorRows", () => {
     for (const target of ["211", "212", "213", "214", "217"]) {
       expect.soft(rowFor(target)).toMatchObject({
         type: "pull_request",
+        title: `Pull request #${target}`,
+        url: undefined,
         prUrl: undefined,
         metadata: { prUrl: { state: "missing", source: "github" } }
       });

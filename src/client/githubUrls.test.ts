@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalGithubItemUrl,
+  canonicalGithubItemUrlForTarget,
   canonicalPullRequestUrl,
   canonicalPullRequestUrlForTarget,
   githubBranchUrl
@@ -47,6 +48,20 @@ describe("canonicalGithubItemUrl", () => {
     ).toBe("https://github.com/Owner/Repo/pull/57");
     expect(canonicalPullRequestUrlForTarget("https://github.com/Owner/Other/pull/57", "Owner/Repo", "57")).toBeUndefined();
     expect(canonicalPullRequestUrlForTarget("https://github.com/Owner/Repo/pull/58", "Owner/Repo", "57")).toBeUndefined();
+  });
+
+  it("binds canonical issue URLs to their structured repository and target identity", () => {
+    expect(
+      canonicalGithubItemUrlForTarget(
+        "https://github.com/Owner/Repo/issues/47?notification=1#issuecomment-2",
+        "owner/repo",
+        "47",
+        "issues"
+      )
+    ).toBe("https://github.com/Owner/Repo/issues/47");
+    expect(
+      canonicalGithubItemUrlForTarget("https://github.com/Owner/Repo/issues/48", "Owner/Repo", "47", "issues")
+    ).toBeUndefined();
   });
 });
 
