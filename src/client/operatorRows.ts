@@ -867,6 +867,13 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["github", item.github?.implementationPr?.url],
     ["github", item.type === "pull_request" ? item.github?.url : undefined]
   );
+  const observedTargetType =
+    item.github?.loadState === "loaded"
+    && item.github.repo === item.repo
+    && item.github.target === item.target
+    && item.github.type !== "unknown"
+      ? item.github.type
+      : undefined;
   const batchId =
     signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId || latest?.batchId;
   const batchMetadata = batchId
@@ -894,7 +901,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     provenance: targetProvenance(item, matchingEvents, batch),
     repo: item.repo,
     target: item.target,
-    type: item.type === "unknown" ? batchTarget?.type || "unknown" : item.type,
+    type: observedTargetType || (item.type === "unknown" ? batchTarget?.type || "unknown" : item.type),
     title: item.github?.title || batchTarget?.title || workTitle(item),
     url: item.github?.url || batchTarget?.url,
     operatorState: state,

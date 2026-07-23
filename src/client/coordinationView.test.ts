@@ -591,6 +591,54 @@ describe("buildCoordinationView", () => {
     expect(linked.implementationUrl).toBe("https://github.com/repo/dashboard/pull/54");
   });
 
+  it("uses a loaded same-target PR as the interactive identity while preserving declared issue provenance", () => {
+    const declaredIssue = workItem({
+      id: "repo/dashboard#202",
+      repo: "repo/dashboard",
+      target: "202",
+      type: "issue",
+      schedulingState: "in_process",
+      batchSignals: [{
+        batchId: "b1",
+        laneName: "l2",
+        status: "blocked",
+        blockedOn: ["b1:201"]
+      }],
+      github: {
+        repo: "repo/dashboard",
+        target: "202",
+        type: "pull_request",
+        coordinatedType: "issue",
+        title: "Merged QA lane",
+        url: "https://github.com/repo/dashboard/pull/202",
+        state: "MERGED",
+        mergedAt: "2026-07-21T11:00:00.000Z",
+        labels: [],
+        loadState: "loaded"
+      }
+    });
+    const observed = buildCoordinationView({
+      ...model,
+      workItems: [declaredIssue],
+      batches: [{
+        ...model.batches[0],
+        targets: [{ type: "issue", target: "202" }],
+        lanes: [{ ...model.batches[0].lanes[1], targets: ["202"] }]
+      }],
+      batchOperations: []
+    }, NOW);
+    const job = observed.jobRows[0];
+    const lane = observed.batchCards[0].lanes[0];
+
+    expect(declaredIssue.type).toBe("issue");
+    expect(declaredIssue.github?.coordinatedType).toBe("issue");
+    expect(job.row.type).toBe("pull_request");
+    expect(job.targetLabel).toBe("PR #202");
+    expect(job.implementationLabel).toBeUndefined();
+    expect(lane.target).toBe("PR #202");
+    expect(lane.targetUrl).toBe("https://github.com/repo/dashboard/pull/202");
+  });
+
   it("passes a completion report through and prefers its metrics", () => {
     const withCompletion: DashboardModel = {
       ...model,
