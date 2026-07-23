@@ -17,7 +17,7 @@ import type {
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
 import { isOperationalWorkItem } from "../shared/workItemSelection";
-import { canonicalGithubItemUrl } from "./githubUrls";
+import { canonicalGithubItemUrl, canonicalPullRequestUrl } from "./githubUrls";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -869,12 +869,12 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     interactiveTargetType === "pull_request" || item.github?.implementationPr
       ? { state: "missing", source: "github" }
       : notApplicable(),
-    ["claim", item.claim?.prUrl],
-    ["heartbeat", item.heartbeat?.prUrl],
-    ["manifest", lane?.prUrl],
-    ["event", eventHistoryMetadata?.prUrl],
-    ["github", item.github?.implementationPr?.url],
-    ["github", interactiveTargetType === "pull_request" ? item.github?.url : undefined]
+    ["claim", canonicalPullRequestUrl(item.claim?.prUrl)],
+    ["heartbeat", canonicalPullRequestUrl(item.heartbeat?.prUrl)],
+    ["manifest", canonicalPullRequestUrl(lane?.prUrl)],
+    ["event", canonicalPullRequestUrl(eventHistoryMetadata?.prUrl)],
+    ["github", canonicalPullRequestUrl(item.github?.implementationPr?.url)],
+    ["github", interactiveTargetType === "pull_request" ? canonicalPullRequestUrl(item.github?.url) : undefined]
   );
   const batchId =
     signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId || latest?.batchId;
@@ -1000,8 +1000,8 @@ function buildLaneRow(
     type === "pull_request"
       ? firstObserved(
           { state: "missing", source: "manifest" },
-          ["manifest", lane.prUrl],
-          ["event", eventHistoryMetadata?.prUrl]
+          ["manifest", canonicalPullRequestUrl(lane.prUrl)],
+          ["event", canonicalPullRequestUrl(eventHistoryMetadata?.prUrl)]
         )
       : notApplicable();
   const batchMetadata =
