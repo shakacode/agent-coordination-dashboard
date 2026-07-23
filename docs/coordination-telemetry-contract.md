@@ -18,7 +18,7 @@ layout, see [Coordination Architecture](coordination-architecture.md).
 
 ## Required Identity Fields
 
-Every claim, heartbeat, and batch event should include:
+Every claim and heartbeat should include:
 
 - `agent_id`: stable worker/session id.
 - `machine_id`: short machine label, such as `workstation-1` or `buildbox-a`.
@@ -145,10 +145,11 @@ object per line is easiest to write safely from multiple batch phases.
 
 ```json
 {
+  "schema_version": 1,
   "event_id": "batch-20260619-a:lane-a:continued:2026-06-19T20:00:00Z",
   "type": "continued",
   "batch_id": "batch-20260619-a",
-  "lane_name": "lane-a",
+  "lane": "lane-a",
   "agent_id": "worker-a",
   "machine_id": "workstation-1",
   "thread_handle": "codex-thread-abc",
@@ -159,7 +160,7 @@ object per line is easiest to write safely from multiple batch phases.
   "branch": "jg-codex/4010-docs",
   "pr_url": "https://github.com/owner/repo/pull/4010",
   "status": "in_progress",
-  "timestamp": "2026-06-19T20:00:00Z",
+  "at": "2026-06-19T20:00:00Z",
   "message": "Resumed after token-limit pause."
 }
 ```
@@ -181,10 +182,111 @@ Recommended event types:
 - `qa.validation_passed`
 - `qa.validation_failed`
 
+### Shipped Lifecycle And Typed-Event Contract
+
+This section matches the shipped `agent-coord` contract from
+[agent-coordination PR #101](https://github.com/shakacode/agent-coordination/pull/101),
+which completed
+[issue #76](https://github.com/shakacode/agent-coordination/issues/76) and
+[issue #77](https://github.com/shakacode/agent-coordination/issues/77). The
+reviewed source head is
+[`14aaf396e29aa547f176f0b1e58c2880f4cda378`](https://github.com/shakacode/agent-coordination/commit/14aaf396e29aa547f176f0b1e58c2880f4cda378);
+its tree was squash-merged as
+[`b9666954102fe0b946bbfe985d6b7487e8dcd8dd`](https://github.com/shakacode/agent-coordination/commit/b9666954102fe0b946bbfe985d6b7487e8dcd8dd).
+The source batch's clean audit receipt is attached to
+[issue #76](https://github.com/shakacode/agent-coordination/issues/76#issuecomment-5057853089).
+
+Ordinary lifecycle and milestone events use schema version 1. Their common
+required envelope is `schema_version`, `event_id`, `batch_id`, `type`, and
+`at`. Events use `at`, not the claim/heartbeat `updated_at` and `expires_at`
+fields. Lane, operator, routing, handoff, and correlation metadata remains
+additive and optional unless a typed event or completeness rule below requires
+it.
+
+When `batch_id` is known, successful primary-state changes auto-emit:
+
+- `claim.acquired` for a genuine acquisition, re-acquisition, or takeover. A
+  same-holder TTL renewal emits nothing unless an already-present batch/branch
+  value changes, or a generation/instance value changes or is newly added.
+- `claim.released` for a non-terminal release, with `status: "released"` and
+  handoff metadata when applicable. A terminal release emits `lane_closed`
+  instead; it does not also emit `claim.released`.
+- `phase.changed` only for an established, same-lane phase transition. It
+  carries `previous_phase` and the new `phase`; initial phase assignment,
+  repeated same-phase heartbeats, and cross-lane heartbeat replacement do not
+  emit it.
+
+These ordinary events use time-sortable, per-write IDs and remain append-only.
+Lifecycle emission is best-effort: an event-store failure warns on stderr but
+does not turn a successful claim, release, or heartbeat operation into a
+failure.
+
+Four `record-event` types validate their own CLI flags before writing:
+
+| Type | Required CLI input | Stored requirements |
+| --- | --- | --- |
+| `help_requested` | `--reason` | `reason`: `blocked-user-input`, `question`, or `permission` |
+| `escalation_requested` | `--from-route`, `--to-route`, `--evidence` | `from_route`, `to_route`, and `evidence` must be nonblank after trimming |
+| `error` | `--severity`, `--category`, `--message` | `severity`: `P0`, `P1`, `P2`, or `P3`; `category` and `message` must be nonblank after trimming |
+| `human_intervention` | `--kind` | `kind`: `takeover`, `supersede`, `manual-fix`, or `drain` |
+
+A typed event rejects fields owned by another typed event type, so its stored payload
+contains only its own typed fields. These validations are deliberately limited
+to the four named types; other `type` values keep the backward-compatible
+free-form `record-event` behavior.
+
+`lane_closed` is the versioned terminal exception. It uses schema version 2 and
+the producer contract in `contracts/state-schema-v2.json`; `terminal` is
+`done`, `abandoned`, or `superseded`, and `closed_by` identifies the authorized
+agent and machine. Its event ID is a stable reservation derived from the lane,
+not a chronology key. The create-only reservation makes identical retries
+idempotent, keeps the first closeout authoritative, and rejects a conflicting
+closeout. Explicit producers may write the same record with
+`record-event --type lane_closed`. `workspace` is the tenant/coordination
+namespace reserved by ADR 0004; self-hosted producers use the default value
+`default`.
+
+`agent-coord batch-audit --batch-id ID [--json]` reads the registered batch and
+its event trail. Events are attributed by an explicit matching lane, a target
+that is unique among the batch's lanes, or a unique owner when the event target
+is absent or belongs to that lane. When the manifest declares a repository,
+events from other repositories are excluded.
+
+For completeness, ordinary lifecycle facts must be schema-version-1 events with
+nonblank, non-`UNKNOWN` string `event_id`, `batch_id`, `agent_id`, and `at`.
+Optional `lane`, `repo`, and `target` identity fields must meet the same factual
+string boundary when present. `at` must be a real RFC3339 timestamp, and
+lifecycle events must form a uniquely ordered `(at, event_id)` lineage.
+Takeover `claim.acquired` events extend the authorized-agent lineage; later
+release, phase, and closeout events must come from an authorized agent.
+
+A lane is complete only when that valid lineage contains:
+
+- at least one valid `claim.acquired`; and
+- a valid terminal signal: `claim.released`, or `lane_closed`.
+
+Every observed ordinary lifecycle event must also satisfy its type contract.
+`claim.acquired` may omit `status` or use `active`; `claim.released` may omit it
+or use `released`. `phase.changed` requires a real transition and accepts the
+current `previous_phase` shape or the older `old_phase`/`new_phase` shape for
+compatibility. If any `lane_closed` record is present, every such record must
+pass the version-2 contract and attribution checks and the records must not
+conflict; an invalid terminal record cannot fall back to a nearby
+`claim.released`.
+
+The audit reports specific `claim.acquired`, `terminal`, or `lifecycle` gaps.
+Exit `0` means every registered lane is complete, exit `1` means an observed
+batch is incomplete, and exit `2` means the coordination state is `UNKNOWN`
+(for example an unsafe or unregistered batch id, unreadable or malformed batch
+state, no registered lanes, or a partially visible event listing). JSON changes
+only the rendering. Missing or malformed facts, prose status, and branch names
+never substitute for verified lifecycle evidence.
+
 ## Batch Stop And Restart
 
 When a coordinator decides a running batch should stop before restart, append a
-stop-request event:
+stop-request event. This dashboard-specific producer uses `timestamp`; it is
+separate from the `agent-coord` ordinary-event envelope above.
 
 ```json
 {
@@ -217,10 +319,11 @@ event with the same `batch_id`, `repo`, and `target`:
 
 ```json
 {
+  "schema_version": 1,
   "event_id": "batch-20260619-a:4010:qa-passed:2026-06-19T21:00:00Z",
   "type": "qa.validation_passed",
   "batch_id": "batch-20260619-a",
-  "lane_name": "qa",
+  "lane": "qa",
   "agent_id": "qa-worker-a",
   "machine_id": "workstation-1",
   "thread_handle": "qa-thread-a",
@@ -231,7 +334,7 @@ event with the same `batch_id`, `repo`, and `target`:
   "branch": "jg-codex/4010-docs",
   "pr_url": "https://github.com/owner/repo/pull/4010",
   "status": "passed",
-  "timestamp": "2026-06-19T21:00:00Z",
+  "at": "2026-06-19T21:00:00Z",
   "message": "Validated install, smoke tests, and documented manual checks."
 }
 ```
@@ -249,7 +352,7 @@ When a worker hits a token/time limit:
 - Append a `token_limit_pause` event with the latest known repo, target, lane,
   machine, branch, tests, blockers, and next action.
 - On continuation, read the existing batch file and history first.
-- Append a `continued` event and resume the same `batch_id`, `lane_name`,
+- Append a `continued` event and resume the same `batch_id`, `lane`,
   `agent_id`, and `machine_id` unless intentionally reassigned.
 - Heartbeat again immediately after continuation, then at each phase transition.
 
