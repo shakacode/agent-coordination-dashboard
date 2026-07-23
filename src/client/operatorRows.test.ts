@@ -2890,14 +2890,26 @@ describe("operatorRows", () => {
               url: "https://github.com/repo/api/issues/123",
               state: "OPEN",
               labels: [],
-              loadState: "loaded"
+              loadState: "loaded",
+              implementationPr: {
+                repo: "repo/api",
+                target: "456",
+                title: "API implementation",
+                url: "https://github.com/repo/api/pull/456",
+                state: "OPEN",
+                labels: [],
+                loadState: "loaded"
+              }
             }
           })
         ]
       })
     );
 
-    expect(filterOperatorRows(rows, "PR #123").map((row) => row.repo)).toEqual(["repo/app", "repo/api"]);
+    expect(filterOperatorRows(rows, "PR #123").map((row) => row.repo)).toEqual(["repo/app"]);
+    expect(filterOperatorRows(rows, "Issue #123").map((row) => row.repo)).toEqual(["repo/api"]);
+    expect(filterOperatorRows(rows, "#123").map((row) => row.repo)).toEqual(["repo/app", "repo/api"]);
+    expect(filterOperatorRows(rows, "PR #456").map((row) => row.repo)).toEqual(["repo/api"]);
     expect(filterOperatorRows(rows, "feature/operator").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "thread-a").map((row) => row.repo)).toEqual(["repo/app"]);
     expect(filterOperatorRows(rows, "justin").map((row) => row.repo)).toEqual(["repo/app"]);

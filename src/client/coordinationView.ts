@@ -27,7 +27,7 @@ export const CODEX_COLOR = "var(--codex)";
 export const CLAUDE_COLOR = "var(--claude)";
 export const NEUTRAL_COLOR = "var(--color-neutral-400)";
 
-export type JobBucketId = "running" | "needs_input" | "stuck" | "blocked" | "ready" | "done";
+export type JobBucketId = "running" | "needs_input" | "stuck" | "blocked" | "ready" | "done" | "history";
 export type BatchTier = "blocked" | "stuck" | "running" | "archive";
 
 export interface JobBucketMeta {
@@ -46,7 +46,8 @@ export const JOB_BUCKETS: JobBucketMeta[] = [
   { id: "stuck", label: "Stuck", hint: "no phase change 15m+", color: "var(--warn)", icon: "▲", action: "Resume", pulse: false },
   { id: "blocked", label: "Blocked", hint: "deps & permissions", color: "var(--block)", icon: "▢", action: "Review", pulse: false },
   { id: "ready", label: "Ready to batch", hint: "open, no active holder", color: NEUTRAL_COLOR, icon: "○", action: "Batch", pulse: false },
-  { id: "done", label: "Done today", hint: "finished — merged or released", color: "var(--mut)", icon: "✓", action: "View", pulse: false }
+  { id: "done", label: "Done today", hint: "terminal since local midnight", color: "var(--mut)", icon: "✓", action: "View", pulse: false },
+  { id: "history", label: "History", hint: "terminal before today or time UNKNOWN", color: "var(--mut)", icon: "✓", action: "View", pulse: false }
 ];
 
 const JOB_BUCKET_BY_ID = new Map(JOB_BUCKETS.map((bucket) => [bucket.id, bucket]));
@@ -81,6 +82,8 @@ export interface JobRow {
   icon: string;
   iconColor: string;
   targetLabel: string;
+  implementationLabel?: string;
+  implementationUrl?: string;
   targetColor: string;
   title: string;
   note: string;
@@ -120,6 +123,8 @@ export interface LaneView {
 }
 
 export interface BatchCard {
+  /** Repository-aware stable identity used for keys, selection, and highlighting. */
+  identity: string;
   id: string;
   idAttr: string;
   title: string;
@@ -352,7 +357,17 @@ export function buildHostLegend(agents: AgentSummary[]): HostLegendItem[] {
 
 const NEEDS_INPUT_ATTENTION = new Set(["blocked_user_input", "qa_missing", "batch_stopped", "batch_stop_requested"]);
 
-export function jobBucketForRow(row: OperatorRow, attentionKind?: string): JobBucketId {
+function completedOnLocalCalendarDay(value: string | undefined, nowMs: number): boolean {
+  const completedMs = timestampMs(value);
+  if (!completedMs || !nowMs) return false;
+  const completed = new Date(completedMs);
+  const now = new Date(nowMs);
+  return completed.getFullYear() === now.getFullYear()
+    && completed.getMonth() === now.getMonth()
+    && completed.getDate() === now.getDate();
+}
+
+export function jobBucketForRow(row: OperatorRow, attentionKind?: string, nowMs = Date.now()): JobBucketId {
   if (attentionKind && NEEDS_INPUT_ATTENTION.has(attentionKind)) return "needs_input";
   switch (row.operatorState) {
     case "running":
@@ -369,7 +384,7 @@ export function jobBucketForRow(row: OperatorRow, attentionKind?: string): JobBu
       return "ready";
     case "done":
     case "archived":
-      return "done";
+      return completedOnLocalCalendarDay(row.completedAt, nowMs) ? "done" : "history";
     default:
       return "stuck";
   }
@@ -381,16 +396,18 @@ function jobNote(row: OperatorRow): string {
   return row.activityMessage || activity || row.retentionStatus || "";
 }
 
-function buildJobRow(row: OperatorRow, workItem: WorkItem | undefined): JobRow {
-  const bucket = jobBucketForRow(row, workItem?.attention?.kind);
+function buildJobRow(row: OperatorRow, workItem: WorkItem | undefined, nowMs: number): JobRow {
+  const bucket = jobBucketForRow(row, workItem?.attention?.kind, nowMs);
   const meta = JOB_BUCKET_BY_ID.get(bucket)!;
-  const isTerminal = bucket === "done" || bucket === "ready";
+  const isTerminal = bucket === "done" || bucket === "history" || bucket === "ready";
   return {
     id: row.id,
     bucket,
     icon: meta.icon,
     iconColor: meta.color,
     targetLabel: targetLabel(row),
+    implementationLabel: row.implementationPr ? `PR #${displayAttribution(row.implementationPr.target)}` : undefined,
+    implementationUrl: row.implementationPr?.url,
     targetColor: isTerminal ? NEUTRAL_COLOR : hostColor(row.host),
     title: row.title,
     note: jobNote(row),
@@ -431,14 +448,97 @@ function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord): b
   return true;
 }
 
-function laneRowsIndex(rows: OperatorRow[]): Map<string, OperatorRow[]> {
+function batchRepositoryScope(batch: BatchRecord): string {
+  const fallbackRepo = batch.repo?.trim();
+  const effectiveTargetRepos = (batch.targets || []).map((target) => target.repo?.trim() || fallbackRepo);
+  if (effectiveTargetRepos.some((repo) => !repo)) return `UNKNOWN:${batch.path}`;
+  const targetRepos = Array.from(new Set(effectiveTargetRepos.filter((repo): repo is string => Boolean(repo)))).sort();
+  if (targetRepos.length === 1) return targetRepos[0];
+  if (targetRepos.length > 1) return `MULTI:${targetRepos.join(",")}`;
+  if (fallbackRepo) return fallbackRepo;
+  // With no repository evidence, the source path is the only honest namespace.
+  return `UNKNOWN:${batch.path}`;
+}
+
+function batchDisplayRepository(batch: BatchRecord): string {
+  const scope = batchRepositoryScope(batch);
+  return scope.startsWith("UNKNOWN:") || scope.startsWith("MULTI:")
+    ? "UNKNOWN"
+    : displayAttribution(scope, "UNKNOWN");
+}
+
+export function batchIdentity(batch: BatchRecord): string {
+  return JSON.stringify([batchRepositoryScope(batch), batch.batchId]);
+}
+
+function batchDomToken(identity: string): string {
+  return identity.replace(/[^A-Za-z0-9_-]/g, (character) => `-${character.codePointAt(0)!.toString(16)}-`);
+}
+
+function batchPreference(left: BatchRecord, right: BatchRecord): number {
+  const sourceRank = (batch: BatchRecord) => batch.source === "inferred" ? 0 : 1;
+  return sourceRank(right) - sourceRank(left)
+    || timestampMs(right.updatedAt) - timestampMs(left.updatedAt)
+    || timestampMs(right.createdAt) - timestampMs(left.createdAt)
+    || right.lanes.length - left.lanes.length
+    || left.path.localeCompare(right.path);
+}
+
+/**
+ * Reconcile duplicate observations of the same repository-scoped batch before
+ * rendering. A saved manifest is authoritative over an inferred observation;
+ * ties are resolved from durable timestamps and paths, never array position.
+ */
+export function reconcileBatchRecords(batches: BatchRecord[]): BatchRecord[] {
+  const grouped = new Map<string, BatchRecord[]>();
+  for (const batch of batches) {
+    const identity = batchIdentity(batch);
+    const candidates = grouped.get(identity) || [];
+    candidates.push(batch);
+    grouped.set(identity, candidates);
+  }
+  return Array.from(grouped.values(), (candidates) => [...candidates].sort(batchPreference)[0]);
+}
+
+export interface BatchReference {
+  batchId: string;
+  repo?: string;
+  path?: string;
+}
+
+/** Resolve a batch reference without silently choosing a same-ID batch in another repository. */
+export function findBatchCard(cards: BatchCard[], reference: BatchReference): BatchCard | undefined {
+  const candidates = cards.filter((card) => card.id === reference.batchId);
+  if (reference.path) {
+    const byPath = candidates.find((card) => card.batch.path === reference.path);
+    if (byPath) return byPath;
+  }
+  if (reference.repo) {
+    const byRepo = candidates.filter((card) =>
+      batchRepositoryScope(card.batch) === reference.repo
+      || (card.batch.targets || []).some((target) => target.repo === reference.repo)
+    );
+    return byRepo.length === 1 ? byRepo[0] : undefined;
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function rowMatchesBatch(row: OperatorRow, batch: BatchRecord): boolean {
+  if (row.batchId !== batch.batchId) return false;
+  if (row.batchPath && batch.path) return row.batchPath === batch.path;
+  const scope = batchRepositoryScope(batch);
+  return !scope.startsWith("UNKNOWN:") && !scope.startsWith("MULTI:")
+    ? row.repo === scope
+    : (batch.targets || []).some((target) => target.repo === row.repo);
+}
+
+function laneRowsIndex(rows: OperatorRow[], batches: BatchRecord[]): Map<string, OperatorRow[]> {
   const index = new Map<string, OperatorRow[]>();
-  for (const row of rows) {
-    if (!row.batchId || !row.laneName) continue;
-    const key = `${row.batchId} ${row.laneName}`;
-    const bucket = index.get(key) || [];
-    bucket.push(row);
-    index.set(key, bucket);
+  for (const batch of batches) {
+    for (const lane of batch.lanes) {
+      const key = `${batchIdentity(batch)}\u0000${lane.name}`;
+      index.set(key, rows.filter((row) => row.laneName === lane.name && rowMatchesBatch(row, batch)));
+    }
   }
   return index;
 }
@@ -473,7 +573,7 @@ function buildLaneView(
       ? jobNote(representative)
       : displayAttribution(lane.status, "");
   return {
-    id: `${batch.batchId} ${lane.name} ${laneIndex}`,
+    id: JSON.stringify([batchIdentity(batch), lane.name, [...lane.targets].sort(), lane.owner, lane.branch || ""]),
     branch: LANE_BRANCH_CHARS(laneIndex, laneCount),
     tag: displayAttribution(lane.name),
     target: targetText,
@@ -576,7 +676,7 @@ export function buildBatchCard(
 ): BatchCard {
   const laneCount = batch.lanes.length;
   const lanes = batch.lanes.map((lane, index) =>
-    buildLaneView(batch, index, laneCount, rowsByLane.get(`${batch.batchId} ${lane.name}`) || [], workItemByKey)
+    buildLaneView(batch, index, laneCount, rowsByLane.get(`${batchIdentity(batch)}\u0000${lane.name}`) || [], workItemByKey)
   );
   const laneStates = lanes.map((lane) => lane.operatorState);
   const tier = batchTierFromLanes(laneStates, operation);
@@ -593,10 +693,11 @@ export function buildBatchCard(
     .filter((value): value is string => Boolean(value))
     .sort((left, right) => timestampMs(right) - timestampMs(left))[0];
   return {
+    identity: batchIdentity(batch),
     id: batch.batchId,
-    idAttr: `batch-${batch.batchId}`,
+    idAttr: `batch-${batchDomToken(batchIdentity(batch))}`,
     title: batchTitle(batch),
-    repo: displayAttribution(batch.repo || batch.path),
+    repo: batchDisplayRepository(batch),
     thread: batch.lanes.find((lane) => lane.threadHandle)?.threadHandle,
     coordinator: ABSENT,
     mergeAuth: batch.mergeAuthority || ABSENT,
@@ -713,17 +814,18 @@ export function buildCoordinationView(dashboard: DashboardModel, now?: Date | st
         ? now.getTime()
         : timestampMs(now) || Date.now();
 
-  const rows = buildOperatorRows(dashboard, { now: new Date(nowMs) });
+  const reconciledBatches = reconcileBatchRecords(dashboard.batches);
+  const rows = buildOperatorRows({ ...dashboard, batches: reconciledBatches }, { now: new Date(nowMs) });
   const workItemByKey = new Map(dashboard.workItems.map((item) => [`${item.repo}#${item.target}`, item]));
 
-  const jobRows = rows.map((row) => buildJobRow(row, row.target ? workItemByKey.get(`${row.repo}#${row.target}`) : undefined));
+  const jobRows = rows.map((row) => buildJobRow(row, row.target ? workItemByKey.get(`${row.repo}#${row.target}`) : undefined, nowMs));
   const jobCounts = JOB_BUCKETS.reduce((counts, bucket) => {
     counts[bucket.id] = jobRows.filter((row) => row.bucket === bucket.id).length;
     return counts;
   }, {} as Record<JobBucketId, number>);
 
-  const rowsByLane = laneRowsIndex(rows);
-  const batchCards = dashboard.batches
+  const rowsByLane = laneRowsIndex(rows, reconciledBatches);
+  const batchCards = reconciledBatches
     .map((batch) => {
       const operation = dashboard.batchOperations.find((candidate) => operationMatchesBatch(candidate, batch));
       return buildBatchCard(batch, operation, rowsByLane, workItemByKey, nowMs);

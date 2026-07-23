@@ -6,7 +6,7 @@ import { effectiveCustody } from "../shared/effectiveCustody";
 import { fallbackTimelineWorkItem } from "../shared/fallbackWorkItem";
 import type { BatchRecord, CoordinationResource, CoordinationWarning, DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import { deleteAnnotation, fetchDashboard, fetchItemTimeline, fetchSettings, requestBatchStop, saveAnnotation, saveImportedBatchManifest, saveSettings, type ItemTimelineResponse } from "./api";
-import { buildCoordinationView, type BatchCard } from "./coordinationView";
+import { buildCoordinationView, findBatchCard, type BatchCard, type BatchReference } from "./coordinationView";
 import type { OperatorRow } from "./operatorRows";
 import { TopBar } from "./components/TopBar";
 import { DashboardShell, type TabId } from "./components/DashboardShell";
@@ -94,7 +94,7 @@ function isHeartbeat(value: unknown): boolean {
 
 function isWorkItem(value: unknown): boolean {
   if (!isRecord(value) || !hasStrings(value, ["id", "repo", "target", "type", "schedulingState"])) return false;
-  if (!hasOptionalStrings(value, ["operatorState", "terminalState", "lastActivityAt"])) return false;
+  if (!hasOptionalStrings(value, ["operatorState", "terminalState", "completedAt", "lastActivityAt"])) return false;
   if (typeof value.selected !== "boolean" || !Array.isArray(value.warnings) || !value.warnings.every(isWarning)) return false;
   if (value.batchSignals !== undefined && (!Array.isArray(value.batchSignals) || !value.batchSignals.every((signal) =>
     isRecord(signal)
@@ -105,6 +105,10 @@ function isWorkItem(value: unknown): boolean {
   if (value.github !== undefined && (!isRecord(value.github)
     || !hasStrings(value.github, ["repo", "target", "type", "title", "url", "state", "loadState"])
     || !hasOptionalStrings(value.github, ["coordinatedType", "author", "branch", "reviewDecision", "ciStatus", "mergedAt", "closedAt", "branchState"])
+    || (value.github.implementationPr !== undefined && (!isRecord(value.github.implementationPr)
+      || !hasStrings(value.github.implementationPr, ["repo", "target", "title", "url", "state", "loadState"])
+      || !hasOptionalStrings(value.github.implementationPr, ["author", "branch", "reviewDecision", "ciStatus", "mergedAt", "closedAt", "branchState"])
+      || !isStringArray(value.github.implementationPr.labels)))
     || !isStringArray(value.github.labels))) return false;
   if (value.claim !== undefined && !isClaim(value.claim)) return false;
   if (value.heartbeat !== undefined && !isHeartbeat(value.heartbeat)) return false;
@@ -260,6 +264,12 @@ function itemRouteFromSearchParams(params: URLSearchParams): ItemRoute | undefin
   return match ? { repo: match[1], target: match[2] } : undefined;
 }
 
+export function batchReferenceFromSearchParams(params: URLSearchParams): BatchReference | undefined {
+  const batchId = params.get("batch")?.trim();
+  if (!batchId) return undefined;
+  return { batchId, repo: params.get("repo")?.trim() || undefined };
+}
+
 export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
   const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
   return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
@@ -335,9 +345,21 @@ export function App() {
   const warningsRef = useRef<HTMLDetailsElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightTimeout = useRef<number | undefined>(undefined);
+  const initialBatchReference = useRef(batchReferenceFromSearchParams(new URLSearchParams(window.location.search)));
   const lastCacheWriteAttemptAt = useRef(0);
 
   const view = useMemo(() => (dashboard ? buildCoordinationView(dashboard) : null), [dashboard]);
+
+  useEffect(() => {
+    const reference = initialBatchReference.current;
+    if (!view || !reference) return;
+    const card = findBatchCard(view.batchCards, reference);
+    if (!card) return;
+    initialBatchReference.current = undefined;
+    setTab("batches");
+    setBatchFilter("all");
+    setHighlightBatch(card.identity);
+  }, [view]);
 
   const cacheDashboard = useCallback((nextDashboard: DashboardModel, nextSettings: DashboardRuntimeSettings, background = false) => {
     const attemptedAt = Date.now();
@@ -667,12 +689,13 @@ export function App() {
     setSelectedBatch(card);
   }
 
-  function openBatchById(batchId: string) {
+  function openBatchById(batchId: string, batchPath?: string, repo?: string) {
+    const card = view ? findBatchCard(view.batchCards, { batchId, path: batchPath, repo }) : undefined;
     setSelectedRow(null);
     setSelectedBatch(null);
     setTab("batches");
     setBatchFilter("all");
-    setHighlightBatch(batchId);
+    setHighlightBatch(card?.identity || null);
     window.clearTimeout(highlightTimeout.current);
     highlightTimeout.current = window.setTimeout(() => setHighlightBatch(null), 2600);
   }
@@ -683,7 +706,7 @@ export function App() {
     if (githubUrl) {
       const match = dashboard?.workItems.find((candidate) => {
         const { claim, heartbeat } = effectiveCustody(candidate);
-        return [candidate.github?.url, claim?.prUrl, heartbeat?.prUrl]
+        return [candidate.github?.url, candidate.github?.implementationPr?.url, claim?.prUrl, heartbeat?.prUrl]
           .some((candidateUrl) => canonicalGithubItemUrl(candidateUrl)?.toLowerCase() === githubUrl.toLowerCase());
       });
       if (match) {
@@ -695,18 +718,35 @@ export function App() {
     const numberMatch = trimmed.match(/(\d+)\s*$/);
     if (!numberMatch) return;
     const digits = numberMatch[1];
+    const typedReference = trimmed.match(/^(pr|pull request|issue)\s*#?\s*\d+\s*$/i)?.[1]?.toLowerCase();
+    const requestedType = typedReference === "issue" ? "issue" : typedReference ? "pull_request" : undefined;
     // Everything before the trailing number is treated as an optional repo hint
     // so a bare number never silently resolves to the wrong repository.
-    const repoHint = trimmed.slice(0, numberMatch.index).replace(/[#\s]+$/, "").trim().toLowerCase();
-    const exact = view.jobRows.filter((candidate) => String(candidate.row.target || "") === digits);
-    let candidates = exact;
-    if (repoHint) {
+    const repoHint = requestedType ? "" : trimmed.slice(0, numberMatch.index).replace(/[#\s]+$/, "").trim().toLowerCase();
+    const matchesNumber = (candidate: JobRow, exactMatch: boolean) => {
+      const targetMatch = String(candidate.row.target || "") === digits;
+      const implementationMatch = candidate.row.implementationPr?.target === digits;
+      const targetPartial = String(candidate.row.target || "").includes(digits);
+      const implementationPartial = Boolean(candidate.row.implementationPr?.target.includes(digits));
+      if (requestedType === "issue") return candidate.row.type === "issue" && (exactMatch ? targetMatch : targetPartial);
+      if (requestedType === "pull_request") {
+        return (candidate.row.type === "pull_request" && (exactMatch ? targetMatch : targetPartial))
+          || (exactMatch ? implementationMatch : implementationPartial);
+      }
+      return exactMatch ? targetMatch || implementationMatch : targetPartial || implementationPartial;
+    };
+    const filterByRepository = (candidates: JobRow[]) => {
+      if (!repoHint) return candidates;
       const repoName = (repo: string) => repo.toLowerCase().split("/").pop();
-      const byName = exact.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
-      const byLoose = exact.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
-      candidates = byName.length > 0 ? byName : byLoose.length > 0 ? byLoose : exact;
-    }
-    const hit = candidates[0] || view.jobRows.find((candidate) => String(candidate.row.target || "").includes(digits));
+      const byName = candidates.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
+      const byLoose = candidates.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
+      return byName.length > 0 ? byName : byLoose;
+    };
+    const exact = filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, true)));
+    const partial = exact.length === 0
+      ? filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, false)))
+      : [];
+    const hit = exact.length === 1 ? exact[0] : partial.length === 1 ? partial[0] : undefined;
     if (hit) {
       setTab("jobs");
       openRow(hit.row, hit.workItem);
@@ -839,7 +879,11 @@ export function App() {
   };
   const timelineWorkItem = itemTimeline ? itemTimeline.item || fallbackTimelineWorkItem(itemTimeline.repo, itemTimeline.target) : undefined;
   const selectedRowBatchCard = selectedRow?.row.batchId
-    ? view.batchCards.find((card) => card.id === selectedRow.row.batchId)
+    ? findBatchCard(view.batchCards, {
+        batchId: selectedRow.row.batchId,
+        path: selectedRow.row.batchPath,
+        repo: selectedRow.row.repo
+      })
     : undefined;
   const selectedBatchTitle = selectedRowBatchCard?.title;
   // Manifest-only lane route: surface it in the drawer when the work item has none.
@@ -985,7 +1029,7 @@ export function App() {
         <>
           <DashboardShell
             batchFilter={batchFilter}
-            highlightBatchId={highlightBatch}
+            highlightBatchIdentity={highlightBatch}
             jobFilter={jobFilter}
             onOpenBatch={openBatchCard}
             onOpenRow={openRow}

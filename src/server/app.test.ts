@@ -782,7 +782,7 @@ describe("dashboard app import endpoint", () => {
     expect(githubLoads).toBe(2);
   });
 
-  it("uses a claim PR URL as the canonical GitHub target and maps its terminal result onto the issue WorkItem", async () => {
+  it("keeps the coordinated issue canonical while mapping a claim's merged implementation PR", async () => {
     const capturedAt = Date.now();
     const archiveAfterMs = 24 * 60 * 60 * 1000;
     const recentlyMergedAt = new Date(capturedAt - (archiveAfterMs / 2)).toISOString();
@@ -808,7 +808,24 @@ describe("dashboard app import endpoint", () => {
     const body = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>>; trulyOpenCount: number; trulyOpenCountStatus: string };
     expect(reconciledTarget).toBe("54");
     expect(body.workItems).toHaveLength(1);
-    expect(body.workItems[0]).toMatchObject({ id: "shakacode/react_on_rails#45", target: "45", type: "issue", operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/shakacode/react_on_rails/pull/54" }, github: { target: "45", type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
+    expect(body.workItems[0]).toMatchObject({
+      id: "shakacode/react_on_rails#45",
+      target: "45",
+      type: "issue",
+      operatorState: "terminal",
+      terminalState: "done",
+      terminalProvenance: { source: "github", url: "https://github.com/shakacode/react_on_rails/pull/54" },
+      github: {
+        target: "45",
+        type: "issue",
+        url: "https://github.com/shakacode/react_on_rails/issues/45",
+        implementationPr: {
+          target: "54",
+          type: "pull_request",
+          url: "https://github.com/shakacode/react_on_rails/pull/54"
+        }
+      }
+    });
     expect(body.trulyOpenCount).toBe(0);
     expect(body.trulyOpenCountStatus).toBe("available");
   });
@@ -926,10 +943,25 @@ describe("dashboard app import endpoint", () => {
     expect(received).toMatchObject({ target: "54", branch: "completed/from-heartbeat" });
     expect(body.workItems[0]).toMatchObject({
       id: "shakacode/react_on_rails#45",
+      type: "issue",
       operatorState: "archived_view",
       terminalState: "done",
       terminalProvenance: { source: "github", url: "https://github.com/shakacode/react_on_rails/pull/54" },
-      github: { state: "MERGED", mergedAt: "2026-07-11T10:00:00Z" }
+      completedAt: "2026-07-11T10:00:00Z",
+      github: {
+        target: "45",
+        type: "issue",
+        title: "Open issue",
+        url: "https://github.com/shakacode/react_on_rails/issues/45",
+        state: "OPEN",
+        implementationPr: {
+          target: "54",
+          title: "Merged implementation",
+          url: "https://github.com/shakacode/react_on_rails/pull/54",
+          state: "MERGED",
+          mergedAt: "2026-07-11T10:00:00Z"
+        }
+      }
     });
   });
 
@@ -1022,7 +1054,20 @@ describe("dashboard app import endpoint", () => {
       loadGitHubTargets: async (references) => ({ items: references.map((reference) => ({ repo: reference.repo, target: reference.target, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const })), warnings: [] })
     });
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>> };
-    expect(body.workItems[0]).toMatchObject({ type: "issue", terminalState: "done", terminalProvenance: { source: "declared" }, github: { type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" } });
+    expect(body.workItems[0]).toMatchObject({
+      type: "issue",
+      terminalState: "done",
+      terminalProvenance: { source: "declared" },
+      github: {
+        type: "issue",
+        implementationPr: {
+          type: "pull_request",
+          url: "https://github.com/shakacode/react_on_rails/pull/54",
+          state: "MERGED",
+          mergedAt: "2026-07-12T10:00:00Z"
+        }
+      }
+    });
   });
 
   it("enriches a declared terminal issue when only its history event records the PR URL", async () => {
@@ -1045,21 +1090,34 @@ describe("dashboard app import endpoint", () => {
       pr_url: "https://github.com/shakacode/react_on_rails/pull/54",
       timestamp: "2026-07-12T10:01:00Z"
     }));
-    let reconciledTarget = "";
+    let reconciledTargets: string[] = [];
     const app = await createDashboardApp(testConfig(stateRoot), {
       serveFrontend: false,
       loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
       loadGitHubTargets: async (references) => ({
         items: references.map((reference) => {
-          reconciledTarget = reference.target;
+          reconciledTargets.push(reference.target);
           return { repo: reference.repo, target: reference.target, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const };
         }),
         warnings: []
       })
     });
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>>; githubMergeTimeStatus: string };
-    expect(reconciledTarget).toBe("54");
-    expect(body.workItems[0]).toMatchObject({ type: "issue", terminalState: "done", terminalProvenance: { source: "declared" }, github: { type: "pull_request", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" } });
+    expect(reconciledTargets).toEqual(["54", "45"]);
+    expect(body.workItems[0]).toMatchObject({
+      type: "issue",
+      terminalState: "done",
+      terminalProvenance: { source: "declared" },
+      github: {
+        type: "issue",
+        implementationPr: {
+          type: "pull_request",
+          url: "https://github.com/shakacode/react_on_rails/pull/54",
+          state: "MERGED",
+          mergedAt: "2026-07-12T10:00:00Z"
+        }
+      }
+    });
     expect(body.githubMergeTimeStatus).toBe("available");
   });
 
@@ -1153,10 +1211,19 @@ describe("dashboard app import endpoint", () => {
       }
     });
 
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; github?: { reviewDecision?: string; ciStatus?: string; url: string } }> };
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; github?: { implementationPr?: { reviewDecision?: string; ciStatus?: string; url: string } } }> };
     expect(receivedExistingTarget).toMatchObject({ target: "54", reviewDecision: "APPROVED", ciStatus: "passing" });
     expect(body.workItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "shakacode/react_on_rails#45", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54", reviewDecision: "APPROVED", ciStatus: "passing" }) })
+      expect.objectContaining({
+        id: "shakacode/react_on_rails#45",
+        github: expect.objectContaining({
+          implementationPr: expect.objectContaining({
+            url: "https://github.com/shakacode/react_on_rails/pull/54",
+            reviewDecision: "APPROVED",
+            ciStatus: "passing"
+          })
+        })
+      })
     ]));
   });
 
@@ -1234,13 +1301,13 @@ describe("dashboard app import endpoint", () => {
         lanes: [{ name: "implementation", owner: "worker-b", targets: ["45"], depends_on: [], status: "completed", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
       }))
     ]);
-    let reconciledTarget = "";
+    let reconciledTargets: string[] = [];
     const app = await createDashboardApp(testConfig(stateRoot), {
       serveFrontend: false,
       loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
       loadGitHubTargets: async (references) => ({
         items: references.map((reference) => {
-          reconciledTarget = reference.target;
+          reconciledTargets.push(reference.target);
           return { ...reference, type: "pull_request" as const, title: "Merged implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const };
         }),
         warnings: []
@@ -1248,8 +1315,20 @@ describe("dashboard app import endpoint", () => {
     });
 
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<Record<string, unknown>> };
-    expect(reconciledTarget).toBe("54");
-    expect(body.workItems[0]).toMatchObject({ target: "45", terminalState: "done", github: { state: "MERGED", url: "https://github.com/shakacode/react_on_rails/pull/54" } });
+    expect(reconciledTargets).toEqual(["54", "45"]);
+    expect(body.workItems[0]).toMatchObject({
+      target: "45",
+      terminalState: "done",
+      github: {
+        target: "45",
+        type: "issue",
+        implementationPr: {
+          target: "54",
+          state: "MERGED",
+          url: "https://github.com/shakacode/react_on_rails/pull/54"
+        }
+      }
+    });
   });
 
   it("scopes duplicate repo-less batch ids by explicit target repo without cross-attributing lanes", () => {
@@ -1340,10 +1419,22 @@ describe("dashboard app import endpoint", () => {
     const app = await createDashboardApp(testConfig(stateRoot), {
       serveFrontend: false,
       loadOpenGitHubItems: async () => ({ items: [openPr], warnings: [] }),
-      loadGitHubTargets: async () => ({ items: [openPr], warnings: [] })
+      loadGitHubTargets: async (references) => ({
+        references,
+        items: references.map((reference) => reference.target === "54"
+          ? openPr
+          : { repo: reference.repo, target: "45", type: "issue" as const, title: "Issue target", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const }),
+        warnings: []
+      })
     });
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { url: string } }>; trulyOpenCount: number };
-    expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", type: "issue", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { implementationPr?: { url: string } } }>; trulyOpenCount: number };
+    expect(body.workItems).toEqual([expect.objectContaining({
+      id: "shakacode/react_on_rails#45",
+      type: "issue",
+      github: expect.objectContaining({
+        implementationPr: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" })
+      })
+    })]);
     expect(body.trulyOpenCount).toBe(1);
   });
 
@@ -1363,12 +1454,71 @@ describe("dashboard app import endpoint", () => {
     const app = await createDashboardApp(testConfig(stateRoot), {
       serveFrontend: false,
       loadOpenGitHubItems: async () => ({ items: [openPr], warnings: [] }),
-      loadGitHubTargets: async () => ({ items: [openPr], warnings: [] })
+      loadGitHubTargets: async (references) => ({
+        references,
+        items: references.map((reference) => reference.target === "54"
+          ? openPr
+          : { repo: reference.repo, target: "45", type: "issue" as const, title: "Issue target", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const }),
+        warnings: []
+      })
     });
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { url: string } }>; qaValidations: Array<{ id: string; target: string; type: string }>; trulyOpenCount: number };
-    expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", type: "pull_request", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
-    expect(body.qaValidations).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", target: "45", type: "pull_request" })]);
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; type: string; github?: { implementationPr?: { url: string } } }>; qaValidations: Array<{ id: string; target: string; type: string }>; trulyOpenCount: number };
+    expect(body.workItems).toEqual([expect.objectContaining({
+      id: "shakacode/react_on_rails#45",
+      type: "issue",
+      github: expect.objectContaining({
+        implementationPr: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" })
+      })
+    })]);
+    expect(body.qaValidations).toEqual([]);
     expect(body.trulyOpenCount).toBe(1);
+  });
+
+  it("fetches an unknown coordinated target separately from its linked implementation PR", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-linked-pr-target-"));
+    const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(join(claimDirectory, "45.json"), JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      agent_id: "worker",
+      status: "active",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54"
+    }));
+    let requestedTargets: string[] = [];
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        requestedTargets = references.map((reference) => reference.target);
+        return {
+          references,
+          items: references.map((reference) => reference.target === "54"
+            ? { repo: reference.repo, target: "54", type: "pull_request" as const, title: "Implementation", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "OPEN", labels: [], loadState: "loaded" as const }
+            : { repo: reference.repo, target: "45", type: "issue" as const, title: "Coordinated issue", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const }),
+          warnings: []
+        };
+      }
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as {
+      workItems: Array<{ type: string; github?: { target: string; type: string; implementationPr?: { target: string; url: string } } }>;
+    };
+    expect(requestedTargets).toEqual(["54", "45"]);
+    expect(body.workItems).toEqual([
+      expect.objectContaining({
+        type: "issue",
+        github: expect.objectContaining({
+          target: "45",
+          type: "issue",
+          implementationPr: expect.objectContaining({
+            target: "54",
+            url: "https://github.com/shakacode/react_on_rails/pull/54"
+          })
+        })
+      })
+    ]);
   });
 
   it("preserves a consumed canonical PR row when it has independent coordination evidence", async () => {
@@ -1379,7 +1529,17 @@ describe("dashboard app import endpoint", () => {
     await mkdir(claimDirectory, { recursive: true });
     await writeFile(join(claimDirectory, "54.json"), JSON.stringify({ schema_version: 1, repo: "shakacode/react_on_rails", target: "54", agent_id: "pr-worker", status: "active" }));
     const openPr = { repo: "shakacode/react_on_rails", target: "54", type: "pull_request" as const, title: "Open PR", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "OPEN", labels: [], loadState: "loaded" as const };
-    const app = await createDashboardApp(testConfig(stateRoot), { serveFrontend: false, loadOpenGitHubItems: async () => ({ items: [openPr], warnings: [] }), loadGitHubTargets: async () => ({ items: [openPr], warnings: [] }) });
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [openPr], warnings: [] }),
+      loadGitHubTargets: async (references) => ({
+        references,
+        items: references.map((reference) => reference.target === "54"
+          ? openPr
+          : { repo: reference.repo, target: "45", type: "issue" as const, title: "Issue target", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" as const }),
+        warnings: []
+      })
+    });
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string }>; trulyOpenCount: number };
     expect(body.workItems.map((item) => item.id)).toEqual(["shakacode/react_on_rails#45", "shakacode/react_on_rails#54"]);
     expect(body.trulyOpenCount).toBe(2);
@@ -1415,8 +1575,8 @@ describe("dashboard app import endpoint", () => {
       loadOpenGitHubItems: async () => ({ items: ["45", "46"].map((target) => ({ repo: "shakacode/react_on_rails", target, type: "issue" as const, title: `Open issue ${target}`, url: `https://github.com/shakacode/react_on_rails/issues/${target}`, state: "OPEN", labels: [], loadState: "loaded" as const })), warnings: [] }),
       loadGitHubTargets: async (references) => ({ items: references.map((reference) => ({ repo: reference.repo, target: reference.target, type: "pull_request" as const, title: "Merged shared PR", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", branchState: reference.branch === "feature/a" ? "deleted" as const : "present" as const, labels: [], loadState: "loaded" as const })), warnings: [] })
     });
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ target: string; type: string; terminalState?: string; github?: { branchState?: string } }> };
-    expect(body.workItems.map((item) => ({ target: item.target, type: item.type, terminal: item.terminalState, branch: item.github?.branchState }))).toEqual([
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ target: string; type: string; terminalState?: string; github?: { implementationPr?: { branchState?: string } } }> };
+    expect(body.workItems.map((item) => ({ target: item.target, type: item.type, terminal: item.terminalState, branch: item.github?.implementationPr?.branchState }))).toEqual([
       { target: "45", type: "issue", terminal: "done", branch: "deleted" },
       { target: "46", type: "issue", terminal: "done", branch: "present" }
     ]);
@@ -1431,7 +1591,7 @@ describe("dashboard app import endpoint", () => {
       await mkdir(join(root, "batches"), { recursive: true });
       await writeFile(join(root, "batches", "batch.json"), JSON.stringify({ schema_version: 1, batch_id: "batch", repo: "shakacode/react_on_rails", targets: [{ type: "issue", target: "45" }], lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "running", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }] }));
     }]
-  ])("uses %s PR URL metadata as the canonical GitHub target", async (_source, setup) => {
+  ])("uses %s PR URL metadata as a distinct implementation target", async (_source, setup) => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-pr-url-"));
     await setup(stateRoot);
     let reconciledTarget = "";
@@ -1440,9 +1600,16 @@ describe("dashboard app import endpoint", () => {
       loadOpenGitHubItems: async () => ({ items: [{ repo: "shakacode/react_on_rails", target: "45", type: "issue", title: "Open issue", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: [], loadState: "loaded" }], warnings: [] }),
       loadGitHubTargets: async (references) => ({ items: references.map((reference) => { reconciledTarget = reference.target; return { ...reference, type: "pull_request" as const, title: "Merged", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: [], loadState: "loaded" as const }; }), warnings: [] })
     });
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; terminalState?: string; github?: { url: string } }> };
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; terminalState?: string; github?: { url: string; implementationPr?: { url: string } } }> };
     expect(reconciledTarget).toBe("54");
-    expect(body.workItems).toEqual([expect.objectContaining({ id: "shakacode/react_on_rails#45", terminalState: "done", github: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" }) })]);
+    expect(body.workItems).toEqual([expect.objectContaining({
+      id: "shakacode/react_on_rails#45",
+      terminalState: "done",
+      github: expect.objectContaining({
+        url: "https://github.com/shakacode/react_on_rails/issues/45",
+        implementationPr: expect.objectContaining({ url: "https://github.com/shakacode/react_on_rails/pull/54" })
+      })
+    })]);
   });
 
   it.each([
@@ -1529,11 +1696,19 @@ describe("dashboard app import endpoint", () => {
     });
 
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; terminalState?: string; github?: { state: string; branchState?: string; loadState: string } }>; trulyOpenCount: number; trulyOpenCountStatus: string; warnings: Array<{ message: string }> };
-    expect(ghCalls).toEqual(["repos/shakacode/react_on_rails/issues/54"]);
+    expect(ghCalls).toEqual([
+      "repos/shakacode/react_on_rails/issues/54",
+      "repos/shakacode/react_on_rails/issues/45"
+    ]);
     expect(body.workItems).toEqual([expect.objectContaining({
       id: "shakacode/react_on_rails#45",
       terminalState: "done",
-      github: expect.objectContaining({ state: "MERGED", loadState: "loaded", branchState: "unknown" })
+      github: expect.objectContaining({
+        type: "issue",
+        state: "UNKNOWN",
+        loadState: "unknown",
+        implementationPr: expect.objectContaining({ state: "MERGED", loadState: "loaded", branchState: "unknown" })
+      })
     })]);
     expect(body.trulyOpenCount).toBe(0);
     expect(body.trulyOpenCountStatus).toBe("available");

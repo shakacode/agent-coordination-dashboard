@@ -60,6 +60,29 @@ describe("JobDetailDrawer provenance rows", () => {
     expect(screen.getByText("gpt-5.6-sol/xhigh")).toBeInTheDocument();
   });
 
+  it("shows an issue target separately from its linked implementation PR", () => {
+    const issueRow = {
+      ...row,
+      type: "issue",
+      target: "47",
+      url: "https://github.com/repo/dashboard/issues/47",
+      implementationPr: {
+        repo: "repo/dashboard",
+        target: "91",
+        title: "Implementation",
+        url: "https://github.com/repo/dashboard/pull/91",
+        state: "OPEN",
+        labels: [],
+        loadState: "loaded"
+      }
+    } as OperatorRow;
+    render(<JobDetailDrawer row={issueRow} onClose={() => {}} />);
+
+    expect(screen.getByRole("dialog", { name: "Issue #47 detail" })).toBeInTheDocument();
+    expect(screen.getByText("Implementation PR")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PR #91" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/91");
+  });
+
   it("degrades route, merge authority, and tokens to the em-dash placeholder when absent (#79/#80/#81)", () => {
     render(<JobDetailDrawer row={row} onClose={() => {}} />);
     expect(screen.getByText(/Token and cost accounting is not emitted by the coordination protocol yet/)).toBeInTheDocument();

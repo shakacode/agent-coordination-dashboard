@@ -313,6 +313,8 @@ export interface GitHubPreview {
   type: WorkItemType;
   /** Original coordinated identity when linked GitHub evidence points at another target. */
   coordinatedType?: WorkItemType;
+  /** Same-repository implementation PR, kept distinct from the coordinated target identity. */
+  implementationPr?: GitHubImplementationPullRequest;
   title: string;
   url: string;
   state: string;
@@ -327,6 +329,23 @@ export interface GitHubPreview {
   /** Present only when GitHub supplied a trustworthy close timestamp. */
   closedAt?: string;
   /** Supporting signal only. Branch deletion never implies terminal work. */
+  branchState?: "present" | "deleted" | "unknown";
+  loadState: "loaded" | "unknown";
+}
+
+export interface GitHubImplementationPullRequest {
+  repo: string;
+  target: string;
+  title: string;
+  url: string;
+  state: string;
+  author?: string;
+  labels: string[];
+  branch?: string;
+  reviewDecision?: string;
+  ciStatus?: GitHubCiStatus;
+  mergedAt?: string;
+  closedAt?: string;
   branchState?: "present" | "deleted" | "unknown";
   loadState: "loaded" | "unknown";
 }
@@ -364,6 +383,8 @@ export interface WorkItem {
     source: "declared" | "github";
     url?: string;
   };
+  /** Observed terminal transition time. Missing when no source supplies one. */
+  completedAt?: string;
   attention?: {
     kind: AttentionReasonKind;
     label: string;

@@ -16,7 +16,7 @@ export interface JobDetailDrawerProps {
   /** Lane manifest route, for the common manifest-only case where the work item has none. */
   route?: string;
   onClose: () => void;
-  onOpenBatch?: (batchId: string) => void;
+  onOpenBatch?: (batchId: string, batchPath?: string, repo?: string) => void;
   onOpenTimeline?: (item: WorkItem) => void;
   onAnnotate?: (annotation: AnnotationAction) => Promise<void> | void;
   onClearAnnotation?: () => Promise<void> | void;
@@ -78,6 +78,7 @@ export function JobDetailDrawer({
   const color = stateColor(row.operatorState);
   const need = workItem?.attention?.label || (row.blockedOn.length > 0 ? `Blocked on ${row.blockedOn.join(", ")}` : "");
   const githubUrl = safeGithubUrl(row.url);
+  const implementationUrl = safeGithubUrl(row.implementationPr?.url);
   const where: Array<{ k: string; v: string; color?: string; href?: string }> = [
     { k: "Host", v: displayAttribution(row.host, "UNKNOWN"), color: hostColor(row.host) },
     { k: "Dev tool", v: devToolForHost(row.host) || "UNKNOWN" },
@@ -85,6 +86,13 @@ export function JobDetailDrawer({
     { k: "Machine", v: displayAttribution(row.machineId, "UNKNOWN") },
     { k: "User", v: displayAttribution(row.operator, "UNKNOWN") },
     { k: "Batch", v: batchTitle || (row.batchId ? displayAttribution(row.batchId) : "unbatched") },
+    ...(row.implementationPr
+      ? [{
+          k: "Implementation PR",
+          v: `PR #${displayAttribution(row.implementationPr.target)}`,
+          href: implementationUrl
+        }]
+      : []),
     { k: "Branch", v: displayAttribution(row.branch, "UNKNOWN"), href: branchTreeUrl(row.repo, row.branch) },
     { k: "Phase", v: displayAttribution(row.activityStatus, "UNKNOWN") },
     { k: "Merge auth", v: mergeAuth || ABSENT },
@@ -156,7 +164,7 @@ export function JobDetailDrawer({
 
         <div className="drawer-foot">
           {row.batchId && onOpenBatch && (
-            <button className="btn btn-primary" style={{ width: "calc(100% - 40px)", margin: "16px 20px 0", justifyContent: "space-between" }} onClick={() => onOpenBatch(row.batchId!)} type="button">
+            <button className="btn btn-primary" style={{ width: "calc(100% - 40px)", margin: "16px 20px 0", justifyContent: "space-between" }} onClick={() => onOpenBatch(row.batchId!, row.batchPath, row.repo)} type="button">
               <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><MessageSquare size={14} aria-hidden="true" /> Go to batch</span>
               <span style={{ fontFamily: "var(--font-heading)", fontSize: "12px", opacity: 0.85, maxWidth: "210px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{batchTitle || displayAttribution(row.batchId)} ↗</span>
             </button>

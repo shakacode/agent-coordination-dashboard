@@ -20,7 +20,7 @@ export interface DashboardShellProps {
   onOpenBatch: (card: BatchCard) => void;
   onToggleSelect?: (row: JobRow) => void;
   selectionDisabled?: boolean;
-  highlightBatchId?: string | null;
+  highlightBatchIdentity?: string | null;
 }
 
 const TABS: Array<{ id: TabId; label: string; hint?: string }> = [
@@ -41,7 +41,7 @@ export function DashboardShell({
   onOpenBatch,
   onToggleSelect,
   selectionDisabled,
-  highlightBatchId
+  highlightBatchIdentity
 }: DashboardShellProps) {
   return (
     <div className="app-width">
@@ -86,7 +86,7 @@ export function DashboardShell({
         <BatchesBoard
           activeFilter={batchFilter}
           cards={view.batchCards}
-          highlightBatchId={highlightBatchId}
+          highlightBatchIdentity={highlightBatchIdentity}
           onOpenBatch={onOpenBatch}
           onOpenRow={onOpenRow}
           onSetFilter={onSetBatchFilter}

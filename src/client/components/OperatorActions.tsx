@@ -9,10 +9,20 @@ export interface AnnotationAction {
   until?: string;
 }
 
-function pullRequestUrl(item: WorkItem): string | undefined {
+function pullRequest(item: WorkItem): { target: string; url: string } | undefined {
   const { claim, heartbeat } = effectiveCustody(item);
-  const values = [item.github?.type === "pull_request" ? item.github.url : undefined, claim?.prUrl, heartbeat?.prUrl];
-  return values.flatMap((value) => value ? [canonicalPullRequestUrl(value)] : []).find(Boolean);
+  const values = [
+    item.github?.implementationPr?.url,
+    item.github?.type === "pull_request" ? item.github.url : undefined,
+    claim?.prUrl,
+    heartbeat?.prUrl
+  ];
+  for (const value of values) {
+    const url = value ? canonicalPullRequestUrl(value) : undefined;
+    const target = url?.match(/\/pull\/(\d+)$/)?.[1];
+    if (url && target) return { target, url };
+  }
+  return undefined;
 }
 
 function branchUrl(item: WorkItem): string | undefined {
@@ -49,7 +59,7 @@ export function OperatorActions({
 }) {
   const [confirmation, setConfirmation] = useState("");
   const [annotationChoice, setAnnotationChoice] = useState("");
-  const pr = pullRequestUrl(item);
+  const pr = pullRequest(item);
   const showResume = resumeAvailable || (resumeFallbackWhenPrUnavailable && !pr);
   const branch = branchUrl(item);
   const batch = batchId(item);
@@ -95,7 +105,7 @@ export function OperatorActions({
   return <div className="operator-actions">
     {showResume ? <button disabled={commandActionsDisabled} onClick={() => void copy(resumeCommandPrompt(item), "Resume prompt")} type="button">Copy resume prompt</button> : null}
     {takeoverAvailable ? <button disabled={commandActionsDisabled} onClick={() => void copy(takeoverCommand(item), "Takeover command")} type="button">Copy takeover command</button> : null}
-    {pr ? <a href={pr} rel="noreferrer" target="_blank">Open PR</a> : null}
+    {pr ? <a aria-label={`Open PR #${pr.target}`} href={pr.url} rel="noreferrer" target="_blank">Open PR #{pr.target}</a> : null}
     {branch ? <a href={branch} rel="noreferrer" target="_blank">Open branch</a> : null}
     {batch ? <a href={`/?batch=${encodeURIComponent(batch)}&repo=${encodeURIComponent(item.repo)}`}>Open batch</a> : null}
     {onAnnotate ? <label className="annotation-choice">

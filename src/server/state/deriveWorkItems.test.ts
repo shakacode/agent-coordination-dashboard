@@ -32,8 +32,8 @@ describe("deriveWorkItems", () => {
       ]
     });
 
-    expect(merged).toMatchObject({ operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/43" }, lastActivityAt: "2026-07-12T11:00:00Z" });
-    expect(closed).toMatchObject({ operatorState: "terminal", terminalState: "closed", terminalProvenance: { source: "github", url: "https://github.com/repo/app/issues/44" }, lastActivityAt: "2026-07-12T10:00:00Z" });
+    expect(merged).toMatchObject({ operatorState: "terminal", terminalState: "done", terminalProvenance: { source: "github", url: "https://github.com/repo/app/pull/43" }, completedAt: "2026-07-12T11:00:00Z", lastActivityAt: "2026-07-12T11:00:00Z" });
+    expect(closed).toMatchObject({ operatorState: "terminal", terminalState: "closed", terminalProvenance: { source: "github", url: "https://github.com/repo/app/issues/44" }, completedAt: "2026-07-12T10:00:00Z", lastActivityAt: "2026-07-12T10:00:00Z" });
   });
 
   it("keeps declared terminal state ahead of conflicting GitHub fallback", () => {
@@ -51,6 +51,234 @@ describe("deriveWorkItems", () => {
     expect(item).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "declared" }, lastActivityAt: "2026-07-12T11:30:00Z" });
   });
 
+  it("does not let older terminal telemetry override newer active work", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T11:35:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "in_progress",
+          updatedAt: "2026-07-12T11:30:00Z",
+          expiresAt: "2026-07-12T12:30:00Z",
+          path: "heartbeat.json",
+          liveness: "live"
+        },
+        batchSignals: [{
+          batchId: "older-batch",
+          laneName: "implementation",
+          status: "done",
+          blockedOn: [],
+          updatedAt: "2026-07-12T10:00:00Z"
+        }]
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "running",
+      terminalState: undefined,
+      terminalProvenance: undefined
+    });
+  });
+
+  it("does not let older GitHub completion evidence override newer active telemetry", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T11:35:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        type: "pull_request",
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "in_progress",
+          updatedAt: "2026-07-12T11:30:00Z",
+          expiresAt: "2026-07-12T12:30:00Z",
+          path: "heartbeat.json",
+          liveness: "live"
+        },
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "pull_request",
+          title: "Merged",
+          url: "https://github.com/shakacode/dashboard/pull/43",
+          state: "MERGED",
+          mergedAt: "2026-07-12T11:00:00Z",
+          labels: [],
+          loadState: "loaded"
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "running",
+      terminalState: undefined,
+      completedAt: undefined
+    });
+  });
+
+  it("does not let undated GitHub completion evidence override timestamped active telemetry", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        type: "pull_request",
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "in_progress",
+          updatedAt: "2026-07-12T11:55:00Z",
+          expiresAt: "2026-07-12T12:30:00Z",
+          path: "heartbeat.json",
+          liveness: "live"
+        },
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "pull_request",
+          title: "Merged without timestamp",
+          url: "https://github.com/shakacode/dashboard/pull/43",
+          state: "MERGED",
+          labels: [],
+          loadState: "loaded"
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "running",
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      completedAt: undefined
+    });
+  });
+
+  it.each([
+    {
+      name: "root issue closed after the latest coordination signal",
+      now: "2026-07-14T12:00:00Z",
+      closedAt: "2026-07-12T11:30:00Z",
+      heartbeat: {
+        schemaVersion: 1,
+        agentId: "worker",
+        repo: BASE_ITEM.repo,
+        target: BASE_ITEM.target,
+        status: "dead",
+        updatedAt: "2026-07-12T11:00:00Z",
+        expiresAt: "2026-07-12T11:05:00Z",
+        path: "heartbeat.json",
+        liveness: "dead" as const
+      },
+      operatorState: "needs_attention"
+    },
+    {
+      name: "root issue closed before the latest coordination signal",
+      now: "2026-07-12T12:00:00Z",
+      closedAt: "2026-07-12T11:00:00Z",
+      heartbeat: {
+        schemaVersion: 1,
+        agentId: "worker",
+        repo: BASE_ITEM.repo,
+        target: BASE_ITEM.target,
+        status: "in_progress",
+        updatedAt: "2026-07-12T11:55:00Z",
+        expiresAt: "2026-07-12T12:30:00Z",
+        path: "heartbeat.json",
+        liveness: "live" as const
+      },
+      operatorState: "running"
+    }
+  ])("keeps an open implementation PR nonterminal when $name", ({ now, closedAt, heartbeat, operatorState }) => {
+    const [item] = deriveWorkItems({
+      now: new Date(now),
+      workItems: [{
+        ...BASE_ITEM,
+        heartbeat,
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "issue",
+          title: "Closed root issue",
+          url: "https://github.com/shakacode/dashboard/issues/43",
+          state: "CLOSED",
+          closedAt,
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: BASE_ITEM.repo,
+            target: "54",
+            title: "Open implementation",
+            url: "https://github.com/shakacode/dashboard/pull/54",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState,
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      completedAt: undefined
+    });
+  });
+
+  it("keeps an unknown implementation PR nonterminal and archive-ineligible", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-14T12:00:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "dead",
+          updatedAt: "2026-07-12T11:00:00Z",
+          expiresAt: "2026-07-12T11:05:00Z",
+          path: "heartbeat.json",
+          liveness: "dead"
+        },
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "issue",
+          title: "Closed root issue",
+          url: "https://github.com/shakacode/dashboard/issues/43",
+          state: "CLOSED",
+          closedAt: "2026-07-12T11:30:00Z",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: BASE_ITEM.repo,
+            target: "54",
+            title: "Unknown implementation",
+            url: "https://github.com/shakacode/dashboard/pull/54",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "needs_attention",
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      completedAt: undefined
+    });
+  });
+
   it("does not guess terminal state when GitHub reconciliation is unknown", () => {
     const [item] = deriveWorkItems({
       now: new Date("2026-07-12T12:00:00Z"),
@@ -58,6 +286,41 @@ describe("deriveWorkItems", () => {
     });
     expect(item.terminalState).toBeUndefined();
     expect(item.terminalProvenance).toBeUndefined();
+  });
+
+  it("uses a loaded merged implementation PR when the coordinated target is unavailable", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-12T12:00:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "unknown",
+          title: "UNKNOWN",
+          url: "",
+          state: "UNKNOWN",
+          labels: [],
+          loadState: "unknown",
+          implementationPr: {
+            repo: BASE_ITEM.repo,
+            target: "54",
+            title: "Implement issue 43",
+            url: "https://github.com/shakacode/dashboard/pull/54",
+            state: "MERGED",
+            mergedAt: "2026-07-12T11:00:00Z",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      terminalState: "done",
+      completedAt: "2026-07-12T11:00:00Z",
+      terminalProvenance: { source: "github", url: "https://github.com/shakacode/dashboard/pull/54" }
+    });
   });
 
   it("never infers terminal state from a deleted branch alone", () => {
@@ -192,6 +455,59 @@ describe("deriveWorkItems", () => {
     expect(agedOut).toMatchObject({ operatorState: "archived_view", terminalState: undefined, attention: undefined });
     expect(possibleOpenPr).toMatchObject({ operatorState: "needs_attention", attention: { kind: "dead_holder" } });
   });
+
+  it.each(["", "/files", "/checks", "/commits"])(
+    "does not keep a dead holder active when its loaded implementation PR is closed and linked through %s",
+    (subpage) => {
+      const updatedAt = new Date(Date.parse("2026-07-12T11:20:00.000Z") - ARCHIVE_AFTER_MS - 1).toISOString();
+      const [item] = deriveWorkItems({
+        workItems: [{
+          ...BASE_ITEM,
+          heartbeat: {
+            schemaVersion: 1,
+            agentId: "acd-b-i43",
+            repo: BASE_ITEM.repo,
+            target: BASE_ITEM.target,
+            status: "implementation",
+            prUrl: `https://github.com/shakacode/dashboard/pull/54${subpage}`,
+            updatedAt,
+            expiresAt: updatedAt,
+            path: "heartbeats/acd-b-i43.json",
+            liveness: "dead"
+          },
+          github: {
+            repo: BASE_ITEM.repo,
+            target: BASE_ITEM.target,
+            type: "unknown",
+            title: "UNKNOWN",
+            url: "",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown",
+            implementationPr: {
+              repo: BASE_ITEM.repo,
+              target: "54",
+              title: "Closed implementation",
+              url: "https://github.com/shakacode/dashboard/pull/54",
+              state: "CLOSED",
+              closedAt: "2026-07-11T11:20:00.000Z",
+              labels: [],
+              loadState: "loaded"
+            }
+          }
+        }],
+        now: new Date("2026-07-12T11:20:00.000Z")
+      });
+
+      expect(item).toMatchObject({
+        operatorState: "archived_view",
+        terminalState: undefined,
+        terminalProvenance: undefined,
+        completedAt: undefined,
+        attention: undefined
+      });
+    }
+  );
 
   it("turns stopped batches and missing PR QA into explicit attention reasons", () => {
     const items = deriveWorkItems({
