@@ -172,14 +172,21 @@ describe("demo coordination state", () => {
 
       const dashboard = (await (
         await fetch(`http://127.0.0.1:${port}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } })
-      ).json()) as { agents: Array<{ machineId?: string }>; batches: unknown[]; stateRoot: string; warnings: Array<{ message: string; target?: string }>; workItems: Array<{ target: string; terminalState?: string; terminalProvenance?: { source: string }; github?: { branchState?: string } }>; trulyOpenCountStatus: string };
+      ).json()) as { agents: Array<{ machineId?: string }>; batches: unknown[]; stateRoot: string; warnings: Array<{ message: string; target?: string }>; workItems: Array<{ target: string; operatorState?: string; schedulingState?: string; terminalState?: string; terminalProvenance?: { source: string }; github?: { branchState?: string } }>; trulyOpenCountStatus: string };
       expect(new Set(dashboard.agents.map((agent) => agent.machineId))).toEqual(
         new Set(["demo-m1", "demo-m2", "demo-m3", "demo-m4"])
       );
       expect(dashboard.batches).toHaveLength(2);
       expect(dashboard.stateRoot).toBe(root);
-      expect(dashboard.workItems.find((item) => item.target === "202")).toMatchObject({ terminalState: "done", terminalProvenance: { source: "github" } });
-      expect(dashboard.workItems.find((item) => item.target === "203")).toMatchObject({ terminalState: "closed", terminalProvenance: { source: "github" }, github: { branchState: "deleted" } });
+      expect(dashboard.workItems.find((item) => item.target === "202")).toMatchObject({
+        operatorState: "running",
+        schedulingState: "in_process"
+      });
+      expect(dashboard.workItems.find((item) => item.target === "203")).toMatchObject({
+        operatorState: "needs_attention",
+        schedulingState: "started_not_processing",
+        github: { branchState: "deleted" }
+      });
       expect(dashboard.trulyOpenCountStatus).toBe("available");
       expect(dashboard.warnings).toEqual(
         expect.arrayContaining([
@@ -187,8 +194,16 @@ describe("demo coordination state", () => {
         ])
       );
       expect(dashboard.warnings.some((warning) =>
-        ["202", "203"].includes(warning.target || "") && warning.message.includes("holder is not currently live or stale")
+        warning.target === "202" && warning.message.includes("holder is not currently live or stale")
       )).toBe(false);
+      expect(dashboard.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            target: "203",
+            message: expect.stringContaining("holder is not currently live or stale")
+          })
+        ])
+      );
 
       child.kill("SIGTERM");
       const [exitCode] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
