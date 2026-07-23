@@ -145,6 +145,7 @@ object per line is easiest to write safely from multiple batch phases.
 
 ```json
 {
+  "schema_version": 1,
   "event_id": "batch-20260619-a:lane-a:continued:2026-06-19T20:00:00Z",
   "type": "continued",
   "batch_id": "batch-20260619-a",
@@ -229,7 +230,7 @@ Four `record-event` types validate their own CLI flags before writing:
 | `error` | `--severity`, `--category`, `--message` | `severity`: `P0`, `P1`, `P2`, or `P3`; `category` and `message` must be nonblank after trimming |
 | `human_intervention` | `--kind` | `kind`: `takeover`, `supersede`, `manual-fix`, or `drain` |
 
-A typed event rejects fields owned by another typed type, so its stored payload
+A typed event rejects fields owned by another typed event type, so its stored payload
 contains only its own typed fields. These validations are deliberately limited
 to the four named types; other `type` values keep the backward-compatible
 free-form `record-event` behavior.
@@ -241,7 +242,9 @@ agent and machine. Its event ID is a stable reservation derived from the lane,
 not a chronology key. The create-only reservation makes identical retries
 idempotent, keeps the first closeout authoritative, and rejects a conflicting
 closeout. Explicit producers may write the same record with
-`record-event --type lane_closed`; `workspace` defaults to `default`.
+`record-event --type lane_closed`. `workspace` is the tenant/coordination
+namespace reserved by ADR 0004; self-hosted producers use the default value
+`default`.
 
 `agent-coord batch-audit --batch-id ID [--json]` reads the registered batch and
 its event trail. Events are attributed by an explicit matching lane, a target
@@ -282,7 +285,8 @@ never substitute for verified lifecycle evidence.
 ## Batch Stop And Restart
 
 When a coordinator decides a running batch should stop before restart, append a
-stop-request event:
+stop-request event. This dashboard-specific producer uses `timestamp`; it is
+separate from the `agent-coord` ordinary-event envelope above.
 
 ```json
 {
@@ -315,10 +319,11 @@ event with the same `batch_id`, `repo`, and `target`:
 
 ```json
 {
+  "schema_version": 1,
   "event_id": "batch-20260619-a:4010:qa-passed:2026-06-19T21:00:00Z",
   "type": "qa.validation_passed",
   "batch_id": "batch-20260619-a",
-  "lane_name": "qa",
+  "lane": "qa",
   "agent_id": "qa-worker-a",
   "machine_id": "workstation-1",
   "thread_handle": "qa-thread-a",
@@ -329,7 +334,7 @@ event with the same `batch_id`, `repo`, and `target`:
   "branch": "jg-codex/4010-docs",
   "pr_url": "https://github.com/owner/repo/pull/4010",
   "status": "passed",
-  "timestamp": "2026-06-19T21:00:00Z",
+  "at": "2026-06-19T21:00:00Z",
   "message": "Validated install, smoke tests, and documented manual checks."
 }
 ```
@@ -347,7 +352,7 @@ When a worker hits a token/time limit:
 - Append a `token_limit_pause` event with the latest known repo, target, lane,
   machine, branch, tests, blockers, and next action.
 - On continuation, read the existing batch file and history first.
-- Append a `continued` event and resume the same `batch_id`, `lane_name`,
+- Append a `continued` event and resume the same `batch_id`, `lane`,
   `agent_id`, and `machine_id` unless intentionally reassigned.
 - Heartbeat again immediately after continuation, then at each phase transition.
 
