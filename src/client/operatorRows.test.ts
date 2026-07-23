@@ -1548,6 +1548,55 @@ describe("operatorRows", () => {
     });
   });
 
+  it("keeps PR URL metadata aligned with the observed same-target identity", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            type: "issue",
+            github: {
+              ...workItem().github!,
+              type: "pull_request",
+              coordinatedType: "issue",
+              url: "https://github.com/repo/app/pull/123"
+            }
+          }),
+          workItem({
+            id: "repo/app#124",
+            target: "124",
+            type: "pull_request",
+            github: {
+              ...workItem().github!,
+              target: "124",
+              type: "issue",
+              coordinatedType: "pull_request",
+              url: "https://github.com/repo/app/issues/124"
+            }
+          })
+        ]
+      })
+    );
+    const observedPr = rows.find((row) => row.target === "123");
+    const observedIssue = rows.find((row) => row.target === "124");
+
+    expect(observedPr).toMatchObject({
+      type: "pull_request",
+      prUrl: "https://github.com/repo/app/pull/123",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/123",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect(observedIssue).toMatchObject({
+      type: "issue",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "not_applicable" } }
+    });
+  });
+
   it("keeps operator fields informational for ready event-only work", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -1556,7 +1605,12 @@ describe("operatorRows", () => {
             type: "issue",
             schedulingState: "ready_for_batch",
             claim: undefined,
-            heartbeat: undefined
+            heartbeat: undefined,
+            github: {
+              ...workItem().github!,
+              type: "issue",
+              url: "https://github.com/repo/app/issues/123"
+            }
           })
         ],
         events: [

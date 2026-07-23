@@ -856,17 +856,6 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["manifest", lane?.branch],
     ["event", eventHistoryMetadata?.branch]
   );
-  const prUrlMetadata = firstObserved(
-    item.type === "pull_request" || item.github?.implementationPr
-      ? { state: "missing", source: "github" }
-      : notApplicable(),
-    ["claim", item.claim?.prUrl],
-    ["heartbeat", item.heartbeat?.prUrl],
-    ["manifest", lane?.prUrl],
-    ["event", eventHistoryMetadata?.prUrl],
-    ["github", item.github?.implementationPr?.url],
-    ["github", item.type === "pull_request" ? item.github?.url : undefined]
-  );
   const observedTargetType =
     item.github?.loadState === "loaded"
     && item.github.repo === item.repo
@@ -874,6 +863,19 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     && item.github.type !== "unknown"
       ? item.github.type
       : undefined;
+  const interactiveTargetType =
+    observedTargetType || (item.type === "unknown" ? batchTarget?.type || "unknown" : item.type);
+  const prUrlMetadata = firstObserved(
+    interactiveTargetType === "pull_request" || item.github?.implementationPr
+      ? { state: "missing", source: "github" }
+      : notApplicable(),
+    ["claim", item.claim?.prUrl],
+    ["heartbeat", item.heartbeat?.prUrl],
+    ["manifest", lane?.prUrl],
+    ["event", eventHistoryMetadata?.prUrl],
+    ["github", item.github?.implementationPr?.url],
+    ["github", interactiveTargetType === "pull_request" ? item.github?.url : undefined]
+  );
   const batchId =
     signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId || latest?.batchId;
   const batchMetadata = batchId
@@ -901,7 +903,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     provenance: targetProvenance(item, matchingEvents, batch),
     repo: item.repo,
     target: item.target,
-    type: observedTargetType || (item.type === "unknown" ? batchTarget?.type || "unknown" : item.type),
+    type: interactiveTargetType,
     title: item.github?.title || batchTarget?.title || workTitle(item),
     url: item.github?.url || batchTarget?.url,
     operatorState: state,
