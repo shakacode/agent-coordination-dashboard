@@ -840,8 +840,8 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     notApplicable(),
     ["claim", item.claim?.host],
     ["heartbeat", item.heartbeat?.host],
-    ["manifest", lane?.host],
-    ["event", eventHistoryMetadata?.host]
+    ["event", eventHistoryMetadata?.host],
+    ["manifest", lane?.host]
   );
   const machineMetadata = firstObserved(
     item.heartbeat ? { state: "missing", source: "heartbeat" } : notApplicable(),
@@ -978,7 +978,7 @@ function buildLaneRow(
     ["manifest", lane.threadHandle],
     ["event", eventHistoryMetadata?.threadHandle]
   );
-  const hostMetadata = firstObserved(notApplicable(), ["manifest", lane.host], ["event", eventHistoryMetadata?.host]);
+  const hostMetadata = firstObserved(notApplicable(), ["event", eventHistoryMetadata?.host], ["manifest", lane.host]);
   const machineMetadata = eventHistoryMetadata?.machineId
     ? observed(eventHistoryMetadata.machineId, "event")
     : notApplicable();

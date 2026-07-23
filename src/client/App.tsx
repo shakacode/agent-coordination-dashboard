@@ -731,20 +731,28 @@ export function App() {
 
   function selectHost(host?: string) {
     if (itemRoute) closeItem();
+    setFindOpen(false);
     setFleetFilter(host ? { host } : {});
     setTab("jobs");
   }
 
   function selectFleetFilter(filter: FleetFilter) {
     if (itemRoute) closeItem();
+    setFindOpen(false);
     setFleetFilter(filter);
     setTab("jobs");
   }
 
   function clearFleetFilter() {
     if (itemRoute) closeItem();
+    setFindOpen(false);
     setFleetFilter({});
     setTab("jobs");
+  }
+
+  function selectTab(nextTab: TabId) {
+    setFindOpen(false);
+    setTab(nextTab);
   }
 
   function findFromDrawer(value: string) {
@@ -1052,7 +1060,7 @@ export function App() {
             onSetBatchFilter={setBatchFilter}
             onSetFleetFilter={selectFleetFilter}
             onSetJobFilter={setJobFilter}
-            onSetTab={setTab}
+            onSetTab={selectTab}
             onToggleSelect={localWritesDisabled ? undefined : toggleSelectRow}
             selectionDisabled={batchPromptDisabled}
             tab={tab}

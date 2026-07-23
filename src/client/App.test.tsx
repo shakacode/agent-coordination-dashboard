@@ -522,6 +522,7 @@ describe("App", () => {
     const results = await screen.findByRole("listbox", { name: "Find results" });
     const options = within(results).getAllByRole("option");
     expect(options.length).toBeGreaterThan(1);
+    expect(options.every((option) => option.parentElement?.getAttribute("role") === "presentation")).toBe(true);
 
     await userEvent.keyboard("{ArrowDown}");
     expect(options[0]).toHaveFocus();
@@ -548,6 +549,26 @@ describe("App", () => {
     expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
     const fleet = screen.getByLabelText("Host fleet filters");
     await userEvent.click(within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ }));
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+  });
+
+  it("dismisses universal find when keyboard activation continues through navigation or fleet controls", async () => {
+    render(<App />);
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "repo/dashboard");
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+
+    const machines = screen.getByRole("button", { name: "Machines" });
+    machines.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
+
+    search.focus();
+    expect(await screen.findByRole("listbox", { name: "Find results" })).toBeInTheDocument();
+    const fleet = screen.getByLabelText("Host fleet filters");
+    const claude = within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ });
+    claude.focus();
+    await userEvent.keyboard("{Enter}");
     expect(screen.queryByRole("listbox", { name: "Find results" })).not.toBeInTheDocument();
   });
 
@@ -629,6 +650,7 @@ describe("App", () => {
     expect(stylesheet).toMatch(/\.job-title,[\s\S]*overflow-wrap: anywhere/);
     expect(stylesheet).toMatch(/\.host-legend\s*{[\s\S]*flex-wrap:\s*wrap/);
     expect(stylesheet).toMatch(/\.topbar-inner\s*{[\s\S]*grid-template/);
+    expect(stylesheet.match(/\.topbar-tools\s*\{[^}]+\}/)?.[0]).toContain("grid-column: 3");
     const srOnlyRule = stylesheet.match(/\.sr-only\s*\{[^}]+\}/)?.[0] || "";
     expect(srOnlyRule).toContain("clip-path: inset(50%)");
     expect(srOnlyRule).not.toMatch(/\n\s*clip:/);

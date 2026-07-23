@@ -159,6 +159,37 @@ describe("buildFindResults", () => {
     }));
   });
 
+  it("continues past ambiguous exact jobs to a uniquely matching machine", () => {
+    const secondHeartbeat = {
+      ...heartbeat,
+      agentId: "codex-maker-2",
+      target: "90"
+    };
+    const secondWorkItem: WorkItem = {
+      ...workItem,
+      id: "repo/dashboard#90",
+      target: "90",
+      heartbeat: secondHeartbeat,
+      github: {
+        ...workItem.github!,
+        target: "90",
+        title: "Second machine job",
+        url: "https://github.com/repo/dashboard/issues/90"
+      }
+    };
+    const sharedMachineView = buildCoordinationView({
+      ...model,
+      workItems: [workItem, secondWorkItem]
+    }, model.generatedAt);
+    const results = buildFindResults(sharedMachineView, "m1");
+
+    expect(results.filter((result) => result.kind === "job")).toHaveLength(2);
+    expect(exactFindResult(results, "m1")).toEqual(expect.objectContaining({
+      kind: "machine",
+      machine: "m1"
+    }));
+  });
+
   it("uses observed lane host custody for batch find results after a live takeover", () => {
     const takeoverHeartbeat = {
       ...heartbeat,

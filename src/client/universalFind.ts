@@ -140,7 +140,7 @@ export function exactFindResult(results: FindResult[], rawQuery: string): FindRe
       result.kind === kind
       && exactValues(result).some((value) => normalized(value) === query)
     );
-    if (matches.length > 0) return matches.length === 1 ? matches[0] : undefined;
+    if (matches.length === 1) return matches[0];
   }
   return undefined;
 }

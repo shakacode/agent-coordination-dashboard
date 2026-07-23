@@ -187,7 +187,7 @@ export function TopBar({
                   <>
                     <div aria-label="Find results" className="find-results" role="listbox">
                       {visibleFindResults.map((result, index) => (
-                        <div className="find-result-row" key={result.id}>
+                        <div className="find-result-row" key={result.id} role="presentation">
                           <button
                             aria-selected={activeResultId === result.id}
                             className="find-result"

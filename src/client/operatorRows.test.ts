@@ -1655,6 +1655,63 @@ describe("operatorRows", () => {
     });
   });
 
+  it("prefers event-only takeover host custody over stale target manifest metadata", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            claim: undefined,
+            heartbeat: undefined,
+            batchSignals: [{
+              batchId: "batch-1",
+              laneName: "implementation",
+              status: "coding",
+              blockedOn: []
+            }]
+          })
+        ],
+        batches: [{
+          schemaVersion: 1,
+          batchId: "batch-1",
+          repo: "repo/app",
+          path: "batches/batch-1.json",
+          targets: [{ type: "pull_request", target: "123", repo: "repo/app" }],
+          lanes: [{
+            name: "implementation",
+            owner: "agent-manifest",
+            targets: ["123"],
+            dependsOn: [],
+            status: "coding",
+            liveness: "no-heartbeat",
+            blockedOn: [],
+            host: "Codex"
+          }]
+        }],
+        events: [{
+          eventId: "event-host-takeover",
+          type: "phase",
+          batchId: "batch-1",
+          laneName: "implementation",
+          agentId: "agent-event",
+          host: "Claude",
+          repo: "repo/app",
+          target: "123",
+          status: "coding",
+          timestamp: "2026-07-09T19:59:30Z",
+          path: "events/batch-1.jsonl:1"
+        }]
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      source: "target",
+      host: "Claude",
+      metadata: {
+        host: { value: "Claude", state: "observed", source: "event" }
+      }
+    });
+  });
+
   it("keeps batch-backed event metadata on event-recovery rows without batch signals", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -2295,6 +2352,7 @@ describe("operatorRows", () => {
           liveness: "no-heartbeat",
           blockedOn: [],
           threadHandle: "manifest-thread",
+          host: "claude",
           branch: "manifest-branch"
         }
       ]
@@ -2338,7 +2396,7 @@ describe("operatorRows", () => {
     expect(rows[0].metadata).toMatchObject({
       machine: { value: rows[0].machineId },
       thread: { value: rows[0].threadHandle },
-      host: { value: rows[0].host },
+      host: { value: "codex", state: "observed", source: "event" },
       owner: { value: rows[0].operator },
       branch: { value: rows[0].branch },
       prUrl: { value: rows[0].prUrl },
