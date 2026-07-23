@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type KeyboardEvent, type Ref } from "react";
+import { useEffect, useState, type FormEvent, type KeyboardEvent, type Ref } from "react";
 import { Copy, RefreshCw, Search, X } from "lucide-react";
 import type { HostLegendItem } from "../coordinationView";
 import type { FindResult } from "../universalFind";
@@ -49,6 +49,13 @@ export function TopBar({
   searchInputRef
 }: TopBarProps) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [activeResultId, setActiveResultId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!findOpen || !findResults.some((result) => result.id === activeResultId)) {
+      setActiveResultId(null);
+    }
+  }, [activeResultId, findOpen, findResults]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -62,7 +69,27 @@ export function TopBar({
     }
     if (event.key === "ArrowDown" && findResults.length > 0) {
       event.preventDefault();
-      document.getElementById(`find-result-${encodeURIComponent(findResults[0].id)}`)?.focus();
+      focusResult(0);
+    }
+  }
+
+  function focusResult(index: number) {
+    const result = findResults[(index + findResults.length) % findResults.length];
+    if (!result) return;
+    setActiveResultId(result.id);
+    document.getElementById(`find-result-${encodeURIComponent(result.id)}`)?.focus();
+  }
+
+  function resultKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusResult(index + (event.key === "ArrowDown" ? 1 : -1));
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      focusResult(event.key === "Home" ? 0 : findResults.length - 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onFindDismiss();
     }
   }
 
@@ -142,13 +169,15 @@ export function TopBar({
                   <p className="find-state" role="status">No matches for &quot;{query.trim()}&quot;</p>
                 ) : (
                   <div aria-label="Find results" className="find-results" role="listbox">
-                    {findResults.map((result) => (
+                    {findResults.map((result, index) => (
                       <div className="find-result-row" key={result.id}>
                         <button
-                          aria-selected="false"
+                          aria-selected={activeResultId === result.id}
                           className="find-result"
                           id={`find-result-${encodeURIComponent(result.id)}`}
                           onClick={() => onFindResult(result)}
+                          onFocus={() => setActiveResultId(result.id)}
+                          onKeyDown={(event) => resultKeyDown(event, index)}
                           role="option"
                           type="button"
                         >

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DashboardModel, WorkItem } from "../shared/types";
 import { buildCoordinationView } from "./coordinationView";
-import { buildFindResults, exactJobFindResult } from "./universalFind";
+import { buildFindResults, exactFindResult, exactJobFindResult } from "./universalFind";
 
 const heartbeat = {
   schemaVersion: 1,
@@ -14,6 +14,7 @@ const heartbeat = {
   batchId: "batch-alpha",
   threadHandle: "acd-chat-kite",
   branch: "codex/universal-find",
+  prUrl: "https://github.com/repo/dashboard/pull/189",
   status: "implementing",
   updatedAt: "2026-07-23T01:00:00Z",
   expiresAt: "2026-07-23T02:00:00Z",
@@ -36,7 +37,16 @@ const workItem: WorkItem = {
     url: "https://github.com/repo/dashboard/issues/89",
     state: "OPEN",
     labels: [],
-    loadState: "loaded"
+    loadState: "loaded",
+    implementationPr: {
+      repo: "repo/dashboard",
+      target: "190",
+      title: "Implement universal find",
+      url: "https://github.com/repo/dashboard/pull/190",
+      state: "OPEN",
+      labels: [],
+      loadState: "loaded"
+    }
   },
   warnings: [],
   selected: false
@@ -73,7 +83,8 @@ const model: DashboardModel = {
       host: "Codex app",
       operator: "justin",
       threadHandle: "acd-chat-kite",
-      branch: "codex/universal-find"
+      branch: "codex/universal-find",
+      prUrl: "https://github.com/repo/dashboard/pull/190"
     }],
     path: "batches/batch-alpha.json"
   }],
@@ -125,5 +136,60 @@ describe("buildFindResults", () => {
       kind: "job",
       row: expect.objectContaining({ target: "89" })
     }));
+  });
+
+  it.each([
+    "https://github.com/repo/dashboard/pull/189",
+    "https://github.com/repo/dashboard/pull/190",
+    "190"
+  ])("opens the uniquely matching job for exact custody identity %s", (query) => {
+    const results = buildFindResults(view, query);
+    expect(exactFindResult(results, query)).toEqual(expect.objectContaining({
+      kind: "job",
+      row: expect.objectContaining({ target: "89" })
+    }));
+  });
+
+  it("opens an exact batch id even when the batch's jobs also match", () => {
+    const results = buildFindResults(view, "batch-alpha");
+    expect(results.map((result) => result.kind)).toEqual(expect.arrayContaining(["job", "batch"]));
+    expect(exactFindResult(results, "batch-alpha")).toEqual(expect.objectContaining({
+      kind: "batch",
+      card: expect.objectContaining({ id: "batch-alpha" })
+    }));
+  });
+
+  it.each(["repo/other#45", "other#45"])("normalizes compact repository references %s", (query) => {
+    const other: WorkItem = {
+      ...workItem,
+      id: "repo/other#45",
+      repo: "repo/other",
+      target: "45",
+      heartbeat: undefined,
+      schedulingState: "ready_for_batch",
+      github: {
+        repo: "repo/other",
+        target: "45",
+        type: "issue",
+        title: "Other repository issue",
+        url: "https://github.com/repo/other/issues/45",
+        state: "OPEN",
+        labels: [],
+        loadState: "loaded"
+      }
+    };
+    const compactView = buildCoordinationView({
+      ...model,
+      targetRepos: ["repo/dashboard", "repo/other"],
+      workItems: [...model.workItems, other]
+    }, model.generatedAt);
+
+    expect(buildFindResults(compactView, query)).toEqual([
+      expect.objectContaining({
+        kind: "job",
+        repo: "repo/other",
+        row: expect.objectContaining({ target: "45" })
+      })
+    ]);
   });
 });

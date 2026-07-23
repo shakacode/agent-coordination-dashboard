@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 // @ts-expect-error App tests inspect the checked-in CSS, while the browser tsconfig intentionally excludes Node types.
 import { readFileSync } from "node:fs";
@@ -497,6 +497,42 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Work item #43" })).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Dashboard views" })
       .querySelector('[aria-current="page"]')).toHaveTextContent("Jobs");
+  });
+
+  it("leaves an item route when clearing an active fleet filter", async () => {
+    render(<App />);
+    const fleet = await screen.findByLabelText("Host fleet filters");
+    await userEvent.click(within(fleet).getByRole("button", { name: /Claude.*1 live.*1 total/ }));
+
+    act(() => {
+      window.history.pushState({}, "", "/?item=repo/dashboard/43");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByRole("heading", { name: "Work item #43" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear fleet filters" }));
+    expect(window.location.search).not.toContain("item=");
+    expect(screen.queryByRole("heading", { name: "Work item #43" })).not.toBeInTheDocument();
+  });
+
+  it("tracks and traverses the active universal-find option with the keyboard", async () => {
+    render(<App />);
+    const search = await screen.findByRole("searchbox", { name: "Find jobs, batches, machines, chats, branches, or GitHub items" });
+    await userEvent.type(search, "repo/dashboard");
+    const results = await screen.findByRole("listbox", { name: "Find results" });
+    const options = within(results).getAllByRole("option");
+    expect(options.length).toBeGreaterThan(1);
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(options[0]).toHaveFocus();
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[1]).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(options[1]).toHaveFocus();
+    expect(options[1]).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{ArrowUp}");
+    expect(options[0]).toHaveFocus();
   });
 
   it("opens the custody timeline for a deep-linked item route", async () => {

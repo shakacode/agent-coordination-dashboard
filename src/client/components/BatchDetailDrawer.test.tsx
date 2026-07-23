@@ -212,4 +212,28 @@ describe("BatchDetailDrawer lane execution map (#88)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Copy chat acd-codex-chat" }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("acd-codex-chat");
   });
+
+  it("does not brand a GitHub issue URL as a pull request", () => {
+    const card = cardFrom({
+      targets: [
+        { type: "issue", target: "87", repo: "repo/dashboard", url: "https://github.com/repo/dashboard/issues/87" }
+      ],
+      lanes: [{
+        name: "issue-only",
+        owner: "codex-maker",
+        targets: ["87"],
+        dependsOn: [],
+        status: "running",
+        liveness: "live",
+        blockedOn: [],
+        prUrl: "https://github.com/repo/dashboard/issues/999"
+      }]
+    });
+
+    render(<BatchDetailDrawer card={card} onClose={() => {}} />);
+
+    expect(screen.getByRole("link", { name: "Issue #87" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open PR" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Issue #999" })).not.toBeInTheDocument();
+  });
 });

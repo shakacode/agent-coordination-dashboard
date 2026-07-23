@@ -22,7 +22,7 @@ import type { AnnotationAction } from "./components/OperatorActions";
 import type { JobRow } from "./coordinationView";
 import { parseRepoScopeExclusion, SignalGroupList } from "./components/SignalGroups";
 import { groupWarnings } from "./signalGroups";
-import { buildFindResults, exactJobFindResult, type FindResult } from "./universalFind";
+import { buildFindResults, exactFindResult, type FindResult } from "./universalFind";
 
 type WorkItem = DashboardModel["workItems"][number];
 const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
@@ -724,8 +724,8 @@ export function App() {
 
   function submitSearch() {
     setFindOpen(true);
-    const exactJob = exactJobFindResult(findResults, query);
-    if (exactJob) openFindResult(exactJob);
+    const exactResult = exactFindResult(findResults, query);
+    if (exactResult) openFindResult(exactResult);
     else if (findResults.length === 1) openFindResult(findResults[0]);
   }
 
@@ -738,6 +738,12 @@ export function App() {
   function selectFleetFilter(filter: FleetFilter) {
     if (itemRoute) closeItem();
     setFleetFilter(filter);
+    setTab("jobs");
+  }
+
+  function clearFleetFilter() {
+    if (itemRoute) closeItem();
+    setFleetFilter({});
     setTab("jobs");
   }
 
@@ -895,7 +901,7 @@ export function App() {
         findOpen={findOpen}
         findResults={findResults}
         hostLegend={view.hostLegend}
-        onClearFleetFilter={() => setFleetFilter({})}
+        onClearFleetFilter={clearFleetFilter}
         onFindDismiss={() => setFindOpen(false)}
         onFindFocus={() => setFindOpen(true)}
         onFindResult={openFindResult}

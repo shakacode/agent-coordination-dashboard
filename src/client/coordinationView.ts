@@ -610,7 +610,7 @@ function buildLaneView(
     branch: LANE_BRANCH_CHARS(laneIndex, laneCount),
     tag: displayAttribution(lane.name),
     target: targetText,
-    targetColor: hostColor(lane.host || representative?.host),
+    targetColor: hostColor(representative?.host || lane.host),
     title: representative?.title || displayAttribution(lane.status, "Lane"),
     state: displayAttribution(lane.status, state),
     operatorState: state,
@@ -619,14 +619,14 @@ function buildLaneView(
     note,
     noteColor: BLOCKED_LANE_STATES.has(state) ? "var(--block)" : STUCK_LANE_STATES.has(state) ? "var(--warn)" : "var(--mut)",
     route: lane.route || workItem?.route,
-    where: displayAttribution(lane.host, ""),
-    branchName: lane.branch || representative?.branch,
+    where: displayAttribution(representative?.host || lane.host, ""),
+    branchName: representative?.branch || lane.branch,
     targetUrl: representative?.url || laneTargetUrl(batch, firstTarget),
-    owner: lane.owner || representative?.agentId,
+    owner: representative?.agentId || lane.owner,
     machine: representative?.machineId,
-    host: lane.host || representative?.host,
-    threadHandle: lane.threadHandle || representative?.threadHandle,
-    prUrl: lane.prUrl || representative?.prUrl || representative?.implementationPr?.url,
+    host: representative?.host || lane.host,
+    threadHandle: representative?.threadHandle || lane.threadHandle,
+    prUrl: representative?.prUrl || representative?.implementationPr?.url || lane.prUrl,
     row: representative,
     workItem
   };
@@ -738,7 +738,7 @@ export function buildBatchCard(
     idAttr: `batch-${batchDomToken(batchIdentity(batch))}`,
     title: batchTitle(batch),
     repo: batchDisplayRepository(batch),
-    thread: batch.lanes.find((lane) => lane.threadHandle)?.threadHandle,
+    thread: undefined,
     coordinator: ABSENT,
     mergeAuth: batch.mergeAuthority || ABSENT,
     objective: batch.objective,
@@ -827,7 +827,7 @@ export function buildMachineCards(agents: AgentSummary[], nowMs: number, jobRows
                       && (!repo || candidate.row.repo === repo)
                       && (!target || candidate.row.target === target)
                     );
-                    return repo || target ? candidates[0] : candidates.length === 1 ? candidates[0] : undefined;
+                    return repo && target ? candidates[0] : candidates.length === 1 ? candidates[0] : undefined;
                   })();
               const row = job?.row;
               const workItem = job?.workItem || currentWork;

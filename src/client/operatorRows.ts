@@ -226,8 +226,13 @@ function normalizeSearch(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function searchReference(query: string): { target: string; type?: "issue" | "pull_request" } | undefined {
-  const match = normalizeSearch(query).match(/^(?:(pr|pull request|issue)\s*)?#?\s*(\d+)$/);
+function searchReference(query: string): { target: string; type?: "issue" | "pull_request"; repo?: string } | undefined {
+  const normalized = normalizeSearch(query);
+  const compact = normalized.match(/^([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)?)#(\d+)$/);
+  if (compact) {
+    return { repo: compact[1], target: compact[2] };
+  }
+  const match = normalized.match(/^(?:(pr|pull request|issue)\s*)?#?\s*(\d+)$/);
   if (!match) return undefined;
   return {
     target: match[2],
@@ -1208,6 +1213,10 @@ export function filterOperatorRows(rows: OperatorRow[], query: string, targetRep
   const exactReference = searchReference(query);
   const filtered = exactReference
     ? rows.filter((row) => {
+        if (exactReference.repo) {
+          const repo = row.repo.toLowerCase();
+          if (repo !== exactReference.repo && !repo.endsWith(`/${exactReference.repo}`)) return false;
+        }
         if (exactReference.type === "issue") {
           return row.type === "issue" && row.target === exactReference.target;
         }

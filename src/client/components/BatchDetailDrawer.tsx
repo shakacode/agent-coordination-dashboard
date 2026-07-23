@@ -3,7 +3,7 @@ import { Clipboard, OctagonPause, Search, X } from "lucide-react";
 import type { BatchCompletionReport, BatchRecord, WorkItem } from "../../shared/types";
 import { displayAttribution } from "../../shared/attribution";
 import { ABSENT, metric, type BatchCard } from "../coordinationView";
-import { canonicalGithubItemUrl, githubBranchUrl } from "../githubUrls";
+import { canonicalGithubItemUrl, canonicalPullRequestUrl, githubBranchUrl } from "../githubUrls";
 import type { OperatorRow } from "../operatorRows";
 import { LinkableValue, LinkChips } from "./reportPrimitives";
 
@@ -260,7 +260,7 @@ export function BatchDetailDrawer({
               <tbody>
                 {card.lanes.map((lane) => {
                   const targetUrl = canonicalGithubItemUrl(lane.targetUrl);
-                  const prUrl = canonicalGithubItemUrl(lane.prUrl);
+                  const prUrl = lane.prUrl ? canonicalPullRequestUrl(lane.prUrl) : undefined;
                   const prTarget = prUrl?.match(/\/pull\/(\d+)$/)?.[1];
                   const branchUrl = githubBranchUrl(lane.row?.repo || card.repo, lane.branchName);
                   return (

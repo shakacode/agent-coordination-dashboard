@@ -95,13 +95,33 @@ function machineMatches(card: MachineCard, query: string): boolean {
   ], query);
 }
 
-function resultScore(result: FindResult, query: string): number {
-  const exactValues = result.kind === "job"
-    ? [result.row.target, result.row.threadHandle, result.row.branch, result.row.agentId, result.row.machineId, result.row.repo, canonicalGithubItemUrl(result.row.url)]
+function jobExactValues(result: Extract<FindResult, { kind: "job" }>): Array<string | undefined> {
+  const custodyPrUrl = canonicalGithubItemUrl(result.row.prUrl);
+  return [
+    result.row.target,
+    result.row.threadHandle,
+    result.row.branch,
+    result.row.agentId,
+    result.row.machineId,
+    result.row.repo,
+    canonicalGithubItemUrl(result.row.url),
+    result.row.implementationPr?.target,
+    canonicalGithubItemUrl(result.row.implementationPr?.url),
+    custodyPrUrl?.match(/\/pull\/(\d+)$/)?.[1],
+    custodyPrUrl
+  ];
+}
+
+function exactValues(result: FindResult): Array<string | undefined> {
+  return result.kind === "job"
+    ? jobExactValues(result)
     : result.kind === "batch"
       ? [result.card.id, result.card.thread, result.card.title, result.card.repo]
       : [result.card.id, result.card.label];
-  if (exactValues.some((value) => normalized(value) === query)) return 0;
+}
+
+function resultScore(result: FindResult, query: string): number {
+  if (exactValues(result).some((value) => normalized(value) === query)) return 0;
   return result.kind === "job" ? 1 : result.kind === "batch" ? 2 : 3;
 }
 
@@ -109,17 +129,21 @@ export function exactJobFindResult(results: FindResult[], rawQuery: string): Ext
   const query = normalized(canonicalGithubItemUrl(rawQuery) || rawQuery);
   const matches = results.filter((result): result is Extract<FindResult, { kind: "job" }> =>
     result.kind === "job"
-    && [
-      result.row.target,
-      result.row.threadHandle,
-      result.row.branch,
-      result.row.agentId,
-      result.row.machineId,
-      result.row.repo,
-      canonicalGithubItemUrl(result.row.url)
-    ].some((value) => normalized(value) === query)
+    && jobExactValues(result).some((value) => normalized(value) === query)
   );
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function exactFindResult(results: FindResult[], rawQuery: string): FindResult | undefined {
+  const query = normalized(canonicalGithubItemUrl(rawQuery) || rawQuery);
+  for (const kind of ["job", "batch", "machine"] as const) {
+    const matches = results.filter((result) =>
+      result.kind === kind
+      && exactValues(result).some((value) => normalized(value) === query)
+    );
+    if (matches.length > 0) return matches.length === 1 ? matches[0] : undefined;
+  }
+  return undefined;
 }
 
 export function buildFindResults(view: CoordinationView, rawQuery: string): FindResult[] {

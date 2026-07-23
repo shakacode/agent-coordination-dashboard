@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { BATCH_TIERS, JOB_BUCKETS, canonicalHostName, type CoordinationView } from "../coordinationView";
 import type { OperatorRow } from "../operatorRows";
 import type { BatchCard, JobRow } from "../coordinationView";
@@ -52,30 +53,41 @@ export function DashboardShell({
   selectionDisabled,
   highlightBatchIdentity
 }: DashboardShellProps) {
-  const matchesFleet = (host?: string, machine?: string) =>
-    (!fleetFilter.host || canonicalHostName(host) === fleetFilter.host)
-    && (!fleetFilter.machine || machine === fleetFilter.machine);
-  const jobRows = view.jobRows.filter((row) => matchesFleet(row.row.host, row.row.machineId));
-  const jobCounts = JOB_BUCKETS.reduce((counts, bucket) => {
-    counts[bucket.id] = jobRows.filter((row) => row.bucket === bucket.id).length;
-    return counts;
-  }, {} as CoordinationView["jobCounts"]);
-  const batchCards = view.batchCards.filter((card) => {
-    if (!fleetFilter.host && !fleetFilter.machine) return true;
-    return card.lanes.some((lane) => matchesFleet(lane.host, lane.machine))
-      || matchesFleet(card.host, card.machine);
-  });
-  const batchTierCounts = BATCH_TIERS.reduce((counts, tier) => {
-    counts[tier.id] = batchCards.filter((card) => card.tier === tier.id).length;
-    return counts;
-  }, {} as CoordinationView["batchTierCounts"]);
-  const machines = view.machines
-    .filter((machine) => !fleetFilter.machine || machine.id === fleetFilter.machine)
-    .map((machine) => ({
-      ...machine,
-      hosts: machine.hosts.filter((host) => !fleetFilter.host || canonicalHostName(host.name) === fleetFilter.host)
-    }))
-    .filter((machine) => machine.hosts.length > 0);
+  const { jobRows, jobCounts, batchCards, batchTierCounts, machines } = useMemo(() => {
+    const matchesFleet = (host?: string, machine?: string) =>
+      (!fleetFilter.host || canonicalHostName(host) === fleetFilter.host)
+      && (!fleetFilter.machine || machine === fleetFilter.machine);
+    const filteredJobs = view.jobRows.filter((row) => matchesFleet(row.row.host, row.row.machineId));
+    const filteredJobCounts = JOB_BUCKETS.reduce((counts, bucket) => {
+      counts[bucket.id] = filteredJobs.filter((row) => row.bucket === bucket.id).length;
+      return counts;
+    }, {} as CoordinationView["jobCounts"]);
+    const filteredBatches = view.batchCards.filter((card) => {
+      if (!fleetFilter.host && !fleetFilter.machine) return true;
+      const laneMatch = card.lanes.some((lane) => matchesFleet(lane.host, lane.machine));
+      if (laneMatch) return true;
+      if (fleetFilter.machine && card.lanes.some((lane) => Boolean(lane.machine))) return false;
+      return matchesFleet(card.host, card.machine);
+    });
+    const filteredBatchCounts = BATCH_TIERS.reduce((counts, tier) => {
+      counts[tier.id] = filteredBatches.filter((card) => card.tier === tier.id).length;
+      return counts;
+    }, {} as CoordinationView["batchTierCounts"]);
+    const filteredMachines = view.machines
+      .filter((machine) => !fleetFilter.machine || machine.id === fleetFilter.machine)
+      .map((machine) => ({
+        ...machine,
+        hosts: machine.hosts.filter((host) => !fleetFilter.host || canonicalHostName(host.name) === fleetFilter.host)
+      }))
+      .filter((machine) => machine.hosts.length > 0);
+    return {
+      jobRows: filteredJobs,
+      jobCounts: filteredJobCounts,
+      batchCards: filteredBatches,
+      batchTierCounts: filteredBatchCounts,
+      machines: filteredMachines
+    };
+  }, [fleetFilter.host, fleetFilter.machine, view]);
 
   return (
     <div className="app-width">
