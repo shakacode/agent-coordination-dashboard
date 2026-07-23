@@ -735,15 +735,18 @@ export function App() {
       }
       return exactMatch ? targetMatch || implementationMatch : targetPartial || implementationPartial;
     };
-    const exact = view.jobRows.filter((candidate) => matchesNumber(candidate, true));
-    let candidates = exact;
-    if (repoHint) {
+    const filterByRepository = (candidates: JobRow[]) => {
+      if (!repoHint) return candidates;
       const repoName = (repo: string) => repo.toLowerCase().split("/").pop();
-      const byName = exact.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
-      const byLoose = exact.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
-      candidates = byName.length > 0 ? byName : byLoose.length > 0 ? byLoose : exact;
-    }
-    const hit = candidates[0] || view.jobRows.find((candidate) => matchesNumber(candidate, false));
+      const byName = candidates.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
+      const byLoose = candidates.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
+      return byName.length > 0 ? byName : byLoose.length > 0 ? byLoose : candidates;
+    };
+    const exact = filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, true)));
+    const partial = exact.length === 0
+      ? filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, false)))
+      : [];
+    const hit = exact.length === 1 ? exact[0] : partial.length === 1 ? partial[0] : undefined;
     if (hit) {
       setTab("jobs");
       openRow(hit.row, hit.workItem);

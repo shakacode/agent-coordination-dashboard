@@ -265,6 +265,8 @@ describe("buildCoordinationView", () => {
     expect(findBatchCard(cards, { batchId: "b1" })).toBeUndefined();
     expect(findBatchCard(cards, { batchId: "b1", repo: "repo/dashboard" })?.batch.path).toBe(first.path);
     expect(findBatchCard(cards, { batchId: "b1", repo: "repo/other" })?.batch.path).toBe(second.path);
+    expect(findBatchCard(cards, { batchId: "b1", repo: "repo/dashboard" })?.repo).toBe("repo/dashboard");
+    expect(findBatchCard(cards, { batchId: "b1", repo: "repo/other" })?.repo).toBe("repo/other");
   });
 
   it("groups agents into machines and collapses dead agents to a count", () => {

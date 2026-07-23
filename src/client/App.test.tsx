@@ -358,6 +358,42 @@ describe("App", () => {
     expect(within(drawer).getByText("Ready dashboard work")).toBeInTheDocument();
   });
 
+  it("requires a repository hint when an exact number is ambiguous", async () => {
+    const collisionModel: DashboardModel = {
+      ...model,
+      targetRepos: ["repo/dashboard", "repo/other"],
+      workItems: [
+        ...model.workItems,
+        {
+          ...model.workItems[2],
+          id: "repo/other#45",
+          repo: "repo/other",
+          github: {
+            ...model.workItems[2].github!,
+            repo: "repo/other",
+            title: "Ready other-repository work",
+            url: "https://github.com/repo/other/issues/45"
+          }
+        }
+      ]
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings")
+        ? okJson({ ...settings, targetRepos: collisionModel.targetRepos })
+        : okJson(collisionModel)
+    ));
+    render(<App />);
+
+    const search = await screen.findByLabelText("Find PR or issue number");
+    await userEvent.type(search, "45{enter}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await userEvent.clear(search);
+    await userEvent.type(search, "other 45{enter}");
+    const drawer = await screen.findByRole("dialog", { name: "Issue #45 detail" });
+    expect(within(drawer).getByText("Ready other-repository work")).toBeInTheDocument();
+  });
+
   it("opens the custody timeline for a deep-linked item route", async () => {
     window.history.pushState({}, "", "/?item=repo/dashboard/43");
     render(<App />);

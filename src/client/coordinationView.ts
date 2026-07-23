@@ -457,6 +457,13 @@ function batchRepositoryScope(batch: BatchRecord): string {
   return `UNKNOWN:${batch.path}`;
 }
 
+function batchDisplayRepository(batch: BatchRecord): string {
+  const scope = batchRepositoryScope(batch);
+  return scope.startsWith("UNKNOWN:") || scope.startsWith("MULTI:")
+    ? "UNKNOWN"
+    : displayAttribution(scope, "UNKNOWN");
+}
+
 export function batchIdentity(batch: BatchRecord): string {
   return JSON.stringify([batchRepositoryScope(batch), batch.batchId]);
 }
@@ -687,7 +694,7 @@ export function buildBatchCard(
     id: batch.batchId,
     idAttr: `batch-${batchDomToken(batchIdentity(batch))}`,
     title: batchTitle(batch),
-    repo: displayAttribution(batch.repo || batch.path),
+    repo: batchDisplayRepository(batch),
     thread: batch.lanes.find((lane) => lane.threadHandle)?.threadHandle,
     coordinator: ABSENT,
     mergeAuth: batch.mergeAuthority || ABSENT,

@@ -83,13 +83,21 @@ interface EffectiveGitHubLifecycle {
 function effectiveGitHubLifecycle(item: WorkItem): EffectiveGitHubLifecycle {
   const github = item.github;
   const implementationPr = github?.implementationPr;
-  const linkedPrUrl = Boolean(item.claim?.prUrl || item.heartbeat?.prUrl);
+  const implementationState = implementationPr?.loadState === "loaded"
+    ? implementationPr.state.trim().toLowerCase()
+    : undefined;
+  const normalizeUrl = (url: string) => url.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
+  const closedImplementationUrl = implementationState === "closed" && implementationPr
+    ? normalizeUrl(implementationPr.url)
+    : undefined;
+  const unresolvedLinkedPrUrl = [item.claim?.prUrl, item.heartbeat?.prUrl]
+    .filter((url): url is string => Boolean(url))
+    .some((url) => normalizeUrl(url) !== closedImplementationUrl);
 
   if (implementationPr) {
     if (implementationPr.loadState !== "loaded") {
       return { mayHaveOpenPullRequest: true };
     }
-    const implementationState = implementationPr.state.trim().toLowerCase();
     if (implementationState === "open" || implementationState === "unknown") {
       return { mayHaveOpenPullRequest: true };
     }
@@ -106,9 +114,9 @@ function effectiveGitHubLifecycle(item: WorkItem): EffectiveGitHubLifecycle {
   if (github?.loadState !== "loaded") {
     return {
       mayHaveOpenPullRequest: Boolean(
-        linkedPrUrl
+        unresolvedLinkedPrUrl
         || github?.type === "pull_request"
-        || implementationPr
+        || (implementationPr && implementationState !== "closed")
       )
     };
   }
@@ -131,7 +139,7 @@ function effectiveGitHubLifecycle(item: WorkItem): EffectiveGitHubLifecycle {
   }
   return {
     mayHaveOpenPullRequest: Boolean(
-      linkedPrUrl
+      unresolvedLinkedPrUrl
       || (github.type === "pull_request" && (rootState === "open" || rootState === "unknown"))
     )
   };
@@ -213,10 +221,9 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
     const githubTerminal =
       githubTerminalCandidate
       && !(
-        githubCompletionAt
-        && latestLifecycle
-        && latestLifecycle.time > timestamp(githubCompletionAt)
+        latestLifecycle
         && !terminalState([latestLifecycle.status])
+        && (!githubCompletionAt || latestLifecycle.time > timestamp(githubCompletionAt))
       )
         ? githubTerminalCandidate
         : undefined;
