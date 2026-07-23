@@ -205,8 +205,8 @@ it.
 When `batch_id` is known, successful primary-state changes auto-emit:
 
 - `claim.acquired` for a genuine acquisition, re-acquisition, or takeover. A
-  same-holder TTL renewal emits nothing unless its lane, generation, or instance
-  identity changes or is newly added.
+  same-holder TTL renewal emits nothing unless an already-present batch/branch
+  value changes, or a generation/instance value changes or is newly added.
 - `claim.released` for a non-terminal release, with `status: "released"` and
   handoff metadata when applicable. A terminal release emits `lane_closed`
   instead; it does not also emit `claim.released`.
