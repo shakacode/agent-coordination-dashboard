@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { WorkItem } from "../../shared/types";
+import type { DashboardModel, GitHubImplementationPullRequest, WorkItem } from "../../shared/types";
+import { buildCoordinationView } from "../coordinationView";
 import type { OperatorRow } from "../operatorRows";
 import { JobDetailDrawer } from "./JobDetailDrawer";
 
@@ -35,6 +36,38 @@ function workItem(partial: Partial<WorkItem> = {}): WorkItem {
     selected: false,
     ...partial
   };
+}
+
+function rowWithImplementationPreview(implementationPr: GitHubImplementationPullRequest): OperatorRow {
+  const item = workItem({
+    id: "repo/dashboard#215",
+    target: "215",
+    github: {
+      repo: "repo/dashboard",
+      target: "215",
+      type: "pull_request",
+      title: "Root pull request 215",
+      url: "https://github.com/repo/dashboard/pull/215",
+      state: "OPEN",
+      labels: [],
+      loadState: "loaded",
+      implementationPr
+    }
+  });
+  const model: DashboardModel = {
+    generatedAt: "2026-07-23T01:01:00Z",
+    stateRoot: "/state",
+    targetRepos: ["repo/dashboard"],
+    agents: [],
+    workItems: [item],
+    batches: [],
+    events: [],
+    batchOperations: [],
+    qaValidations: [],
+    healthItems: [],
+    warnings: []
+  };
+  return buildCoordinationView(model, model.generatedAt).jobRows[0].row;
 }
 
 describe("JobDetailDrawer provenance rows", () => {
@@ -82,6 +115,36 @@ describe("JobDetailDrawer provenance rows", () => {
     expect(screen.getByText("Implementation PR")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "PR #91" })).toHaveAttribute("href", "https://github.com/repo/dashboard/pull/91");
   });
+
+  it.each([
+    ["unknown-load-state", {
+      repo: "repo/dashboard",
+      target: "315",
+      title: "Partial implementation",
+      url: "https://github.com/repo/dashboard/pull/315",
+      state: "UNKNOWN",
+      labels: [],
+      loadState: "unknown"
+    }],
+    ["mismatched-url", {
+      repo: "repo/dashboard",
+      target: "316",
+      title: "Mismatched implementation",
+      url: "https://github.com/repo/api/pull/999",
+      state: "OPEN",
+      labels: [],
+      loadState: "loaded"
+    }]
+  ] satisfies Array<[string, GitHubImplementationPullRequest]>)(
+    "does not render a rejected %s implementation preview",
+    (_case, implementationPr) => {
+      render(<JobDetailDrawer row={rowWithImplementationPreview(implementationPr)} onClose={() => {}} />);
+
+      expect(screen.queryByText("Implementation PR")).not.toBeInTheDocument();
+      expect(screen.queryByText(`PR #${implementationPr.target}`)).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: `PR #${implementationPr.target}` })).not.toBeInTheDocument();
+    }
+  );
 
   it("degrades route, merge authority, and tokens to the em-dash placeholder when absent (#79/#80/#81)", () => {
     render(<JobDetailDrawer row={row} onClose={() => {}} />);

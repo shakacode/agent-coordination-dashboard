@@ -591,6 +591,124 @@ describe("buildCoordinationView", () => {
     expect(linked.implementationUrl).toBe("https://github.com/repo/dashboard/pull/54");
   });
 
+  it("does not expose rejected implementation previews to job consumers", () => {
+    const invalidImplementationItems = [
+      workItem({
+        id: "repo/dashboard#215",
+        repo: "repo/dashboard",
+        target: "215",
+        type: "pull_request",
+        schedulingState: "ready_for_batch",
+        github: {
+          repo: "repo/dashboard",
+          target: "215",
+          type: "pull_request",
+          title: "Root pull request 215",
+          url: "https://github.com/repo/dashboard/pull/215",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "315",
+            title: "Partial implementation",
+            url: "https://github.com/repo/dashboard/pull/315",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/dashboard#216",
+        repo: "repo/dashboard",
+        target: "216",
+        type: "pull_request",
+        schedulingState: "ready_for_batch",
+        github: {
+          repo: "repo/dashboard",
+          target: "216",
+          type: "pull_request",
+          title: "Root pull request 216",
+          url: "https://github.com/repo/dashboard/pull/216",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "316",
+            title: "Mismatched implementation",
+            url: "https://github.com/repo/api/pull/999",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      })
+    ];
+    const jobs = buildCoordinationView({
+      ...model,
+      agents: [],
+      workItems: invalidImplementationItems,
+      batches: [],
+      batchOperations: []
+    }, NOW).jobRows;
+
+    for (const job of jobs) {
+      expect.soft(job.implementationLabel).toBeUndefined();
+      expect.soft(job.implementationUrl).toBeUndefined();
+      expect.soft(job.row.implementationPr).toBeUndefined();
+    }
+  });
+
+  it("uses a loaded same-target PR as the interactive identity while preserving declared issue provenance", () => {
+    const declaredIssue = workItem({
+      id: "repo/dashboard#202",
+      repo: "repo/dashboard",
+      target: "202",
+      type: "issue",
+      schedulingState: "in_process",
+      batchSignals: [{
+        batchId: "b1",
+        laneName: "l2",
+        status: "blocked",
+        blockedOn: ["b1:201"]
+      }],
+      github: {
+        repo: "repo/dashboard",
+        target: "202",
+        type: "pull_request",
+        coordinatedType: "issue",
+        title: "Merged QA lane",
+        url: "https://github.com/repo/dashboard/pull/202",
+        state: "MERGED",
+        mergedAt: "2026-07-21T11:00:00.000Z",
+        labels: [],
+        loadState: "loaded"
+      }
+    });
+    const observed = buildCoordinationView({
+      ...model,
+      workItems: [declaredIssue],
+      batches: [{
+        ...model.batches[0],
+        targets: [{ type: "issue", target: "202" }],
+        lanes: [{ ...model.batches[0].lanes[1], targets: ["202"] }]
+      }],
+      batchOperations: []
+    }, NOW);
+    const job = observed.jobRows[0];
+    const lane = observed.batchCards[0].lanes[0];
+
+    expect(declaredIssue.type).toBe("issue");
+    expect(declaredIssue.github?.coordinatedType).toBe("issue");
+    expect(job.row.type).toBe("pull_request");
+    expect(job.targetLabel).toBe("PR #202");
+    expect(job.implementationLabel).toBeUndefined();
+    expect(lane.target).toBe("PR #202");
+    expect(lane.targetUrl).toBe("https://github.com/repo/dashboard/pull/202");
+  });
+
   it("passes a completion report through and prefers its metrics", () => {
     const withCompletion: DashboardModel = {
       ...model,

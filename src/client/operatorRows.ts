@@ -17,7 +17,12 @@ import type {
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
 import { isOperationalWorkItem } from "../shared/workItemSelection";
-import { canonicalGithubItemUrl } from "./githubUrls";
+import {
+  canonicalGithubItemUrl,
+  canonicalGithubItemUrlForTarget,
+  canonicalPullRequestUrl,
+  canonicalPullRequestUrlForTarget
+} from "./githubUrls";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -64,6 +69,7 @@ export interface OperatorRow {
   repo: string;
   target?: string;
   type: WorkItemType;
+  declaredType?: WorkItemType;
   title: string;
   url?: string;
   operatorState: OperatorState;
@@ -492,6 +498,8 @@ function rowSearchText(row: Omit<OperatorRow, "searchText">): string {
       row.target ? `#${row.target}` : "",
       row.type === "pull_request" && row.target ? `pr #${row.target}` : "",
       row.type === "issue" && row.target ? `issue #${row.target}` : "",
+      row.declaredType === "pull_request" && row.target ? `pr #${row.target}` : "",
+      row.declaredType === "issue" && row.target ? `issue #${row.target}` : "",
       row.title,
       safeGithubUrl(row.url),
       row.operatorState,
@@ -724,8 +732,8 @@ function findSignalLane(item: WorkItem, batches: BatchRecord[]): { batch?: Batch
   };
 }
 
-function workTitle(item: WorkItem): string {
-  return item.github?.title || `${item.type === "pull_request" ? "Pull request" : item.type === "issue" ? "Issue" : "Target"} #${item.target}`;
+function workTitle(item: WorkItem, type = item.type): string {
+  return `${type === "pull_request" ? "Pull request" : type === "issue" ? "Issue" : "Target"} #${item.target}`;
 }
 
 function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): NonNullable<BatchRecord["targets"]>[number] | undefined {
@@ -856,16 +864,41 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["manifest", lane?.branch],
     ["event", eventHistoryMetadata?.branch]
   );
+  const observedTargetType =
+    item.github?.loadState === "loaded"
+    && item.github.repo === item.repo
+    && item.github.target === item.target
+    && item.github.type !== "unknown"
+      ? item.github.type
+      : undefined;
+  const interactiveTargetType =
+    observedTargetType || (item.type === "unknown" ? batchTarget?.type || "unknown" : item.type);
+  const observedTargetUrl = observedTargetType === "pull_request"
+    ? canonicalPullRequestUrlForTarget(item.github?.url, item.repo, item.target)
+    : observedTargetType === "issue"
+      ? canonicalGithubItemUrlForTarget(item.github?.url, item.repo, item.target, "issues")
+      : undefined;
+  const observedTargetPrUrl = observedTargetType === "pull_request" ? observedTargetUrl : undefined;
+  const implementationPr = item.github?.implementationPr;
+  const observedImplementationPrUrl =
+    implementationPr?.loadState === "loaded"
+    && implementationPr.repo === item.repo
+    && implementationPr.target !== item.target
+      ? canonicalPullRequestUrlForTarget(implementationPr.url, implementationPr.repo, implementationPr.target)
+      : undefined;
+  const observedImplementationPr = implementationPr && observedImplementationPrUrl
+    ? { ...implementationPr, url: observedImplementationPrUrl }
+    : undefined;
   const prUrlMetadata = firstObserved(
-    item.type === "pull_request" || item.github?.implementationPr
+    interactiveTargetType === "pull_request" || observedImplementationPr
       ? { state: "missing", source: "github" }
       : notApplicable(),
-    ["claim", item.claim?.prUrl],
-    ["heartbeat", item.heartbeat?.prUrl],
-    ["manifest", lane?.prUrl],
-    ["event", eventHistoryMetadata?.prUrl],
-    ["github", item.github?.implementationPr?.url],
-    ["github", item.type === "pull_request" ? item.github?.url : undefined]
+    ["claim", canonicalPullRequestUrl(item.claim?.prUrl)],
+    ["heartbeat", canonicalPullRequestUrl(item.heartbeat?.prUrl)],
+    ["manifest", canonicalPullRequestUrl(lane?.prUrl)],
+    ["event", canonicalPullRequestUrl(eventHistoryMetadata?.prUrl)],
+    ["github", observedImplementationPrUrl],
+    ["github", observedTargetPrUrl]
   );
   const batchId =
     signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId || latest?.batchId;
@@ -894,9 +927,10 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     provenance: targetProvenance(item, matchingEvents, batch),
     repo: item.repo,
     target: item.target,
-    type: item.type === "unknown" ? batchTarget?.type || "unknown" : item.type,
-    title: item.github?.title || batchTarget?.title || workTitle(item),
-    url: item.github?.url || batchTarget?.url,
+    type: interactiveTargetType,
+    declaredType: item.type,
+    title: (observedTargetUrl ? item.github?.title : undefined) || batchTarget?.title || workTitle(item, interactiveTargetType),
+    url: observedTargetUrl || batchTarget?.url,
     operatorState: state,
     liveness: isArchivedView ? "none" : item.heartbeat?.liveness || "none",
     livenessAge: ageLabel(item.heartbeat?.updatedAt, nowMs),
@@ -906,7 +940,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     completedAt: item.completedAt,
     lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
     retentionStatus,
-    githubState: item.github?.loadState === "loaded" ? item.github.state : UNKNOWN,
+    githubState: observedTargetUrl ? item.github?.state : UNKNOWN,
     schedulingState: isArchivedView ? undefined : item.schedulingState,
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
@@ -922,7 +956,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     operator: ownerMetadata.value,
     branch: branchMetadata.value,
     prUrl: prUrlMetadata.value,
-    implementationPr: item.github?.implementationPr,
+    implementationPr: observedImplementationPr,
     metadata: {
       owner: ownerMetadata,
       thread: threadMetadata,
@@ -991,8 +1025,8 @@ function buildLaneRow(
     type === "pull_request"
       ? firstObserved(
           { state: "missing", source: "manifest" },
-          ["manifest", lane.prUrl],
-          ["event", eventHistoryMetadata?.prUrl]
+          ["manifest", canonicalPullRequestUrl(lane.prUrl)],
+          ["event", canonicalPullRequestUrl(eventHistoryMetadata?.prUrl)]
         )
       : notApplicable();
   const batchMetadata =
@@ -1218,10 +1252,10 @@ export function filterOperatorRows(rows: OperatorRow[], query: string, targetRep
           if (repo !== exactReference.repo && !repo.endsWith(`/${exactReference.repo}`)) return false;
         }
         if (exactReference.type === "issue") {
-          return row.type === "issue" && row.target === exactReference.target;
+          return (row.type === "issue" || row.declaredType === "issue") && row.target === exactReference.target;
         }
         const pullRequestMatch =
-          (row.type === "pull_request" && row.target === exactReference.target)
+          ((row.type === "pull_request" || row.declaredType === "pull_request") && row.target === exactReference.target)
           || row.implementationPr?.target === exactReference.target
           || Boolean(safeGithubUrl(row.prUrl)?.endsWith(`/pull/${exactReference.target}`));
         return exactReference.type === "pull_request"

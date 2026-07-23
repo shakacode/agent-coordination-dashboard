@@ -1548,6 +1548,442 @@ describe("operatorRows", () => {
     });
   });
 
+  it("keeps PR URL metadata aligned with the observed same-target identity", () => {
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: [
+          workItem({
+            type: "issue",
+            github: {
+              ...workItem().github!,
+              type: "pull_request",
+              coordinatedType: "issue",
+              url: "https://github.com/repo/app/pull/123"
+            }
+          }),
+          workItem({
+            id: "repo/app#124",
+            target: "124",
+            type: "pull_request",
+            github: {
+              ...workItem().github!,
+              target: "124",
+              type: "issue",
+              coordinatedType: "pull_request",
+              url: "https://github.com/repo/app/issues/124"
+            }
+          })
+        ]
+      })
+    );
+    const observedPr = rows.find((row) => row.target === "123");
+    const observedIssue = rows.find((row) => row.target === "124");
+
+    expect(observedPr).toMatchObject({
+      type: "pull_request",
+      prUrl: "https://github.com/repo/app/pull/123",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/123",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect(observedIssue).toMatchObject({
+      type: "issue",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "not_applicable" } }
+    });
+    expect(filterOperatorRows(rows, "Issue #123").map((row) => row.target)).toEqual(["123"]);
+    expect(filterOperatorRows(rows, "PR #124").map((row) => row.target)).toEqual(["124"]);
+  });
+
+  it("accepts only canonical pull-request URLs across PR metadata sources", () => {
+    const matrix = [
+      workItem({
+        id: "repo/app#201",
+        target: "201",
+        type: "issue",
+        github: {
+          ...workItem().github!,
+          target: "201",
+          type: "pull_request",
+          coordinatedType: "issue",
+          url: "https://github.com/repo/app/issues/201"
+        }
+      }),
+      workItem({
+        id: "repo/app#202",
+        target: "202",
+        type: "issue",
+        github: {
+          ...workItem().github!,
+          target: "202",
+          type: "pull_request",
+          coordinatedType: "issue",
+          url: "https://github.com/repo/app/pull/202/files?diff=split#x"
+        }
+      }),
+      workItem({
+        id: "repo/app#203",
+        target: "203",
+        type: "issue",
+        claim: {
+          ...claim,
+          target: "203",
+          prUrl: "https://github.com/repo/app/issues/999",
+          path: "claims/repo/app/203.json"
+        },
+        github: {
+          ...workItem().github!,
+          target: "203",
+          type: "issue",
+          url: "https://github.com/repo/app/issues/203"
+        }
+      }),
+      workItem({
+        id: "repo/app#204",
+        target: "204",
+        type: "pull_request",
+        claim: {
+          ...claim,
+          target: "204",
+          prUrl: "https://github.com/repo/app/pull/not-a-number",
+          path: "claims/repo/app/204.json"
+        },
+        github: undefined
+      }),
+      workItem({
+        id: "repo/app#205",
+        target: "205",
+        type: "issue",
+        github: {
+          ...workItem().github!,
+          target: "205",
+          type: "issue",
+          url: "https://github.com/repo/app/issues/205",
+          implementationPr: {
+            repo: "repo/app",
+            target: "305",
+            title: "Implement issue 205",
+            url: "https://github.com/repo/app/pull/305/files?diff=split#x",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/app#206",
+        target: "206",
+        type: "issue",
+        github: {
+          ...workItem().github!,
+          repo: "repo/other",
+          target: "206",
+          type: "pull_request",
+          url: "https://github.com/repo/other/pull/206"
+        }
+      }),
+      workItem({
+        id: "repo/app#207",
+        target: "207",
+        type: "issue",
+        github: {
+          ...workItem().github!,
+          target: "207",
+          type: "pull_request",
+          url: "https://github.com/repo/app/pull/207",
+          loadState: "unknown"
+        }
+      }),
+      workItem({
+        id: "repo/app#208",
+        target: "208",
+        type: "issue",
+        claim: {
+          ...claim,
+          target: "208",
+          prUrl: "https://github.com/repo/app/pull/308/checks?check_run_id=1#step:2",
+          path: "claims/repo/app/208.json"
+        },
+        github: {
+          ...workItem().github!,
+          target: "208",
+          type: "issue",
+          url: "https://github.com/repo/app/issues/208"
+        }
+      }),
+      workItem({
+        id: "repo/app#211",
+        target: "211",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "211",
+          url: "https://github.com/repo/app/pull/211",
+          loadState: "unknown"
+        }
+      }),
+      workItem({
+        id: "repo/app#212",
+        target: "212",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          repo: "repo/api",
+          target: "212",
+          url: "https://github.com/repo/api/pull/212"
+        }
+      }),
+      workItem({
+        id: "repo/app#213",
+        target: "213",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "213",
+          url: "https://github.com/repo/app/pull/313"
+        }
+      }),
+      workItem({
+        id: "repo/app#214",
+        target: "214",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "214",
+          type: "unknown",
+          url: "https://github.com/repo/app/pull/214"
+        }
+      }),
+      workItem({
+        id: "repo/app#215",
+        target: "215",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "215",
+          url: "https://github.com/repo/app/pull/215",
+          implementationPr: {
+            repo: "repo/app",
+            target: "315",
+            title: "Partial implementation",
+            url: "https://github.com/repo/app/pull/315",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/app#216",
+        target: "216",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "216",
+          url: "https://github.com/repo/app/pull/216",
+          implementationPr: {
+            repo: "repo/app",
+            target: "316",
+            title: "Mismatched implementation",
+            url: "https://github.com/repo/api/pull/999",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/app#217",
+        target: "217",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "317",
+          url: "https://github.com/repo/app/pull/317",
+          state: "MERGED"
+        }
+      })
+    ];
+    const rows = buildOperatorRows(
+      dashboard({
+        workItems: matrix,
+        batches: [
+          {
+            schemaVersion: 1,
+            batchId: "pr-url-matrix",
+            repo: "repo/app",
+            path: "batches/pr-url-matrix.json",
+            targets: [
+              { type: "pull_request", target: "209", repo: "repo/app" },
+              { type: "pull_request", target: "210", repo: "repo/app" }
+            ],
+            lanes: [
+              {
+                name: "event-fallback",
+                owner: "agent-event",
+                targets: ["209"],
+                dependsOn: [],
+                status: "active",
+                liveness: "no-heartbeat",
+                blockedOn: [],
+                prUrl: "https://github.com/repo/app/issues/209"
+              },
+              {
+                name: "invalid-manifest",
+                owner: "agent-manifest",
+                targets: ["210"],
+                dependsOn: [],
+                status: "active",
+                liveness: "no-heartbeat",
+                blockedOn: [],
+                prUrl: "https://github.com/repo/app/issues/210"
+              }
+            ]
+          }
+        ],
+        events: [
+          {
+            eventId: "pr-url-event",
+            type: "phase",
+            batchId: "pr-url-matrix",
+            laneName: "event-fallback",
+            agentId: "agent-event",
+            repo: "repo/app",
+            target: "209",
+            status: "coding",
+            timestamp: "2026-07-09T19:59:30Z",
+            path: "events/pr-url-matrix.jsonl:1",
+            prUrl: "https://github.com/repo/app/pull/309/files?diff=split#x"
+          }
+        ]
+      })
+    );
+    const rowFor = (target: string) => rows.find((row) => row.target === target);
+
+    expect(rowFor("201")).toMatchObject({
+      type: "pull_request",
+      title: "Pull request #201",
+      url: undefined,
+      githubState: UNKNOWN,
+      prUrl: undefined,
+      metadata: { prUrl: { state: "missing", source: "github" } }
+    });
+    expect(rowFor("202")).toMatchObject({
+      type: "pull_request",
+      url: "https://github.com/repo/app/pull/202",
+      prUrl: "https://github.com/repo/app/pull/202",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/202",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect(rowFor("203")).toMatchObject({
+      type: "issue",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "not_applicable" } }
+    });
+    expect(rowFor("204")).toMatchObject({
+      type: "pull_request",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "missing", source: "github" } }
+    });
+    expect(rowFor("205")).toMatchObject({
+      type: "issue",
+      implementationPr: { target: "305", url: "https://github.com/repo/app/pull/305" },
+      prUrl: "https://github.com/repo/app/pull/305",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/305",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect(rowFor("206")).toMatchObject({
+      type: "issue",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "not_applicable" } }
+    });
+    expect(rowFor("207")).toMatchObject({
+      type: "issue",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "not_applicable" } }
+    });
+    expect(rowFor("208")).toMatchObject({
+      type: "issue",
+      prUrl: "https://github.com/repo/app/pull/308",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/308",
+          state: "observed",
+          source: "claim"
+        }
+      }
+    });
+    expect(rowFor("209")).toMatchObject({
+      type: "pull_request",
+      prUrl: "https://github.com/repo/app/pull/309",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/309",
+          state: "observed",
+          source: "event"
+        }
+      }
+    });
+    expect(rowFor("210")).toMatchObject({
+      type: "pull_request",
+      prUrl: undefined,
+      metadata: { prUrl: { state: "missing", source: "manifest" } }
+    });
+    for (const target of ["211", "212", "213", "214", "217"]) {
+      expect.soft(rowFor(target)).toMatchObject({
+        type: "pull_request",
+        title: `Pull request #${target}`,
+        url: undefined,
+        githubState: UNKNOWN,
+        prUrl: undefined,
+        metadata: { prUrl: { state: "missing", source: "github" } }
+      });
+    }
+    expect.soft(rowFor("215")).toMatchObject({
+      type: "pull_request",
+      implementationPr: undefined,
+      prUrl: "https://github.com/repo/app/pull/215",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/215",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect.soft(rowFor("216")).toMatchObject({
+      type: "pull_request",
+      implementationPr: undefined,
+      prUrl: "https://github.com/repo/app/pull/216",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/216",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect(filterOperatorRows(rows, "Partial implementation")).toEqual([]);
+    expect(filterOperatorRows(rows, "PR #315")).toEqual([]);
+    expect(filterOperatorRows(rows, "Mismatched implementation")).toEqual([]);
+    expect(filterOperatorRows(rows, "PR #316")).toEqual([]);
+    expect(filterOperatorRows(rows, "https://github.com/repo/api/pull/999")).toEqual([]);
+  });
+
   it("keeps operator fields informational for ready event-only work", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -1556,7 +1992,12 @@ describe("operatorRows", () => {
             type: "issue",
             schedulingState: "ready_for_batch",
             claim: undefined,
-            heartbeat: undefined
+            heartbeat: undefined,
+            github: {
+              ...workItem().github!,
+              type: "issue",
+              url: "https://github.com/repo/app/issues/123"
+            }
           })
         ],
         events: [
