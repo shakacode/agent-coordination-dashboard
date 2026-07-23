@@ -1712,6 +1712,97 @@ describe("operatorRows", () => {
           type: "issue",
           url: "https://github.com/repo/app/issues/208"
         }
+      }),
+      workItem({
+        id: "repo/app#211",
+        target: "211",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "211",
+          url: "https://github.com/repo/app/pull/211",
+          loadState: "unknown"
+        }
+      }),
+      workItem({
+        id: "repo/app#212",
+        target: "212",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          repo: "repo/api",
+          target: "212",
+          url: "https://github.com/repo/api/pull/212"
+        }
+      }),
+      workItem({
+        id: "repo/app#213",
+        target: "213",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "213",
+          url: "https://github.com/repo/app/pull/313"
+        }
+      }),
+      workItem({
+        id: "repo/app#214",
+        target: "214",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "214",
+          type: "unknown",
+          url: "https://github.com/repo/app/pull/214"
+        }
+      }),
+      workItem({
+        id: "repo/app#215",
+        target: "215",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "215",
+          url: "https://github.com/repo/app/pull/215",
+          implementationPr: {
+            repo: "repo/app",
+            target: "315",
+            title: "Partial implementation",
+            url: "https://github.com/repo/app/pull/315",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/app#216",
+        target: "216",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "216",
+          url: "https://github.com/repo/app/pull/216",
+          implementationPr: {
+            repo: "repo/app",
+            target: "316",
+            title: "Mismatched implementation",
+            url: "https://github.com/repo/api/pull/999",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/app#217",
+        target: "217",
+        type: "pull_request",
+        github: {
+          ...workItem().github!,
+          target: "317",
+          url: "https://github.com/repo/app/pull/317"
+        }
       })
     ];
     const rows = buildOperatorRows(
@@ -1843,6 +1934,35 @@ describe("operatorRows", () => {
       type: "pull_request",
       prUrl: undefined,
       metadata: { prUrl: { state: "missing", source: "manifest" } }
+    });
+    for (const target of ["211", "212", "213", "214", "217"]) {
+      expect.soft(rowFor(target)).toMatchObject({
+        type: "pull_request",
+        prUrl: undefined,
+        metadata: { prUrl: { state: "missing", source: "github" } }
+      });
+    }
+    expect.soft(rowFor("215")).toMatchObject({
+      type: "pull_request",
+      prUrl: "https://github.com/repo/app/pull/215",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/215",
+          state: "observed",
+          source: "github"
+        }
+      }
+    });
+    expect.soft(rowFor("216")).toMatchObject({
+      type: "pull_request",
+      prUrl: "https://github.com/repo/app/pull/216",
+      metadata: {
+        prUrl: {
+          value: "https://github.com/repo/app/pull/216",
+          state: "observed",
+          source: "github"
+        }
+      }
     });
   });
 

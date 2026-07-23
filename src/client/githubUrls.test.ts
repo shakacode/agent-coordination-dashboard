@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { canonicalGithubItemUrl, canonicalPullRequestUrl, githubBranchUrl } from "./githubUrls";
+import {
+  canonicalGithubItemUrl,
+  canonicalPullRequestUrl,
+  canonicalPullRequestUrlForTarget,
+  githubBranchUrl
+} from "./githubUrls";
 
 describe("canonicalGithubItemUrl", () => {
   it.each([
@@ -30,6 +35,18 @@ describe("canonicalGithubItemUrl", () => {
     expect(canonicalPullRequestUrl("https://github.com/pull/Repo/issues/47")).toBeUndefined();
     expect(canonicalPullRequestUrl("https://github.com/Owner/pull/issues/47")).toBeUndefined();
     expect(canonicalPullRequestUrl("https://github.com/pull/pull/pull/47")).toBe("https://github.com/pull/pull/pull/47");
+  });
+
+  it("binds canonical PR URLs to their structured repository and target identity", () => {
+    expect(
+      canonicalPullRequestUrlForTarget(
+        "https://github.com/Owner/Repo/pull/57/files?diff=split#file-1",
+        "owner/repo",
+        "57"
+      )
+    ).toBe("https://github.com/Owner/Repo/pull/57");
+    expect(canonicalPullRequestUrlForTarget("https://github.com/Owner/Other/pull/57", "Owner/Repo", "57")).toBeUndefined();
+    expect(canonicalPullRequestUrlForTarget("https://github.com/Owner/Repo/pull/58", "Owner/Repo", "57")).toBeUndefined();
   });
 });
 

@@ -17,7 +17,11 @@ import type {
 } from "../shared/types";
 import { isQaEventType } from "../shared/qaEvents";
 import { isOperationalWorkItem } from "../shared/workItemSelection";
-import { canonicalGithubItemUrl, canonicalPullRequestUrl } from "./githubUrls";
+import {
+  canonicalGithubItemUrl,
+  canonicalPullRequestUrl,
+  canonicalPullRequestUrlForTarget
+} from "./githubUrls";
 
 export const UNKNOWN = "UNKNOWN";
 export const WEDGED_THRESHOLD_MS = 15 * 60 * 1000;
@@ -865,6 +869,17 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
       : undefined;
   const interactiveTargetType =
     observedTargetType || (item.type === "unknown" ? batchTarget?.type || "unknown" : item.type);
+  const observedTargetPrUrl =
+    observedTargetType === "pull_request"
+      ? canonicalPullRequestUrlForTarget(item.github?.url, item.repo, item.target)
+      : undefined;
+  const implementationPr = item.github?.implementationPr;
+  const observedImplementationPrUrl =
+    implementationPr?.loadState === "loaded"
+    && implementationPr.repo === item.repo
+    && implementationPr.target !== item.target
+      ? canonicalPullRequestUrlForTarget(implementationPr.url, implementationPr.repo, implementationPr.target)
+      : undefined;
   const prUrlMetadata = firstObserved(
     interactiveTargetType === "pull_request" || item.github?.implementationPr
       ? { state: "missing", source: "github" }
@@ -873,8 +888,8 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["heartbeat", canonicalPullRequestUrl(item.heartbeat?.prUrl)],
     ["manifest", canonicalPullRequestUrl(lane?.prUrl)],
     ["event", canonicalPullRequestUrl(eventHistoryMetadata?.prUrl)],
-    ["github", canonicalPullRequestUrl(item.github?.implementationPr?.url)],
-    ["github", interactiveTargetType === "pull_request" ? canonicalPullRequestUrl(item.github?.url) : undefined]
+    ["github", observedImplementationPrUrl],
+    ["github", observedTargetPrUrl]
   );
   const batchId =
     signal?.batchId || item.claim?.batchId || item.heartbeat?.batchId || batch?.batchId || latest?.batchId;
