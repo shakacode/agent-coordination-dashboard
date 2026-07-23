@@ -940,7 +940,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     completedAt: item.completedAt,
     lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
     retentionStatus,
-    githubState: item.github?.loadState === "loaded" ? item.github.state : UNKNOWN,
+    githubState: observedTargetUrl ? item.github?.state : UNKNOWN,
     schedulingState: isArchivedView ? undefined : item.schedulingState,
     lastEventAt: latest?.timestamp,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,

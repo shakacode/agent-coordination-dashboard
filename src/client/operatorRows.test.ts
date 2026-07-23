@@ -1803,7 +1803,8 @@ describe("operatorRows", () => {
         github: {
           ...workItem().github!,
           target: "317",
-          url: "https://github.com/repo/app/pull/317"
+          url: "https://github.com/repo/app/pull/317",
+          state: "MERGED"
         }
       })
     ];
@@ -1867,6 +1868,7 @@ describe("operatorRows", () => {
       type: "pull_request",
       title: "Pull request #201",
       url: undefined,
+      githubState: UNKNOWN,
       prUrl: undefined,
       metadata: { prUrl: { state: "missing", source: "github" } }
     });
@@ -1946,6 +1948,7 @@ describe("operatorRows", () => {
         type: "pull_request",
         title: `Pull request #${target}`,
         url: undefined,
+        githubState: UNKNOWN,
         prUrl: undefined,
         metadata: { prUrl: { state: "missing", source: "github" } }
       });
