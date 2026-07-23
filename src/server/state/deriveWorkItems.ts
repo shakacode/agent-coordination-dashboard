@@ -80,19 +80,32 @@ interface EffectiveGitHubLifecycle {
   mayHaveOpenPullRequest: boolean;
 }
 
+function githubPullRequestIdentity(value: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.host.toLowerCase() !== "github.com") return undefined;
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length < 4 || segments[2] !== "pull" || !/^[1-9]\d*$/.test(segments[3])) return undefined;
+  if (segments.length > 4 && !["files", "checks", "commits"].includes(segments[4])) return undefined;
+  return [url.hostname, segments[0], segments[1], "pull", segments[3]].join("/").toLowerCase();
+}
+
 function effectiveGitHubLifecycle(item: WorkItem): EffectiveGitHubLifecycle {
   const github = item.github;
   const implementationPr = github?.implementationPr;
   const implementationState = implementationPr?.loadState === "loaded"
     ? implementationPr.state.trim().toLowerCase()
     : undefined;
-  const normalizeUrl = (url: string) => url.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
-  const closedImplementationUrl = implementationState === "closed" && implementationPr
-    ? normalizeUrl(implementationPr.url)
+  const closedImplementationIdentity = implementationState === "closed" && implementationPr
+    ? githubPullRequestIdentity(implementationPr.url)
     : undefined;
   const unresolvedLinkedPrUrl = [item.claim?.prUrl, item.heartbeat?.prUrl]
     .filter((url): url is string => Boolean(url))
-    .some((url) => normalizeUrl(url) !== closedImplementationUrl);
+    .some((url) => !closedImplementationIdentity || githubPullRequestIdentity(url) !== closedImplementationIdentity);
 
   if (implementationPr) {
     if (implementationPr.loadState !== "loaded") {

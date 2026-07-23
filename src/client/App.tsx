@@ -740,7 +740,7 @@ export function App() {
       const repoName = (repo: string) => repo.toLowerCase().split("/").pop();
       const byName = candidates.filter((candidate) => candidate.row.repo.toLowerCase() === repoHint || repoName(candidate.row.repo) === repoHint);
       const byLoose = candidates.filter((candidate) => candidate.row.repo.toLowerCase().includes(repoHint));
-      return byName.length > 0 ? byName : byLoose.length > 0 ? byLoose : candidates;
+      return byName.length > 0 ? byName : byLoose;
     };
     const exact = filterByRepository(view.jobRows.filter((candidate) => matchesNumber(candidate, true)));
     const partial = exact.length === 0

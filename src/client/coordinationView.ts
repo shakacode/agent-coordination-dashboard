@@ -449,10 +449,13 @@ function operationMatchesBatch(operation: BatchOperation, batch: BatchRecord): b
 }
 
 function batchRepositoryScope(batch: BatchRecord): string {
-  const targetRepos = Array.from(new Set((batch.targets || []).map((target) => target.repo?.trim()).filter((repo): repo is string => Boolean(repo)))).sort();
+  const fallbackRepo = batch.repo?.trim();
+  const effectiveTargetRepos = (batch.targets || []).map((target) => target.repo?.trim() || fallbackRepo);
+  if (effectiveTargetRepos.some((repo) => !repo)) return `UNKNOWN:${batch.path}`;
+  const targetRepos = Array.from(new Set(effectiveTargetRepos.filter((repo): repo is string => Boolean(repo)))).sort();
   if (targetRepos.length === 1) return targetRepos[0];
   if (targetRepos.length > 1) return `MULTI:${targetRepos.join(",")}`;
-  if (batch.repo?.trim()) return batch.repo.trim();
+  if (fallbackRepo) return fallbackRepo;
   // With no repository evidence, the source path is the only honest namespace.
   return `UNKNOWN:${batch.path}`;
 }

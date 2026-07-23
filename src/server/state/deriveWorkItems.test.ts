@@ -456,55 +456,58 @@ describe("deriveWorkItems", () => {
     expect(possibleOpenPr).toMatchObject({ operatorState: "needs_attention", attention: { kind: "dead_holder" } });
   });
 
-  it("does not keep a dead holder active when its loaded implementation PR is closed", () => {
-    const updatedAt = new Date(Date.parse("2026-07-12T11:20:00.000Z") - ARCHIVE_AFTER_MS - 1).toISOString();
-    const [item] = deriveWorkItems({
-      workItems: [{
-        ...BASE_ITEM,
-        heartbeat: {
-          schemaVersion: 1,
-          agentId: "acd-b-i43",
-          repo: BASE_ITEM.repo,
-          target: BASE_ITEM.target,
-          status: "implementation",
-          prUrl: "https://github.com/shakacode/dashboard/pull/54",
-          updatedAt,
-          expiresAt: updatedAt,
-          path: "heartbeats/acd-b-i43.json",
-          liveness: "dead"
-        },
-        github: {
-          repo: BASE_ITEM.repo,
-          target: BASE_ITEM.target,
-          type: "unknown",
-          title: "UNKNOWN",
-          url: "",
-          state: "UNKNOWN",
-          labels: [],
-          loadState: "unknown",
-          implementationPr: {
+  it.each(["", "/files", "/checks", "/commits"])(
+    "does not keep a dead holder active when its loaded implementation PR is closed and linked through %s",
+    (subpage) => {
+      const updatedAt = new Date(Date.parse("2026-07-12T11:20:00.000Z") - ARCHIVE_AFTER_MS - 1).toISOString();
+      const [item] = deriveWorkItems({
+        workItems: [{
+          ...BASE_ITEM,
+          heartbeat: {
+            schemaVersion: 1,
+            agentId: "acd-b-i43",
             repo: BASE_ITEM.repo,
-            target: "54",
-            title: "Closed implementation",
-            url: "https://github.com/shakacode/dashboard/pull/54",
-            state: "CLOSED",
-            closedAt: "2026-07-11T11:20:00.000Z",
+            target: BASE_ITEM.target,
+            status: "implementation",
+            prUrl: `https://github.com/shakacode/dashboard/pull/54${subpage}`,
+            updatedAt,
+            expiresAt: updatedAt,
+            path: "heartbeats/acd-b-i43.json",
+            liveness: "dead"
+          },
+          github: {
+            repo: BASE_ITEM.repo,
+            target: BASE_ITEM.target,
+            type: "unknown",
+            title: "UNKNOWN",
+            url: "",
+            state: "UNKNOWN",
             labels: [],
-            loadState: "loaded"
+            loadState: "unknown",
+            implementationPr: {
+              repo: BASE_ITEM.repo,
+              target: "54",
+              title: "Closed implementation",
+              url: "https://github.com/shakacode/dashboard/pull/54",
+              state: "CLOSED",
+              closedAt: "2026-07-11T11:20:00.000Z",
+              labels: [],
+              loadState: "loaded"
+            }
           }
-        }
-      }],
-      now: new Date("2026-07-12T11:20:00.000Z")
-    });
+        }],
+        now: new Date("2026-07-12T11:20:00.000Z")
+      });
 
-    expect(item).toMatchObject({
-      operatorState: "archived_view",
-      terminalState: undefined,
-      terminalProvenance: undefined,
-      completedAt: undefined,
-      attention: undefined
-    });
-  });
+      expect(item).toMatchObject({
+        operatorState: "archived_view",
+        terminalState: undefined,
+        terminalProvenance: undefined,
+        completedAt: undefined,
+        attention: undefined
+      });
+    }
+  );
 
   it("turns stopped batches and missing PR QA into explicit attention reasons", () => {
     const items = deriveWorkItems({

@@ -269,6 +269,39 @@ describe("buildCoordinationView", () => {
     expect(findBatchCard(cards, { batchId: "b1", repo: "repo/other" })?.repo).toBe("repo/other");
   });
 
+  it("keeps repo-less targets in the effective batch repository scope", () => {
+    const knownFallback = {
+      ...model.batches[0],
+      batchId: "known-fallback",
+      repo: "repo/dashboard",
+      targets: [
+        { type: "issue" as const, target: "201", repo: "repo/other" },
+        { type: "issue" as const, target: "202" }
+      ]
+    };
+    const unresolvedFallback = {
+      ...knownFallback,
+      batchId: "unknown-fallback",
+      repo: undefined,
+      path: "batches/unknown-fallback.json"
+    };
+    const cards = buildCoordinationView({
+      ...model,
+      batches: [knownFallback, unresolvedFallback],
+      batchOperations: []
+    }, NOW).batchCards;
+
+    expect(batchIdentity(knownFallback)).toBe(JSON.stringify([
+      "MULTI:repo/dashboard,repo/other",
+      "known-fallback"
+    ]));
+    expect(batchIdentity(unresolvedFallback)).toBe(JSON.stringify([
+      "UNKNOWN:batches/unknown-fallback.json",
+      "unknown-fallback"
+    ]));
+    expect(cards.map((card) => card.repo)).toEqual(["UNKNOWN", "UNKNOWN"]);
+  });
+
   it("groups agents into machines and collapses dead agents to a count", () => {
     const m1 = view.machines.find((machine) => machine.id === "m1");
     const m5 = view.machines.find((machine) => machine.id === "m5");

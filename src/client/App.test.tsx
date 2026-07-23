@@ -326,6 +326,13 @@ describe("App", () => {
     expect(within(drawer).getByText("Needs input work")).toBeInTheDocument();
   });
 
+  it("does not discard an explicit repository hint that matches no candidate", async () => {
+    render(<App />);
+    const search = await screen.findByLabelText("Find PR or issue number");
+    await userEvent.type(search, "other 46{enter}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("uses the target type to disambiguate an issue number from an implementation PR number", async () => {
     const collisionModel: DashboardModel = {
       ...model,
