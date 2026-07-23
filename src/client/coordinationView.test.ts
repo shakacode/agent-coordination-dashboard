@@ -591,6 +591,76 @@ describe("buildCoordinationView", () => {
     expect(linked.implementationUrl).toBe("https://github.com/repo/dashboard/pull/54");
   });
 
+  it("does not expose rejected implementation previews to job consumers", () => {
+    const invalidImplementationItems = [
+      workItem({
+        id: "repo/dashboard#215",
+        repo: "repo/dashboard",
+        target: "215",
+        type: "pull_request",
+        schedulingState: "ready_for_batch",
+        github: {
+          repo: "repo/dashboard",
+          target: "215",
+          type: "pull_request",
+          title: "Root pull request 215",
+          url: "https://github.com/repo/dashboard/pull/215",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "315",
+            title: "Partial implementation",
+            url: "https://github.com/repo/dashboard/pull/315",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      }),
+      workItem({
+        id: "repo/dashboard#216",
+        repo: "repo/dashboard",
+        target: "216",
+        type: "pull_request",
+        schedulingState: "ready_for_batch",
+        github: {
+          repo: "repo/dashboard",
+          target: "216",
+          type: "pull_request",
+          title: "Root pull request 216",
+          url: "https://github.com/repo/dashboard/pull/216",
+          state: "OPEN",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "316",
+            title: "Mismatched implementation",
+            url: "https://github.com/repo/api/pull/999",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      })
+    ];
+    const jobs = buildCoordinationView({
+      ...model,
+      agents: [],
+      workItems: invalidImplementationItems,
+      batches: [],
+      batchOperations: []
+    }, NOW).jobRows;
+
+    for (const job of jobs) {
+      expect.soft(job.implementationLabel).toBeUndefined();
+      expect.soft(job.implementationUrl).toBeUndefined();
+      expect.soft(job.row.implementationPr).toBeUndefined();
+    }
+  });
+
   it("uses a loaded same-target PR as the interactive identity while preserving declared issue provenance", () => {
     const declaredIssue = workItem({
       id: "repo/dashboard#202",

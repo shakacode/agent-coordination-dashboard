@@ -886,8 +886,11 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     && implementationPr.target !== item.target
       ? canonicalPullRequestUrlForTarget(implementationPr.url, implementationPr.repo, implementationPr.target)
       : undefined;
+  const observedImplementationPr = implementationPr && observedImplementationPrUrl
+    ? { ...implementationPr, url: observedImplementationPrUrl }
+    : undefined;
   const prUrlMetadata = firstObserved(
-    interactiveTargetType === "pull_request" || item.github?.implementationPr
+    interactiveTargetType === "pull_request" || observedImplementationPr
       ? { state: "missing", source: "github" }
       : notApplicable(),
     ["claim", canonicalPullRequestUrl(item.claim?.prUrl)],
@@ -953,7 +956,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     operator: ownerMetadata.value,
     branch: branchMetadata.value,
     prUrl: prUrlMetadata.value,
-    implementationPr: item.github?.implementationPr,
+    implementationPr: observedImplementationPr,
     metadata: {
       owner: ownerMetadata,
       thread: threadMetadata,

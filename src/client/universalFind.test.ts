@@ -152,6 +152,71 @@ describe("buildFindResults", () => {
     );
   });
 
+  it("does not find rejected implementation previews by their title, target, or URL", () => {
+    const rejectedImplementations: WorkItem[] = [
+      {
+        ...workItem,
+        id: "repo/dashboard#215",
+        target: "215",
+        heartbeat: undefined,
+        github: {
+          ...workItem.github!,
+          target: "215",
+          type: "pull_request",
+          title: "Root pull request 215",
+          url: "https://github.com/repo/dashboard/pull/215",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "315",
+            title: "Partial implementation",
+            url: "https://github.com/repo/dashboard/pull/315",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      },
+      {
+        ...workItem,
+        id: "repo/dashboard#216",
+        target: "216",
+        heartbeat: undefined,
+        github: {
+          ...workItem.github!,
+          target: "216",
+          type: "pull_request",
+          title: "Root pull request 216",
+          url: "https://github.com/repo/dashboard/pull/216",
+          implementationPr: {
+            repo: "repo/dashboard",
+            target: "316",
+            title: "Mismatched implementation",
+            url: "https://github.com/repo/api/pull/999",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }
+    ];
+    const rejectedView = buildCoordinationView({
+      ...model,
+      agents: [],
+      workItems: rejectedImplementations,
+      batches: []
+    }, model.generatedAt);
+
+    for (const query of [
+      "Partial implementation",
+      "PR #315",
+      "Mismatched implementation",
+      "PR #316",
+      "https://github.com/repo/api/pull/999"
+    ]) {
+      expect.soft(buildFindResults(rejectedView, query).filter((result) => result.kind === "job")).toEqual([]);
+    }
+  });
+
   it("keeps handle provenance available for copy fallback", () => {
     expect(buildFindResults(view, "acd-chat-kite")).toContainEqual(
       expect.objectContaining({

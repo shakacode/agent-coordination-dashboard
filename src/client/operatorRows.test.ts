@@ -1894,6 +1894,7 @@ describe("operatorRows", () => {
     });
     expect(rowFor("205")).toMatchObject({
       type: "issue",
+      implementationPr: { target: "305", url: "https://github.com/repo/app/pull/305" },
       prUrl: "https://github.com/repo/app/pull/305",
       metadata: {
         prUrl: {
@@ -1951,6 +1952,7 @@ describe("operatorRows", () => {
     }
     expect.soft(rowFor("215")).toMatchObject({
       type: "pull_request",
+      implementationPr: undefined,
       prUrl: "https://github.com/repo/app/pull/215",
       metadata: {
         prUrl: {
@@ -1962,6 +1964,7 @@ describe("operatorRows", () => {
     });
     expect.soft(rowFor("216")).toMatchObject({
       type: "pull_request",
+      implementationPr: undefined,
       prUrl: "https://github.com/repo/app/pull/216",
       metadata: {
         prUrl: {
@@ -1971,6 +1974,11 @@ describe("operatorRows", () => {
         }
       }
     });
+    expect(filterOperatorRows(rows, "Partial implementation")).toEqual([]);
+    expect(filterOperatorRows(rows, "PR #315")).toEqual([]);
+    expect(filterOperatorRows(rows, "Mismatched implementation")).toEqual([]);
+    expect(filterOperatorRows(rows, "PR #316")).toEqual([]);
+    expect(filterOperatorRows(rows, "https://github.com/repo/api/pull/999")).toEqual([]);
   });
 
   it("keeps operator fields informational for ready event-only work", () => {
