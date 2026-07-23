@@ -73,20 +73,68 @@ function latestTimestampedLifecycle(candidates: Array<{ status?: string; updated
     .sort((left, right) => right.time - left.time || left.index - right.index)[0];
 }
 
-function githubTerminalState(item: WorkItem): WorkItemTerminalState | undefined {
-  if (item.github?.implementationPr?.loadState === "loaded" && item.github.implementationPr.state.trim().toLowerCase() === "merged") {
-    return "done";
-  }
-  if (item.github?.loadState !== "loaded") return undefined;
-  const state = item.github.state.trim().toLowerCase();
-  if (item.github.type === "pull_request" && state === "merged") return "done";
-  if (state === "closed") return "closed";
-  return undefined;
+interface EffectiveGitHubLifecycle {
+  terminalState?: WorkItemTerminalState;
+  completedAt?: string;
+  terminalUrl?: string;
+  mayHaveOpenPullRequest: boolean;
 }
 
-function githubCompletedAt(item: WorkItem, state: WorkItemTerminalState | undefined): string | undefined {
-  if (state === "done") return item.github?.implementationPr?.mergedAt || item.github?.mergedAt;
-  return state ? item.github?.closedAt : undefined;
+function effectiveGitHubLifecycle(item: WorkItem): EffectiveGitHubLifecycle {
+  const github = item.github;
+  const implementationPr = github?.implementationPr;
+  const linkedPrUrl = Boolean(item.claim?.prUrl || item.heartbeat?.prUrl);
+
+  if (implementationPr) {
+    if (implementationPr.loadState !== "loaded") {
+      return { mayHaveOpenPullRequest: true };
+    }
+    const implementationState = implementationPr.state.trim().toLowerCase();
+    if (implementationState === "open" || implementationState === "unknown") {
+      return { mayHaveOpenPullRequest: true };
+    }
+    if (implementationState === "merged") {
+      return {
+        terminalState: "done",
+        completedAt: implementationPr.mergedAt,
+        terminalUrl: implementationPr.url,
+        mayHaveOpenPullRequest: false
+      };
+    }
+  }
+
+  if (github?.loadState !== "loaded") {
+    return {
+      mayHaveOpenPullRequest: Boolean(
+        linkedPrUrl
+        || github?.type === "pull_request"
+        || implementationPr
+      )
+    };
+  }
+  const rootState = github.state.trim().toLowerCase();
+  if (github.type === "pull_request" && rootState === "merged") {
+    return {
+      terminalState: "done",
+      completedAt: github.mergedAt,
+      terminalUrl: github.url,
+      mayHaveOpenPullRequest: false
+    };
+  }
+  if (rootState === "closed") {
+    return {
+      terminalState: "closed",
+      completedAt: github.closedAt,
+      terminalUrl: github.url,
+      mayHaveOpenPullRequest: false
+    };
+  }
+  return {
+    mayHaveOpenPullRequest: Boolean(
+      linkedPrUrl
+      || (github.type === "pull_request" && (rootState === "open" || rootState === "unknown"))
+    )
+  };
 }
 
 function attention(item: WorkItem, statuses: string[], activityAt: string | undefined, input: DeriveWorkItemsInput) {
@@ -133,13 +181,6 @@ function operatorState(item: WorkItem, terminal: WorkItemTerminalState | undefin
   return "ready";
 }
 
-function mayHaveOpenPullRequest(item: WorkItem): boolean {
-  if (item.github?.type === "pull_request" || item.github?.implementationPr) {
-    return item.github.loadState !== "loaded" || item.github.state.toLowerCase() === "open";
-  }
-  return Boolean(item.claim?.prUrl || item.heartbeat?.prUrl);
-}
-
 /** Build the single, read-only operator state used by every v2 dashboard surface. */
 export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
   return input.workItems.map((item) => {
@@ -165,8 +206,9 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
     ].filter((value): value is string => Boolean(value));
     const declaredTerminalEvidence = currentDeclaredTerminal(lifecycleCandidates);
     const declaredTerminal = declaredTerminalEvidence?.state;
-    const githubTerminalCandidate = declaredTerminal ? undefined : githubTerminalState(item);
-    const githubCompletionAt = githubCompletedAt(item, githubTerminalCandidate);
+    const githubLifecycle = effectiveGitHubLifecycle(item);
+    const githubTerminalCandidate = declaredTerminal ? undefined : githubLifecycle.terminalState;
+    const githubCompletionAt = declaredTerminal ? undefined : githubLifecycle.completedAt;
     const latestLifecycle = latestTimestampedLifecycle(lifecycleCandidates);
     const githubTerminal =
       githubTerminalCandidate
@@ -180,13 +222,13 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
         : undefined;
     const terminal = declaredTerminal || githubTerminal;
     const completedAt = declaredTerminalEvidence?.completedAt
-      || githubCompletedAt(item, githubTerminal);
+      || (githubTerminal ? githubCompletionAt : undefined);
     const activityAt = githubTerminal
       ? latestTimestamp([coordinationActivityAt, item.github?.implementationPr?.mergedAt, item.github?.mergedAt, item.github?.closedAt])
       : coordinationActivityAt;
     const deadPastPresentationTtl = item.heartbeat?.liveness === "dead"
       && input.now.getTime() - timestamp(activityAt) > ARCHIVE_AFTER_MS
-      && !mayHaveOpenPullRequest(item);
+      && !githubLifecycle.mayHaveOpenPullRequest;
     const reason = terminal || deadPastPresentationTtl ? undefined : attention(item, statuses, activityAt, input);
     return {
       ...item,
@@ -195,7 +237,7 @@ export function deriveWorkItems(input: DeriveWorkItemsInput): WorkItem[] {
       terminalProvenance: terminal
         ? declaredTerminal
           ? { source: "declared" }
-          : { source: "github", url: item.github?.implementationPr?.url || item.github?.url }
+          : { source: "github", url: githubLifecycle.terminalUrl }
         : undefined,
       completedAt,
       attention: reason,

@@ -224,9 +224,24 @@ describe("buildCoordinationView", () => {
     expect(forward.batchCards[0].identity).toBe(batchIdentity(manifest));
     expect(forward.batchCards[0].lanes[0]).toMatchObject({
       operatorState: "running",
-      row: undefined
+      state: "running",
+      row: {
+        batchPath: manifest.path,
+        operatorState: "running"
+      }
     });
-    expect(reversed.batchCards[0].identity).toBe(forward.batchCards[0].identity);
+    expect(reversed.batchCards[0]).toMatchObject({
+      identity: forward.batchCards[0].identity,
+      tier: forward.batchCards[0].tier
+    });
+    expect(reversed.batchCards[0].lanes[0]).toMatchObject({
+      operatorState: "running",
+      state: "running",
+      row: {
+        batchPath: manifest.path,
+        operatorState: "running"
+      }
+    });
   });
 
   it("keeps same-ID batches in different repositories distinct and scoped", () => {

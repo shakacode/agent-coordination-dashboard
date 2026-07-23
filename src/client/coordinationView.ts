@@ -804,7 +804,8 @@ export function buildCoordinationView(dashboard: DashboardModel, now?: Date | st
         ? now.getTime()
         : timestampMs(now) || Date.now();
 
-  const rows = buildOperatorRows(dashboard, { now: new Date(nowMs) });
+  const reconciledBatches = reconcileBatchRecords(dashboard.batches);
+  const rows = buildOperatorRows({ ...dashboard, batches: reconciledBatches }, { now: new Date(nowMs) });
   const workItemByKey = new Map(dashboard.workItems.map((item) => [`${item.repo}#${item.target}`, item]));
 
   const jobRows = rows.map((row) => buildJobRow(row, row.target ? workItemByKey.get(`${row.repo}#${row.target}`) : undefined, nowMs));
@@ -813,7 +814,6 @@ export function buildCoordinationView(dashboard: DashboardModel, now?: Date | st
     return counts;
   }, {} as Record<JobBucketId, number>);
 
-  const reconciledBatches = reconcileBatchRecords(dashboard.batches);
   const rowsByLane = laneRowsIndex(rows, reconciledBatches);
   const batchCards = reconciledBatches
     .map((batch) => {

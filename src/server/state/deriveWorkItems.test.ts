@@ -122,6 +122,125 @@ describe("deriveWorkItems", () => {
     });
   });
 
+  it.each([
+    {
+      name: "root issue closed after the latest coordination signal",
+      now: "2026-07-14T12:00:00Z",
+      closedAt: "2026-07-12T11:30:00Z",
+      heartbeat: {
+        schemaVersion: 1,
+        agentId: "worker",
+        repo: BASE_ITEM.repo,
+        target: BASE_ITEM.target,
+        status: "dead",
+        updatedAt: "2026-07-12T11:00:00Z",
+        expiresAt: "2026-07-12T11:05:00Z",
+        path: "heartbeat.json",
+        liveness: "dead" as const
+      },
+      operatorState: "needs_attention"
+    },
+    {
+      name: "root issue closed before the latest coordination signal",
+      now: "2026-07-12T12:00:00Z",
+      closedAt: "2026-07-12T11:00:00Z",
+      heartbeat: {
+        schemaVersion: 1,
+        agentId: "worker",
+        repo: BASE_ITEM.repo,
+        target: BASE_ITEM.target,
+        status: "in_progress",
+        updatedAt: "2026-07-12T11:55:00Z",
+        expiresAt: "2026-07-12T12:30:00Z",
+        path: "heartbeat.json",
+        liveness: "live" as const
+      },
+      operatorState: "running"
+    }
+  ])("keeps an open implementation PR nonterminal when $name", ({ now, closedAt, heartbeat, operatorState }) => {
+    const [item] = deriveWorkItems({
+      now: new Date(now),
+      workItems: [{
+        ...BASE_ITEM,
+        heartbeat,
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "issue",
+          title: "Closed root issue",
+          url: "https://github.com/shakacode/dashboard/issues/43",
+          state: "CLOSED",
+          closedAt,
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: BASE_ITEM.repo,
+            target: "54",
+            title: "Open implementation",
+            url: "https://github.com/shakacode/dashboard/pull/54",
+            state: "OPEN",
+            labels: [],
+            loadState: "loaded"
+          }
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState,
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      completedAt: undefined
+    });
+  });
+
+  it("keeps an unknown implementation PR nonterminal and archive-ineligible", () => {
+    const [item] = deriveWorkItems({
+      now: new Date("2026-07-14T12:00:00Z"),
+      workItems: [{
+        ...BASE_ITEM,
+        heartbeat: {
+          schemaVersion: 1,
+          agentId: "worker",
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          status: "dead",
+          updatedAt: "2026-07-12T11:00:00Z",
+          expiresAt: "2026-07-12T11:05:00Z",
+          path: "heartbeat.json",
+          liveness: "dead"
+        },
+        github: {
+          repo: BASE_ITEM.repo,
+          target: BASE_ITEM.target,
+          type: "issue",
+          title: "Closed root issue",
+          url: "https://github.com/shakacode/dashboard/issues/43",
+          state: "CLOSED",
+          closedAt: "2026-07-12T11:30:00Z",
+          labels: [],
+          loadState: "loaded",
+          implementationPr: {
+            repo: BASE_ITEM.repo,
+            target: "54",
+            title: "Unknown implementation",
+            url: "https://github.com/shakacode/dashboard/pull/54",
+            state: "UNKNOWN",
+            labels: [],
+            loadState: "unknown"
+          }
+        }
+      }]
+    });
+
+    expect(item).toMatchObject({
+      operatorState: "needs_attention",
+      terminalState: undefined,
+      terminalProvenance: undefined,
+      completedAt: undefined
+    });
+  });
+
   it("does not guess terminal state when GitHub reconciliation is unknown", () => {
     const [item] = deriveWorkItems({
       now: new Date("2026-07-12T12:00:00Z"),
