@@ -141,8 +141,7 @@ export interface LaneView {
  * is kept on LaneView that no surface renders.
  */
 interface LaneBlocker {
-  /** The raw `blockedOn` entry, kept so an unresolved edge stays quotable. */
-  key: string;
+  /** The lane this edge resolved to, or the name it was written with if unknown. */
   laneName: string;
   batchId?: string;
   /** Absent when no lane in coordination state matches the edge. */
@@ -812,19 +811,39 @@ function declaredBlockers(card: BatchCard, position: number): string[] {
 
 function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
   const index = new Map<string, BlockerNode>();
+  const aliases: Array<{ key: string; node: BlockerNode }> = [];
   for (const card of cards) {
+    const repo = batchRepositoryScope(card.batch);
+    // A manifest may name a dependency by target rather than by lane, so targets
+    // are aliased too — but only when exactly one lane owns the target. This is
+    // the same refusal to guess that laneRowsIndex applies to custody.
+    const owners = new Map<string, number>();
+    for (const lane of card.batch.lanes) {
+      for (const target of lane.targets || []) owners.set(target, (owners.get(target) || 0) + 1);
+    }
     for (let position = 0; position < card.lanes.length; position += 1) {
       const laneName = card.batch.lanes[position]?.name;
       if (!laneName) continue;
-      index.set(blockerKey(batchRepositoryScope(card.batch), card.id, laneName), {
+      const node: BlockerNode = {
         state: card.lanes[position].operatorState,
         // Intermediate hops need the merged view too, or a walk stops early at a
         // lane whose dependency was only ever recorded on a batch signal.
         blockedOn: declaredBlockers(card, position),
         laneName,
         batchId: card.id
-      });
+      };
+      index.set(blockerKey(repo, card.id, laneName), node);
+      for (const target of card.batch.lanes[position].targets || []) {
+        if (owners.get(target) === 1 && target !== laneName) {
+          aliases.push({ key: blockerKey(repo, card.id, target), node });
+        }
+      }
     }
+  }
+  // Applied after every lane name is present so an alias can never shadow a real
+  // lane that happens to share a target's name.
+  for (const alias of aliases) {
+    if (!index.has(alias.key)) index.set(alias.key, alias.node);
   }
   return index;
 }
@@ -833,8 +852,9 @@ function resolveBlocker(index: Map<string, BlockerNode>, key: string, ownRepo: s
   const { batchId, laneName, qualified } = parseBlockerKey(key, ownBatchId);
   const node = index.get(blockerKey(ownRepo, batchId, laneName));
   return {
-    key,
-    laneName,
+    // Report the lane the edge resolved to; an unresolved edge keeps the name it
+    // was written with so the operator can still search for it.
+    laneName: node?.laneName ?? laneName,
     // Keep the resolved batch so a multi-hop walk stays in the blocker's batch
     // instead of falling back to the batch the walk started from.
     batchId: node?.batchId ?? (qualified ? batchId : undefined),
@@ -889,36 +909,56 @@ interface BlockerChain {
   cycleLane?: string;
 }
 
+/** Worst-first ordering over whole chains: what a chain ends on, then its first edge. */
+function compareChains(left: BlockerChain, right: BlockerChain): number {
+  return blockerSeverity(left.root) - blockerSeverity(right.root)
+    || blockerSeverity(left.first) - blockerSeverity(right.first);
+}
+
 /**
- * Follow one dependency to its root. Bounded by a visited set so a cycle in the
- * manifest reports the cycle instead of hanging. Where an intermediate lane has
- * several dependencies of its own, the worst by immediate state is taken — full
- * branch evaluation at every depth would be exponential, and the ranking that
- * matters to the operator happens across the lane's own top-level dependencies.
+ * Follow one dependency to the lane actually holding it up.
+ *
+ * Every branch is evaluated, at every depth: an intermediate lane's dependencies
+ * can differ in exactly the way the top-level ones do, one bottoming out on
+ * finished work and another on a dead worker, and taking the first by immediate
+ * state would report the wrong root. Memoising per node keeps that linear in the
+ * dependency graph rather than exponential in its depth.
+ *
+ * `path` carries the lanes already being visited on this branch, seeded with the
+ * lane the note is for, so a manifest that loops reports the cycle rather than
+ * hanging. Cycle results depend on that path, so they are never memoised.
  */
 function walkToRoot(
   index: Map<string, BlockerNode>,
   ownRepo: string,
   ownBatchId: string,
-  ownLaneName: string,
-  first: LaneBlocker
+  first: LaneBlocker,
+  path: Set<string>,
+  memo: Map<string, BlockerChain>
 ): BlockerChain {
-  const visited = new Set([blockerKey(ownRepo, ownBatchId, ownLaneName)]);
-  let current = first;
-  while (current.state === "blocked") {
-    const currentBatchId = current.batchId || ownBatchId;
-    const currentKey = blockerKey(ownRepo, currentBatchId, current.laneName);
-    if (visited.has(currentKey)) {
-      return { first, root: current, endsWithoutBlocker: false, cycleLane: current.laneName };
-    }
-    visited.add(currentKey);
-    const next = (index.get(currentKey)?.blockedOn || [])
-      .map((key) => resolveBlocker(index, key, ownRepo, currentBatchId))
-      .sort((left, right) => blockerSeverity(left) - blockerSeverity(right))[0];
-    if (!next) return { first, root: current, endsWithoutBlocker: true };
-    current = next;
-  }
-  return { first, root: current, endsWithoutBlocker: false };
+  if (first.state !== "blocked") return { first, root: first, endsWithoutBlocker: false };
+  const batchId = first.batchId || ownBatchId;
+  const key = blockerKey(ownRepo, batchId, first.laneName);
+  if (path.has(key)) return { first, root: first, endsWithoutBlocker: false, cycleLane: first.laneName };
+  const cached = memo.get(key);
+  if (cached) return { ...cached, first };
+  const edges = index.get(key)?.blockedOn || [];
+  if (edges.length === 0) return { first, root: first, endsWithoutBlocker: true };
+
+  path.add(key);
+  const worst = edges
+    .map((edge) => walkToRoot(index, ownRepo, batchId, resolveBlocker(index, edge, ownRepo, batchId), path, memo))
+    .sort(compareChains)[0];
+  path.delete(key);
+
+  const chain: BlockerChain = {
+    first,
+    root: worst.root,
+    endsWithoutBlocker: worst.endsWithoutBlocker,
+    cycleLane: worst.cycleLane
+  };
+  if (!chain.cycleLane) memo.set(key, chain);
+  return chain;
 }
 
 /**
@@ -946,11 +986,11 @@ function blockerNote(
   if (blockers.every((blocker) => blocker.state && TERMINAL_LANE_STATES.has(blocker.state))) {
     return "dependencies satisfied — ready to relaunch";
   }
+  const path = new Set([blockerKey(ownRepo, ownBatchId, ownLaneName)]);
+  const memo = new Map<string, BlockerChain>();
   const chosen = blockers
-    .map((blocker) => walkToRoot(index, ownRepo, ownBatchId, ownLaneName, blocker))
-    .sort((left, right) =>
-      blockerSeverity(left.root) - blockerSeverity(right.root) ||
-      blockerSeverity(left.first) - blockerSeverity(right.first))[0];
+    .map((blocker) => walkToRoot(index, ownRepo, ownBatchId, blocker, path, memo))
+    .sort(compareChains)[0];
 
   const first = blockerLabel(chosen.first, ownBatchId);
   if (!chosen.first.state) return `${verb} ${first}, which is not in coordination state`;

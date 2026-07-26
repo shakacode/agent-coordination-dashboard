@@ -1342,6 +1342,48 @@ describe("buildCoordinationView", () => {
       expect(impl.note).toBe("waiting on other, which is dead — relaunch or drop other");
     });
 
+    it("resolves a dependency that names a target instead of a lane", () => {
+      const view = buildCoordinationView(blockedModel([
+        {
+          ...batch("rel", [
+            { ...lane("impl", "in_progress", "dead"), targets: ["201"] },
+            lane("qa", "blocked", "no-heartbeat", ["rel:201"])
+          ])
+        }
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by impl, which is dead — relaunch or drop impl");
+    });
+
+    it("refuses to guess when a target belongs to more than one lane", () => {
+      const view = buildCoordinationView(blockedModel([
+        {
+          ...batch("rel", [
+            { ...lane("impl", "in_progress", "dead"), targets: ["201"] },
+            { ...lane("audit", "in_progress", "dead"), targets: ["201"] },
+            lane("qa", "blocked", "no-heartbeat", ["rel:201"])
+          ])
+        }
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by 201, which is not in coordination state");
+    });
+
+    it("ranks nested branches by their roots, not by manifest order", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("done-root", "merged", "dead"),
+          lane("dead-root", "in_progress", "dead"),
+          lane("via-done", "blocked", "no-heartbeat", ["rel:done-root"]),
+          lane("via-dead", "blocked", "no-heartbeat", ["rel:dead-root"]),
+          // One hop deeper than the top-level case: the competing branches sit
+          // under mid, so only a nested walk can tell them apart.
+          lane("mid", "blocked", "no-heartbeat", ["rel:via-done", "rel:via-dead"]),
+          lane("qa", "blocked", "no-heartbeat", ["rel:mid"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note)
+        .toBe("blocked by mid → root dead-root, which is dead — relaunch or drop dead-root");
+    });
+
     it("survives a dependency cycle without hanging", () => {
       const view = buildCoordinationView(blockedModel([
         batch("rel", [
