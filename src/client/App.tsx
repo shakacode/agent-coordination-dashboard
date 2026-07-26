@@ -330,7 +330,7 @@ export function App() {
   const [tab, setTab] = useState<TabId>("batches");
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>({});
   const [jobFilter, setJobFilter] = useState<JobFilter>("all");
-  const [batchFilter, setBatchFilter] = useState<BatchFilter>("all");
+  const [batchFilter, setBatchFilter] = useState<BatchFilter>("active");
   const [selectedRow, setSelectedRow] = useState<{ row: OperatorRow; workItem?: WorkItem } | null>(null);
   const [selectedBatch, setSelectedBatch] = useState<BatchCard | null>(null);
   const [highlightBatch, setHighlightBatch] = useState<string | null>(null);
