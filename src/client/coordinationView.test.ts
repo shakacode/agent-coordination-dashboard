@@ -1174,7 +1174,6 @@ describe("buildCoordinationView", () => {
       // The only "rel:smoke" lives in a different repo, so it must read as
       // unresolvable rather than borrowing that repo's lane state.
       expect(laneByTag(own, "qa").note).toBe("blocked by smoke, which is not in coordination state");
-      expect(laneByTag(own, "qa").blockers[0].state).toBeUndefined();
     });
 
     it("reports an actionable dead blocker ahead of an unresolvable one", () => {
@@ -1312,6 +1311,35 @@ describe("buildCoordinationView", () => {
       // The row reports something more specific than the lane's own "blocked".
       expect(a1.note).not.toBe("blocked, no blocker recorded — check the PR or drop the lane");
       expect(a1.note).toContain("changes");
+    });
+
+    it("resolves a dependency carried only by a paused lane's row", () => {
+      // A paused row outranks its own dependency, so the lane is not "blocked",
+      // but jobNote still rendered that dependency as raw keys. Resolution
+      // replaces raw keys with the root and its action for these lanes too.
+      const paused: DashboardModel = {
+        ...model,
+        workItems: [
+          workItem({
+            id: "repo/dashboard#380", repo: "repo/dashboard", target: "380", type: "pull_request", schedulingState: "in_process",
+            batchSignals: [{ batchId: "rel", laneName: "impl", status: "token_limit_pause", blockedOn: ["rel:other"], updatedAt: "2026-07-21T11:59:00.000Z" }],
+            heartbeat: liveHeartbeat("codex-live", "2026-07-21T11:59:00.000Z", { host: "Codex", machineId: "m1", repo: "repo/dashboard", target: "380", status: "token_limit_pause", batchId: "rel" })
+          })
+        ],
+        events: [
+          { eventId: "e2", type: "phase.changed", batchId: "rel", laneName: "impl", timestamp: "2026-07-21T11:59:00.000Z", repo: "repo/dashboard", target: "380", message: "hit the context limit mid-rebase", status: "token_limit_pause", path: "events/e2.json" }
+        ],
+        batches: [batch("rel", [
+          lane("other", "in_progress", "dead"),
+          { ...lane("impl", "token_limit_pause", "live", []), targets: ["380"] }
+        ])],
+        batchOperations: []
+      };
+      const impl = laneByTag(buildCoordinationView(paused, NOW).batchCards[0], "impl");
+      expect(impl.operatorState).toBe("paused");
+      // Not "blocked on rel:other", and phrased as waiting since it never
+      // declared itself blocked.
+      expect(impl.note).toBe("waiting on other, which is dead — relaunch or drop other");
     });
 
     it("survives a dependency cycle without hanging", () => {

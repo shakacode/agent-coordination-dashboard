@@ -131,21 +131,22 @@ export interface LaneView {
   host?: string;
   threadHandle?: string;
   prUrl?: string;
-  /** Dependencies this lane declared, resolved against every batch's lanes. */
-  blockers: LaneBlocker[];
   row?: OperatorRow;
   workItem?: WorkItem;
 }
 
-/** One `blockedOn` edge, resolved to the lane it names when that lane is known. */
-export interface LaneBlocker {
+/**
+ * One `blockedOn` edge, resolved to the lane it names when that lane is known.
+ * Internal to blocker resolution: the operator sees the derived note, so nothing
+ * is kept on LaneView that no surface renders.
+ */
+interface LaneBlocker {
   /** The raw `blockedOn` entry, kept so an unresolved edge stays quotable. */
   key: string;
   laneName: string;
   batchId?: string;
   /** Absent when no lane in coordination state matches the edge. */
   state?: OperatorState;
-  crossBatch: boolean;
 }
 
 export interface BatchCard {
@@ -837,8 +838,7 @@ function resolveBlocker(index: Map<string, BlockerNode>, key: string, ownRepo: s
     // Keep the resolved batch so a multi-hop walk stays in the blocker's batch
     // instead of falling back to the batch the walk started from.
     batchId: node?.batchId ?? (qualified ? batchId : undefined),
-    state: node?.state,
-    crossBatch: qualified && batchId !== ownBatchId
+    state: node?.state
   };
 }
 
@@ -981,22 +981,30 @@ function applyBlockerResolution(cards: BatchCard[]): void {
       // take both: reading only the manifest would report "no blocker recorded"
       // for a lane whose representative row knows exactly what it is waiting on.
       const declared = declaredBlockers(card, position);
-      view.blockers = declared.map((key) => resolveBlocker(index, key, repo, card.id));
+      const laneStatus = card.batch.lanes[position]?.status;
       const declaredBlocked = view.operatorState === "blocked";
       if (declared.length === 0) {
         // A lane can read blocked from its own status text with no dependency at
         // all. Anything the row actually reported — message, activity, retention
         // — explains more than generic guidance, so only fall back when the note
         // is empty or merely echoes the lane status back.
-        if (declaredBlocked && !noteAddsDetail(view.note, card.batch.lanes[position]?.status)) {
+        if (declaredBlocked && !noteAddsDetail(view.note, laneStatus)) {
           view.note = "blocked, no blocker recorded — check the PR or drop the lane";
         }
         continue;
       }
       // Terminal lanes keep their own note: a manifest that never cleared
       // blockedOn must not make finished work look like it is still waiting.
+      //
+      // Every other lane with a dependency is safe to rewrite: whenever one is
+      // declared, the note it already has is a raw rendering of that same
+      // dependency — "depends on <keys>" from the manifest, or "blocked on
+      // <keys>" from jobNote, which puts blockedOn ahead of the agent's own
+      // message. So there is no agent detail here to lose, only raw keys to
+      // replace with the resolved root and its action.
       if (!declaredBlocked && TERMINAL_LANE_STATES.has(view.operatorState)) continue;
-      view.note = blockerNote(index, repo, card.id, card.batch.lanes[position].name, view.blockers, declaredBlocked);
+      const blockers = declared.map((key) => resolveBlocker(index, key, repo, card.id));
+      view.note = blockerNote(index, repo, card.id, card.batch.lanes[position].name, blockers, declaredBlocked);
     }
   }
 }
