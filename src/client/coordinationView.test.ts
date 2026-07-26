@@ -1278,6 +1278,42 @@ describe("buildCoordinationView", () => {
       expect(qa.note).toBe("blocked by mid → root root, which is dead — relaunch or drop root");
     });
 
+    it("picks the dependency chain that is still outstanding, not the one that finished", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("done-root", "merged", "dead"),
+          lane("dead-root", "in_progress", "dead"),
+          // Both branches are blocked, so neither wins on its own state; the
+          // manifest lists the satisfied branch first.
+          lane("via-done", "blocked", "no-heartbeat", ["rel:done-root"]),
+          lane("via-dead", "blocked", "no-heartbeat", ["rel:dead-root"]),
+          lane("qa", "blocked", "no-heartbeat", ["rel:via-done", "rel:via-dead"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note)
+        .toBe("blocked by via-dead → root dead-root, which is dead — relaunch or drop dead-root");
+    });
+
+    it("keeps a lane's recorded activity when no dependency is declared", () => {
+      const described: DashboardModel = {
+        ...model,
+        workItems: [
+          workItem({
+            id: "repo/dashboard#370", repo: "repo/dashboard", target: "370", type: "pull_request", schedulingState: "in_process",
+            batchSignals: [{ batchId: "rel", laneName: "a1", status: "changes_requested", blockedOn: [], updatedAt: "2026-07-21T11:59:00.000Z" }],
+            heartbeat: liveHeartbeat("codex-live", "2026-07-21T11:59:00.000Z", { host: "Codex", machineId: "m1", repo: "repo/dashboard", target: "370", status: "changes_requested", batchId: "rel" })
+          })
+        ],
+        batches: [batch("rel", [{ ...lane("a1", "blocked", "live", []), targets: ["370"] }])],
+        batchOperations: []
+      };
+      const a1 = laneByTag(buildCoordinationView(described, NOW).batchCards[0], "a1");
+      expect(a1.operatorState).toBe("blocked");
+      // The row reports something more specific than the lane's own "blocked".
+      expect(a1.note).not.toBe("blocked, no blocker recorded — check the PR or drop the lane");
+      expect(a1.note).toContain("changes");
+    });
+
     it("survives a dependency cycle without hanging", () => {
       const view = buildCoordinationView(blockedModel([
         batch("rel", [

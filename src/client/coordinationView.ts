@@ -789,6 +789,18 @@ function blockerKey(repo: string, batchId: string, laneName: string): string {
   return [repo, batchId, laneName].join(BLOCKER_KEY_SEPARATOR);
 }
 
+/**
+ * True when a lane's existing note says something beyond restating its own
+ * status. jobNote falls through message → activity → retention, so the note can
+ * already carry the agent's own account of why it stopped; replacing that with
+ * generic guidance would lose the only specific information available. A note
+ * that merely echoes the status back adds nothing, and the guidance is better.
+ */
+function noteAddsDetail(note: string, laneStatus: string | undefined): boolean {
+  const text = note.trim().toLowerCase();
+  return text.length > 0 && text !== (laneStatus || "").trim().toLowerCase();
+}
+
 /** Every dependency a lane declares, from its manifest and its representative row alike. */
 function declaredBlockers(card: BatchCard, position: number): string[] {
   return [...new Set([
@@ -867,10 +879,56 @@ function blockerLabel(blocker: LaneBlocker, ownBatchId: string): string {
   return `${batchId}:${blocker.laneName}`;
 }
 
+/** One dependency followed down to the lane actually holding it up. */
+interface BlockerChain {
+  first: LaneBlocker;
+  root: LaneBlocker;
+  /** The chain ends on a lane that calls itself blocked but names nothing. */
+  endsWithoutBlocker: boolean;
+  /** Set when the manifest loops back on itself; carries the lane it looped to. */
+  cycleLane?: string;
+}
+
 /**
- * Walk from a blocked lane's worst dependency down to the lane actually holding
- * the chain up, and phrase it as an action. Bounded by a visited set so a cycle
- * in the manifest reports the cycle instead of hanging.
+ * Follow one dependency to its root. Bounded by a visited set so a cycle in the
+ * manifest reports the cycle instead of hanging. Where an intermediate lane has
+ * several dependencies of its own, the worst by immediate state is taken — full
+ * branch evaluation at every depth would be exponential, and the ranking that
+ * matters to the operator happens across the lane's own top-level dependencies.
+ */
+function walkToRoot(
+  index: Map<string, BlockerNode>,
+  ownRepo: string,
+  ownBatchId: string,
+  ownLaneName: string,
+  first: LaneBlocker
+): BlockerChain {
+  const visited = new Set([blockerKey(ownRepo, ownBatchId, ownLaneName)]);
+  let current = first;
+  while (current.state === "blocked") {
+    const currentBatchId = current.batchId || ownBatchId;
+    const currentKey = blockerKey(ownRepo, currentBatchId, current.laneName);
+    if (visited.has(currentKey)) {
+      return { first, root: current, endsWithoutBlocker: false, cycleLane: current.laneName };
+    }
+    visited.add(currentKey);
+    const next = (index.get(currentKey)?.blockedOn || [])
+      .map((key) => resolveBlocker(index, key, ownRepo, currentBatchId))
+      .sort((left, right) => blockerSeverity(left) - blockerSeverity(right))[0];
+    if (!next) return { first, root: current, endsWithoutBlocker: true };
+    current = next;
+  }
+  return { first, root: current, endsWithoutBlocker: false };
+}
+
+/**
+ * Phrase a lane's dependencies as the action its operator should take.
+ *
+ * Every dependency is followed to its root before one is chosen, because the
+ * immediate edges say nothing about which chain is actually outstanding: two
+ * lanes can both read "blocked" while one bottoms out on finished work and the
+ * other on a dead worker. Ranking by root keeps the note from announcing "ready
+ * to relaunch" while a different chain is still holding the lane up.
  */
 function blockerNote(
   index: Map<string, BlockerNode>,
@@ -888,40 +946,24 @@ function blockerNote(
   if (blockers.every((blocker) => blocker.state && TERMINAL_LANE_STATES.has(blocker.state))) {
     return "dependencies satisfied — ready to relaunch";
   }
-  const worst = [...blockers].sort((left, right) => blockerSeverity(left) - blockerSeverity(right))[0];
-  const first = blockerLabel(worst, ownBatchId);
-  if (!worst.state) return `${verb} ${first}, which is not in coordination state`;
+  const chosen = blockers
+    .map((blocker) => walkToRoot(index, ownRepo, ownBatchId, ownLaneName, blocker))
+    .sort((left, right) =>
+      blockerSeverity(left.root) - blockerSeverity(right.root) ||
+      blockerSeverity(left.first) - blockerSeverity(right.first))[0];
 
-  const visited = new Set([blockerKey(ownRepo, ownBatchId, ownLaneName)]);
-  let current = worst;
-  // Set when the chain ends on a lane that calls itself blocked but names nothing.
-  let endsWithoutBlocker = false;
-  while (current.state === "blocked") {
-    const currentBatchId = current.batchId || ownBatchId;
-    const currentKey = blockerKey(ownRepo, currentBatchId, current.laneName);
-    if (visited.has(currentKey)) {
-      return `${verb} ${first} → dependency cycle back to ${current.laneName}`;
-    }
-    visited.add(currentKey);
-    const node = index.get(currentKey);
-    const next = (node?.blockedOn || [])
-      .map((key) => resolveBlocker(index, key, ownRepo, currentBatchId))
-      .sort((left, right) => blockerSeverity(left) - blockerSeverity(right))[0];
-    if (!next) {
-      endsWithoutBlocker = true;
-      break;
-    }
-    current = next;
-  }
+  const first = blockerLabel(chosen.first, ownBatchId);
+  if (!chosen.first.state) return `${verb} ${first}, which is not in coordination state`;
+  if (chosen.cycleLane) return `${verb} ${first} → dependency cycle back to ${chosen.cycleLane}`;
 
-  const root = blockerLabel(current, ownBatchId);
+  const root = blockerLabel(chosen.root, ownBatchId);
   // Only name a root separately once the walk actually moved past the first edge.
   const lead = root === first ? `${verb} ${first}` : `${verb} ${first} → root ${root}`;
-  if (endsWithoutBlocker) return `${lead}, which is blocked with no blocker recorded`;
-  if (!current.state) return `${lead}, which is not in coordination state`;
-  if (current.state === "dead") return `${lead}, which is dead — relaunch or drop ${root}`;
-  if (TERMINAL_LANE_STATES.has(current.state)) return `${lead}, which is done — ready to relaunch`;
-  return `${lead}, which is ${current.state}`;
+  if (chosen.endsWithoutBlocker) return `${lead}, which is blocked with no blocker recorded`;
+  if (!chosen.root.state) return `${lead}, which is not in coordination state`;
+  if (chosen.root.state === "dead") return `${lead}, which is dead — relaunch or drop ${root}`;
+  if (TERMINAL_LANE_STATES.has(chosen.root.state)) return `${lead}, which is done — ready to relaunch`;
+  return `${lead}, which is ${chosen.root.state}`;
 }
 
 /**
@@ -943,9 +985,10 @@ function applyBlockerResolution(cards: BatchCard[]): void {
       const declaredBlocked = view.operatorState === "blocked";
       if (declared.length === 0) {
         // A lane can read blocked from its own status text with no dependency at
-        // all. Whatever the agent reported explains more than generic guidance,
-        // so only fall back when it left nothing behind.
-        if (declaredBlocked && !view.row?.activityMessage?.trim()) {
+        // all. Anything the row actually reported — message, activity, retention
+        // — explains more than generic guidance, so only fall back when the note
+        // is empty or merely echoes the lane status back.
+        if (declaredBlocked && !noteAddsDetail(view.note, card.batch.lanes[position]?.status)) {
           view.note = "blocked, no blocker recorded — check the PR or drop the lane";
         }
         continue;
