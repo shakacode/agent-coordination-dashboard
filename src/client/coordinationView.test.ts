@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSummary, DashboardModel, WorkItem } from "../shared/types";
+import type { BatchCard } from "./coordinationView";
 import { ABSENT, aggregateUsage, batchIdentity, buildCoordinationView, canonicalHostName, findBatchCard, formatTokens, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
 import { buildOperatorRows, type OperatorRow } from "./operatorRows";
 
@@ -1042,6 +1043,126 @@ describe("buildCoordinationView", () => {
     }), NOW).batchCards[0];
     expect(card.lanes[0].operatorState).toBe("done");
     expect(card.tier).toBe("blocked");
+  });
+
+  it("still reports a dead lane that never reached a terminal status", () => {
+    const abandoned: DashboardModel = {
+      ...model,
+      workItems: [],
+      batches: [
+        {
+          schemaVersion: 1, batchId: "b5", repo: "repo/dashboard", objective: "Abandoned batch.", createdAt: "2026-07-21T10:00:00.000Z",
+          lanes: [
+            { name: "l", owner: "o", targets: ["304"], dependsOn: [], status: "in_progress", liveness: "dead", blockedOn: [] },
+            { name: "qa", owner: "o2", targets: ["304"], dependsOn: [], status: "in_progress", liveness: "dead", blockedOn: [] }
+          ],
+          path: "batches/b5.json"
+        }
+      ],
+      batchOperations: []
+    };
+    const card = buildCoordinationView(abandoned, NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe("dead");
+    // Dead mid-flight work is forgotten, not awaiting an operator decision.
+    expect(card.tier).toBe("stuck");
+  });
+
+  describe("blocker resolution", () => {
+    function blockedModel(batches: DashboardModel["batches"]): DashboardModel {
+      return { ...model, workItems: [], batches, batchOperations: [] };
+    }
+
+    function batch(batchId: string, lanes: DashboardModel["batches"][number]["lanes"]) {
+      return {
+        schemaVersion: 1 as const, batchId, repo: "repo/dashboard", objective: `${batchId} objective.`,
+        createdAt: "2026-07-21T10:00:00.000Z", lanes, path: `batches/${batchId}.json`
+      };
+    }
+
+    function lane(name: string, status: string, liveness: string, blockedOn: string[] = []) {
+      return { name, owner: `owner-${name}`, targets: [], dependsOn: [], status, liveness: liveness as never, blockedOn };
+    }
+
+    const laneByTag = (card: BatchCard, tag: string) => card.lanes.find((candidate) => candidate.tag === tag)!;
+
+    it("names the root blocker when a dependency chain bottoms out on a dead lane", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("smoke", "heartbeat", "dead"),
+          lane("ledger", "blocked", "no-heartbeat", ["rel:smoke"]),
+          lane("qa", "blocked", "no-heartbeat", ["rel:ledger"])
+        ])
+      ]), NOW);
+      const card = view.batchCards[0];
+      expect(laneByTag(card, "ledger").note).toBe("blocked by smoke, which is dead — relaunch or drop smoke");
+      // qa is two hops out, so the note must name the root, not its neighbour.
+      expect(laneByTag(card, "qa").note).toBe("blocked by ledger → root smoke, which is dead — relaunch or drop smoke");
+    });
+
+    it("reports a lane whose dependencies have all finished as ready to relaunch", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("build", "merged", "dead"),
+          lane("qa", "blocked", "no-heartbeat", ["rel:build"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("dependencies satisfied — ready to relaunch");
+    });
+
+    it("resolves a dependency that points at a lane in another batch", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("upstream", [lane("b1", "in_progress", "dead")]),
+        batch("downstream", [lane("c1", "blocked", "no-heartbeat", ["upstream:b1"])])
+      ]), NOW);
+      const downstream = view.batchCards.find((candidate) => candidate.id === "downstream")!;
+      expect(laneByTag(downstream, "c1").note).toBe("blocked by upstream:b1, which is dead — relaunch or drop upstream:b1");
+    });
+
+    it("says so plainly when a dependency cannot be found in coordination state", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [lane("qa", "blocked", "no-heartbeat", ["ghost:missing"])])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by ghost:missing, which is not in coordination state");
+    });
+
+    it("does not hide a blocked lane that recorded no blocker at all", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [lane("a1", "blocked", "dead")])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "a1").note).toBe("blocked, no blocker recorded — check the PR or drop the lane");
+    });
+
+    it("does not name a redundant root when the chain never moved past the first edge", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("upstream", [lane("b3", "blocked", "dead")]),
+        batch("downstream", [lane("c2", "blocked", "no-heartbeat", ["upstream:b3"])])
+      ]), NOW);
+      const downstream = view.batchCards.find((candidate) => candidate.id === "downstream")!;
+      expect(laneByTag(downstream, "c2").note).toBe("blocked by upstream:b3, which is blocked with no blocker recorded");
+    });
+
+
+    it("leaves a finished lane's note alone when its manifest kept a stale dependency", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("server", "in_progress", "dead"),
+          lane("qa", "done", "dead", ["rel:server"])
+        ])
+      ]), NOW);
+      const qa = laneByTag(view.batchCards[0], "qa");
+      expect(qa.operatorState).toBe("done");
+      expect(qa.note).not.toMatch(/waiting on|blocked by/);
+    });
+
+    it("survives a dependency cycle without hanging", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("x", "blocked", "no-heartbeat", ["rel:y"]),
+          lane("y", "blocked", "no-heartbeat", ["rel:x"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "x").note).toBe("blocked by y → dependency cycle back to x");
+    });
   });
 
   it("does not narrate a stale dependency on a lane that already finished", () => {
