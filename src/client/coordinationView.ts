@@ -789,15 +789,25 @@ function blockerKey(repo: string, batchId: string, laneName: string): string {
   return [repo, batchId, laneName].join(BLOCKER_KEY_SEPARATOR);
 }
 
+/** Every dependency a lane declares, from its manifest and its representative row alike. */
+function declaredBlockers(card: BatchCard, position: number): string[] {
+  return [...new Set([
+    ...(card.batch.lanes[position]?.blockedOn || []),
+    ...(card.lanes[position]?.row?.blockedOn || [])
+  ])];
+}
+
 function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
   const index = new Map<string, BlockerNode>();
   for (const card of cards) {
     for (let position = 0; position < card.lanes.length; position += 1) {
       const laneName = card.batch.lanes[position]?.name;
       if (!laneName) continue;
-      index.set(blockerKey(card.batch.repo || "", card.id, laneName), {
+      index.set(blockerKey(batchRepositoryScope(card.batch), card.id, laneName), {
         state: card.lanes[position].operatorState,
-        blockedOn: card.batch.lanes[position].blockedOn || [],
+        // Intermediate hops need the merged view too, or a walk stops early at a
+        // lane whose dependency was only ever recorded on a batch signal.
+        blockedOn: declaredBlockers(card, position),
         laneName,
         batchId: card.id
       });
@@ -845,9 +855,16 @@ function blockerSeverity(blocker: LaneBlocker): number {
   return BLOCKER_SEVERITY[blocker.state] ?? 3;
 }
 
-/** Display name for a blocker: cross-batch edges keep their batch prefix to stay unambiguous. */
-function blockerLabel(blocker: LaneBlocker): string {
-  return blocker.crossBatch ? blocker.key : blocker.laneName;
+/**
+ * Display name for a blocker: cross-batch edges keep their batch prefix to stay
+ * unambiguous. `ownBatchId` is always the lane the note is written for, so a root
+ * reached through another batch stays qualified even when the edge that named it
+ * was unqualified within that batch.
+ */
+function blockerLabel(blocker: LaneBlocker, ownBatchId: string): string {
+  const batchId = blocker.batchId;
+  if (!batchId || batchId === ownBatchId) return blocker.laneName;
+  return `${batchId}:${blocker.laneName}`;
 }
 
 /**
@@ -872,7 +889,7 @@ function blockerNote(
     return "dependencies satisfied — ready to relaunch";
   }
   const worst = [...blockers].sort((left, right) => blockerSeverity(left) - blockerSeverity(right))[0];
-  const first = blockerLabel(worst);
+  const first = blockerLabel(worst, ownBatchId);
   if (!worst.state) return `${verb} ${first}, which is not in coordination state`;
 
   const visited = new Set([blockerKey(ownRepo, ownBatchId, ownLaneName)]);
@@ -897,7 +914,7 @@ function blockerNote(
     current = next;
   }
 
-  const root = blockerLabel(current);
+  const root = blockerLabel(current, ownBatchId);
   // Only name a root separately once the walk actually moved past the first edge.
   const lead = root === first ? `${verb} ${first}` : `${verb} ${first} → root ${root}`;
   if (endsWithoutBlocker) return `${lead}, which is blocked with no blocker recorded`;
@@ -915,21 +932,27 @@ function blockerNote(
 function applyBlockerResolution(cards: BatchCard[]): void {
   const index = blockerIndex(cards);
   for (const card of cards) {
-    const repo = card.batch.repo || "";
+    const repo = batchRepositoryScope(card.batch);
     for (let position = 0; position < card.lanes.length; position += 1) {
       const view = card.lanes[position];
       // A batch signal can record a dependency the saved manifest predates, so
       // take both: reading only the manifest would report "no blocker recorded"
       // for a lane whose representative row knows exactly what it is waiting on.
-      const declared = [...new Set([
-        ...(card.batch.lanes[position]?.blockedOn || []),
-        ...(view.row?.blockedOn || [])
-      ])];
+      const declared = declaredBlockers(card, position);
       view.blockers = declared.map((key) => resolveBlocker(index, key, repo, card.id));
       const declaredBlocked = view.operatorState === "blocked";
+      if (declared.length === 0) {
+        // A lane can read blocked from its own status text with no dependency at
+        // all. Whatever the agent reported explains more than generic guidance,
+        // so only fall back when it left nothing behind.
+        if (declaredBlocked && !view.row?.activityMessage?.trim()) {
+          view.note = "blocked, no blocker recorded — check the PR or drop the lane";
+        }
+        continue;
+      }
       // Terminal lanes keep their own note: a manifest that never cleared
       // blockedOn must not make finished work look like it is still waiting.
-      if (!declaredBlocked && (declared.length === 0 || TERMINAL_LANE_STATES.has(view.operatorState))) continue;
+      if (!declaredBlocked && TERMINAL_LANE_STATES.has(view.operatorState)) continue;
       view.note = blockerNote(index, repo, card.id, card.batch.lanes[position].name, view.blockers, declaredBlocked);
     }
   }

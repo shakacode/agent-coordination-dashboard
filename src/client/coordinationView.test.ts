@@ -1220,6 +1220,64 @@ describe("buildCoordinationView", () => {
       expect(qa.note).toBe("blocked by impl, which is dead — relaunch or drop impl");
     });
 
+    it("keeps the agent's own explanation when a lane is blocked by status text alone", () => {
+      const explained: DashboardModel = {
+        ...model,
+        workItems: [
+          workItem({
+            id: "repo/dashboard#350", repo: "repo/dashboard", target: "350", type: "pull_request", schedulingState: "in_process",
+            batchSignals: [{ batchId: "rel", laneName: "a1", status: "blocked", blockedOn: [], updatedAt: "2026-07-21T11:59:00.000Z" }],
+            heartbeat: liveHeartbeat("codex-live", "2026-07-21T11:59:00.000Z", { host: "Codex", machineId: "m1", repo: "repo/dashboard", target: "350", status: "blocked", batchId: "rel" })
+          })
+        ],
+        events: [
+          { eventId: "e1", type: "phase.changed", batchId: "rel", laneName: "a1", timestamp: "2026-07-21T11:59:00.000Z", repo: "repo/dashboard", target: "350", message: "waiting on design review from the platform team", status: "blocked", path: "events/e1.json" }
+        ],
+        batches: [batch("rel", [{ ...lane("a1", "blocked", "live", []), targets: ["350"] }])],
+        batchOperations: []
+      };
+      const a1 = laneByTag(buildCoordinationView(explained, NOW).batchCards[0], "a1");
+      expect(a1.operatorState).toBe("blocked");
+      // Generic guidance must not bulldoze what the agent actually reported.
+      expect(a1.note).toBe("waiting on design review from the platform team");
+    });
+
+    it("names the root's own batch when a chain crosses into it", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("upstream", [
+          lane("root", "in_progress", "dead"),
+          lane("mid", "blocked", "no-heartbeat", ["root"])
+        ]),
+        batch("downstream", [lane("qa", "blocked", "no-heartbeat", ["upstream:mid"])])
+      ]), NOW);
+      const downstream = view.batchCards.find((candidate) => candidate.id === "downstream")!;
+      // "root" is unqualified inside upstream, but from downstream's point of view
+      // it is another batch's lane and must stay qualified in the instruction.
+      expect(laneByTag(downstream, "qa").note)
+        .toBe("blocked by upstream:mid → root upstream:root, which is dead — relaunch or drop upstream:root");
+    });
+
+    it("follows a blocker recorded only on an intermediate lane's representative row", () => {
+      const signalOnly: DashboardModel = {
+        ...model,
+        workItems: [
+          workItem({
+            id: "repo/dashboard#360", repo: "repo/dashboard", target: "360", type: "pull_request", schedulingState: "in_process",
+            batchSignals: [{ batchId: "rel", laneName: "mid", status: "blocked", blockedOn: ["rel:root"], updatedAt: "2026-07-21T11:00:00.000Z" }]
+          })
+        ],
+        batches: [batch("rel", [
+          lane("root", "in_progress", "dead"),
+          // The manifest predates the signal, so the intermediate hop looks empty.
+          { ...lane("mid", "blocked", "no-heartbeat", []), targets: ["360"] },
+          lane("qa", "blocked", "no-heartbeat", ["rel:mid"])
+        ])],
+        batchOperations: []
+      };
+      const qa = laneByTag(buildCoordinationView(signalOnly, NOW).batchCards[0], "qa");
+      expect(qa.note).toBe("blocked by mid → root root, which is dead — relaunch or drop root");
+    });
+
     it("survives a dependency cycle without hanging", () => {
       const view = buildCoordinationView(blockedModel([
         batch("rel", [
