@@ -779,13 +779,23 @@ function parseBlockerKey(key: string, fallbackBatchId: string): { batchId: strin
   return { batchId: key.slice(0, separator), laneName: key.slice(separator + 1), qualified: true };
 }
 
+/**
+ * Index keys carry the repository because batch ids are not unique across repos
+ * — findBatchCard already refuses to pick a same-id batch from another
+ * repository, and resolving a dependency against the wrong repo's lane would
+ * produce a confidently wrong instruction.
+ */
+function blockerKey(repo: string, batchId: string, laneName: string): string {
+  return [repo, batchId, laneName].join(BLOCKER_KEY_SEPARATOR);
+}
+
 function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
   const index = new Map<string, BlockerNode>();
   for (const card of cards) {
     for (let position = 0; position < card.lanes.length; position += 1) {
       const laneName = card.batch.lanes[position]?.name;
       if (!laneName) continue;
-      index.set(`${card.id}${BLOCKER_KEY_SEPARATOR}${laneName}`, {
+      index.set(blockerKey(card.batch.repo || "", card.id, laneName), {
         state: card.lanes[position].operatorState,
         blockedOn: card.batch.lanes[position].blockedOn || [],
         laneName,
@@ -796,25 +806,42 @@ function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
   return index;
 }
 
-function resolveBlocker(index: Map<string, BlockerNode>, key: string, ownBatchId: string): LaneBlocker {
+function resolveBlocker(index: Map<string, BlockerNode>, key: string, ownRepo: string, ownBatchId: string): LaneBlocker {
   const { batchId, laneName, qualified } = parseBlockerKey(key, ownBatchId);
-  const node = index.get(`${batchId}${BLOCKER_KEY_SEPARATOR}${laneName}`)
-    // An unqualified edge names a sibling lane; try the owning batch too.
-    || (qualified ? undefined : index.get(`${ownBatchId}${BLOCKER_KEY_SEPARATOR}${laneName}`));
+  const node = index.get(blockerKey(ownRepo, batchId, laneName));
   return {
     key,
     laneName,
-    batchId: qualified ? batchId : undefined,
+    // Keep the resolved batch so a multi-hop walk stays in the blocker's batch
+    // instead of falling back to the batch the walk started from.
+    batchId: node?.batchId ?? (qualified ? batchId : undefined),
     state: node?.state,
     crossBatch: qualified && batchId !== ownBatchId
   };
 }
 
-/** How a blocker reads to an operator, worst first: these decide which edge to report. */
-const BLOCKER_SEVERITY: Partial<Record<OperatorState, number>> = { dead: 0, blocked: 1, wedged: 2, stale: 2, paused: 2 };
+/**
+ * How a blocker reads to an operator, worst first: this decides which edge gets
+ * reported when a lane declares several. Terminal ranks last so a satisfied
+ * dependency never masks one still outstanding, and an unresolvable edge ranks
+ * behind every real state so a typo cannot hide an actionable root cause.
+ */
+const BLOCKER_SEVERITY: Partial<Record<OperatorState, number>> = {
+  dead: 0,
+  blocked: 1,
+  wedged: 2,
+  stale: 2,
+  paused: 2,
+  running: 3,
+  ready: 3,
+  unknown: 3,
+  done: 5,
+  archived: 5
+};
+const UNRESOLVED_BLOCKER_SEVERITY = 4;
 
 function blockerSeverity(blocker: LaneBlocker): number {
-  if (!blocker.state) return -1; // unresolved: the operator cannot even look it up
+  if (!blocker.state) return UNRESOLVED_BLOCKER_SEVERITY;
   return BLOCKER_SEVERITY[blocker.state] ?? 3;
 }
 
@@ -830,6 +857,7 @@ function blockerLabel(blocker: LaneBlocker): string {
  */
 function blockerNote(
   index: Map<string, BlockerNode>,
+  ownRepo: string,
   ownBatchId: string,
   ownLaneName: string,
   blockers: LaneBlocker[],
@@ -847,20 +875,20 @@ function blockerNote(
   const first = blockerLabel(worst);
   if (!worst.state) return `${verb} ${first}, which is not in coordination state`;
 
-  const visited = new Set([`${ownBatchId}${BLOCKER_KEY_SEPARATOR}${ownLaneName}`]);
+  const visited = new Set([blockerKey(ownRepo, ownBatchId, ownLaneName)]);
   let current = worst;
   // Set when the chain ends on a lane that calls itself blocked but names nothing.
   let endsWithoutBlocker = false;
   while (current.state === "blocked") {
     const currentBatchId = current.batchId || ownBatchId;
-    const currentKey = `${currentBatchId}${BLOCKER_KEY_SEPARATOR}${current.laneName}`;
+    const currentKey = blockerKey(ownRepo, currentBatchId, current.laneName);
     if (visited.has(currentKey)) {
       return `${verb} ${first} → dependency cycle back to ${current.laneName}`;
     }
     visited.add(currentKey);
     const node = index.get(currentKey);
     const next = (node?.blockedOn || [])
-      .map((key) => resolveBlocker(index, key, currentBatchId))
+      .map((key) => resolveBlocker(index, key, ownRepo, currentBatchId))
       .sort((left, right) => blockerSeverity(left) - blockerSeverity(right))[0];
     if (!next) {
       endsWithoutBlocker = true;
@@ -887,15 +915,22 @@ function blockerNote(
 function applyBlockerResolution(cards: BatchCard[]): void {
   const index = blockerIndex(cards);
   for (const card of cards) {
+    const repo = card.batch.repo || "";
     for (let position = 0; position < card.lanes.length; position += 1) {
       const view = card.lanes[position];
-      const declared = card.batch.lanes[position]?.blockedOn || [];
-      view.blockers = declared.map((key) => resolveBlocker(index, key, card.id));
+      // A batch signal can record a dependency the saved manifest predates, so
+      // take both: reading only the manifest would report "no blocker recorded"
+      // for a lane whose representative row knows exactly what it is waiting on.
+      const declared = [...new Set([
+        ...(card.batch.lanes[position]?.blockedOn || []),
+        ...(view.row?.blockedOn || [])
+      ])];
+      view.blockers = declared.map((key) => resolveBlocker(index, key, repo, card.id));
       const declaredBlocked = view.operatorState === "blocked";
       // Terminal lanes keep their own note: a manifest that never cleared
       // blockedOn must not make finished work look like it is still waiting.
       if (!declaredBlocked && (declared.length === 0 || TERMINAL_LANE_STATES.has(view.operatorState))) continue;
-      view.note = blockerNote(index, card.id, card.batch.lanes[position].name, view.blockers, declaredBlocked);
+      view.note = blockerNote(index, repo, card.id, card.batch.lanes[position].name, view.blockers, declaredBlocked);
     }
   }
 }
@@ -993,7 +1028,10 @@ export function buildBatchCard(
   const tier = batch.blocker ? "blocked" : batchTierFromLanes(laneStates, operation);
   const tierMeta = BATCH_TIER_META.get(tier)!;
   const done = laneStates.filter((state) => TERMINAL_LANE_STATES.has(state)).length;
-  const running = laneStates.filter((state) => state === "running" || STUCK_LANE_STATES.has(state)).length;
+  // Stuck lanes still count as in-flight on the progress bar, but a dead one does
+  // not: nobody is carrying it, and showing abandoned work as running is exactly
+  // the confusion the stuck tier exists to remove.
+  const running = laneStates.filter((state) => state === "running" || (STUCK_LANE_STATES.has(state) && state !== "dead")).length;
   const total = laneCount || 1;
   const convo = convoStatusFor(tier);
   const observedHosts = new Set(

@@ -1065,6 +1065,9 @@ describe("buildCoordinationView", () => {
     expect(card.lanes[0].operatorState).toBe("dead");
     // Dead mid-flight work is forgotten, not awaiting an operator decision.
     expect(card.tier).toBe("stuck");
+    // An abandoned lane is not progress: it must not widen the running bar.
+    expect(card.running).toBe(0);
+    expect(card.runPct).toBe("0%");
   });
 
   describe("blocker resolution", () => {
@@ -1152,6 +1155,69 @@ describe("buildCoordinationView", () => {
       const qa = laneByTag(view.batchCards[0], "qa");
       expect(qa.operatorState).toBe("done");
       expect(qa.note).not.toMatch(/waiting on|blocked by/);
+    });
+
+    it("does not resolve a dependency against a same-id batch in another repository", () => {
+      // findBatchCard already refuses to pick a same-ID batch from another repo;
+      // blocker resolution must not quietly reintroduce that confusion.
+      const crossRepo: DashboardModel = {
+        ...model,
+        workItems: [],
+        batches: [
+          { ...batch("rel", [lane("smoke", "in_progress", "dead")]), repo: "repo/other" },
+          { ...batch("rel", [lane("qa", "blocked", "no-heartbeat", ["rel:smoke"])]), repo: "repo/dashboard" }
+        ],
+        batchOperations: []
+      };
+      const own = buildCoordinationView(crossRepo, NOW).batchCards
+        .find((candidate) => candidate.repo === "repo/dashboard")!;
+      // The only "rel:smoke" lives in a different repo, so it must read as
+      // unresolvable rather than borrowing that repo's lane state.
+      expect(laneByTag(own, "qa").note).toBe("blocked by smoke, which is not in coordination state");
+      expect(laneByTag(own, "qa").blockers[0].state).toBeUndefined();
+    });
+
+    it("reports an actionable dead blocker ahead of an unresolvable one", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("impl", "in_progress", "dead"),
+          lane("qa", "blocked", "no-heartbeat", ["ghost:missing", "rel:impl"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by impl, which is dead — relaunch or drop impl");
+    });
+
+    it("reports an unfinished dependency ahead of a finished one", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("finished", "merged", "dead"),
+          lane("running", "in_progress", "live"),
+          lane("qa", "blocked", "no-heartbeat", ["rel:finished", "rel:running"])
+        ])
+      ]), NOW);
+      // The finished edge sorts first in the manifest; it must not win and claim
+      // the lane is ready while another dependency is still going.
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by running, which is running");
+    });
+
+    it("keeps a blocker recorded only on the representative row", () => {
+      const signalOnly: DashboardModel = {
+        ...model,
+        workItems: [
+          workItem({
+            id: "repo/dashboard#340", repo: "repo/dashboard", target: "340", type: "pull_request", schedulingState: "in_process",
+            batchSignals: [{ batchId: "rel", laneName: "qa", status: "blocked", blockedOn: ["rel:impl"], updatedAt: "2026-07-21T11:00:00.000Z" }]
+          })
+        ],
+        batches: [batch("rel", [
+          lane("impl", "in_progress", "dead"),
+          // The manifest predates the signal, so it records no dependency at all.
+          { ...lane("qa", "blocked", "no-heartbeat", []), targets: ["340"] }
+        ])],
+        batchOperations: []
+      };
+      const qa = laneByTag(buildCoordinationView(signalOnly, NOW).batchCards[0], "qa");
+      expect(qa.note).toBe("blocked by impl, which is dead — relaunch or drop impl");
     });
 
     it("survives a dependency cycle without hanging", () => {
