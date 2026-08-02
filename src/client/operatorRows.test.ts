@@ -14,7 +14,8 @@ import {
 
 const TERMINAL_STATUS_CASES = [
   "final", "merged", "merged (squash)", "done", "done - archived", "closed", "complete", "completed",
-  "released", "released - pending qa", "cancelled", "abandoned", "superseded"
+  "released", "released - pending qa", "cancelled", "abandoned", "superseded",
+  "PR merged", "task done", "auto-merged", "state: closed"
 ] as const;
 const NONTERMINAL_TERMINAL_WORD_CASES = [
   "not final", "final-review", "final review", "not merged", "pre-merged", "almost merged", "not done",

@@ -154,16 +154,20 @@ const ACCEPTED_TERMINAL_STATUSES = new Set<string>([
 ]);
 const CURRENT_TERMINAL_STATUS_PATTERN =
   /^(merged|done|closed|complete|completed|cancelled|abandoned|superseded)\b/i;
+const LEGACY_PREFIXED_TERMINAL_STATUS_PATTERN =
+  /^(?:pr\s+merged|task\s+done|auto-merged|state:\s*closed)\b/i;
 
 function isDoneStatus(value: string): boolean {
   const normalized = value.trim().toLowerCase();
-  return normalized === "final" || isClaimRelease(normalized) || DONE_PATTERN.test(normalized);
+  return isCurrentTerminalStatus(normalized) || DONE_PATTERN.test(normalized);
 }
 
 /** Keep lane and representative-row terminal classification on one shared vocabulary. */
 export function isCurrentTerminalStatus(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase() || "";
-  return normalized === "final" || isClaimRelease(normalized) || CURRENT_TERMINAL_STATUS_PATTERN.test(normalized);
+  return normalized === "final" || isClaimRelease(normalized)
+    || CURRENT_TERMINAL_STATUS_PATTERN.test(normalized)
+    || LEGACY_PREFIXED_TERMINAL_STATUS_PATTERN.test(normalized);
 }
 
 /**

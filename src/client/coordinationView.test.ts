@@ -6,7 +6,8 @@ import { buildOperatorRows, type OperatorRow } from "./operatorRows";
 const NOW = "2026-07-21T12:00:00.000Z";
 const TERMINAL_STATUS_CASES = [
   "final", "merged", "merged (squash)", "done", "done - archived", "closed", "complete",
-  "completed", "released", "released - pending qa", "cancelled", "abandoned", "superseded"
+  "completed", "released", "released - pending qa", "cancelled", "abandoned", "superseded",
+  "PR merged", "task done", "auto-merged", "state: closed"
 ] as const;
 const NONTERMINAL_TERMINAL_WORD_CASES = [
   "not final", "final-review", "final review", "not merged", "pre-merged", "almost merged",
@@ -1256,6 +1257,7 @@ describe("buildCoordinationView", () => {
     expect(buildOperatorRows(reopened, { now: new Date(NOW) })[0].operatorState).toBe("dead");
     const card = buildCoordinationView(reopened, NOW).batchCards[0];
     expect(card.lanes[0].operatorState).toBe("dead");
+    expect(card.lanes[0].state).toBe("coding");
     expect(card.tier).toBe("blocked");
   });
 

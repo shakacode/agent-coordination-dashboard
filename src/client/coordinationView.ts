@@ -710,7 +710,10 @@ function buildLaneView(
     target: targetText,
     targetColor: hostColor(representative?.host || lane.host),
     title: representative?.title || displayAttribution(lane.status, "Lane"),
-    state: displayAttribution(lane.status, state),
+    state: displayAttribution(
+      declaredTerminal && !TERMINAL_LANE_STATES.has(state) ? presentationRow?.activityStatus : lane.status,
+      state
+    ),
     operatorState: state,
     stateColor: stateColor(state),
     age: representative?.lastActivityAge || ABSENT,
