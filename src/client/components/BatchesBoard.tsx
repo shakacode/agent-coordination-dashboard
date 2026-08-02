@@ -79,7 +79,7 @@ export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onO
             aria-pressed={activeFilter === filter.id}
             className={`triage-card${activeFilter === filter.id ? " active" : ""}`}
             key={filter.id}
-            onClick={() => onSetFilter(activeFilter === filter.id && filter.id !== "active" ? "active" : filter.id)}
+            onClick={() => onSetFilter(activeFilter === filter.id && filter.id !== "all" ? "active" : filter.id)}
             style={{ color: filter.color, borderColor: activeFilter === filter.id ? filter.color : undefined, background: activeFilter === filter.id ? `color-mix(in srgb, ${filter.color} 12%, transparent)` : undefined }}
             type="button"
           >
@@ -96,7 +96,7 @@ export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onO
       {visible.length === 0 ? (
         <p className="empty-state">
           {activeFilter === "active" && cards.length > 0
-            ? `Nothing needs you — all ${cards.length} batches are ready to archive.`
+            ? `Nothing needs you — ${cards.length === 1 ? "the batch is" : `all ${cards.length} batches are`} ready to archive.`
             : "No batches in this view."}
         </p>
       ) : (
