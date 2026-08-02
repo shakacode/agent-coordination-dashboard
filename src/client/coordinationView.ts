@@ -144,6 +144,7 @@ interface LaneBlocker {
   /** The lane this edge resolved to, or the name it was written with if unknown. */
   laneName: string;
   batchId?: string;
+  repo?: string;
   /** Absent when no lane in coordination state matches the edge. */
   state?: OperatorState;
 }
@@ -420,10 +421,10 @@ export function jobBucketForRow(row: OperatorRow, attentionKind?: string, nowMs 
     case "wedged":
     case "stale":
     case "paused":
+    case "dead":
     case "unknown":
       return "stuck";
     case "blocked":
-    case "dead":
       return "blocked";
     case "ready":
       return "ready";
@@ -484,6 +485,10 @@ const TERMINAL_LANE_STATES = new Set<OperatorState>(["done", "archived"]);
 // forgotten" tier, and it needs adoption rather than a decision.
 const BLOCKED_LANE_STATES = new Set<OperatorState>(["blocked"]);
 const STUCK_LANE_STATES = new Set<OperatorState>(["wedged", "stale", "paused", "dead"]);
+const CUSTODY_PRIORITY_LANE_STATES = new Set<OperatorState>([
+  ...BLOCKED_LANE_STATES,
+  "dead"
+]);
 
 function batchTitle(batch: BatchRecord): string {
   const objective = batch.objective?.trim();
@@ -650,8 +655,9 @@ function buildLaneView(
   // "blocked — needs your decision".
   //
   // The per-row order below mirrors deriveOperatorState, including its carve-out
-  // for claim releases. Across a multi-target lane, any current blocked row
-  // outranks another target's live custody so the lane keeps the blocker visible.
+  // for claim releases. Across a multi-target lane, a current blocked or dead
+  // row outranks another target's live custody so that attention state stays
+  // visible without making ordinary stale/wedged telemetry displace live work.
   const newerNonterminalRows = declaredTerminal
     ? [...laneRows]
         .filter(
@@ -670,18 +676,18 @@ function buildLaneView(
             timestampMs(right.batchActivityAt) - timestampMs(left.batchActivityAt)
         )
     : [];
-  const newerBlockingRow = newerNonterminalRows.find((row) => BLOCKED_LANE_STATES.has(row.operatorState));
+  const newerAttentionRow = newerNonterminalRows.find((row) => CUSTODY_PRIORITY_LANE_STATES.has(row.operatorState));
   const newerNonterminalRow = newerNonterminalRows[0];
-  const representative = newerBlockingRow || currentCustodyRow || newerNonterminalRow || laneRows[0];
+  const representative = newerAttentionRow || currentCustodyRow || newerNonterminalRow || laneRows[0];
+  const currentBlockedOn = representative ? representative.blockedOn : lane.blockedOn;
   const releaseHasRecordedBlocker =
-    lane.blockedOn.length > 0
-    || Boolean(representative?.blockedOn.length)
+    currentBlockedOn.length > 0
     || representative?.operatorState === "blocked";
   const declaredCompletionWins =
     declaredTerminal
     && (!isClaimRelease(lane.status) || !releaseHasRecordedBlocker);
-  const state: OperatorState = newerBlockingRow
-    ? newerBlockingRow.operatorState
+  const state: OperatorState = newerAttentionRow
+    ? newerAttentionRow.operatorState
     : currentCustodyRow
       ? currentCustodyRow.operatorState
       : newerNonterminalRow
@@ -689,7 +695,7 @@ function buildLaneView(
         : declaredCompletionWins
           ? "done"
           : representative?.operatorState
-            || (lane.blockedOn.length > 0 ? "blocked"
+            || (currentBlockedOn.length > 0 ? "blocked"
               : declaredTerminal ? "done"
                 : lane.liveness === "dead" ? "dead"
                   : declared);
@@ -715,10 +721,10 @@ function buildLaneView(
   // manifest never cleared must not be rendered as though it were still waiting.
   const note = declaredTerminal && TERMINAL_LANE_STATES.has(state)
     ? displayAttribution(lane.status, "")
-    : lane.blockedOn.length > 0 && !TERMINAL_LANE_STATES.has(state)
-      ? `depends on ${lane.blockedOn.join(", ")}`
-      : presentationRow
-        ? jobNote(presentationRow)
+    : presentationRow
+      ? jobNote(presentationRow)
+      : currentBlockedOn.length > 0 && !TERMINAL_LANE_STATES.has(state)
+        ? `depends on ${currentBlockedOn.join(", ")}`
         : displayAttribution(lane.status, "");
   const activityStatus = presentationRow?.activityStatus;
   const displayedState = declared === state
@@ -766,17 +772,44 @@ interface BlockerNode {
   blockedOn: string[];
   laneName: string;
   batchId: string;
+  repo: string;
 }
 
 const BLOCKER_KEY_SEPARATOR = "\u0000";
 
-/** Split a `blockedOn` entry into its batch and lane parts. Edges may omit the batch. */
-function parseBlockerKey(key: string, fallbackBatchId: string): { batchId: string; laneName: string; qualified: boolean } {
+/** Split a `blockedOn` entry into its lookup parts. Edges may name a batch/lane or a repository work item. */
+function parseBlockerKey(key: string, fallbackBatchId: string): {
+  repo?: string;
+  batchId: string;
+  laneName: string;
+  batchQualified: boolean;
+  unresolvedName: string;
+} {
+  const targetSeparator = key.lastIndexOf("#");
+  if (targetSeparator > 0 && targetSeparator < key.length - 1) {
+    return {
+      repo: key.slice(0, targetSeparator),
+      batchId: fallbackBatchId,
+      laneName: key.slice(targetSeparator + 1),
+      batchQualified: false,
+      unresolvedName: key.slice(targetSeparator + 1)
+    };
+  }
   const separator = key.lastIndexOf(":");
   if (separator <= 0 || separator === key.length - 1) {
-    return { batchId: fallbackBatchId, laneName: key, qualified: false };
+    return {
+      batchId: fallbackBatchId,
+      laneName: key,
+      batchQualified: false,
+      unresolvedName: key
+    };
   }
-  return { batchId: key.slice(0, separator), laneName: key.slice(separator + 1), qualified: true };
+  return {
+    batchId: key.slice(0, separator),
+    laneName: key.slice(separator + 1),
+    batchQualified: true,
+    unresolvedName: key.slice(separator + 1)
+  };
 }
 
 /**
@@ -803,15 +836,18 @@ function noteAddsDetail(note: string, laneStatus: string | undefined): boolean {
 
 /** Every dependency a lane declares, from its manifest and its representative row alike. */
 function declaredBlockers(card: BatchCard, position: number): string[] {
-  return [...new Set([
-    ...(card.batch.lanes[position]?.blockedOn || []),
-    ...(card.lanes[position]?.row?.blockedOn || [])
-  ])];
+  // buildOperatorRows already selects the authoritative manifest-or-signal
+  // snapshot by freshness. Re-unioning that row with the manifest here would
+  // resurrect whichever blocker set the row deliberately superseded.
+  return card.lanes[position]?.row?.blockedOn
+    || card.batch.lanes[position]?.blockedOn
+    || [];
 }
 
 function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
   const index = new Map<string, BlockerNode>();
   const aliases: Array<{ key: string; node: BlockerNode }> = [];
+  const repositoryTargets = new Map<string, BlockerNode | undefined>();
   for (const card of cards) {
     const repo = batchRepositoryScope(card.batch);
     // A manifest may name a dependency by target rather than by lane, so targets
@@ -830,12 +866,23 @@ function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
         // lane whose dependency was only ever recorded on a batch signal.
         blockedOn: declaredBlockers(card, position),
         laneName,
-        batchId: card.id
+        batchId: card.id,
+        repo
       };
       index.set(blockerKey(repo, card.id, laneName), node);
       for (const target of card.batch.lanes[position].targets || []) {
         if (owners.get(target) === 1 && target !== laneName) {
           aliases.push({ key: blockerKey(repo, card.id, target), node });
+        }
+        // A repository-qualified work-item reference constrains the repository
+        // but not the batch. Keep a repository-wide alias only when exactly one
+        // lane owns the target, so cross-batch references resolve without ever
+        // guessing between duplicate targets.
+        const repositoryTargetKey = blockerKey(repo, "", target);
+        if (!repositoryTargets.has(repositoryTargetKey)) {
+          repositoryTargets.set(repositoryTargetKey, node);
+        } else if (repositoryTargets.get(repositoryTargetKey) !== node) {
+          repositoryTargets.set(repositoryTargetKey, undefined);
         }
       }
     }
@@ -845,19 +892,24 @@ function blockerIndex(cards: BatchCard[]): Map<string, BlockerNode> {
   for (const alias of aliases) {
     if (!index.has(alias.key)) index.set(alias.key, alias.node);
   }
+  for (const [key, node] of repositoryTargets) {
+    if (node) index.set(key, node);
+  }
   return index;
 }
 
 function resolveBlocker(index: Map<string, BlockerNode>, key: string, ownRepo: string, ownBatchId: string): LaneBlocker {
-  const { batchId, laneName, qualified } = parseBlockerKey(key, ownBatchId);
-  const node = index.get(blockerKey(ownRepo, batchId, laneName));
+  const { repo: writtenRepo, batchId, laneName, batchQualified, unresolvedName } = parseBlockerKey(key, ownBatchId);
+  const lookupRepo = writtenRepo || ownRepo;
+  const node = index.get(blockerKey(lookupRepo, writtenRepo ? "" : batchId, laneName));
   return {
     // Report the lane the edge resolved to; an unresolved edge keeps the name it
     // was written with so the operator can still search for it.
-    laneName: node?.laneName ?? laneName,
+    laneName: node?.laneName ?? unresolvedName,
     // Keep the resolved batch so a multi-hop walk stays in the blocker's batch
     // instead of falling back to the batch the walk started from.
-    batchId: node?.batchId ?? (qualified ? batchId : undefined),
+    batchId: node?.batchId ?? (batchQualified ? batchId : undefined),
+    repo: node?.repo ?? writtenRepo,
     state: node?.state
   };
 }
@@ -865,8 +917,10 @@ function resolveBlocker(index: Map<string, BlockerNode>, key: string, ownRepo: s
 /**
  * How a blocker reads to an operator, worst first: this decides which edge gets
  * reported when a lane declares several. Terminal ranks last so a satisfied
- * dependency never masks one still outstanding, and an unresolvable edge ranks
- * behind every real state so a typo cannot hide an actionable root cause.
+ * dependency never masks one still outstanding. An unresolvable edge ranks
+ * behind actionable stopped work but ahead of live work, so it cannot hide a
+ * dead root and a live edge cannot hide coordination state the operator cannot
+ * inspect.
  */
 const BLOCKER_SEVERITY: Partial<Record<OperatorState, number>> = {
   dead: 0,
@@ -874,13 +928,13 @@ const BLOCKER_SEVERITY: Partial<Record<OperatorState, number>> = {
   wedged: 2,
   stale: 2,
   paused: 2,
-  running: 3,
-  ready: 3,
   unknown: 3,
+  running: 4,
+  ready: 4,
   done: 5,
   archived: 5
 };
-const UNRESOLVED_BLOCKER_SEVERITY = 4;
+const UNRESOLVED_BLOCKER_SEVERITY = 3;
 
 function blockerSeverity(blocker: LaneBlocker): number {
   if (!blocker.state) return UNRESOLVED_BLOCKER_SEVERITY;
@@ -893,8 +947,12 @@ function blockerSeverity(blocker: LaneBlocker): number {
  * reached through another batch stays qualified even when the edge that named it
  * was unqualified within that batch.
  */
-function blockerLabel(blocker: LaneBlocker, ownBatchId: string): string {
+function blockerLabel(blocker: LaneBlocker, ownRepo: string, ownBatchId: string): string {
   const batchId = blocker.batchId;
+  if (blocker.repo && (blocker.repo !== ownRepo || !blocker.state)) {
+    const resolvedName = batchId ? `${batchId}:${blocker.laneName}` : blocker.laneName;
+    return `${blocker.repo}#${resolvedName}`;
+  }
   if (!batchId || batchId === ownBatchId) return blocker.laneName;
   return `${batchId}:${blocker.laneName}`;
 }
@@ -905,8 +963,8 @@ interface BlockerChain {
   root: LaneBlocker;
   /** The chain ends on a lane that calls itself blocked but names nothing. */
   endsWithoutBlocker: boolean;
-  /** Set when the manifest loops back on itself; carries the lane it looped to. */
-  cycleLane?: string;
+  /** Set when the manifest loops back on itself; carries the scoped lane it looped to. */
+  cycleBlocker?: LaneBlocker;
 }
 
 /** Worst-first ordering over whole chains: what a chain ends on, then its first edge. */
@@ -937,9 +995,10 @@ function walkToRoot(
   memo: Map<string, BlockerChain>
 ): BlockerChain {
   if (first.state !== "blocked") return { first, root: first, endsWithoutBlocker: false };
+  const repo = first.repo || ownRepo;
   const batchId = first.batchId || ownBatchId;
-  const key = blockerKey(ownRepo, batchId, first.laneName);
-  if (path.has(key)) return { first, root: first, endsWithoutBlocker: false, cycleLane: first.laneName };
+  const key = blockerKey(repo, batchId, first.laneName);
+  if (path.has(key)) return { first, root: first, endsWithoutBlocker: false, cycleBlocker: first };
   const cached = memo.get(key);
   if (cached) return { ...cached, first };
   const edges = index.get(key)?.blockedOn || [];
@@ -947,7 +1006,7 @@ function walkToRoot(
 
   path.add(key);
   const worst = edges
-    .map((edge) => walkToRoot(index, ownRepo, batchId, resolveBlocker(index, edge, ownRepo, batchId), path, memo))
+    .map((edge) => walkToRoot(index, repo, batchId, resolveBlocker(index, edge, repo, batchId), path, memo))
     .sort(compareChains)[0];
   path.delete(key);
 
@@ -955,9 +1014,9 @@ function walkToRoot(
     first,
     root: worst.root,
     endsWithoutBlocker: worst.endsWithoutBlocker,
-    cycleLane: worst.cycleLane
+    cycleBlocker: worst.cycleBlocker
   };
-  if (!chain.cycleLane) memo.set(key, chain);
+  if (!chain.cycleBlocker) memo.set(key, chain);
   return chain;
 }
 
@@ -992,11 +1051,13 @@ function blockerNote(
     .map((blocker) => walkToRoot(index, ownRepo, ownBatchId, blocker, path, memo))
     .sort(compareChains)[0];
 
-  const first = blockerLabel(chosen.first, ownBatchId);
+  const first = blockerLabel(chosen.first, ownRepo, ownBatchId);
   if (!chosen.first.state) return `${verb} ${first}, which is not in coordination state`;
-  if (chosen.cycleLane) return `${verb} ${first} → dependency cycle back to ${chosen.cycleLane}`;
+  if (chosen.cycleBlocker) {
+    return `${verb} ${first} → dependency cycle back to ${blockerLabel(chosen.cycleBlocker, ownRepo, ownBatchId)}`;
+  }
 
-  const root = blockerLabel(chosen.root, ownBatchId);
+  const root = blockerLabel(chosen.root, ownRepo, ownBatchId);
   // Only name a root separately once the walk actually moved past the first edge.
   const lead = root === first ? `${verb} ${first}` : `${verb} ${first} → root ${root}`;
   if (chosen.endsWithoutBlocker) return `${lead}, which is blocked with no blocker recorded`;

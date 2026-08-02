@@ -348,6 +348,11 @@ describe("buildCoordinationView", () => {
     expect(jobBucketForRow(runningRow, "qa_missing")).toBe("needs_input");
   });
 
+  it("routes dead jobs to stuck rather than decision-required blocked", () => {
+    const deadRow = { operatorState: "dead", blockedOn: [] } as unknown as OperatorRow;
+    expect(jobBucketForRow(deadRow)).toBe("stuck");
+  });
+
   it("counts jobs per bucket", () => {
     expect(view.jobCounts.running).toBeGreaterThanOrEqual(1);
     expect(view.jobCounts.needs_input).toBe(1);
@@ -965,7 +970,7 @@ describe("buildCoordinationView", () => {
       coordinationFixture({ batchId: "b5", lanes: [
         testLane({ targets: ["304"], status: "in_progress" }),
         testLane({ name: "qa", targets: ["304"], status: "in_progress" })
-      ] }), { state: "dead", tier: "blocked" }],
+      ] }), { state: "dead", tier: "stuck" }],
     ["does not let a manifest claim release clear a lane's blocker",
       coordinationFixture({ batchId: "b7", workItems: [workItem({
         id: "repo/dashboard#320", repo: "repo/dashboard", target: "320",
@@ -1121,6 +1126,52 @@ describe("buildCoordinationView", () => {
       expect(laneByTag(downstream, "c1").note).toBe("blocked by upstream:b1, which is dead — relaunch or drop upstream:b1");
     });
 
+    it("resolves a repository-qualified work-item dependency by target", () => {
+      const implementation = { ...lane("impl", "in_progress", "dead"), targets: ["440"] };
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          implementation,
+          lane("qa", "blocked", "no-heartbeat", ["repo/dashboard#440"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by impl, which is dead — relaunch or drop impl");
+    });
+
+    it("resolves a repository-qualified work-item dependency across batches", () => {
+      const implementation = { ...lane("impl", "in_progress", "dead"), targets: ["440"] };
+      const view = buildCoordinationView(blockedModel([
+        batch("upstream", [implementation]),
+        batch("downstream", [lane("qa", "blocked", "no-heartbeat", ["repo/dashboard#440"])])
+      ]), NOW);
+      const downstream = view.batchCards.find((candidate) => candidate.id === "downstream")!;
+      expect(laneByTag(downstream, "qa").note)
+        .toBe("blocked by upstream:impl, which is dead — relaunch or drop upstream:impl");
+    });
+
+    it("keeps repository context when a qualified target resolves in another repository", () => {
+      const implementation = { ...lane("impl", "in_progress", "dead"), targets: ["440"] };
+      const view = buildCoordinationView(blockedModel([
+        { ...batch("rel", [lane("qa", "blocked", "no-heartbeat", ["repo/other#440"])]), repo: "repo/dashboard" },
+        { ...batch("rel", [implementation]), repo: "repo/other" }
+      ]), NOW);
+      const own = view.batchCards.find((candidate) => candidate.repo === "repo/dashboard")!;
+      expect(laneByTag(own, "qa").note)
+        .toBe("blocked by repo/other#rel:impl, which is dead — relaunch or drop repo/other#rel:impl");
+    });
+
+    it("does not guess when a repository-qualified target matches several batches", () => {
+      const first = { ...lane("first", "in_progress", "dead"), targets: ["440"] };
+      const second = { ...lane("second", "in_progress", "dead"), targets: ["440"] };
+      const view = buildCoordinationView(blockedModel([
+        batch("one", [first]),
+        batch("two", [second]),
+        batch("downstream", [lane("qa", "blocked", "no-heartbeat", ["repo/dashboard#440"])])
+      ]), NOW);
+      const downstream = view.batchCards.find((candidate) => candidate.id === "downstream")!;
+      expect(laneByTag(downstream, "qa").note)
+        .toBe("blocked by repo/dashboard#440, which is not in coordination state");
+    });
+
     it("says so plainly when a dependency cannot be found in coordination state", () => {
       const view = buildCoordinationView(blockedModel([
         batch("rel", [lane("qa", "blocked", "no-heartbeat", ["ghost:missing"])])
@@ -1186,6 +1237,17 @@ describe("buildCoordinationView", () => {
       expect(laneByTag(view.batchCards[0], "qa").note).toBe("blocked by impl, which is dead — relaunch or drop impl");
     });
 
+    it("reports an unresolvable dependency ahead of a known live one", () => {
+      const view = buildCoordinationView(blockedModel([
+        batch("rel", [
+          lane("running", "in_progress", "live"),
+          lane("qa", "blocked", "no-heartbeat", ["rel:running", "ghost:missing"])
+        ])
+      ]), NOW);
+      expect(laneByTag(view.batchCards[0], "qa").note)
+        .toBe("blocked by ghost:missing, which is not in coordination state");
+    });
+
     it("reports an unfinished dependency ahead of a finished one", () => {
       const view = buildCoordinationView(blockedModel([
         batch("rel", [
@@ -1218,6 +1280,79 @@ describe("buildCoordinationView", () => {
       const qa = laneByTag(buildCoordinationView(signalOnly, NOW).batchCards[0], "qa");
       expect(qa.note).toBe("blocked by impl, which is dead — relaunch or drop impl");
     });
+
+    function sourceSnapshotModel(
+      target: string,
+      manifestStatus: string,
+      manifestBlockedOn: string[],
+      manifestAt: string,
+      signalStatus: string,
+      signalBlockedOn: string[],
+      signalAt: string,
+      oldStatus = "in_progress"
+    ): DashboardModel {
+      return {
+        ...model,
+        workItems: [workItem({
+          id: `repo/dashboard#${target}`, repo: "repo/dashboard", target, type: "pull_request", schedulingState: "in_process",
+          batchSignals: [{ batchId: "rel", laneName: "qa", status: signalStatus, blockedOn: signalBlockedOn, updatedAt: signalAt }]
+        })],
+        batches: [{
+          ...batch("rel", [
+            lane("old", oldStatus, "dead"),
+            lane("new", "in_progress", "live"),
+            { ...lane("qa", manifestStatus, "live", manifestBlockedOn), targets: [target] }
+          ]),
+          updatedAt: manifestAt
+        }],
+        batchOperations: []
+      };
+    }
+
+    it("uses a newer manifest blocker instead of retaining an older signal blocker", () => {
+      const view = buildCoordinationView(sourceSnapshotModel(
+        "341", "blocked", ["rel:new"], "2026-07-21T11:30:00.000Z",
+        "blocked", ["rel:old"], "2026-07-21T11:00:00.000Z"
+      ), NOW);
+      const qa = laneByTag(view.batchCards[0], "qa");
+      expect(qa.note).toBe("blocked by new, which is running");
+    });
+
+    it("uses a newer signal blocker instead of retaining an older manifest blocker", () => {
+      const view = buildCoordinationView(sourceSnapshotModel(
+        "342", "blocked", ["rel:old"], "2026-07-21T11:00:00.000Z",
+        "blocked", ["rel:new"], "2026-07-21T11:30:00.000Z"
+      ), NOW);
+      const qa = laneByTag(view.batchCards[0], "qa");
+      expect(qa.note).toBe("blocked by new, which is running");
+    });
+
+    it.each(["blocked", "paused"])("lets a newer active signal clear an older %s manifest across Jobs and Batches", (status) => {
+      const view = buildCoordinationView(sourceSnapshotModel(
+        "343", status, ["rel:old"], "2026-07-21T11:00:00.000Z",
+        "in_progress", [], "2026-07-21T11:30:00.000Z", "merged"
+      ), NOW);
+      const job = view.jobRows.find((candidate) => candidate.row.target === "343")!;
+      expect(job.row).toMatchObject({ blockedOn: [], operatorState: "running", activityStatus: "in_progress" });
+      expect(job).toMatchObject({ bucket: "running" });
+      expect(job.note).not.toMatch(/blocked|paused|rel:old/);
+      const card = view.batchCards[0];
+      expect(laneByTag(card, "qa")).toMatchObject({ operatorState: "running" });
+      expect(laneByTag(card, "qa").note).not.toMatch(/blocked|paused|rel:old/);
+      expect(card.tier).toBe("running");
+    });
+
+    it.each([["merged", "done"], ["paused", "paused"]])(
+      "uses an equal-timestamp %s manifest coherently for retention",
+      (status, operatorState) => {
+        const view = buildCoordinationView(sourceSnapshotModel(
+          "344", status, [], "2026-07-21T11:30:00.000Z",
+          "in_progress", [], "2026-07-21T11:30:00.000Z", "merged"
+        ), NOW);
+        expect(view.jobRows.find((candidate) => candidate.row.target === "344")?.row)
+          .toMatchObject({ operatorState, activityStatus: status, retentionStatus: status });
+      }
+    );
 
     it("keeps the agent's own explanation when a lane is blocked by status text alone", () => {
       const explained: DashboardModel = {
@@ -1393,6 +1528,23 @@ describe("buildCoordinationView", () => {
       ]), NOW);
       expect(laneByTag(view.batchCards[0], "x").note).toBe("blocked by y → dependency cycle back to x");
     });
+
+    it("keeps repository and batch context when a dependency cycle closes across batches", () => {
+      const view = buildCoordinationView(blockedModel([
+        { ...batch("A", [lane("qa", "blocked", "no-heartbeat", ["repo/other#440"])]), repo: "repo/dashboard" },
+        {
+          ...batch("B", [
+            { ...lane("start", "blocked", "no-heartbeat", ["C:dup"]), targets: ["440"] }
+          ]),
+          repo: "repo/other"
+        },
+        { ...batch("C", [lane("dup", "blocked", "no-heartbeat", ["D:mid"])]), repo: "repo/other" },
+        { ...batch("D", [lane("mid", "blocked", "no-heartbeat", ["C:dup"])]), repo: "repo/other" }
+      ]), NOW);
+      const own = view.batchCards.find((candidate) => candidate.repo === "repo/dashboard")!;
+      expect(laneByTag(own, "qa").note)
+        .toBe("blocked by repo/other#B:start → dependency cycle back to repo/other#C:dup");
+    });
   });
 
   it("does not narrate a stale dependency on a lane that already finished", () => {
@@ -1445,13 +1597,13 @@ describe("buildCoordinationView", () => {
         workItems: [coordinatedTarget("308", "b6-timestamped-claim", "coding", "2026-07-21T11:00:00.000Z", {
           claimAt: "2026-07-21T11:00:00.000Z"
         })], lanes: [testLane({ owner: "agent-308", targets: ["308"] })] }),
-      { representative: { operatorState: "dead" }, laneState: "dead", tier: "blocked" }],
+      { representative: { operatorState: "dead" }, laneState: "dead", tier: "stuck" }],
     ["keeps timestamped lifecycle events current when terminal manifest freshness is unavailable",
       coordinationFixture({ batchId: "b6-timestamped-event",
         workItems: [signalledTarget("307", "b6-timestamped-event", "final")],
         lanes: [testLane({ owner: "codex-event", targets: ["307"] })],
         events: [lifecycleEvent("b6-timestamped-event", "coding", "2026-07-21T11:00:00.000Z", { target: "307" })] }),
-      { representative: { operatorState: "dead" }, laneState: "dead", tier: "blocked" }],
+      { representative: { operatorState: "dead" }, laneState: "dead", tier: "stuck" }],
     ["lets current live custody outrank a stale terminal manifest",
       coordinationFixture({ batchId: "b10", createdAt: "2026-07-21T10:00:00.000Z",
         workItems: [coordinatedTarget("311", "b10", "coding", "2026-07-21T11:59:00.000Z", { liveness: "live" })],
@@ -1594,7 +1746,7 @@ describe("buildCoordinationView", () => {
     const lane = buildCoordinationView(blocked, NOW).batchCards[0].lanes[0];
     expect(lane.row).toMatchObject({ operatorState: "blocked", blockedOn: ["repo/dashboard#9"] });
     expect(lane.operatorState).toBe("blocked");
-    expect(lane.note).toMatch(/blocked on|depends on/);
+    expect(lane.note).toBe("blocked by repo/dashboard#9, which is not in coordination state");
   });
 
   it("lets a strictly newer coding event reopen a retained terminal lane", () => {
@@ -1609,7 +1761,7 @@ describe("buildCoordinationView", () => {
     const card = buildCoordinationView(reopened, NOW).batchCards[0];
     expect(card.lanes[0].operatorState).toBe("dead");
     expect(card.lanes[0].state).toBe("coding");
-    expect(card.tier).toBe("blocked");
+    expect(card.tier).toBe("stuck");
   });
 
   it("shows a newer typed terminal transition instead of a stale paused manifest", () => {
@@ -1645,7 +1797,7 @@ describe("buildCoordinationView", () => {
     expect(buildOperatorRows(reopened, { now: new Date(NOW) })[0].operatorState).toBe("dead");
     const card = buildCoordinationView(reopened, NOW).batchCards[0];
     expect(card.lanes[0].operatorState).toBe("dead");
-    expect(card.tier).toBe("blocked");
+    expect(card.tier).toBe("stuck");
   });
 
   it.each([

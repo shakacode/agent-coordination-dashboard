@@ -830,30 +830,53 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   const { batch, lane } = findSignalLane(item, dashboard.batches);
   const transitionEvent = latestTransitionEvent(matchingEvents);
   const batchTarget = batchTargetForWork(batch, item);
-  const blockedOn = Array.from(new Set([...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean)));
+  const manifestLifecycleAt = batch ? maxTimestamp(batch.updatedAt, batch.createdAt) : undefined;
+  const signalLifecycleAt = maxTimestamp(signal?.updatedAt);
+  const manifestLifecycleMs = timestampMs(manifestLifecycleAt);
+  const signalLifecycleMs = timestampMs(signalLifecycleAt);
+  // A target row can see both a durable manifest lane and a batch signal for
+  // that lane. They are snapshots, not additive blocker sources: unioning them
+  // keeps a superseded dependency alive forever. Prefer the timestamped newer
+  // snapshot (the manifest on a tie); only preserve the old union when neither
+  // source supplies freshness evidence.
+  const currentSignalIsAuthoritative = Boolean(
+    signal
+    && (
+      !lane
+      || signalLifecycleMs > manifestLifecycleMs
+      || (signalLifecycleMs === 0 && manifestLifecycleMs === 0)
+    )
+  );
+  const effectiveLane =
+    lane && signal && currentSignalIsAuthoritative
+      ? { ...lane, status: signal.status, blockedOn: signal.blockedOn }
+      : lane;
+  const blockedOn = !signal
+    ? lane?.blockedOn || []
+    : !lane
+      ? signal.blockedOn
+      : signalLifecycleMs > manifestLifecycleMs
+        ? signal.blockedOn
+        : manifestLifecycleMs > 0
+          ? lane.blockedOn
+          : signalLifecycleMs > 0
+            ? signal.blockedOn
+            : Array.from(new Set([...signal.blockedOn, ...lane.blockedOn].filter(Boolean)));
   const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventHistoryMetadata);
   const lifecycleSignalCandidates = (item.batchSignals || []).map((candidate) => {
-    const matchingBatch = dashboard.batches.find((candidateBatch) => {
-      if (candidateBatch.batchId !== candidate.batchId) {
-        return false;
-      }
-      const matchingLane = candidateBatch.lanes.find((candidateLane) => candidateLane.name === candidate.laneName);
-      return Boolean(matchingLane && batchContainsWork(candidateBatch, item, matchingLane));
-    });
     return {
       batchId: candidate.batchId,
       laneName: candidate.laneName,
       status: candidate.status,
-      timestamp: maxTimestamp(candidate.updatedAt, matchingBatch?.updatedAt, matchingBatch?.createdAt)
+      timestamp: maxTimestamp(candidate.updatedAt)
     };
   });
   const claimLifecycleAt = maxTimestamp(item.claim?.updatedAt, item.claim?.claimedAt);
   const currentSignalCandidate = signal
     ? lifecycleSignalCandidates.find(
-        (candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName
-      )
+      (candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName
+    )
     : undefined;
-  const manifestLifecycleAt = batch ? maxTimestamp(batch.updatedAt, batch.createdAt) : undefined;
   const currentCustodyHasUnknownFreshness = Boolean(
     (item.claim && item.claim.status !== "released" && !claimLifecycleAt)
     || (
@@ -864,8 +887,13 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
   );
   const currentTransitionCandidate = currentCustodyHasUnknownFreshness ? undefined : transitionEvent;
   const suppressTerminalSignalForUnknownCustody =
-    currentCustodyHasUnknownFreshness && isCurrentTerminalStatus(currentSignalCandidate?.status);
-  const currentSignalForState = suppressTerminalSignalForUnknownCustody ? undefined : currentSignalCandidate;
+    currentSignalIsAuthoritative
+    && currentCustodyHasUnknownFreshness
+    && isCurrentTerminalStatus(currentSignalCandidate?.status);
+  const currentSignalForState =
+    currentSignalIsAuthoritative && !suppressTerminalSignalForUnknownCustody
+      ? currentSignalCandidate
+      : undefined;
   const currentLifecycleAt = maxTimestamp(
     item.heartbeat?.updatedAt,
     claimLifecycleAt,
@@ -901,15 +929,16 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     workItem: item,
     heartbeat: item.heartbeat,
     claim: item.claim,
-    lane,
+    lane: effectiveLane,
     event: latest,
     transitionEvent,
-    signalStatus: suppressTerminalSignalForUnknownCustody ? undefined : signal?.status,
+    signalStatus: currentSignalForState?.status,
     currentStatus,
     hasCurrentStatus,
     transitionMatchesCurrentContext,
     currentLifecycleAt,
     manifestLifecycleAt,
+    liveness: effectiveLane?.liveness,
     blockedOn,
     nowMs
   });
@@ -919,7 +948,12 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ...lifecycleEvents.map((event) => ({ status: event.status || event.type, timestamp: event.timestamp })),
     { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
     { status: item.claim?.status, timestamp: claimLifecycleAt },
-    ...lifecycleSignalCandidates
+    ...lifecycleSignalCandidates.filter(
+      (candidate) => currentSignalIsAuthoritative || candidate !== currentSignalCandidate
+    ),
+    // Keep manifest activity as its own evidence. Folding this timestamp into a
+    // signal candidate makes stale signal status look as fresh as the manifest.
+    { status: lane?.status, timestamp: manifestLifecycleAt }
   ];
   const latestLifecycleAt = maxTimestamp(
     ...lifecycleCandidates.map((candidate) => candidate.timestamp),
@@ -1018,7 +1052,7 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ["event", latest?.status || latest?.type],
     ["heartbeat", item.heartbeat?.status],
     ["claim", item.claim?.status],
-    ["manifest", signal?.status || lane?.status]
+    ["manifest", currentSignalForState?.status || lane?.status]
   );
   const baseRow: Omit<OperatorRow, "searchText"> = {
     id: `target:${item.repo}#${item.target}`,
