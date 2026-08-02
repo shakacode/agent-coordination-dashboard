@@ -448,6 +448,9 @@ function deriveOperatorState(input: {
       : !input.hasCurrentStatus || input.transitionMatchesCurrentContext === true);
   const terminalTransitionIsSuperseded =
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
+  const currentCompletion =
+    (isCurrentTerminalStatus(input.currentStatus) && !isClaimRelease(input.currentStatus)) ||
+    (terminalTransitionIsCurrent && !isClaimRelease(transitionStatus));
 
   if (input.workItem?.operatorState === "archived_view" && !input.workItem.terminalState) {
     return "archived";
@@ -455,18 +458,15 @@ function deriveOperatorState(input: {
   if (input.workItem && !isOperationalWorkItem(input.workItem)) {
     return "done";
   }
-  if (PAUSED_PATTERN.test(currentText)) {
+  if (PAUSED_PATTERN.test(currentText) && !currentCompletion) {
     return "paused";
   }
-  // Completion outranks a dependency: manifests keep blockedOn after a lane
-  // finishes, so a stale edge must not resurrect completed work as blocked.
+  // Completion outranks stale paused or dependency text: manifests and
+  // heartbeats can retain both after a lane finishes.
   // A claim release is deliberately excluded — the telemetry contract defines
   // claim.released as non-terminal (a terminal release emits lane_closed
   // instead), so a holder walking away from blocked work must stay blocked.
-  if (
-    (isCurrentTerminalStatus(input.currentStatus) && !isClaimRelease(input.currentStatus)) ||
-    (terminalTransitionIsCurrent && !isClaimRelease(transitionStatus))
-  ) {
+  if (currentCompletion) {
     return "done";
   }
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {

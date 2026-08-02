@@ -518,6 +518,18 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0].operatorState).toBe(expected);
   });
 
+  it("lets a newer typed terminal transition override older paused telemetry", () => {
+    const model = dashboard({
+      workItems: [workItem({
+        claim: undefined,
+        heartbeat: { ...heartbeat, status: "paused", updatedAt: "2026-07-10T19:58:00Z" },
+        batchSignals: [batchSignal("paused", "2026-07-10T19:58:00Z")]
+      })],
+      events: [testEvent("done", "2026-07-10T19:59:00Z", { type: "lane_closed" })]
+    });
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "done" });
+  });
+
   it.each([
     ["reconciles a targetless terminal manifest with 'newer coding' evidence", "manifest", "coding", "20:01", "dead", "20:01"],
     ["reconciles a targetless terminal manifest with 'newer blocked' evidence", "manifest", "blocked", "20:01", "blocked", "20:01"],
