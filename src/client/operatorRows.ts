@@ -152,9 +152,6 @@ const ACCEPTED_TERMINAL_STATUSES = new Set<string>([
   "merged",
   "cancelled"
 ]);
-// Kept in step with TERMINAL_STATUS_PATTERN in coordinationView, so a lane and
-// its representative row never disagree about whether qualified status text
-// such as "merged (squash)" or "released - pending qa" reports finished work.
 const CURRENT_TERMINAL_STATUS_PATTERN =
   /^(merged|done|closed|complete|completed|cancelled|abandoned|superseded)\b/i;
 
@@ -163,7 +160,8 @@ function isDoneStatus(value: string): boolean {
   return normalized === "final" || isClaimRelease(normalized) || DONE_PATTERN.test(normalized);
 }
 
-function isCurrentTerminalStatus(value: string | undefined): boolean {
+/** Keep lane and representative-row terminal classification on one shared vocabulary. */
+export function isCurrentTerminalStatus(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase() || "";
   return normalized === "final" || isClaimRelease(normalized) || CURRENT_TERMINAL_STATUS_PATTERN.test(normalized);
 }

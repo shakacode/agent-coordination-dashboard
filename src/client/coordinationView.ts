@@ -10,7 +10,13 @@ import type {
 } from "../shared/types";
 import { displayAttribution } from "../shared/attribution";
 import { isSelectableWorkItem } from "../shared/workItemSelection";
-import { buildOperatorRows, isClaimRelease, type OperatorRow, type OperatorState } from "./operatorRows";
+import {
+  buildOperatorRows,
+  isClaimRelease,
+  isCurrentTerminalStatus,
+  type OperatorRow,
+  type OperatorState
+} from "./operatorRows";
 
 /**
  * coordinationView derives the Coordination Dashboard design's view-models from
@@ -252,10 +258,6 @@ export function devToolForHost(host: string | undefined): string | undefined {
   return undefined;
 }
 
-// Must stay in step with isCurrentTerminalStatus in operatorRows: a status that
-// only one of the two recognizes lands the same lane in a different tier
-// depending on whether custody happened to produce a representative row.
-const TERMINAL_STATUS_PATTERN = /^(merged|done|closed|complete|completed|cancelled|abandoned|superseded)\b/;
 const BLOCKED_STATUS_PATTERN = /\b(block|blocked|blocking|waiting|depends|needs[_\- ]?changes)\b/;
 const STUCK_STATUS_PATTERN = /\b(stuck|stale)\b/;
 const PAUSED_STATUS_PATTERN = /\b(paused?|token[_\- ]?limit|context[_\- ]?limit|context[_\- ]?window)\b/;
@@ -268,7 +270,7 @@ export function laneStatusState(status: string | undefined): OperatorState {
   if (!normalized) return "unknown";
   // `final` is a lifecycle state, while `final-review` / `final review` are
   // active phases. Keep that token exact before applying the richer aliases.
-  if (normalized === "final" || isClaimRelease(normalized) || TERMINAL_STATUS_PATTERN.test(normalized)) return "done";
+  if (isCurrentTerminalStatus(normalized)) return "done";
   if (PAUSED_STATUS_PATTERN.test(normalized)) return "paused";
   if (BLOCKED_STATUS_PATTERN.test(normalized)) return "blocked";
   if (STUCK_STATUS_PATTERN.test(normalized)) return "stale";
