@@ -436,7 +436,7 @@ function deriveOperatorState(input: {
     && timestampMs(input.claim.claimedAt) === 0
   );
   const manifestTerminalIsCurrent =
-    !input.heartbeat
+    (!input.heartbeat || (timestampMs(input.heartbeat.updatedAt) > 0 && manifestLifecycleAt > timestampMs(input.heartbeat.updatedAt)))
     && isCurrentTerminalStatus(input.lane?.status)
     && manifestLifecycleAt > 0
     && manifestLifecycleAt >= currentLifecycleAt;
@@ -450,7 +450,7 @@ function deriveOperatorState(input: {
     isCurrentTerminalStatus(transitionStatus) && transitionAt > 0 && currentLifecycleAt > transitionAt;
   const currentCompletion =
     (isCurrentTerminalStatus(input.currentStatus) && !isClaimRelease(input.currentStatus)) ||
-    (terminalTransitionIsCurrent && !isClaimRelease(transitionStatus));
+    (terminalTransitionIsCurrent && !isClaimRelease(transitionStatus)) || (manifestTerminalIsCurrent && !isClaimRelease(input.lane?.status));
 
   if (input.workItem?.operatorState === "archived_view" && !input.workItem.terminalState) {
     return "archived";
@@ -466,7 +466,7 @@ function deriveOperatorState(input: {
   // A claim release is deliberately excluded — the telemetry contract defines
   // claim.released as non-terminal (a terminal release emits lane_closed
   // instead), so a holder walking away from blocked work must stay blocked.
-  if (currentCompletion || (manifestTerminalIsCurrent && !isClaimRelease(input.lane?.status))) {
+  if (currentCompletion) {
     return "done";
   }
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {

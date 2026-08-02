@@ -602,7 +602,8 @@ describe("operatorRows", () => {
     const model = dashboard({
       generatedAt: "2026-07-10T20:00:00Z",
       workItems: [workItem({
-        schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined,
+        schedulingState: "started_not_processing", claim: { ...claim, updatedAt: "2026-07-10T19:57:00Z" },
+        heartbeat: { ...heartbeat, status: "paused", updatedAt: "2026-07-10T19:57:00Z", liveness: "dead" },
         batchSignals: [batchSignal("blocked", "2026-07-10T19:57:00Z", { blockedOn: ["repo/app#124"] })]
       })],
       batches: [targetlessBatch("batch-1", testLane({

@@ -1083,7 +1083,7 @@ describe("buildCoordinationView", () => {
       coordinationFixture({ batchId: "b6", createdAt: "2026-07-21T10:00:00.000Z",
         workItems: [coordinatedTarget("310", "b6", "coding", "2026-07-21T09:00:00.000Z", { liveness: "dead" })],
         lanes: [testLane({ targets: ["310"] })] }),
-      { representative: { batchId: "b6", laneName: "l", operatorState: "dead" }, rowState: "done", laneState: "done", tier: "archive" }],
+      { representative: { batchId: "b6", laneName: "l", operatorState: "done" }, rowState: "done", laneState: "done", tier: "archive" }],
     ["keeps untimestamped active custody visible beneath an untimestamped terminal manifest",
       coordinationFixture({ batchId: "b6-untimestamped-custody",
         workItems: [coordinatedTarget("309", "b6-untimestamped-custody", "final")],
@@ -1168,7 +1168,7 @@ describe("buildCoordinationView", () => {
     ["prefers live over stale custody when 'live sorted first'", "liveness", "351", "350", "350"],
     ["ranks same-liveness custody when 'newer target sorts second'", "recency", "11:40", "11:59", "361"],
     ["ranks same-liveness custody when 'newer target sorts first'", "recency", "11:59", "11:40", "360"],
-    ["ranks same-liveness custody when 'recency ties preserve deterministic r…'", "recency", "11:59", "11:59", "360"]
+    ["ranks same-liveness custody when 'recency ties preserve deterministic ranking'", "recency", "11:59", "11:59", "360"]
   ] as const)("%s", (_name, kind, firstValue, secondValue, expectedTarget) => {
     const at = (minute: string) => `2026-07-21T${minute}:00.000Z`;
     const batchId = kind === "liveness" ? "b12-liveness" : "b12-recency";
