@@ -703,6 +703,12 @@ function buildLaneView(
       : presentationRow
         ? jobNote(presentationRow)
         : displayAttribution(lane.status, "");
+  const activityStatus = presentationRow?.activityStatus;
+  const displayedState = declared === state
+    ? lane.status
+    : activityStatus && isCurrentTerminalStatus(activityStatus) === TERMINAL_LANE_STATES.has(state)
+      ? activityStatus
+      : state;
   return {
     id: JSON.stringify([batchIdentity(batch), lane.name, [...lane.targets].sort(), lane.owner, lane.branch || ""]),
     branch: LANE_BRANCH_CHARS(laneIndex, laneCount),
@@ -710,10 +716,7 @@ function buildLaneView(
     target: targetText,
     targetColor: hostColor(representative?.host || lane.host),
     title: representative?.title || displayAttribution(lane.status, "Lane"),
-    state: displayAttribution(
-      declaredTerminal && !TERMINAL_LANE_STATES.has(state) ? presentationRow?.activityStatus : lane.status,
-      state
-    ),
+    state: displayAttribution(displayedState, state),
     operatorState: state,
     stateColor: stateColor(state),
     age: representative?.lastActivityAge || ABSENT,

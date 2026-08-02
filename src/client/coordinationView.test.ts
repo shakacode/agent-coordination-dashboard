@@ -1261,6 +1261,29 @@ describe("buildCoordinationView", () => {
     expect(card.tier).toBe("blocked");
   });
 
+  it("shows a newer typed terminal transition instead of a stale paused manifest", () => {
+    const batchId = "b13-paused-then-done";
+    const card = buildCoordinationView(coordinationFixture({
+      batchId, updatedAt: "2026-07-21T10:00:00.000Z",
+      lanes: [testLane({ targets: [], status: "paused" })],
+      events: [lifecycleEvent(batchId, "done", "2026-07-21T11:00:00.000Z",
+        { type: "lane_closed", target: undefined })]
+    }), NOW).batchCards[0];
+    expect(card.lanes[0]).toMatchObject({ operatorState: "done", state: "done" });
+  });
+
+  it("does not show an older terminal event over newer active custody", () => {
+    const batchId = "b13-active-after-done";
+    const card = buildCoordinationView(coordinationFixture({
+      batchId, updatedAt: "2026-07-21T10:00:00.000Z",
+      workItems: [coordinatedTarget("370", batchId, "final", undefined,
+        { claimAt: "2026-07-21T11:00:00.000Z" })],
+      lanes: [testLane({ targets: ["370"] })],
+      events: [lifecycleEvent(batchId, "done", "2026-07-21T09:00:00.000Z", { target: "370" })]
+    }), NOW).batchCards[0];
+    expect(card.lanes[0]).toMatchObject({ operatorState: "dead", state: "dead" });
+  });
+
   it("keeps a targetless terminal lane out of the archive when a newer event reopens it", () => {
     const batchId = "b13-targetless-reopened";
     const reopened = coordinationFixture({
