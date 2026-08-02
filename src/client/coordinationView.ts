@@ -653,9 +653,9 @@ function buildLaneView(
             timestampMs(right.batchActivityAt) - timestampMs(left.batchActivityAt)
         )
     : [];
-  const newerBlockedRow = newerNonterminalRows.find((row) => row.operatorState === "blocked");
+  const newerBlockingRow = newerNonterminalRows.find((row) => BLOCKED_LANE_STATES.has(row.operatorState));
   const newerNonterminalRow = newerNonterminalRows[0];
-  const representative = newerBlockedRow || currentCustodyRow || newerNonterminalRow || laneRows[0];
+  const representative = newerBlockingRow || currentCustodyRow || newerNonterminalRow || laneRows[0];
   const releaseHasRecordedBlocker =
     lane.blockedOn.length > 0
     || Boolean(representative?.blockedOn.length)
@@ -663,8 +663,8 @@ function buildLaneView(
   const declaredCompletionWins =
     declaredTerminal
     && (!isClaimRelease(lane.status) || !releaseHasRecordedBlocker);
-  const state: OperatorState = newerBlockedRow
-    ? "blocked"
+  const state: OperatorState = newerBlockingRow
+    ? newerBlockingRow.operatorState
     : currentCustodyRow
       ? currentCustodyRow.operatorState
       : newerNonterminalRow

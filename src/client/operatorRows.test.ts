@@ -530,15 +530,15 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "done" });
   });
 
-  it("lets a timestamped terminal event close an untimestamped targetless manifest lane", () => {
-    const model = dashboard({
+  it.each(["lane_closed", "lane.done", "lifecycle.completed"])(
+    "lets a timestamped %s terminal event close an untimestamped targetless manifest lane", (eventType) => {
+    const status = eventType === "lane_closed" ? "done" : undefined, model = dashboard({
       batches: [targetlessBatch("targetless-open", testLane({ status: "in_progress" }))],
-      events: [testEvent("done", "2026-07-10T20:01:00Z", {
-        type: "lane_closed", batchId: "targetless-open", target: undefined, laneName: "implementation"
+      events: [testEvent(status || eventType, "2026-07-10T20:01:00Z", {
+        type: eventType, status, batchId: "targetless-open", target: undefined, laneName: "implementation"
       })]
     });
-    expect(buildOperatorRows(model)[0]).toMatchObject(
-      { operatorState: "done", activityStatus: "done", retentionStatus: "done" });
+    expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", activityStatus: status || eventType, retentionStatus: status || eventType });
   });
 
   it.each([
@@ -551,9 +551,9 @@ describe("operatorRows", () => {
     ["reconciles a retained terminal signal with a 'newer blocked event'", "signal", "blocked", "19:59", "blocked", "19:59"],
     ["reconciles a retained terminal signal with a 'older blocked event'", "signal", "blocked", "19:57", "done", "19:58"],
     ["reconciles a retained terminal signal with a 'equal-timestamp blocked event'", "signal", "blocked", "19:58", "done", "19:58"],
-    ["reconciles a retained terminal signal with a 'newer coding event'", "signal", "coding", "19:59", "dead", "19:59"],
-    ["reconciles a retained terminal signal with a 'older coding event'", "signal", "coding", "19:57", "done", "19:58"],
-    ["reconciles a retained terminal signal with a 'equal-timestamp coding event'", "signal", "coding", "19:58", "done", "19:58"]
+    ["reconciles a retained terminal signal with a 'newer coding event'", "signal", "coding", "19:59", "dead", "19:59"], ["reconciles a retained terminal signal with a 'older coding event'", "signal", "coding", "19:57", "done", "19:58"],
+    ["reconciles a retained terminal signal with a 'equal-timestamp coding event'", "signal", "coding", "19:58", "done", "19:58"], ["recognizes a newer statusless lane.done event", "signal", "lane.done", "19:59", "done", "19:59"],
+    ["recognizes a newer statusless lifecycle.completed event", "signal", "lifecycle.completed", "19:59", "done", "19:59"]
   ] as const)("%s", (_name, kind, eventStatus, eventMinute, expectedState, expectedMinute) => {
     const at = (minute: string) => `2026-07-10T${minute}:00Z`;
     const batchId = kind === "manifest" ? `targetless-${eventStatus}` : "batch-1";
@@ -568,10 +568,10 @@ describe("operatorRows", () => {
         : [],
       events: [testEvent(eventStatus, at(eventMinute), kind === "manifest"
         ? { type: "phase", batchId, target: undefined, laneName: "implementation" }
-        : {})]
+        : eventStatus.includes(".") ? { type: eventStatus, status: undefined } : {})]
     });
     const row = buildOperatorRows(model)[0];
-    expect(row.operatorState).toBe(expectedState);
+    expect(row).toMatchObject({ operatorState: expectedState, ...(eventStatus.includes(".") ? { activityStatus: eventStatus } : {}) });
     expect(kind === "manifest" ? row.lifecycleEventAt : row.batchActivityAt).toBe(at(expectedMinute));
   });
 

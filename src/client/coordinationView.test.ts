@@ -1136,7 +1136,7 @@ describe("buildCoordinationView", () => {
   it.each([
     ["keeps a current blocker visible with 'blocked before live' custody", "terminal", "blocked-first", "live"],
     ["keeps a current blocker visible with 'live before blocked' custody", "terminal", "custody-first", "live"],
-    ["keeps a current blocker visible with 'blocked before stale' custody", "terminal", "blocked-first", "stale"],
+    ["keeps a current dead row ahead of newer live custody", "terminal", "dead-first", "live"],
     ["keeps a current blocker visible with 'stale before blocked' custody", "terminal", "custody-first", "stale"],
     ["keeps a nonterminal multi-target lane blocked for the blocked-first input permutation", "open", "blocked-first", "live"],
     ["keeps a nonterminal multi-target lane blocked for the live-first input permutation", "open", "custody-first", "live"]
@@ -1144,9 +1144,9 @@ describe("buildCoordinationView", () => {
     const batchId = kind === "terminal" ? "b12-current-blocker" : "b12-mixed";
     const blockedTarget = kind === "terminal" ? "342" : "340";
     const custodyTarget = kind === "terminal" ? "343" : "341";
-    const blocked = coordinatedTarget(blockedTarget, batchId, "blocked", "2026-07-21T11:00:00.000Z", {
-      blockedOn: ["repo/dashboard#9"]
-    });
+    const deadRow = order === "dead-first";
+    const blocked = coordinatedTarget(blockedTarget, batchId, deadRow ? "coding" : "blocked", "2026-07-21T11:00:00.000Z",
+      { blockedOn: deadRow ? [] : ["repo/dashboard#9"], claimAt: deadRow ? "2026-07-21T11:00:00.000Z" : undefined });
     const custody = coordinatedTarget(custodyTarget, batchId, "coding", "2026-07-21T11:59:00.000Z", { liveness });
     const fixture = coordinationFixture({
       batchId, workItems: order === "blocked-first" ? [blocked, custody] : [custody, blocked],
@@ -1158,9 +1158,9 @@ describe("buildCoordinationView", () => {
     });
     const lane = fixtureLane(fixture);
     expect(lane.row).toMatchObject({
-      target: blockedTarget, operatorState: "blocked", blockedOn: ["repo/dashboard#9"]
+      target: blockedTarget, operatorState: deadRow ? "dead" : "blocked", blockedOn: deadRow ? [] : ["repo/dashboard#9"]
     });
-    expect(lane.operatorState).toBe("blocked");
+    expect(lane.operatorState).toBe(deadRow ? "dead" : "blocked");
   });
 
   it.each([
@@ -1199,16 +1199,16 @@ describe("buildCoordinationView", () => {
     ["keeps 'stale' custody current when terminal manifest freshness is unavailable", "stale", "11:59", false, "stale", "stuck"]
   ] as const)("%s", (_name, liveness, minute, hasManifestTime, expectedState, expectedTier) => {
     const custodyAt = `2026-07-21T${minute}:00.000Z`;
-    const target = hasManifestTime ? "365" : "366";
-    const batchId = hasManifestTime ? `b12-${liveness}-${custodyAt}` : `b12-unknown-manifest-${liveness}`;
-    const card = buildCoordinationView(coordinationFixture({
+    const target = hasManifestTime ? "365" : "366", batchId = hasManifestTime ? `b12-${liveness}-${custodyAt}` : `b12-unknown-manifest-${liveness}`;
+    const fixture = coordinationFixture({
       batchId,
       createdAt: hasManifestTime ? "2026-07-21T08:00:00.000Z" : undefined,
       updatedAt: hasManifestTime ? "2026-07-21T10:00:00.000Z" : undefined,
       workItems: [coordinatedTarget(target, batchId, "coding", custodyAt, { liveness })],
       lanes: [testLane({ owner: `agent-${target}`, targets: [target], status: "merged" })]
-    }), NOW).batchCards[0];
-    expect(card.lanes[0].operatorState).toBe(expectedState);
+    });
+    const [row, card] = [buildOperatorRows(fixture, { now: new Date(NOW) })[0], buildCoordinationView(fixture, NOW).batchCards[0]];
+    expect([row.operatorState, card.lanes[0].operatorState]).toEqual([expectedState, expectedState]);
     if (expectedTier) expect(card.tier).toBe(expectedTier);
   });
 

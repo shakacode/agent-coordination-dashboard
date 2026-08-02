@@ -153,7 +153,7 @@ const ACCEPTED_TERMINAL_STATUSES = new Set<string>([
   "cancelled"
 ]);
 const CURRENT_TERMINAL_STATUS_PATTERN =
-  /^(merged|done|closed|complete|completed|cancelled|abandoned|superseded)\b/i;
+  /^(?:(?:lane|claim|custody|lifecycle)[._\s-]+)?(merged|done|closed|complete|completed|cancelled|abandoned|superseded)\b/i;
 const LEGACY_PREFIXED_TERMINAL_STATUS_PATTERN =
   /^(?:pr\s+merged|task\s+done|auto-merged|state:\s*closed)\b/i;
 
@@ -436,7 +436,7 @@ function deriveOperatorState(input: {
     && timestampMs(input.claim.claimedAt) === 0
   );
   const manifestTerminalIsCurrent =
-    (!input.heartbeat || (timestampMs(input.heartbeat.updatedAt) > 0 && manifestLifecycleAt > timestampMs(input.heartbeat.updatedAt)))
+    (!input.heartbeat || (timestampMs(input.heartbeat.updatedAt) > 0 && manifestLifecycleAt >= timestampMs(input.heartbeat.updatedAt)))
     && isCurrentTerminalStatus(input.lane?.status)
     && manifestLifecycleAt > 0
     && manifestLifecycleAt >= currentLifecycleAt;
@@ -1149,7 +1149,7 @@ function buildLaneRow(
       timestampMs(manifestLifecycleAt) > 0
         ? timestampMs(transitionLifecycleAt) > timestampMs(manifestLifecycleAt)
         : isCurrentTerminalStatus(lane.status) && !isCurrentTerminalStatus(transitionStatus)
-          || transitionEvent?.type === "lane_closed" && isCurrentTerminalStatus(transitionStatus)
+          || (/^(?:lane|claim|custody|lifecycle)[._\s-]+/i.test(transitionEvent?.type || "") && isCurrentTerminalStatus(transitionStatus))
     );
   const currentStatus = transitionSupersedesManifest ? transitionStatus : lane.status;
   const currentLifecycleAt = transitionSupersedesManifest ? transitionLifecycleAt : manifestLifecycleAt;
