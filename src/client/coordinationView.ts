@@ -10,7 +10,13 @@ import type {
 } from "../shared/types";
 import { displayAttribution } from "../shared/attribution";
 import { isSelectableWorkItem } from "../shared/workItemSelection";
-import { buildOperatorRows, type OperatorRow, type OperatorState } from "./operatorRows";
+import {
+  buildOperatorRows,
+  isClaimRelease,
+  isCurrentTerminalStatus,
+  type OperatorRow,
+  type OperatorState
+} from "./operatorRows";
 
 /**
  * coordinationView derives the Coordination Dashboard design's view-models from
@@ -252,7 +258,6 @@ export function devToolForHost(host: string | undefined): string | undefined {
   return undefined;
 }
 
-const TERMINAL_STATUS_PATTERN = /\b(final|merged|done|closed|complete|completed|released|cancelled)\b/;
 const BLOCKED_STATUS_PATTERN = /\b(block|blocked|blocking|waiting|depends|needs[_\- ]?changes)\b/;
 const STUCK_STATUS_PATTERN = /\b(stuck|stale)\b/;
 const PAUSED_STATUS_PATTERN = /\b(paused?|token[_\- ]?limit|context[_\- ]?limit|context[_\- ]?window)\b/;
@@ -263,7 +268,9 @@ const RUNNING_STATUS_PATTERN = /\b(running|in[_\- ]?progress|coding|working|star
 export function laneStatusState(status: string | undefined): OperatorState {
   const normalized = (status || "").trim().toLowerCase();
   if (!normalized) return "unknown";
-  if (TERMINAL_STATUS_PATTERN.test(normalized)) return "done";
+  // `final` is a lifecycle state, while `final-review` / `final review` are
+  // active phases. Keep that token exact before applying the richer aliases.
+  if (isCurrentTerminalStatus(normalized)) return "done";
   if (PAUSED_STATUS_PATTERN.test(normalized)) return "paused";
   if (BLOCKED_STATUS_PATTERN.test(normalized)) return "blocked";
   if (STUCK_STATUS_PATTERN.test(normalized)) return "stale";
@@ -416,7 +423,11 @@ export function jobBucketForRow(row: OperatorRow, attentionKind?: string, nowMs 
 }
 
 function jobNote(row: OperatorRow): string {
-  if (row.blockedOn.length > 0) return `blocked on ${row.blockedOn.join(", ")}`;
+  // A finished row can still carry a dependency its manifest never cleared.
+  // Reporting that as "blocked on" would contradict the terminal badge beside it.
+  if (row.blockedOn.length > 0 && !TERMINAL_LANE_STATES.has(row.operatorState)) {
+    return `blocked on ${row.blockedOn.join(", ")}`;
+  }
   const activity = displayAttribution(row.activityStatus, "");
   return row.activityMessage || activity || row.retentionStatus || "";
 }
@@ -596,9 +607,82 @@ function buildLaneView(
   workItemByKey: Map<string, WorkItem>
 ): LaneView {
   const lane = batch.lanes[laneIndex];
-  const representative = laneRows[0];
-  const state: OperatorState = representative?.operatorState
-    || (lane.blockedOn.length > 0 ? "blocked" : lane.liveness === "dead" ? "dead" : laneStatusState(lane.status));
+  const declared = laneStatusState(lane.status);
+  const declaredTerminal = declared === "done";
+  const manifestActivityAt = Math.max(timestampMs(batch.updatedAt), timestampMs(batch.createdAt));
+  const currentCustodyRow = declaredTerminal
+    ? [...laneRows]
+        .filter(
+          (row) =>
+            (row.liveness === "live" || row.liveness === "stale")
+            && (
+              manifestActivityAt === 0
+              || timestampMs(row.heartbeatUpdatedAt) > manifestActivityAt
+            )
+        )
+        .sort((left, right) => {
+          const livenessDelta =
+            (left.liveness === "live" ? 0 : 1) - (right.liveness === "live" ? 0 : 1);
+          return livenessDelta || timestampMs(right.heartbeatUpdatedAt) - timestampMs(left.heartbeatUpdatedAt);
+        })[0]
+    : undefined;
+  // A lane that declared it finished stays done even after its worker stopped
+  // beating or left a dependency behind: finishing is exactly why the agent went
+  // away. Only lanes that never reached terminal are reported as blocked or
+  // dead, so completed batches land in the archive tier instead of piling up as
+  // "blocked — needs your decision".
+  //
+  // The per-row order below mirrors deriveOperatorState, including its carve-out
+  // for claim releases. Across a multi-target lane, any current blocked row
+  // outranks another target's live custody so the lane keeps the blocker visible.
+  const newerNonterminalRows = declaredTerminal
+    ? [...laneRows]
+        .filter(
+          (row) =>
+            !TERMINAL_LANE_STATES.has(row.operatorState)
+            && (
+              manifestActivityAt === 0
+                ? timestampMs(row.lifecycleEventAt) > 0
+                  || timestampMs(row.claimUpdatedAt) > 0
+                  || timestampMs(row.heartbeatUpdatedAt) > 0
+                : timestampMs(row.batchActivityAt) > manifestActivityAt
+            )
+        )
+        .sort(
+          (left, right) =>
+            timestampMs(right.batchActivityAt) - timestampMs(left.batchActivityAt)
+        )
+    : [];
+  const newerBlockingRow = newerNonterminalRows.find((row) => BLOCKED_LANE_STATES.has(row.operatorState));
+  const newerNonterminalRow = newerNonterminalRows[0];
+  const representative = newerBlockingRow || currentCustodyRow || newerNonterminalRow || laneRows[0];
+  const releaseHasRecordedBlocker =
+    lane.blockedOn.length > 0
+    || Boolean(representative?.blockedOn.length)
+    || representative?.operatorState === "blocked";
+  const declaredCompletionWins =
+    declaredTerminal
+    && (!isClaimRelease(lane.status) || !releaseHasRecordedBlocker);
+  const state: OperatorState = newerBlockingRow
+    ? newerBlockingRow.operatorState
+    : currentCustodyRow
+      ? currentCustodyRow.operatorState
+      : newerNonterminalRow
+        ? newerNonterminalRow.operatorState
+        : declaredCompletionWins
+          ? "done"
+          : representative?.operatorState
+            || (lane.blockedOn.length > 0 ? "blocked"
+              : declaredTerminal ? "done"
+                : lane.liveness === "dead" ? "dead"
+                  : declared);
+  const presentationRow = representative
+    ? {
+        ...representative,
+        operatorState: state,
+        blockedOn: TERMINAL_LANE_STATES.has(state) ? [] : representative.blockedOn
+      }
+    : undefined;
   const firstTarget = lane.targets[0];
   const workItem = representative?.target
     ? workItemByKey.get(`${representative.repo}#${representative.target}`)
@@ -610,11 +694,21 @@ function buildLaneView(
     : firstTarget
       ? `#${displayAttribution(firstTarget, firstTarget)}`
       : displayAttribution(lane.name);
-  const note = lane.blockedOn.length > 0
-    ? `depends on ${lane.blockedOn.join(", ")}`
-    : representative
-      ? jobNote(representative)
-      : displayAttribution(lane.status, "");
+  // Same reasoning as jobNote: once the lane is terminal, a dependency the
+  // manifest never cleared must not be rendered as though it were still waiting.
+  const note = declaredTerminal && TERMINAL_LANE_STATES.has(state)
+    ? displayAttribution(lane.status, "")
+    : lane.blockedOn.length > 0 && !TERMINAL_LANE_STATES.has(state)
+      ? `depends on ${lane.blockedOn.join(", ")}`
+      : presentationRow
+        ? jobNote(presentationRow)
+        : displayAttribution(lane.status, "");
+  const activityStatus = presentationRow?.activityStatus;
+  const displayedState = declared === state
+    ? lane.status
+    : activityStatus && isCurrentTerminalStatus(activityStatus) === TERMINAL_LANE_STATES.has(state)
+      ? activityStatus
+      : state;
   return {
     id: JSON.stringify([batchIdentity(batch), lane.name, [...lane.targets].sort(), lane.owner, lane.branch || ""]),
     branch: LANE_BRANCH_CHARS(laneIndex, laneCount),
@@ -622,7 +716,7 @@ function buildLaneView(
     target: targetText,
     targetColor: hostColor(representative?.host || lane.host),
     title: representative?.title || displayAttribution(lane.status, "Lane"),
-    state: displayAttribution(lane.status, state),
+    state: displayAttribution(displayedState, state),
     operatorState: state,
     stateColor: stateColor(state),
     age: representative?.lastActivityAge || ABSENT,
@@ -637,7 +731,7 @@ function buildLaneView(
     host: representative?.host || lane.host,
     threadHandle: representative?.threadHandle || lane.threadHandle,
     prUrl: representative?.prUrl || representative?.implementationPr?.url || lane.prUrl,
-    row: representative,
+    row: presentationRow,
     workItem
   };
 }
@@ -729,7 +823,10 @@ export function buildBatchCard(
     buildLaneView(batch, index, laneCount, rowsByLane.get(`${batchIdentity(batch)}\u0000${lane.name}`) || [], workItemByKey)
   );
   const laneStates = lanes.map((lane) => lane.operatorState);
-  const tier = batchTierFromLanes(laneStates, operation);
+  // BatchBlocker is emitted only while operator authority is required. Preserve
+  // that explicit batch-level decision even if every lane independently reports
+  // terminal, otherwise the archive tier hides the structured blocker drawer.
+  const tier = batch.blocker ? "blocked" : batchTierFromLanes(laneStates, operation);
   const tierMeta = BATCH_TIER_META.get(tier)!;
   const done = laneStates.filter((state) => TERMINAL_LANE_STATES.has(state)).length;
   const running = laneStates.filter((state) => state === "running" || STUCK_LANE_STATES.has(state)).length;

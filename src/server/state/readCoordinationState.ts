@@ -640,7 +640,7 @@ function normalizeBatchEvent(raw: Record<string, unknown>, path: string): BatchE
     target: raw.target ? String(raw.target) : undefined,
     branch: stringValue(raw.branch) || undefined,
     prUrl: prUrlFrom(raw),
-    status: stringValue(raw.status) || stringValue(raw.phase) || undefined,
+    status: stringValue(raw.status) || stringValue(raw.phase) || stringValue(raw.terminal) || undefined,
     message: stringValue(raw.message) || undefined,
     timestamp,
     path

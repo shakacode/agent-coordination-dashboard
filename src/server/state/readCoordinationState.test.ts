@@ -126,7 +126,7 @@ describe("readCoordinationState", () => {
         pr_url: "https://github.com/shakacode/react_on_rails/pull/4005",
         generation: "8",
         timestamp: "2026-06-17T19:45:00Z"
-      })}\n{\n`
+      })}\n${JSON.stringify({ event_id: "event-2", type: "lane_closed", terminal: "done", batch_id: "batch-1" })}\n{\n`
     );
 
     const state = await readCoordinationState(root, new Date("2026-06-17T20:00:00Z"));
@@ -180,8 +180,9 @@ describe("readCoordinationState", () => {
       prUrl: "https://github.com/shakacode/react_on_rails/pull/4005",
       generation: 8
     });
+    expect(state.events[1]).toMatchObject({ eventId: "event-2", type: "lane_closed", status: "done" });
     expect(state.warnings.map((warning) => warning.message)).toEqual(
-      expect.arrayContaining([expect.stringContaining("events/batch-1.jsonl:2")])
+      expect.arrayContaining([expect.stringContaining("events/batch-1.jsonl:3")])
     );
     expect(state.warnings.map((warning) => warning.message)).toEqual(expect.arrayContaining([expect.stringContaining("Malformed JSON")]));
     expect(state.warnings).toEqual(
