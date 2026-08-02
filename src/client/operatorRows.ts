@@ -466,7 +466,7 @@ function deriveOperatorState(input: {
   // A claim release is deliberately excluded — the telemetry contract defines
   // claim.released as non-terminal (a terminal release emits lane_closed
   // instead), so a holder walking away from blocked work must stay blocked.
-  if (currentCompletion) {
+  if (currentCompletion || (manifestTerminalIsCurrent && !isClaimRelease(input.lane?.status))) {
     return "done";
   }
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {

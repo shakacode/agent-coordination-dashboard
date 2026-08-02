@@ -603,7 +603,7 @@ describe("operatorRows", () => {
       generatedAt: "2026-07-10T20:00:00Z",
       workItems: [workItem({
         schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined,
-        batchSignals: [batchSignal("coding", "2026-07-10T19:57:00Z")]
+        batchSignals: [batchSignal("blocked", "2026-07-10T19:57:00Z", { blockedOn: ["repo/app#124"] })]
       })],
       batches: [targetlessBatch("batch-1", testLane({
         name: "impl", targets: ["123"], status: "merged", liveness: "dead"

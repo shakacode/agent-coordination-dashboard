@@ -1127,7 +1127,7 @@ describe("buildCoordinationView", () => {
     });
     const rows = buildOperatorRows(multiTarget, { now: new Date(NOW) })
       .filter((row) => row.batchId === "b12" && row.laneName === "l");
-    expect(rows.map((row) => row.operatorState)).toEqual(["blocked", "running"]);
+    expect(rows.map((row) => row.operatorState)).toEqual(["running", "done"]);
     const lane = buildCoordinationView(multiTarget, NOW).batchCards[0].lanes[0];
     expect(lane.row).toMatchObject({ target: "314", operatorState: "running" });
     expect(lane.operatorState).toBe("running");
@@ -1222,8 +1222,8 @@ describe("buildCoordinationView", () => {
     });
     const representative = buildOperatorRows(finished, { now: new Date(NOW) }).find((row) => row.target === "312");
     expect(representative).toMatchObject({
-      operatorState: "blocked",
-      blockedOn: ["outside saved target repositories"]
+      operatorState: "done",
+      blockedOn: []
     });
     const lane = buildCoordinationView(finished, NOW).batchCards[0].lanes[0];
     expect(lane.row).toMatchObject({ operatorState: "done", blockedOn: [] });
@@ -1332,7 +1332,7 @@ describe("buildCoordinationView", () => {
     });
     const rows = buildOperatorRows(multiTarget, { now: new Date(NOW) })
       .filter((row) => row.batchId === "b14" && row.laneName === "l");
-    expect(rows.map((row) => row.target)).toEqual(["316", "317"]);
+    expect(rows.map((row) => row.target)).toEqual(["317", "316"]);
     const lane = buildCoordinationView(multiTarget, NOW).batchCards[0].lanes[0];
     expect(lane.row).toMatchObject({
       target: "317",
@@ -1357,7 +1357,7 @@ describe("buildCoordinationView", () => {
       lanes: [testLane({ owner: "old-agent", targets: ["318"], blockedOn: ["repo/dashboard#9"] })]
     });
     const row = buildOperatorRows(retained, { now: new Date(NOW) }).find((candidate) => candidate.target === "318");
-    expect(row).toMatchObject({ batchId: "b15", operatorState: "blocked" });
+    expect(row).toMatchObject({ batchId: "b15", operatorState: "done" });
     const lane = buildCoordinationView(retained, NOW).batchCards[0].lanes[0];
     expect(lane.row).toMatchObject({ operatorState: "done", blockedOn: [] });
     expect(lane.operatorState).toBe("done");
