@@ -1,0 +1,118 @@
+import { render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { BatchCard, BatchTier } from "../coordinationView";
+import { BatchesBoard } from "./BatchesBoard";
+
+function card(id: string, tier: BatchTier): BatchCard {
+  return {
+    identity: `repo/dashboard\0${id}`,
+    id,
+    idAttr: `batch-${id}`,
+    title: `Batch ${id}`,
+    repo: "repo/dashboard",
+    coordinator: "—",
+    mergeAuth: "—",
+    started: "started 1d ago",
+    duration: "1d",
+    promptSaved: false,
+    hostColor: "var(--codex)",
+    tier,
+    tierMeta: { id: tier, label: tier, hint: "", color: "var(--mut)", pulse: false },
+    superColor: "var(--mut)",
+    superLabel: tier,
+    superPulse: false,
+    convoLabel: tier,
+    convoColor: "var(--mut)",
+    convoHint: "",
+    done: 0,
+    running: 0,
+    total: 1,
+    donePct: "0%",
+    runPct: "0%",
+    qa: "0/0",
+    tokensTotal: "—",
+    cost: "—",
+    lanes: [],
+    batch: { schemaVersion: 1, batchId: id, repo: "repo/dashboard", lanes: [], path: `batches/${id}.json` }
+  };
+}
+
+const cards = [
+  card("blocked-1", "blocked"),
+  card("stuck-1", "stuck"),
+  card("running-1", "running"),
+  card("archived-1", "archive"),
+  card("archived-2", "archive")
+];
+
+const tierCounts: Record<BatchTier, number> = { blocked: 1, stuck: 1, running: 1, archive: 2 };
+
+function renderBoard(activeFilter: Parameters<typeof BatchesBoard>[0]["activeFilter"], onSetFilter = vi.fn()) {
+  render(
+    <BatchesBoard
+      activeFilter={activeFilter}
+      cards={cards}
+      onOpenBatch={vi.fn()}
+      onOpenRow={vi.fn()}
+      onSetFilter={onSetFilter}
+      tierCounts={tierCounts}
+    />
+  );
+  return onSetFilter;
+}
+
+function visibleBatchIds(): string[] {
+  return screen.getAllByRole("article").map((node) => node.id.replace(/^batch-/, ""));
+}
+
+describe("BatchesBoard", () => {
+  it("hides archived batches in the active view", () => {
+    renderBoard("active");
+    expect(visibleBatchIds()).toEqual(["blocked-1", "stuck-1", "running-1"]);
+  });
+
+  it("counts the active filter without the archived batches", () => {
+    renderBoard("active");
+    const active = screen.getByRole("button", { name: /Active/ });
+    expect(within(active).getByText("3")).toBeTruthy();
+    const all = screen.getByRole("button", { name: /All batches/ });
+    expect(within(all).getByText("5")).toBeTruthy();
+  });
+
+  it("still shows every batch when the operator asks for all", () => {
+    renderBoard("all");
+    expect(visibleBatchIds()).toHaveLength(5);
+  });
+
+  it("shows archived batches when their own tier is selected", () => {
+    renderBoard("archive");
+    expect(visibleBatchIds()).toEqual(["archived-1", "archived-2"]);
+  });
+
+  it("returns to the active view when a selected tier is toggled off", () => {
+    const onSetFilter = renderBoard("archive");
+    screen.getByRole("button", { pressed: true }).click();
+    expect(onSetFilter).toHaveBeenCalledWith("active");
+  });
+
+  it("leaves the all-batches view selected when clicked again", () => {
+    const onSetFilter = renderBoard("all");
+    screen.getByRole("button", { pressed: true }).click();
+    expect(onSetFilter).toHaveBeenCalledWith("all");
+  });
+
+  it("describes an empty active view as ready to archive", () => {
+    render(
+      <BatchesBoard
+        activeFilter="active"
+        cards={[card("archived-1", "archive")]}
+        onOpenBatch={vi.fn()}
+        onOpenRow={vi.fn()}
+        onSetFilter={vi.fn()}
+        tierCounts={{ blocked: 0, stuck: 0, running: 0, archive: 1 }}
+      />
+    );
+
+    expect(screen.getByText("Nothing needs you — the batch is ready to archive.")).toBeTruthy();
+  });
+});

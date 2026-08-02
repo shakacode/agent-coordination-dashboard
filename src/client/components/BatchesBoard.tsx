@@ -2,7 +2,12 @@ import { BATCH_TIERS, type BatchCard, type BatchTier, type LaneView } from "../c
 import type { OperatorRow } from "../operatorRows";
 import type { WorkItem } from "../../shared/types";
 
-export type BatchFilter = BatchTier | "all";
+/**
+ * "active" is the landing view: everything still asking something of the
+ * operator. "all" stays reachable so a deep link can reveal an archived batch,
+ * and so the board can still be read in full on demand.
+ */
+export type BatchFilter = BatchTier | "all" | "active";
 
 export interface BatchesBoardProps {
   cards: BatchCard[];
@@ -50,11 +55,17 @@ function LaneRow({ lane, onOpenRow }: { lane: LaneView; onOpenRow: BatchesBoardP
 }
 
 export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onOpenBatch, onOpenRow, highlightBatchIdentity }: BatchesBoardProps) {
+  const activeCount = cards.filter((card) => card.tier !== "archive").length;
   const filters: Array<{ id: BatchFilter; label: string; hint: string; color: string; pulse: boolean; count: number }> = [
-    { id: "all", label: "All batches", hint: "", color: "var(--color-neutral-300)", pulse: false, count: cards.length },
-    ...BATCH_TIERS.map((tier) => ({ id: tier.id as BatchFilter, label: tier.label, hint: tier.hint, color: tier.color, pulse: tier.pulse, count: tierCounts[tier.id] }))
+    { id: "active", label: "Active", hint: "still needs you", color: "var(--color-neutral-300)", pulse: false, count: activeCount },
+    ...BATCH_TIERS.map((tier) => ({ id: tier.id as BatchFilter, label: tier.label, hint: tier.hint, color: tier.color, pulse: tier.pulse, count: tierCounts[tier.id] })),
+    { id: "all", label: "All batches", hint: "including archived", color: "var(--color-neutral-300)", pulse: false, count: cards.length }
   ];
-  const visible = activeFilter === "all" ? cards : cards.filter((card) => card.tier === activeFilter);
+  const visible = activeFilter === "all"
+    ? cards
+    : activeFilter === "active"
+      ? cards.filter((card) => card.tier !== "archive")
+      : cards.filter((card) => card.tier === activeFilter);
 
   return (
     <section aria-label="Batches" className="batches-board">
@@ -68,7 +79,7 @@ export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onO
             aria-pressed={activeFilter === filter.id}
             className={`triage-card${activeFilter === filter.id ? " active" : ""}`}
             key={filter.id}
-            onClick={() => onSetFilter(activeFilter === filter.id && filter.id !== "all" ? "all" : filter.id)}
+            onClick={() => onSetFilter(activeFilter === filter.id && filter.id !== "all" ? "active" : filter.id)}
             style={{ color: filter.color, borderColor: activeFilter === filter.id ? filter.color : undefined, background: activeFilter === filter.id ? `color-mix(in srgb, ${filter.color} 12%, transparent)` : undefined }}
             type="button"
           >
@@ -83,7 +94,11 @@ export function BatchesBoard({ cards, tierCounts, activeFilter, onSetFilter, onO
       </div>
 
       {visible.length === 0 ? (
-        <p className="empty-state">No batches in this view.</p>
+        <p className="empty-state">
+          {activeFilter === "active" && cards.length > 0
+            ? `Nothing needs you — ${cards.length === 1 ? "the batch is" : `all ${cards.length} batches are`} ready to archive.`
+            : "No batches in this view."}
+        </p>
       ) : (
         <div className="batch-list">
           {visible.map((card) => (
