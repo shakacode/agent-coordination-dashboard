@@ -78,12 +78,15 @@ export interface OperatorRow {
   activityStatus: string;
   activityMessage?: string;
   lastActivityAt?: string;
+  batchActivityAt?: string;
   completedAt?: string;
   retentionStatus: string;
   githubState?: string;
   schedulingState?: WorkItem["schedulingState"];
   lastActivityAge: string;
   lastEventAt?: string;
+  lifecycleEventAt?: string;
+  claimUpdatedAt?: string;
   heartbeatUpdatedAt?: string;
   batchId?: string;
   batchPath?: string;
@@ -126,7 +129,10 @@ interface MetadataFields {
   prUrl?: string;
 }
 
-const DONE_PATTERN = /\b(complete|completed|done|merged|closed|cancelled|passed|released)\b/i;
+// preferredSignalForWork uses this broad signal-selection pattern to skip
+// finished signals when picking a target's current work. "passed" remains a QA
+// result and is deliberately excluded from lifecycle terminal classification.
+const DONE_PATTERN = /^(complete|completed|done|merged|closed|cancelled|passed|abandoned|superseded)\b/i;
 const PAUSED_PATTERN =
   /\b(paused?|token[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?limit(?:[_\-\s]?pause)?|context[_\-\s]?window)\b/i;
 const BLOCKED_PATTERN = /\b(blocked|blocking|waiting|needs[_\-\s]?changes|changes[_\-\s]?requested)\b/i;
@@ -138,20 +144,41 @@ const WORK_ITEM_TERMINAL_STATES: Record<WorkItemTerminalState, true> = {
   abandoned: true,
   superseded: true
 };
+// Retention intentionally requires an exact accepted lifecycle value. It is
+// narrower than presentation classification because age-out must stay
+// conservative when status text carries extra context.
 const ACCEPTED_TERMINAL_STATUSES = new Set<string>([
   ...Object.keys(WORK_ITEM_TERMINAL_STATES),
   "merged",
   "cancelled"
 ]);
-const TERMINAL_PRESENTATION_ALIASES = new Set(["complete", "completed", "released"]);
+// Kept in step with TERMINAL_STATUS_PATTERN in coordinationView, so a lane and
+// its representative row never disagree about whether qualified status text
+// such as "merged (squash)" or "released - pending qa" reports finished work.
+const CURRENT_TERMINAL_STATUS_PATTERN =
+  /^(merged|done|closed|complete|completed|cancelled|abandoned|superseded)\b/i;
 
-function isAcceptedTerminalStatus(value: string | undefined): boolean {
-  return ACCEPTED_TERMINAL_STATUSES.has(value?.trim().toLowerCase() || "");
+function isDoneStatus(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "final" || isClaimRelease(normalized) || DONE_PATTERN.test(normalized);
 }
 
 function isCurrentTerminalStatus(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase() || "";
-  return ACCEPTED_TERMINAL_STATUSES.has(normalized) || TERMINAL_PRESENTATION_ALIASES.has(normalized);
+  return normalized === "final" || isClaimRelease(normalized) || CURRENT_TERMINAL_STATUS_PATTERN.test(normalized);
+}
+
+/**
+ * A claim release reads as terminal for presentation but is non-terminal in the
+ * telemetry contract: a genuinely terminal release emits `lane_closed` instead.
+ * It therefore must not be allowed to clear a recorded blocker.
+ *
+ * Exported so lane derivation in coordinationView applies the same carve-out.
+ * Both files decide "did this finish, or did the holder just walk away", and
+ * keeping one predicate is what stops the two from drifting apart again.
+ */
+export function isClaimRelease(value: string | undefined): boolean {
+  return /^released\b/i.test(value?.trim() || "");
 }
 
 function firstValue(...values: Array<string | undefined>): string | undefined {
@@ -368,6 +395,7 @@ function deriveOperatorState(input: {
   hasCurrentStatus?: boolean;
   transitionMatchesCurrentContext?: boolean;
   currentLifecycleAt?: string;
+  manifestLifecycleAt?: string;
   liveness?: Liveness | "none";
   blockedOn: string[];
   nowMs: number;
@@ -382,13 +410,15 @@ function deriveOperatorState(input: {
     eventDrivesOperatorState ? input.event?.status : undefined,
     input.signalStatus
   ]);
-  const currentText = stateText([
+  const currentStatusFields = [
     input.workItem?.schedulingState,
     input.heartbeat?.status,
     input.claim?.status,
     input.lane?.status,
-    input.signalStatus
-  ]);
+    input.signalStatus,
+    input.currentStatus
+  ];
+  const currentText = stateText(currentStatusFields);
 
   const hasReadySignal = input.workItem?.schedulingState === "ready_for_batch" || READY_PATTERN.test(text);
   const hasActiveClaim = Boolean(input.claim && input.claim.status !== "released");
@@ -396,6 +426,18 @@ function deriveOperatorState(input: {
   const transitionStatus = input.transitionEvent?.status || input.transitionEvent?.type;
   const transitionAt = timestampMs(input.transitionEvent?.timestamp);
   const currentLifecycleAt = timestampMs(input.currentLifecycleAt);
+  const manifestLifecycleAt = timestampMs(input.manifestLifecycleAt);
+  const activeClaimHasUnknownFreshness = Boolean(
+    input.claim
+    && input.claim.status !== "released"
+    && timestampMs(input.claim.updatedAt) === 0
+    && timestampMs(input.claim.claimedAt) === 0
+  );
+  const manifestTerminalIsCurrent =
+    !input.heartbeat
+    && isCurrentTerminalStatus(input.lane?.status)
+    && manifestLifecycleAt > 0
+    && manifestLifecycleAt >= currentLifecycleAt;
   const terminalTransitionIsCurrent =
     isCurrentTerminalStatus(transitionStatus) &&
     transitionAt > 0 &&
@@ -414,9 +456,24 @@ function deriveOperatorState(input: {
   if (PAUSED_PATTERN.test(currentText)) {
     return "paused";
   }
+  // Completion outranks a dependency: manifests keep blockedOn after a lane
+  // finishes, so a stale edge must not resurrect completed work as blocked.
+  // A claim release is deliberately excluded — the telemetry contract defines
+  // claim.released as non-terminal (a terminal release emits lane_closed
+  // instead), so a holder walking away from blocked work must stay blocked.
+  if (
+    (isCurrentTerminalStatus(input.currentStatus) && !isClaimRelease(input.currentStatus)) ||
+    (terminalTransitionIsCurrent && !isClaimRelease(transitionStatus))
+  ) {
+    return "done";
+  }
   if (input.blockedOn.length > 0 || BLOCKED_PATTERN.test(currentText)) {
     return "blocked";
   }
+  if (manifestTerminalIsCurrent) {
+    return "done";
+  }
+  // Nothing is blocking, so a release now reads as terminal exactly as before.
   if (isCurrentTerminalStatus(input.currentStatus) || terminalTransitionIsCurrent) {
     return "done";
   }
@@ -444,7 +501,11 @@ function deriveOperatorState(input: {
   if (input.lane && liveness === "no-heartbeat" && ACTIVE_LANE_PATTERN.test(currentText)) {
     return "dead";
   }
-  if (DONE_PATTERN.test(currentText)) {
+  if (
+    (!input.currentStatus || input.currentStatus === "unknown")
+    && !activeClaimHasUnknownFreshness
+    && currentStatusFields.some((status) => isCurrentTerminalStatus(status))
+  ) {
     return "done";
   }
   if (PAUSED_PATTERN.test(text)) {
@@ -470,6 +531,10 @@ function deriveOperatorState(input: {
 
 function isActiveOperatorState(state: OperatorState): boolean {
   return ["running", "wedged", "paused", "blocked", "stale", "dead"].includes(state);
+}
+
+function presentationBlockedOn(state: OperatorState, blockedOn: string[]): string[] {
+  return state === "done" || state === "archived" ? [] : blockedOn;
 }
 
 function metadataWarnings(
@@ -647,7 +712,8 @@ function preferredSignalForWork(item: WorkItem) {
   }
   return (
     signals.find((signal) => READY_PATTERN.test(signal.status)) ||
-    signals.find((signal) => !DONE_PATTERN.test(signal.status) && !BLOCKED_PATTERN.test(signal.status)) ||
+    signals.find((signal) => !isDoneStatus(signal.status) && !BLOCKED_PATTERN.test(signal.status)) ||
+    signals.find((signal) => !isDoneStatus(signal.status)) ||
     signals[0]
   );
 }
@@ -747,12 +813,20 @@ function batchTargetForWork(batch: BatchRecord | undefined, item: WorkItem): Non
 }
 
 function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number): OperatorRow {
-  const matchingEvents = matchingEventsForWork(item, dashboard.events);
+  const signal = preferredSignalForWork(item);
+  const matchingEvents = matchingEventsForWork(item, dashboard.events).filter((event) => {
+    if (!signal) {
+      return true;
+    }
+    if (signal.batchId && event.batchId && event.batchId !== signal.batchId) {
+      return false;
+    }
+    return !signal.laneName || !event.laneName || event.laneName === signal.laneName;
+  });
   const latest = latestEvent(matchingEvents);
   const eventHistoryMetadata = eventMetadataFromHistory(matchingEvents);
-  const transitionEvent = latestTransitionEvent(matchingEvents);
   const { batch, lane } = findSignalLane(item, dashboard.batches);
-  const signal = preferredSignalForWork(item);
+  const transitionEvent = latestTransitionEvent(matchingEvents);
   const batchTarget = batchTargetForWork(batch, item);
   const blockedOn = Array.from(new Set([...(signal?.blockedOn || []), ...(lane?.blockedOn || [])].filter(Boolean)));
   const metadata = metadataFrom(item.claim, item.heartbeat, laneMetadata(lane), eventHistoryMetadata);
@@ -777,13 +851,31 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
         (candidate) => candidate.batchId === signal.batchId && candidate.laneName === signal.laneName
       )
     : undefined;
+  const manifestLifecycleAt = batch ? maxTimestamp(batch.updatedAt, batch.createdAt) : undefined;
+  const currentCustodyHasUnknownFreshness = Boolean(
+    (item.claim && item.claim.status !== "released" && !claimLifecycleAt)
+    || (
+      item.heartbeat
+      && (item.heartbeat.liveness === "live" || item.heartbeat.liveness === "stale")
+      && timestampMs(item.heartbeat.updatedAt) === 0
+    )
+  );
+  const currentTransitionCandidate = currentCustodyHasUnknownFreshness ? undefined : transitionEvent;
+  const suppressTerminalSignalForUnknownCustody =
+    currentCustodyHasUnknownFreshness && isCurrentTerminalStatus(currentSignalCandidate?.status);
+  const currentSignalForState = suppressTerminalSignalForUnknownCustody ? undefined : currentSignalCandidate;
   const currentLifecycleAt = maxTimestamp(
     item.heartbeat?.updatedAt,
     claimLifecycleAt,
-    currentSignalCandidate?.timestamp
+    currentSignalForState?.timestamp,
+    currentTransitionCandidate?.timestamp
   );
   const hasCurrentStatus = Boolean(
-    item.heartbeat?.status?.trim() || item.claim?.status?.trim() || currentSignalCandidate?.status?.trim()
+    item.heartbeat?.status?.trim()
+    || item.claim?.status?.trim()
+    || currentSignalForState?.status?.trim()
+    || currentTransitionCandidate?.status?.trim()
+    || currentTransitionCandidate?.type?.trim()
   );
   const currentBatchIds = new Set(activeBatchIdsForWork(item));
   if (signal?.batchId) {
@@ -796,7 +888,11 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     ? latestLifecycleStatus([
         { status: item.heartbeat?.status, timestamp: item.heartbeat?.updatedAt },
         { status: item.claim?.status, timestamp: claimLifecycleAt },
-        ...(currentSignalCandidate ? [currentSignalCandidate] : [])
+        ...(currentSignalForState ? [currentSignalForState] : []),
+        {
+          status: currentTransitionCandidate?.status || currentTransitionCandidate?.type,
+          timestamp: currentTransitionCandidate?.timestamp
+        }
       ])
     : undefined;
   const state = deriveOperatorState({
@@ -806,11 +902,12 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     lane,
     event: latest,
     transitionEvent,
-    signalStatus: signal?.status,
+    signalStatus: suppressTerminalSignalForUnknownCustody ? undefined : signal?.status,
     currentStatus,
     hasCurrentStatus,
     transitionMatchesCurrentContext,
     currentLifecycleAt,
+    manifestLifecycleAt,
     blockedOn,
     nowMs
   });
@@ -937,18 +1034,21 @@ function buildTargetRow(item: WorkItem, dashboard: DashboardModel, nowMs: number
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
     lastActivityAt: latestLifecycleAt || lastActivityAt,
+    batchActivityAt: currentLifecycleAt,
     completedAt: item.completedAt,
     lastActivityAge: ageLabel(latestLifecycleAt || lastActivityAt, nowMs),
     retentionStatus,
     githubState: observedTargetUrl ? item.github?.state : UNKNOWN,
     schedulingState: isArchivedView ? undefined : item.schedulingState,
     lastEventAt: latest?.timestamp,
+    lifecycleEventAt: currentTransitionCandidate?.timestamp,
+    claimUpdatedAt: claimLifecycleAt,
     heartbeatUpdatedAt: item.heartbeat?.updatedAt,
     batchId,
     batchPath: batch?.path,
     laneName: signal?.laneName || lane?.name,
     dependencies: lane?.dependsOn || [],
-    blockedOn,
+    blockedOn: presentationBlockedOn(state, blockedOn),
     agentId: metadata.agentId,
     machineId: machineMetadata.value,
     threadHandle: threadMetadata.value,
@@ -1038,14 +1138,27 @@ function buildLaneRow(
     ["event", latest?.status || latest?.type],
     ["manifest", lane.status]
   );
+  const manifestLifecycleAt = maxTimestamp(batch.updatedAt, batch.createdAt);
+  const transitionStatus = transitionEvent?.status || transitionEvent?.type;
+  const transitionLifecycleAt = maxTimestamp(transitionEvent?.timestamp);
+  const transitionSupersedesManifest =
+    timestampMs(transitionLifecycleAt) > 0
+    && (
+      timestampMs(manifestLifecycleAt) > 0
+        ? timestampMs(transitionLifecycleAt) > timestampMs(manifestLifecycleAt)
+        : isCurrentTerminalStatus(lane.status) && !isCurrentTerminalStatus(transitionStatus)
+    );
+  const currentStatus = transitionSupersedesManifest ? transitionStatus : lane.status;
+  const currentLifecycleAt = transitionSupersedesManifest ? transitionLifecycleAt : manifestLifecycleAt;
   const state = deriveOperatorState({
     lane,
     event: latest,
     transitionEvent,
-    currentStatus: lane.status,
-    hasCurrentStatus: Boolean(lane.status?.trim()),
+    currentStatus,
+    hasCurrentStatus: Boolean(currentStatus?.trim()),
     transitionMatchesCurrentContext: false,
-    currentLifecycleAt: maxTimestamp(batch.updatedAt, batch.createdAt),
+    currentLifecycleAt,
+    manifestLifecycleAt,
     liveness: lane.liveness || "no-heartbeat",
     blockedOn: lane.blockedOn,
     nowMs
@@ -1081,16 +1194,18 @@ function buildLaneRow(
     activityStatus: activityMetadata.value || UNKNOWN,
     activityMessage: latest?.message,
     lastActivityAt,
+    batchActivityAt: lastActivityAt,
     completedAt: state === "done" ? transitionEvent?.timestamp : undefined,
     lastActivityAge: ageLabel(lastActivityAt, nowMs),
     retentionStatus,
     githubState: target ? UNKNOWN : undefined,
     lastEventAt: latest?.timestamp,
+    lifecycleEventAt: transitionEvent?.timestamp,
     batchId: batch.batchId,
     batchPath: batch.path,
     laneName: lane.name,
     dependencies: lane.dependsOn,
-    blockedOn: lane.blockedOn,
+    blockedOn: presentationBlockedOn(state, lane.blockedOn),
     agentId: metadata.agentId,
     machineId: machineMetadata.value,
     threadHandle: threadMetadata.value,

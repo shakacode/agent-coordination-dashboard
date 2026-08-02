@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSummary, DashboardModel, WorkItem } from "../shared/types";
 import { ABSENT, aggregateUsage, batchIdentity, buildCoordinationView, canonicalHostName, findBatchCard, formatTokens, hostColor, jobBucketForRow, laneStatusState, targetLabel } from "./coordinationView";
-import type { OperatorRow } from "./operatorRows";
+import { buildOperatorRows, type OperatorRow } from "./operatorRows";
 
 const NOW = "2026-07-21T12:00:00.000Z";
+const TERMINAL_STATUS_CASES = [
+  "final", "merged", "merged (squash)", "done", "done - archived", "closed", "complete",
+  "completed", "released", "released - pending qa", "cancelled", "abandoned", "superseded"
+] as const;
+const NONTERMINAL_TERMINAL_WORD_CASES = [
+  "not final", "final-review", "final review", "not merged", "pre-merged", "almost merged",
+  "not done", "almost done", "not closed", "not complete", "almost complete", "not completed",
+  "almost completed", "not released", "pre-released", "unreleased", "not cancelled",
+  "not abandoned", "not superseded"
+] as const;
 
 function workItem(partial: Partial<WorkItem> & Pick<WorkItem, "id" | "repo" | "target" | "type" | "schedulingState">): WorkItem {
   return { warnings: [], selected: false, ...partial };
@@ -20,6 +30,33 @@ function liveHeartbeat(agentId: string, updatedAt: string, extra: Record<string,
     liveness: "live" as const,
     ...extra
   };
+}
+
+function coordinatedTarget(
+  target: string, batchId: string, status: string, updatedAt?: string,
+  options: { blockedOn?: string[]; liveness?: "live" | "stale" | "dead"; claimAt?: string } = {}
+): WorkItem {
+  const agentId = `agent-${target}`;
+  return workItem({
+    id: `repo/dashboard#${target}`, repo: "repo/dashboard", target,
+    type: "pull_request", schedulingState: "in_process",
+    claim: { schemaVersion: 1, repo: "repo/dashboard", target, agentId, batchId, status: "active",
+      claimedAt: options.claimAt, updatedAt: options.claimAt,
+      path: `claims/${agentId}.json` },
+    heartbeat: options.liveness && updatedAt
+      ? liveHeartbeat(agentId, updatedAt, {
+          repo: "repo/dashboard", target, batchId, status, liveness: options.liveness })
+      : undefined,
+    batchSignals: [{ batchId, laneName: "l", status, blockedOn: options.blockedOn || [], updatedAt }]
+  });
+}
+
+function signalledTarget(target: string, batchId: string, status: string, updatedAt?: string): WorkItem {
+  return workItem({
+    id: `repo/dashboard#${target}`, repo: "repo/dashboard", target, type: "pull_request",
+    schedulingState: "started_not_processing",
+    batchSignals: [{ batchId, laneName: "l", status, blockedOn: [], updatedAt }]
+  });
 }
 
 const model: DashboardModel = {
@@ -107,6 +144,37 @@ const model: DashboardModel = {
   healthItems: [],
   warnings: []
 };
+
+type TestLane = DashboardModel["batches"][number]["lanes"][number];
+type TestEvent = DashboardModel["events"][number];
+function testLane(partial: Partial<TestLane> = {}): TestLane {
+  return { name: "l", owner: "agent", targets: ["300"], dependsOn: [], status: "final",
+    liveness: "dead", blockedOn: [], ...partial };
+}
+function lifecycleEvent(batchId: string, status: string, timestamp: string,
+  partial: Partial<TestEvent> = {}): TestEvent {
+  return { eventId: `${batchId}-${status}`, type: "phase", status, batchId,
+    repo: "repo/dashboard", laneName: "l", timestamp,
+    path: `events/${batchId}.jsonl:1`, ...partial };
+}
+function coordinationFixture(options: {
+  batchId: string; lanes?: TestLane[]; workItems?: WorkItem[]; events?: TestEvent[];
+  createdAt?: string; updatedAt?: string;
+  blocker?: DashboardModel["batches"][number]["blocker"];
+}): DashboardModel {
+  const { batchId } = options;
+  return { ...model,
+    workItems: options.workItems || [],
+    batches: [{
+      schemaVersion: 1, batchId, repo: "repo/dashboard", objective: `Fixture ${batchId}`,
+      createdAt: options.createdAt, updatedAt: options.updatedAt,
+      lanes: options.lanes || [testLane()], blocker: options.blocker,
+      path: `batches/${batchId}.json`
+    }],
+    events: options.events || [],
+    batchOperations: [] };
+}
+const fixtureLane = (fixture: DashboardModel) => buildCoordinationView(fixture, NOW).batchCards[0].lanes[0];
 
 describe("buildCoordinationView", () => {
   const view = buildCoordinationView(model, NOW);
@@ -880,12 +948,394 @@ describe("buildCoordinationView", () => {
     expect(card.tier).toBe("archive");
   });
 
+  it.each([
+    ["keeps a lane that declared a terminal status done after its heartbeat dies",
+      coordinationFixture({ batchId: "b3", lanes: [
+        testLane({ name: "l1", targets: ["301"], status: "merged" }),
+        testLane({ name: "qa", targets: ["301"], status: "complete" })
+      ] }), { states: ["done", "done"], done: 2, tier: "archive" }],
+    ["clears a stale dependency once the lane itself reports terminal",
+      coordinationFixture({ batchId: "b4", lanes: [
+        testLane({ targets: ["303"], status: "done", blockedOn: ["b4:other"] }),
+        testLane({ name: "qa", targets: ["303"], status: "done" })
+      ] }), { state: "done", tier: "archive" }],
+    ["still reports a dead lane that never reached a terminal status",
+      coordinationFixture({ batchId: "b5", lanes: [
+        testLane({ targets: ["304"], status: "in_progress" }),
+        testLane({ name: "qa", targets: ["304"], status: "in_progress" })
+      ] }), { state: "dead", tier: "blocked" }],
+    ["does not let a manifest claim release clear a lane's blocker",
+      coordinationFixture({ batchId: "b7", workItems: [workItem({
+        id: "repo/dashboard#320", repo: "repo/dashboard", target: "320",
+        type: "pull_request", schedulingState: "in_process"
+      })], lanes: [
+        testLane({ targets: ["320"], status: "released - pending qa", blockedOn: ["b7:other"] }),
+        testLane({ name: "other", targets: ["321"], status: "in_progress" })
+      ] }), { state: "blocked", tierNot: "archive" }],
+    ["still treats a claim release as terminal when the lane records no blocker",
+      coordinationFixture({ batchId: "b8", lanes: [
+        testLane({ targets: ["330"], status: "released" }),
+        testLane({ name: "qa", targets: ["330"], status: "released" })
+      ] }), { states: ["done", "done"] }],
+    ["still treats a qualified claim release as terminal when the lane records no blocker",
+      coordinationFixture({ batchId: "b8-qualified", lanes: [
+        testLane({ targets: ["331"], status: "released - pending qa" })
+      ] }), { state: "done", tier: "archive" }]
+  ] as const)("%s", (_name, fixture, expected) => {
+    const card = buildCoordinationView(fixture, NOW).batchCards[0];
+    if ("state" in expected) expect(card.lanes[0].operatorState).toBe(expected.state);
+    if ("states" in expected) expect(card.lanes.map((lane) => lane.operatorState)).toEqual(expected.states);
+    if ("done" in expected) expect(card.done).toBe(expected.done);
+    if ("tier" in expected) expect(card.tier).toBe(expected.tier);
+    if ("tierNot" in expected) expect(card.tier).not.toBe(expected.tierNot);
+  });
+
+  it("keeps a blocker-free qualified release terminal over older active-claim evidence", () => {
+    const released = coordinationFixture({
+      batchId: "b8-qualified-older",
+      createdAt: "2026-07-21T10:00:00.000Z",
+      workItems: [coordinatedTarget("333", "b8-qualified-older", "coding", "2026-07-21T09:00:00.000Z")],
+      lanes: [testLane({ owner: "agent-333", targets: ["333"], status: "released - pending qa" })]
+    });
+    const representative = buildOperatorRows(released, { now: new Date(NOW) }).find((row) => row.target === "333");
+    expect(representative?.operatorState).toBe("done");
+    const card = buildCoordinationView(released, NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe("done");
+    expect(card.tier).toBe("archive");
+  });
+
+  it.each(NONTERMINAL_TERMINAL_WORD_CASES)(
+    "does not let the non-release manifest status %s clear a lane blocker",
+    (status) => {
+      const card = buildCoordinationView(coordinationFixture({
+        batchId: `b8-${status}`,
+        lanes: [testLane({ targets: ["331"], status, blockedOn: ["repo/dashboard#330"] })]
+      }), NOW).batchCards[0];
+      expect(card.lanes[0].operatorState).toBe("blocked");
+      expect(card.lanes[0].row?.blockedOn).toEqual(["repo/dashboard#330"]);
+      expect(card.tier).toBe("blocked");
+    }
+  );
+
+  it.each(NONTERMINAL_TERMINAL_WORD_CASES)(
+    "does not archive the blocker-free non-release manifest status %s",
+    (status) => {
+      const card = buildCoordinationView(coordinationFixture({
+        batchId: `b8-open-${status}`,
+        lanes: [testLane({ targets: ["332"], status, liveness: "unknown" })]
+      }), NOW).batchCards[0];
+      expect(card.lanes[0].operatorState).not.toBe("done");
+      expect(card.tier).not.toBe("archive");
+    }
+  );
+
+  it("keeps a terminal batch blocked while it carries an explicit operator blocker", () => {
+    const card = buildCoordinationView(coordinationFixture({
+      batchId: "b8-authority",
+      blocker: {
+        message: "Choose how to complete the batch.",
+        decisions: ["Approve the final action"],
+        recommendedReply: "Approved."
+      },
+      lanes: [testLane({ targets: ["332"] })]
+    }), NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe("done");
+    expect(card.tier).toBe("blocked");
+  });
+
+  it("does not narrate a stale dependency on a lane that already finished", () => {
+    const view = fixtureLane(coordinationFixture({
+      batchId: "b9",
+      lanes: [testLane({ targets: [], status: "merged", blockedOn: ["b9:other"] })]
+    }));
+    expect(view.operatorState).toBe("done");
+    // A done badge beside "depends on b9:other" reads as self-contradictory.
+    expect(view.note).not.toMatch(/depends on|blocked on/);
+  });
+
   it("maps lane status text to a lifecycle state", () => {
     expect(laneStatusState("final")).toBe("done");
+    expect(laneStatusState("final-review")).toBe("running");
+    expect(laneStatusState("final review")).toBe("running");
     expect(laneStatusState("PR-open")).toBe("running");
     expect(laneStatusState("blocked")).toBe("blocked");
     expect(laneStatusState("queued")).toBe("ready");
     expect(laneStatusState("")).toBe("unknown");
+  });
+
+  it.each(TERMINAL_STATUS_CASES)("recognizes the accepted terminal status %s", (status) => {
+    // Lane and row lifecycle derivation must agree on what counts as finished,
+    // or the same status lands in a different tier depending on whether custody
+    // produced a representative row for the lane.
+    expect(laneStatusState(status)).toBe("done");
+  });
+
+  it.each(NONTERMINAL_TERMINAL_WORD_CASES)(
+    "does not treat the nonterminal terminal-word status %s as done",
+    (status) => {
+      expect(laneStatusState(status)).not.toBe("done");
+    }
+  );
+
+  it.each([
+    ["keeps a manifest lane terminal when its representative only has stale non-terminal telemetry",
+      coordinationFixture({ batchId: "b6", createdAt: "2026-07-21T10:00:00.000Z",
+        workItems: [coordinatedTarget("310", "b6", "coding", "2026-07-21T09:00:00.000Z", { liveness: "dead" })],
+        lanes: [testLane({ targets: ["310"] })] }),
+      { representative: { batchId: "b6", laneName: "l", operatorState: "dead" }, rowState: "done", laneState: "done", tier: "archive" }],
+    ["keeps untimestamped active custody visible beneath an untimestamped terminal manifest",
+      coordinationFixture({ batchId: "b6-untimestamped-custody",
+        workItems: [coordinatedTarget("309", "b6-untimestamped-custody", "final")],
+        lanes: [testLane({ owner: "agent-309", targets: ["309"] })] }),
+      { representative: { operatorState: "dead" }, rowState: "done", laneState: "done", tier: "archive" }],
+    ["keeps timestamped active claims current when terminal manifest freshness is unavailable",
+      coordinationFixture({ batchId: "b6-timestamped-claim",
+        workItems: [coordinatedTarget("308", "b6-timestamped-claim", "coding", "2026-07-21T11:00:00.000Z", {
+          claimAt: "2026-07-21T11:00:00.000Z"
+        })], lanes: [testLane({ owner: "agent-308", targets: ["308"] })] }),
+      { representative: { operatorState: "dead" }, laneState: "dead", tier: "blocked" }],
+    ["keeps timestamped lifecycle events current when terminal manifest freshness is unavailable",
+      coordinationFixture({ batchId: "b6-timestamped-event",
+        workItems: [signalledTarget("307", "b6-timestamped-event", "final")],
+        lanes: [testLane({ owner: "codex-event", targets: ["307"] })],
+        events: [lifecycleEvent("b6-timestamped-event", "coding", "2026-07-21T11:00:00.000Z", { target: "307" })] }),
+      { representative: { operatorState: "dead" }, laneState: "dead", tier: "blocked" }],
+    ["lets current live custody outrank a stale terminal manifest",
+      coordinationFixture({ batchId: "b10", createdAt: "2026-07-21T10:00:00.000Z",
+        workItems: [coordinatedTarget("311", "b10", "coding", "2026-07-21T11:59:00.000Z", { liveness: "live" })],
+        lanes: [testLane({ owner: "old-agent", targets: ["311"] })] }),
+      { rowState: "running", laneState: "running", tier: "running" }]
+  ] as const)("%s", (_name, fixture, expected) => {
+    const row = buildOperatorRows(fixture, { now: new Date(NOW) })[0];
+    if ("representative" in expected) expect(row).toMatchObject(expected.representative);
+    const card = buildCoordinationView(fixture, NOW).batchCards[0];
+    if ("rowState" in expected) expect(card.lanes[0].row?.operatorState).toBe(expected.rowState);
+    expect(card.lanes[0].operatorState).toBe(expected.laneState);
+    expect(card.tier).toBe(expected.tier);
+  });
+
+  it("finds current custody beyond the first sorted row in a multi-target lane", () => {
+    const multiTarget = coordinationFixture({
+      batchId: "b12",
+      createdAt: "2026-07-21T10:00:00.000Z",
+      workItems: [
+        coordinatedTarget("313", "b12", "blocked", "2026-07-21T09:00:00.000Z", { blockedOn: ["repo/dashboard#9"] }),
+        coordinatedTarget("314", "b12", "coding", "2026-07-21T11:59:00.000Z", { liveness: "live" })
+      ],
+      lanes: [testLane({ owner: "old-agent", targets: ["313", "314"] })]
+    });
+    const rows = buildOperatorRows(multiTarget, { now: new Date(NOW) })
+      .filter((row) => row.batchId === "b12" && row.laneName === "l");
+    expect(rows.map((row) => row.operatorState)).toEqual(["blocked", "running"]);
+    const lane = buildCoordinationView(multiTarget, NOW).batchCards[0].lanes[0];
+    expect(lane.row).toMatchObject({ target: "314", operatorState: "running" });
+    expect(lane.operatorState).toBe("running");
+  });
+
+  it.each([
+    ["keeps a current blocker visible with 'blocked before live' custody", "terminal", "blocked-first", "live"],
+    ["keeps a current blocker visible with 'live before blocked' custody", "terminal", "custody-first", "live"],
+    ["keeps a current blocker visible with 'blocked before stale' custody", "terminal", "blocked-first", "stale"],
+    ["keeps a current blocker visible with 'stale before blocked' custody", "terminal", "custody-first", "stale"],
+    ["keeps a nonterminal multi-target lane blocked for the blocked-first input permutation", "open", "blocked-first", "live"],
+    ["keeps a nonterminal multi-target lane blocked for the live-first input permutation", "open", "custody-first", "live"]
+  ] as const)("%s", (_name, kind, order, liveness) => {
+    const batchId = kind === "terminal" ? "b12-current-blocker" : "b12-mixed";
+    const blockedTarget = kind === "terminal" ? "342" : "340";
+    const custodyTarget = kind === "terminal" ? "343" : "341";
+    const blocked = coordinatedTarget(blockedTarget, batchId, "blocked", "2026-07-21T11:00:00.000Z", {
+      blockedOn: ["repo/dashboard#9"]
+    });
+    const custody = coordinatedTarget(custodyTarget, batchId, "coding", "2026-07-21T11:59:00.000Z", { liveness });
+    const fixture = coordinationFixture({
+      batchId, workItems: order === "blocked-first" ? [blocked, custody] : [custody, blocked],
+      createdAt: kind === "terminal" ? "2026-07-21T09:00:00.000Z" : "2026-07-21T10:00:00.000Z",
+      updatedAt: kind === "terminal" ? "2026-07-21T10:00:00.000Z" : undefined,
+      lanes: [testLane(kind === "terminal"
+        ? { owner: "old-agent", targets: ["342", "343"] }
+        : { owner: "agent-340", targets: ["340", "341"], status: "in_progress", liveness: "live" })]
+    });
+    const lane = fixtureLane(fixture);
+    expect(lane.row).toMatchObject({
+      target: blockedTarget, operatorState: "blocked", blockedOn: ["repo/dashboard#9"]
+    });
+    expect(lane.operatorState).toBe("blocked");
+  });
+
+  it.each([
+    ["prefers live over stale custody when 'stale sorted first'", "liveness", "350", "351", "351"],
+    ["prefers live over stale custody when 'live sorted first'", "liveness", "351", "350", "350"],
+    ["ranks same-liveness custody when 'newer target sorts second'", "recency", "11:40", "11:59", "361"],
+    ["ranks same-liveness custody when 'newer target sorts first'", "recency", "11:59", "11:40", "360"],
+    ["ranks same-liveness custody when 'recency ties preserve deterministic r…'", "recency", "11:59", "11:59", "360"]
+  ] as const)("%s", (_name, kind, firstValue, secondValue, expectedTarget) => {
+    const at = (minute: string) => `2026-07-21T${minute}:00.000Z`;
+    const batchId = kind === "liveness" ? "b12-liveness" : "b12-recency";
+    const first = kind === "liveness"
+      ? coordinatedTarget(firstValue, batchId, "coding", at("11:40"), { liveness: "stale" })
+      : coordinatedTarget("360", batchId, "coding", at(firstValue), { liveness: "live" });
+    const second = kind === "liveness"
+      ? coordinatedTarget(secondValue, batchId, "coding", at("11:59"), { liveness: "live" })
+      : coordinatedTarget("361", batchId, "coding", at(secondValue), { liveness: "live" });
+    const targets = kind === "liveness" ? ["350", "351"] : ["360", "361"];
+    const lane = fixtureLane(coordinationFixture({
+      batchId, workItems: kind === "liveness" ? [first, second] : [second, first],
+      createdAt: "2026-07-21T10:00:00.000Z",
+      lanes: [testLane({ owner: "old-agent", targets })]
+    }));
+    expect(lane.row).toMatchObject({ target: expectedTarget, operatorState: "running" });
+    if (kind === "liveness") expect(lane.operatorState).toBe("running");
+  });
+
+  it.each([
+    ["compares terminal manifest freshness with 'older live custody'", "live", "09:00", true, "done", undefined],
+    ["compares terminal manifest freshness with 'older stale custody'", "stale", "09:00", true, "done", undefined],
+    ["compares terminal manifest freshness with 'equal live custody'", "live", "10:00", true, "done", undefined],
+    ["compares terminal manifest freshness with 'equal stale custody'", "stale", "10:00", true, "done", undefined],
+    ["compares terminal manifest freshness with 'newer live custody'", "live", "11:59", true, "running", undefined],
+    ["compares terminal manifest freshness with 'newer stale custody'", "stale", "11:59", true, "stale", undefined],
+    ["keeps 'live' custody current when terminal manifest freshness is unavailable", "live", "11:59", false, "running", "running"],
+    ["keeps 'stale' custody current when terminal manifest freshness is unavailable", "stale", "11:59", false, "stale", "stuck"]
+  ] as const)("%s", (_name, liveness, minute, hasManifestTime, expectedState, expectedTier) => {
+    const custodyAt = `2026-07-21T${minute}:00.000Z`;
+    const target = hasManifestTime ? "365" : "366";
+    const batchId = hasManifestTime ? `b12-${liveness}-${custodyAt}` : `b12-unknown-manifest-${liveness}`;
+    const card = buildCoordinationView(coordinationFixture({
+      batchId,
+      createdAt: hasManifestTime ? "2026-07-21T08:00:00.000Z" : undefined,
+      updatedAt: hasManifestTime ? "2026-07-21T10:00:00.000Z" : undefined,
+      workItems: [coordinatedTarget(target, batchId, "coding", custodyAt, { liveness })],
+      lanes: [testLane({ owner: `agent-${target}`, targets: [target], status: "merged" })]
+    }), NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe(expectedState);
+    if (expectedTier) expect(card.tier).toBe(expectedTier);
+  });
+
+  it("does not narrate a representative's stale blocker after the manifest lane finishes", () => {
+    const blocker = ["outside saved target repositories"];
+    const finished = coordinationFixture({
+      batchId: "b11",
+      createdAt: "2026-07-21T10:00:00.000Z",
+      workItems: [coordinatedTarget("312", "b11", "coding", "2026-07-21T09:00:00.000Z", { blockedOn: blocker })],
+      lanes: [testLane({ owner: "old-agent", targets: ["312"], blockedOn: blocker })]
+    });
+    const representative = buildOperatorRows(finished, { now: new Date(NOW) }).find((row) => row.target === "312");
+    expect(representative).toMatchObject({
+      operatorState: "blocked",
+      blockedOn: ["outside saved target repositories"]
+    });
+    const lane = buildCoordinationView(finished, NOW).batchCards[0].lanes[0];
+    expect(lane.row).toMatchObject({ operatorState: "done", blockedOn: [] });
+    expect(lane.operatorState).toBe("done");
+    expect(lane.note).not.toMatch(/blocked on|depends on/);
+  });
+
+  it("lets newer blocked evidence outrank an older terminal manifest", () => {
+    const blocked = coordinationFixture({
+      batchId: "b13",
+      createdAt: "2026-07-21T10:00:00.000Z",
+      workItems: [coordinatedTarget("315", "b13", "blocked", "2026-07-21T11:00:00.000Z", {
+        blockedOn: ["repo/dashboard#9"]
+      })],
+      lanes: [testLane({ owner: "agent-315", targets: ["315"], blockedOn: ["repo/dashboard#9"] })]
+    });
+    const lane = buildCoordinationView(blocked, NOW).batchCards[0].lanes[0];
+    expect(lane.row).toMatchObject({ operatorState: "blocked", blockedOn: ["repo/dashboard#9"] });
+    expect(lane.operatorState).toBe("blocked");
+    expect(lane.note).toMatch(/blocked on|depends on/);
+  });
+
+  it("lets a strictly newer coding event reopen a retained terminal lane", () => {
+    const batchId = "b13-newer-coding";
+    const reopened = coordinationFixture({
+      batchId, createdAt: "2026-07-21T08:00:00.000Z", updatedAt: "2026-07-21T10:00:00.000Z",
+      workItems: [signalledTarget("369", batchId, "final", "2026-07-21T10:00:00.000Z")],
+      lanes: [testLane({ owner: "agent-369", targets: ["369"] })],
+      events: [lifecycleEvent(batchId, "coding", "2026-07-21T11:00:00.000Z", { target: "369" })]
+    });
+    expect(buildOperatorRows(reopened, { now: new Date(NOW) })[0].operatorState).toBe("dead");
+    const card = buildCoordinationView(reopened, NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe("dead");
+    expect(card.tier).toBe("blocked");
+  });
+
+  it("keeps a targetless terminal lane out of the archive when a newer event reopens it", () => {
+    const batchId = "b13-targetless-reopened";
+    const reopened = coordinationFixture({
+      batchId, createdAt: "2026-07-21T08:00:00.000Z", updatedAt: "2026-07-21T10:00:00.000Z",
+      lanes: [testLane({ owner: "agent-targetless", targets: [], liveness: "no-heartbeat" })],
+      events: [lifecycleEvent(batchId, "coding", "2026-07-21T11:00:00.000Z")]
+    });
+    expect(buildOperatorRows(reopened, { now: new Date(NOW) })[0].operatorState).toBe("dead");
+    const card = buildCoordinationView(reopened, NOW).batchCards[0];
+    expect(card.lanes[0].operatorState).toBe("dead");
+    expect(card.tier).toBe("blocked");
+  });
+
+  it.each([
+    ["'newer evidence'", "2026-07-21T10:00:00.000Z", undefined, "2026-07-21T11:00:00.000Z", "blocked"],
+    ["'older evidence'", "2026-07-21T10:00:00.000Z", "2026-07-21T11:00:00.000Z", "2026-07-21T09:00:00.000Z", "done"],
+    ["'equal-timestamp evidence'", "2026-07-21T10:00:00.000Z", undefined, "2026-07-21T10:00:00.000Z", "done"],
+    ["'missing manifest freshness'", undefined, undefined, "2026-07-21T09:00:00.000Z", "done"],
+    ["'invalid manifest freshness'", "not-a-date", "also-not-a-date", "2026-07-21T09:00:00.000Z", "done"],
+    ["'valid createdAt fallback'", "2026-07-21T10:00:00.000Z", "not-a-date", "2026-07-21T09:00:00.000Z", "done"]
+  ] as const)(
+    "reconciles terminal freshness for %s",
+    (_name, createdAt, updatedAt, evidenceAt, expectedState) => {
+      const batchId = `b13-${expectedState}-${evidenceAt}`;
+      const freshness = coordinationFixture({
+        batchId, createdAt, updatedAt,
+        workItems: [coordinatedTarget("370", batchId, "blocked", evidenceAt, {
+          blockedOn: ["repo/dashboard#9"]
+        })],
+        lanes: [testLane({ owner: "agent-370", targets: ["370"] })]
+      });
+      const lane = buildCoordinationView(freshness, NOW).batchCards[0].lanes[0];
+      expect(lane.operatorState).toBe(expectedState);
+    }
+  );
+
+  it("finds newer nonterminal evidence beyond the first sorted lane row", () => {
+    const multiTarget = coordinationFixture({
+      batchId: "b14",
+      createdAt: "2026-07-21T10:00:00.000Z",
+      workItems: [
+        coordinatedTarget("316", "b14", "blocked", "2026-07-21T09:00:00.000Z", { blockedOn: ["repo/dashboard#8"] }),
+        coordinatedTarget("317", "b14", "blocked", "2026-07-21T11:00:00.000Z", { blockedOn: ["repo/dashboard#9"] })
+      ],
+      lanes: [testLane({ owner: "old-agent", targets: ["316", "317"] })]
+    });
+    const rows = buildOperatorRows(multiTarget, { now: new Date(NOW) })
+      .filter((row) => row.batchId === "b14" && row.laneName === "l");
+    expect(rows.map((row) => row.target)).toEqual(["316", "317"]);
+    const lane = buildCoordinationView(multiTarget, NOW).batchCards[0].lanes[0];
+    expect(lane.row).toMatchObject({
+      target: "317",
+      operatorState: "blocked",
+      blockedOn: ["repo/dashboard#9"]
+    });
+    expect(lane.operatorState).toBe("blocked");
+  });
+
+  it("does not use another batch's later signal to supersede this lane's terminal manifest", () => {
+    const target = coordinatedTarget("318", "b15", "blocked", "2026-07-21T09:00:00.000Z", {
+      blockedOn: ["repo/dashboard#9"]
+    });
+    target.batchSignals?.push({
+      batchId: "other-batch", laneName: "other", status: "coding",
+      blockedOn: [], updatedAt: "2026-07-21T11:00:00.000Z"
+    });
+    const retained = coordinationFixture({
+      batchId: "b15",
+      createdAt: "2026-07-21T10:00:00.000Z",
+      workItems: [target],
+      lanes: [testLane({ owner: "old-agent", targets: ["318"], blockedOn: ["repo/dashboard#9"] })]
+    });
+    const row = buildOperatorRows(retained, { now: new Date(NOW) }).find((candidate) => candidate.target === "318");
+    expect(row).toMatchObject({ batchId: "b15", operatorState: "blocked" });
+    const lane = buildCoordinationView(retained, NOW).batchCards[0].lanes[0];
+    expect(lane.row).toMatchObject({ operatorState: "done", blockedOn: [] });
+    expect(lane.operatorState).toBe("done");
   });
 
   it("canonicalizes host names once", () => {

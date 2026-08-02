@@ -6,10 +6,21 @@ import {
   filterOperatorRowsByAge,
   filterOperatorRowsByProvenance,
   filterOperatorRowsForOverview,
+  isClaimRelease,
   operatorDeepLinkFromSearchParams,
   safeGithubUrl,
   UNKNOWN
 } from "./operatorRows";
+
+const TERMINAL_STATUS_CASES = [
+  "final", "merged", "merged (squash)", "done", "done - archived", "closed", "complete", "completed",
+  "released", "released - pending qa", "cancelled", "abandoned", "superseded"
+] as const;
+const NONTERMINAL_TERMINAL_WORD_CASES = [
+  "not final", "final-review", "final review", "not merged", "pre-merged", "almost merged", "not done",
+  "almost done", "not closed", "not complete", "almost complete", "not completed", "almost completed",
+  "not released", "pre-released", "unreleased", "not cancelled", "not abandoned", "not superseded"
+] as const;
 
 const claim: ClaimRecord = {
   schemaVersion: 1,
@@ -85,6 +96,36 @@ function dashboard(partial: Partial<DashboardModel> = {}): DashboardModel {
     warnings: [],
     ...partial
   };
+}
+
+type TestLane = BatchRecord["lanes"][number];
+type TestEvent = DashboardModel["events"][number];
+function testLane(partial: Partial<TestLane> = {}): TestLane {
+  return { name: "implementation", owner: "agent-a", targets: [], dependsOn: [], status: "final",
+    liveness: "no-heartbeat", blockedOn: [], ...partial };
+}
+function testEvent(status: string, timestamp: string, partial: Partial<TestEvent> = {}): TestEvent {
+  const batchId = partial.batchId || "batch-1";
+  return { eventId: `${batchId}-${status}`, type: status, status, batchId, repo: "repo/app",
+    target: "123", laneName: "impl", timestamp, path: `events/${batchId}.jsonl:1`, ...partial };
+}
+function batchSignal(status: string, updatedAt?: string,
+  partial: Partial<NonNullable<WorkItem["batchSignals"]>[number]> = {}) {
+  return { batchId: "batch-1", laneName: "impl", status, blockedOn: [], updatedAt, ...partial };
+}
+function signalledWorkItem(target: string, status: string, blockedOn: string[] = [],
+  partial: Partial<WorkItem> = {}, githubState: "OPEN" | "MERGED" = "OPEN"): WorkItem {
+  return workItem({
+    id: `repo/app#${target}`, target, schedulingState: "started_not_processing",
+    batchSignals: [batchSignal(status, "2026-07-21T11:00:00.000Z", { blockedOn })],
+    github: { ...workItem().github!, target, title: "Fixture PR", state: githubState,
+      url: "https://github.com/repo/app/pull/129" },
+    ...partial
+  });
+}
+function targetlessBatch(batchId: string, lane: TestLane, updatedAt?: string): BatchRecord {
+  return { schemaVersion: 1, batchId, repo: "repo/app", updatedAt,
+    path: `batches/${batchId}.json`, lanes: [lane] };
 }
 
 describe("operatorRows", () => {
@@ -476,6 +517,82 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0].operatorState).toBe(expected);
   });
 
+  it.each([
+    ["reconciles a targetless terminal manifest with 'newer coding' evidence", "manifest", "coding", "20:01", "dead", "20:01"],
+    ["reconciles a targetless terminal manifest with 'newer blocked' evidence", "manifest", "blocked", "20:01", "blocked", "20:01"],
+    ["reconciles a targetless terminal manifest with 'equal coding' evidence", "manifest", "coding", "20:00", "done", "20:00"],
+    ["reconciles a targetless terminal manifest with 'older coding' evidence", "manifest", "coding", "19:59", "done", "19:59"],
+    ["reconciles a targetless terminal manifest with 'equal blocked' evidence", "manifest", "blocked", "20:00", "done", "20:00"],
+    ["reconciles a targetless terminal manifest with 'older blocked' evidence", "manifest", "blocked", "19:59", "done", "19:59"],
+    ["reconciles a retained terminal signal with a 'newer blocked event'", "signal", "blocked", "19:59", "blocked", "19:59"],
+    ["reconciles a retained terminal signal with a 'older blocked event'", "signal", "blocked", "19:57", "done", "19:58"],
+    ["reconciles a retained terminal signal with a 'equal-timestamp blocked event'", "signal", "blocked", "19:58", "done", "19:58"],
+    ["reconciles a retained terminal signal with a 'newer coding event'", "signal", "coding", "19:59", "dead", "19:59"],
+    ["reconciles a retained terminal signal with a 'older coding event'", "signal", "coding", "19:57", "done", "19:58"],
+    ["reconciles a retained terminal signal with a 'equal-timestamp coding event'", "signal", "coding", "19:58", "done", "19:58"]
+  ] as const)("%s", (_name, kind, eventStatus, eventMinute, expectedState, expectedMinute) => {
+    const at = (minute: string) => `2026-07-10T${minute}:00Z`;
+    const batchId = kind === "manifest" ? `targetless-${eventStatus}` : "batch-1";
+    const model = dashboard({
+      generatedAt: kind === "manifest" ? "2026-07-10T20:02:00Z" : "2026-07-10T20:00:00Z",
+      workItems: kind === "signal" ? [workItem({
+        schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined,
+        batchSignals: [batchSignal("final", at("19:58"))]
+      })] : [],
+      batches: kind === "manifest"
+        ? [targetlessBatch(batchId, testLane(), at("20:00"))]
+        : [],
+      events: [testEvent(eventStatus, at(eventMinute), kind === "manifest"
+        ? { type: "phase", batchId, target: undefined, laneName: "implementation" }
+        : {})]
+    });
+    const row = buildOperatorRows(model)[0];
+    expect(row.operatorState).toBe(expectedState);
+    expect(kind === "manifest" ? row.lifecycleEventAt : row.batchActivityAt).toBe(at(expectedMinute));
+  });
+
+  it.each([
+    ["does not let another retained batch's done event narrate the selected coding lane", "coding", "done", "dead"],
+    ["does not let another retained batch's blocked event narrate the selected coding lane", "coding", "blocked", "dead"],
+    ["does not let another retained batch's paused event narrate the selected coding lane", "coding", "paused", "dead"],
+    ["does not let another retained batch's event close the selected active lane", "queued", "done", "ready"]
+  ] as const)("%s", (_name, selectedStatus, eventStatus, expectedState) => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [workItem({
+        schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined,
+        batchSignals: [
+          batchSignal(selectedStatus, "2026-07-10T19:58:00Z", { batchId: "batch-a" }),
+          batchSignal("final", "2026-07-10T19:57:00Z", { batchId: "batch-b" })
+        ]
+      })],
+      events: [testEvent(eventStatus, "2026-07-10T19:59:00Z", { batchId: "batch-b" })]
+    });
+    expect(buildOperatorRows(model)[0]).toMatchObject({
+      batchId: "batch-a", laneName: "impl", operatorState: expectedState,
+      activityStatus: selectedStatus, batchActivityAt: "2026-07-10T19:58:00Z"
+    });
+  });
+
+  it("classifies a terminal lane field independently from its stale target signal", () => {
+    const model = dashboard({
+      generatedAt: "2026-07-10T20:00:00Z",
+      workItems: [workItem({
+        schedulingState: "started_not_processing", claim: undefined, heartbeat: undefined,
+        batchSignals: [batchSignal("coding", "2026-07-10T19:57:00Z")]
+      })],
+      batches: [targetlessBatch("batch-1", testLane({
+        name: "impl", targets: ["123"], status: "merged", liveness: "dead"
+      }), "2026-07-10T19:58:00Z")]
+    });
+
+    expect(buildOperatorRows(model)[0]).toMatchObject({
+      operatorState: "done",
+      batchId: "batch-1",
+      laneName: "impl"
+    });
+  });
+
   it("keeps newer active work running when an older completion-alias event is retained", () => {
     const model = dashboard({
       generatedAt: "2026-07-10T20:00:00Z",
@@ -565,6 +682,19 @@ describe("operatorRows", () => {
       ]
     });
 
+    expect(buildOperatorRows(model)[0].operatorState).toBe("dead");
+  });
+
+  it.each([
+    ["does not let a retained terminal signal override an untimestamped active claim", "final", "impl", true],
+    ["keeps an exact QA passed signal nonterminal when it has no lifecycle timestamp", "passed", "qa", false]
+  ] as const)("%s", (_name, status, laneName, hasClaim) => {
+    const model = dashboard({ workItems: [workItem({
+      heartbeat: undefined,
+      claim: hasClaim ? { ...claim, status: "active", updatedAt: undefined, claimedAt: undefined } : undefined,
+      batchSignals: [batchSignal(status, hasClaim ? "2026-07-09T19:00:00Z" : undefined, { laneName })],
+      schedulingState: "started_not_processing"
+    })] });
     expect(buildOperatorRows(model)[0].operatorState).toBe("dead");
   });
 
@@ -2356,6 +2486,54 @@ describe("operatorRows", () => {
     expect(rows.find((row) => row.target === "124")?.blockedOn).toEqual(["repo/app#done"]);
   });
 
+  it.each([
+    ["reports a finished lane as done without presenting its retained stale dependency", "125", "merged", ["repo/app#124"], "MERGED", "done", []],
+    ["does not let a claim release clear a recorded blocker", "126", "released", ["repo/app#124"], "OPEN", "blocked", undefined],
+    ["still reads a claim release as done when nothing is blocking", "127", "released", [], "MERGED", "done", undefined],
+    ["still reads a qualified claim release as done when nothing is blocking", "127-qualified", "released - pending qa", [], "MERGED", "done", undefined]
+  ] as const)("%s", (_name, target, status, blockedOn, githubState, expectedState, expectedBlockedOn) => {
+    const item = signalledWorkItem(target, status, [...blockedOn], {}, githubState);
+    const row = buildOperatorRows(dashboard({ workItems: [item] })).find((candidate) => candidate.target === target);
+    expect(row?.operatorState).toBe(expectedState);
+    if (expectedBlockedOn) expect(row?.blockedOn).toEqual(expectedBlockedOn);
+    expect(item.batchSignals?.[0].blockedOn).toEqual(blockedOn);
+  });
+
+  it.each(TERMINAL_STATUS_CASES)(
+    "classifies the accepted blocker-free terminal status %s as done",
+    (status) => {
+      const finished = signalledWorkItem(`terminal-${status}`, status);
+      const row = buildOperatorRows(dashboard({ workItems: [finished] })).find((candidate) => candidate.target === `terminal-${status}`);
+      expect(row?.operatorState).toBe("done");
+    }
+  );
+
+  it.each(NONTERMINAL_TERMINAL_WORD_CASES)(
+    "does not let the non-release status %s clear a recorded blocker",
+    (status) => {
+      const blocked = signalledWorkItem(`127-${status}`, status, ["repo/app#124"]);
+      const row = buildOperatorRows(dashboard({ workItems: [blocked] })).find((candidate) => candidate.target === `127-${status}`);
+      expect(row?.operatorState).toBe("blocked");
+      expect(row?.blockedOn).toEqual(["repo/app#124"]);
+    }
+  );
+
+  it.each(NONTERMINAL_TERMINAL_WORD_CASES)(
+    "does not classify the blocker-free non-release status %s as done",
+    (status) => {
+      const open = signalledWorkItem(`128-${status}`, status);
+      const row = buildOperatorRows(dashboard({ workItems: [open] })).find((candidate) => candidate.target === `128-${status}`);
+      expect(row?.operatorState).not.toBe("done");
+    }
+  );
+
+  it("recognizes only a leading release token as a claim release", () => {
+    expect(isClaimRelease("released - pending qa")).toBe(true);
+    for (const unrelated of ["unreleased", "not released", "pre-released", "releasedness", "release"]) {
+      expect(isClaimRelease(unrelated)).toBe(false);
+    }
+  });
+
   it("preserves queued target rows as ready before workers start", () => {
     const rows = buildOperatorRows(
       dashboard({
@@ -2581,6 +2759,25 @@ describe("operatorRows", () => {
 
     expect(rows[0].operatorState).toBe("ready");
     expect(rows[0].batchId).toBe("batch-current");
+  });
+
+  it.each([
+    ["prefers newer active work over an older final signal", "coding", [], "dead"],
+    ["prefers newer blocked work over an older final signal", "blocked", ["repo/app#124"], "blocked"],
+    ["prefers a newer final-review phase over an older final signal", "final-review", [], "dead"]
+  ] as const)("%s", (_name, status, blockedOn, expectedState) => {
+    const item = workItem({
+      claim: undefined, heartbeat: undefined, schedulingState: "started_not_processing",
+      batchSignals: [
+        batchSignal("final", "2026-07-09T19:00:00Z", { batchId: "batch-old", laneName: "docs" }),
+        batchSignal(status, "2026-07-09T20:00:00Z", {
+          batchId: "batch-current", laneName: "docs", blockedOn: [...blockedOn]
+        })
+      ]
+    });
+    const row = buildOperatorRows(dashboard({ workItems: [item] }))[0];
+    expect(row.batchId).toBe("batch-current");
+    expect(row.operatorState).toBe(expectedState);
   });
 
   it("does not classify rows from target-specific events for other targets in the same lane", () => {
