@@ -530,6 +530,17 @@ describe("operatorRows", () => {
     expect(buildOperatorRows(model)[0]).toMatchObject({ operatorState: "done", retentionStatus: "done" });
   });
 
+  it("lets a timestamped terminal event close an untimestamped targetless manifest lane", () => {
+    const model = dashboard({
+      batches: [targetlessBatch("targetless-open", testLane({ status: "in_progress" }))],
+      events: [testEvent("done", "2026-07-10T20:01:00Z", {
+        type: "lane_closed", batchId: "targetless-open", target: undefined, laneName: "implementation"
+      })]
+    });
+    expect(buildOperatorRows(model)[0]).toMatchObject(
+      { operatorState: "done", activityStatus: "done", retentionStatus: "done" });
+  });
+
   it.each([
     ["reconciles a targetless terminal manifest with 'newer coding' evidence", "manifest", "coding", "20:01", "dead", "20:01"],
     ["reconciles a targetless terminal manifest with 'newer blocked' evidence", "manifest", "blocked", "20:01", "blocked", "20:01"],

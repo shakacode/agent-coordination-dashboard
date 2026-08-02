@@ -1149,6 +1149,7 @@ function buildLaneRow(
       timestampMs(manifestLifecycleAt) > 0
         ? timestampMs(transitionLifecycleAt) > timestampMs(manifestLifecycleAt)
         : isCurrentTerminalStatus(lane.status) && !isCurrentTerminalStatus(transitionStatus)
+          || transitionEvent?.type === "lane_closed" && isCurrentTerminalStatus(transitionStatus)
     );
   const currentStatus = transitionSupersedesManifest ? transitionStatus : lane.status;
   const currentLifecycleAt = transitionSupersedesManifest ? transitionLifecycleAt : manifestLifecycleAt;
