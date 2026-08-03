@@ -58,9 +58,20 @@ Portable shared skills resolve this repo's commands and policy through:
 ## Agent Coordination
 
 - Agent workflows use the private `agent-coord` backend selected by
-  `.agents/agent-workflow.yml`. Before coordinated mutations, verify it with the
-  bounded doctor and target/batch status probes, then register the batch and
-  acquire the applicable claims.
+  `.agents/agent-workflow.yml`. Resolve the installed `pr-batch` skill directory
+  as `PR_BATCH_SKILL_DIR`, then run these bounded probes before coordinated
+  mutations:
+
+  ```bash
+  "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 doctor --deep --json
+  "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 status \
+    --repo <owner/repo> --target <issue-or-pr-number> --json
+  "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 status \
+    --batch-id <batch-id> --json
+  ```
+
+  Register the batch and acquire the applicable claims only after these probes
+  confirm the configured backend is healthy and the targets are unclaimed.
 - Do not downgrade a run to `coordination_backend: n/a` while the configured
   backend is healthy. An unavailable or indeterminate backend is `UNKNOWN` and
   blocks coordinated mutations until it recovers.
