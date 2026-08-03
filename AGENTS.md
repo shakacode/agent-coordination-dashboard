@@ -65,9 +65,9 @@ Portable shared skills resolve this repo's commands and policy through:
   ```bash
   "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 doctor --deep --json
   "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 status \
-    --repo <owner/repo> --target <issue-or-pr-number> --json
+    --repo OWNER/REPO --target ISSUE_OR_PR_NUMBER --json
   "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 status \
-    --batch-id <batch-id> --json
+    --batch-id BATCH_ID --json
   ```
 
   Register the batch and acquire the applicable claims only after these probes
