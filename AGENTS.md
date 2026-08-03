@@ -58,9 +58,10 @@ Portable shared skills resolve this repo's commands and policy through:
 ## Agent Coordination
 
 - Agent workflows use the private `agent-coord` backend selected by
-  `.agents/agent-workflow.yml`. Resolve the installed `pr-batch` skill directory
-  as `PR_BATCH_SKILL_DIR`, then run these bounded probes before coordinated
-  mutations:
+  `.agents/agent-workflow.yml`. From the agent runtime's available-skills
+  catalog, select the `pr-batch` skill and set `PR_BATCH_SKILL_DIR` to the
+  directory containing its `SKILL.md`, then run these bounded probes before
+  coordinated mutations:
 
   ```bash
   "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 doctor --deep --json
