@@ -54,3 +54,27 @@ stay read-only.
 Portable shared skills resolve this repo's commands and policy through:
 - **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
 - **Policy / config** — `.agents/agent-workflow.yml`.
+
+## Agent Coordination
+
+- Agent workflows use the private `agent-coord` backend selected by
+  `.agents/agent-workflow.yml`. From the agent runtime's available-skills
+  catalog, select the `pr-batch` skill and set `PR_BATCH_SKILL_DIR` to the
+  directory containing its `SKILL.md`, then run these bounded probes before
+  coordinated mutations:
+
+  ```bash
+  "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 doctor --deep --json
+  "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 status \
+    --repo OWNER/REPO --target ISSUE_OR_PR_NUMBER --json
+  "$PR_BATCH_SKILL_DIR/bin/agent-coord-bounded" --timeout 20 status \
+    --batch-id BATCH_ID --json
+  ```
+
+  Register the batch and acquire the applicable claims only after these probes
+  confirm the configured backend is healthy and the targets are unclaimed.
+- Do not downgrade a run to `coordination_backend: n/a` while the configured
+  backend is healthy. An unavailable or indeterminate backend is `UNKNOWN` and
+  blocks coordinated mutations until it recovers.
+- This workflow coordination is performed by external coordination tooling; it
+  does not expand the dashboard runtime's read-only product boundary.
