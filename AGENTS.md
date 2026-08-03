@@ -54,3 +54,15 @@ stay read-only.
 Portable shared skills resolve this repo's commands and policy through:
 - **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
 - **Policy / config** — `.agents/agent-workflow.yml`.
+
+## Agent Coordination
+
+- Agent workflows use the private `agent-coord` backend selected by
+  `.agents/agent-workflow.yml`. Before coordinated mutations, verify it with the
+  bounded doctor and target/batch status probes, then register the batch and
+  acquire the applicable claims.
+- Do not downgrade a run to `coordination_backend: n/a` while the configured
+  backend is healthy. An unavailable or indeterminate backend is `UNKNOWN` and
+  blocks coordinated mutations until it recovers.
+- This workflow coordination is performed by external coordination tooling; it
+  does not expand the dashboard runtime's read-only product boundary.
