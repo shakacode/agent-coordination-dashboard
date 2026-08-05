@@ -720,6 +720,32 @@ describe("ItemPage", () => {
     expect(screen.getByText(/points at shakacode\/dashboard#48/)).toBeInTheDocument();
   });
 
+  it("keeps lane-mismatch warnings for a manifest-only batch member with no batch id evidence (#74)", () => {
+    // A saved manifest can list the item in batch.targets but in no lane, so
+    // the model emits it with batchSignals: [] and manifest provenance. There
+    // is no batch id to match on, so membership is unknowable and the item's
+    // own batch signals must not be silently filtered away.
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [], provenance: { classification: "inferred", evidence: ["manifest"] } },
+      warnings: [{ severity: "warning", message: "Lane manifest-batch:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." }]
+    }} />);
+
+    expect(screen.getByText(/Lane manifest-batch:ui owner heartbeat/)).toBeInTheDocument();
+  });
+
+  it("still drops foreign lane mismatches for an item with no batch evidence at all", () => {
+    // Negative control for the manifest-provenance exemption above: without
+    // batch provenance, membership stays knowable and foreign lanes are hidden.
+    render(<ItemPage onBack={vi.fn()} timeline={{
+      ...timeline,
+      item: { ...timeline.item, batchSignals: [], provenance: { classification: "observed", evidence: ["heartbeat"] } },
+      warnings: [{ severity: "warning", message: "Lane foreign-batch:ui owner heartbeat points at shakacode/dashboard#31 and was not applied." }]
+    }} />);
+
+    expect(screen.queryByText(/Lane foreign-batch:ui owner heartbeat/)).not.toBeInTheDocument();
+  });
+
   it("keeps lane-mismatch warnings visible when no current item resolves batch attribution", () => {
     render(<ItemPage onBack={vi.fn()} timeline={{
       ...timeline,

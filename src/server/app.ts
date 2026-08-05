@@ -16,7 +16,7 @@ import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboa
 import { applyAnnotations, createAnnotationStore } from "./annotations";
 import { BatchManifestImportError, writeImportedBatchManifest } from "./state/batchManifestImport";
 import { writeBatchStopRequest } from "./state/batchControl";
-import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeBatchEvent, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
+import { buildDashboardModel, hasCoordinationEvidence, isLaneOwnerMismatchWarning, redactOutOfScopeBatchEvent, redactOutOfScopeOperatorMetadata } from "./state/buildDashboardModel";
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
@@ -168,8 +168,13 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       sourceStatus: captured.state.sourceStatus,
       // Reuse the dashboard model's target-repository sanitization, then keep
       // only this item's attributed warnings plus safe, unattributed notices.
+      // Lane owner-mismatch warnings are exempt from the repo/target check:
+      // they carry the batch's operating repo, so for a batch operating in one
+      // repo whose lane points at work in another, this pre-filter would drop
+      // them before the client could attribute them from the message text.
       warnings: model.warnings.filter((warning) =>
-        (!warning.repo || warning.repo === repo) && (!warning.target || warning.target === target)
+        isLaneOwnerMismatchWarning(warning)
+        || ((!warning.repo || warning.repo === repo) && (!warning.target || warning.target === target))
       )
     });
   });

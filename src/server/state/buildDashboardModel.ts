@@ -795,6 +795,23 @@ function scopedInputWarning(warning: CoordinationWarning, targetRepoSet: Set<str
   return undefined;
 }
 
+/**
+ * Lane owner-mismatch warnings carry the batch's *operating* repo in
+ * `warning.repo`, not the repo of the work the owner heartbeat points at. Any
+ * consumer scoping warnings to a single item must attribute them from the
+ * message text instead of the repo/target fields, or a batch operating in one
+ * repo will never deliver its warnings to an item in another.
+ *
+ * Mirrors the template built in `buildDashboardModel` below and
+ * LANE_OWNER_MISMATCH_PATTERN in src/client/components/ItemPage.tsx. When the
+ * template changes, update all three in the same PR.
+ */
+const LANE_OWNER_MISMATCH_PATTERN = /^Lane .+ owner heartbeat points at .+ and was not applied\.$/;
+
+export function isLaneOwnerMismatchWarning(warning: CoordinationWarning): boolean {
+  return LANE_OWNER_MISMATCH_PATTERN.test(warning.message);
+}
+
 function warningsForWork(
   repo: string,
   target: string,
@@ -1127,6 +1144,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       const heartbeat = ownerHeartbeat && heartbeatMatchesLane(batch, lane, ownerHeartbeat) ? ownerHeartbeat : undefined;
       if (ownerHeartbeat && !heartbeat) {
         batchWarnings.push({
+          // `repo` is the batch's operating repo, not the pointed-at work's;
+          // see isLaneOwnerMismatchWarning above before scoping on it.
           severity: "warning",
           repo: batch.repo || (input.targetRepos.length === 1 ? input.targetRepos[0] : undefined),
           agentId: lane.owner,

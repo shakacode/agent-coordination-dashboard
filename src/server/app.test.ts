@@ -610,6 +610,43 @@ describe("dashboard app import endpoint", () => {
     expect(item.item?.heartbeat).toMatchObject({ agentId: "worker-b", status: "implementing" });
   });
 
+  it("delivers cross-repo lane owner-mismatch warnings to the pointed-at item page (#74)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-cross-repo-lane-"));
+    await Promise.all([
+      mkdir(join(root, "batches"), { recursive: true }),
+      mkdir(join(root, "heartbeats"), { recursive: true })
+    ]);
+    // The batch operates in shakacode/app; its lane owner heartbeats against
+    // work in shakacode/api, so the lane warning carries repo shakacode/app.
+    await writeFile(join(root, "batches", "cross-repo.json"), JSON.stringify({
+      schema_version: 1,
+      batch_id: "cross-repo",
+      repo: "shakacode/app",
+      targets: [{ type: "issue", target: "10" }],
+      lanes: [{ name: "api-lane", owner: "worker-x", targets: ["10"], depends_on: [], status: "running" }]
+    }));
+    await writeFile(join(root, "heartbeats", "worker-x.json"), JSON.stringify({
+      agent_id: "worker-x",
+      repo: "shakacode/api",
+      target: "77",
+      batch_id: "cross-repo",
+      status: "implementing",
+      updated_at: new Date(Date.now() - 1_000).toISOString(),
+      expires_at: new Date(Date.now() + 60_000).toISOString()
+    }));
+
+    const baseUrl = await listen(root, { targetRepos: ["shakacode/app", "shakacode/api"] });
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/api")}/77`);
+    const timeline = await response.json() as { warnings: Array<{ message: string }> };
+
+    expect(response.ok).toBe(true);
+    expect(timeline.warnings.map((warning) => warning.message)).toContain(
+      "Lane cross-repo:api-lane owner heartbeat points at shakacode/api#77 and was not applied."
+    );
+    // Ordinary attributed warnings are still pre-filtered by repo/target.
+    expect(timeline.warnings.every((warning) => !warning.message.startsWith("Work is already scheduled in cross-repo:api-lane"))).toBe(true);
+  });
+
   it("refreshes item state from a captured snapshot without repeating cached dashboard GitHub work", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-item-cached-github-"));
     const claimPath = join(root, "claims", "shakacode", "react_on_rails", "46.json");

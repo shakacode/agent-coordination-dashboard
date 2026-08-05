@@ -78,9 +78,11 @@ export function uniquePullRequestUrls(values: Array<string | undefined>): string
   });
 }
 
-// Mirrors the batch lane warning template in src/server/state/buildDashboardModel.ts.
-// When that template changes, update this pattern in the same PR so legacy
-// lane-mismatch records keep scoping to the viewed item instead of stacking.
+// Mirrors the batch lane warning template in src/server/state/buildDashboardModel.ts
+// and its exported `isLaneOwnerMismatchWarning`, which exempts these warnings
+// from the /api/item repo/target pre-filter. When that template changes, update
+// all three in the same PR so legacy lane-mismatch records keep scoping to the
+// viewed item instead of stacking.
 const LANE_OWNER_MISMATCH_PATTERN = /^Lane .+ owner heartbeat points at .+ and was not applied\.$/;
 
 /** Batch evidence that names a batch without a displayable id is unknowable. */
@@ -101,17 +103,25 @@ export function itemScopedTimelineWarnings(timeline: ItemTimelineResponse): Coor
     (warning, index, all) => all.findIndex((candidate) => candidate.severity === warning.severity && candidate.message === warning.message) === index
   );
   const item = timeline.item;
-  const batchMembershipKnowable = Boolean(item)
-    && !declaresUnattributableBatch(item?.claim?.batchId)
-    && !declaresUnattributableBatch(item?.heartbeat?.batchId)
-    && !(item?.batchSignals || []).some((signal) => !hasDisplayAttribution(signal.batchId))
-    && !timeline.events.some((event) => declaresUnattributableBatch(event.batchId));
   const itemBatchIds = [
     item?.claim?.batchId,
     item?.heartbeat?.batchId,
     ...(item?.batchSignals || []).map((signal) => signal.batchId),
     ...timeline.events.map((event) => event.batchId)
   ].filter(hasDisplayAttribution).map((batchId) => batchId.trim());
+  // A saved manifest can list an item in `batch.targets` without placing it in
+  // any lane. The model then emits the item with `batchSignals: []`, so it
+  // carries batch provenance but no batch id to match a lane warning against —
+  // matching by id would hide the item's own batch signals. Treat that as
+  // unknowable membership rather than as "belongs to no batch".
+  const batchProvenanceWithoutId = itemBatchIds.length === 0
+    && (item?.provenance?.evidence || []).some((source) => source === "manifest" || source === "inferred_batch");
+  const batchMembershipKnowable = Boolean(item)
+    && !declaresUnattributableBatch(item?.claim?.batchId)
+    && !declaresUnattributableBatch(item?.heartbeat?.batchId)
+    && !(item?.batchSignals || []).some((signal) => !hasDisplayAttribution(signal.batchId))
+    && !timeline.events.some((event) => declaresUnattributableBatch(event.batchId))
+    && !batchProvenanceWithoutId;
   return deduped.filter((warning) => {
     if (parseRepoScopeExclusion(warning)) return false;
     if (LANE_OWNER_MISMATCH_PATTERN.test(warning.message)) {
