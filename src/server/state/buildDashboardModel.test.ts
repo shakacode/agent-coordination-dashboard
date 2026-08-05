@@ -154,6 +154,103 @@ describe("buildDashboardModel", () => {
     expect(leakyBlocker.batches[0].blocker).toBeUndefined();
   });
 
+  it("redacts routes that carry repository syntax while preserving legitimate model/effort routes (#86)", () => {
+    const lanes = [
+      { name: "leak-url", owner: "worker-url", targets: ["4005"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [], route: "https://github.com/other-org/private-repo/pull/9" },
+      { name: "leak-issue", owner: "worker-issue", targets: ["4005"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [], route: "other-org/private-repo#12" },
+      { name: "legit", owner: "worker-legit", targets: ["4005"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [], route: "gpt-4/high" },
+      { name: "in-scope-url", owner: "worker-in-scope", targets: ["4005"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [], route: "https://github.com/shakacode/react_on_rails/pull/1" }
+    ];
+    const model = buildDashboardModel({
+      now: new Date("2026-06-17T20:00:00Z"),
+      stateRoot: "/state",
+      targetRepos: [claim.repo],
+      claims: [
+        { ...claim, agentId: "claim-leak", target: "4101", route: "https://github.com/other-org/private-repo/pull/9", path: "claims/a.json" },
+        { ...claim, agentId: "claim-legit", target: "4102", route: "gpt-4/high", path: "claims/b.json" }
+      ],
+      heartbeats: [
+        { ...heartbeat, agentId: "hb-leak", target: "4201", route: "other-org/private-repo#12", path: "heartbeats/a.json" },
+        { ...heartbeat, agentId: "hb-legit", target: "4202", route: "gpt-5.6-sol/xhigh", path: "heartbeats/b.json" },
+        // A bare owner/repo-shaped route is indistinguishable from model/effort and is kept.
+        { ...heartbeat, agentId: "hb-bare", target: "4203", route: "other-org/private-repo", path: "heartbeats/c.json" }
+      ],
+      batches: [{ schemaVersion: 1, batchId: "batch-routes", repo: claim.repo, targets: [{ type: "pull_request", target: "4005", repo: claim.repo }], path: "batches/batch-routes.json", lanes }],
+      events: [],
+      githubItems: [],
+      warnings: []
+    });
+    // Resolve through the item so a redacted route cannot be confused with a missing row.
+    const routeFor = (target: string) => {
+      const item = model.workItems.find((candidate) => candidate.target === target);
+      expect(item, `work item ${target} should exist`).toBeDefined();
+      return item?.route;
+    };
+    expect(routeFor("4101")).toBeUndefined();
+    expect(routeFor("4102")).toBe("gpt-4/high");
+    expect(routeFor("4201")).toBeUndefined();
+    expect(routeFor("4202")).toBe("gpt-5.6-sol/xhigh");
+    expect(routeFor("4203")).toBe("other-org/private-repo");
+
+    expect(model.batches[0].lanes.map((lane) => lane.name)).toEqual(["leak-url", "leak-issue", "legit", "in-scope-url"]);
+    const laneRoutes = Object.fromEntries(model.batches[0].lanes.map((lane) => [lane.name, lane.route]));
+    expect(laneRoutes["leak-url"]).toBeUndefined();
+    expect(laneRoutes["leak-issue"]).toBeUndefined();
+    expect(laneRoutes.legit).toBe("gpt-4/high");
+    expect(laneRoutes["in-scope-url"]).toBe("https://github.com/shakacode/react_on_rails/pull/1");
+  });
+
+  it("redacts a completion report on a batch with out-of-scope metadata, keeping it for a fully in-scope batch (#86)", () => {
+    const completion = {
+      state: { live: "3 lanes complete" },
+      audit: { verdict: "pass", author: "fleet-audit v2 at 2026-06-17T20:00:00Z" },
+      receipts: [{ label: "Batch log", href: "https://github.com/repo-b/api/pull/34" }],
+      outcomes: [{ lane: "api-pr", route: "gpt-4/high", result: "merged" }],
+      headline: "All lanes landed.",
+      finalReport: "Merged the API lane."
+    };
+    const apiPreview = { ...preview, repo: "repo-b/api", target: "34", type: "pull_request" as const, title: "API PR", url: "https://github.com/repo-b/api/pull/34" };
+    const lanes = [{ name: "api-pr", owner: "worker-b", targets: ["34"], dependsOn: [], status: "queued", liveness: "no-heartbeat" as const, blockedOn: [] }];
+    const input = {
+      stateRoot: "/state",
+      targetRepos: ["repo-b/api"],
+      claims: [],
+      heartbeats: [],
+      events: [],
+      githubItems: [apiPreview],
+      warnings: [],
+      now: new Date("2026-06-17T20:00:00Z")
+    };
+
+    // batch.repo is out of scope, retained only via the in-scope per-target repo → unsafe metadata.
+    const mixed = buildDashboardModel({
+      ...input,
+      batches: [{ schemaVersion: 1, batchId: "batch-mixed", repo: "repo-a/app", targets: [{ type: "pull_request", target: "12", repo: "repo-a/app" }, { type: "pull_request", target: "34", repo: "repo-b/api" }], completion, path: "batches/batch-mixed.json", lanes }]
+    });
+    expect(mixed.batches[0].completion).toBeUndefined();
+
+    // A fully in-scope batch keeps it, including a legitimate model/effort outcome route.
+    const scoped = buildDashboardModel({
+      ...input,
+      batches: [{ schemaVersion: 1, batchId: "batch-scoped", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], completion, path: "batches/batch-scoped.json", lanes }]
+    });
+    expect(scoped.batches[0].completion).toEqual(completion);
+
+    // Free text inside the report is itself scope evidence.
+    const leaky = buildDashboardModel({
+      ...input,
+      batches: [{ schemaVersion: 1, batchId: "batch-leaky", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], completion: { ...completion, finalReport: "Blocked on other-org/private-repo#12 before release." }, path: "batches/batch-leaky.json", lanes }]
+    });
+    expect(leaky.batches[0].completion).toBeUndefined();
+
+    // A receipt href pointing at another repository is the same class of leak.
+    const leakyReceipt = buildDashboardModel({
+      ...input,
+      batches: [{ schemaVersion: 1, batchId: "batch-receipt", repo: "repo-b/api", targets: [{ type: "pull_request", target: "34", repo: "repo-b/api" }], completion: { ...completion, receipts: [{ label: "Batch log", href: "https://github.com/other-org/private-repo/pull/9" }] }, path: "batches/batch-receipt.json", lanes }]
+    });
+    expect(leakyReceipt.batches[0].completion).toBeUndefined();
+  });
+
   it("removes operational warnings and QA artifacts only for terminal targets in a mixed batch", () => {
     const batch = {
       schemaVersion: 1 as const,

@@ -1,5 +1,6 @@
 import type {
   AgentSummary,
+  BatchCompletionReport,
   BatchOperation,
   BatchEvent,
   BatchLane,
@@ -344,7 +345,26 @@ interface OperatorMetadata {
   operator?: string;
   branch?: string;
   prUrl?: string;
+  route?: string;
   message?: string;
+}
+
+const BARE_OWNER_REPO_SHAPED_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
+
+/**
+ * A legitimate route is a bound `model/effort` pair (`gpt-4/high`), which is
+ * structurally identical to `owner/repo`. Treating that shape as repository
+ * identity would wipe every valid route, so a route only counts as a repository
+ * reference when it carries a signal a real route never does: an embedded
+ * repository URL, an `owner/repo#<number>` reference, or a prompt `Repository:`
+ * header. A bare `owner/repo`-shaped route is deliberately kept — it cannot be
+ * told apart from `model/effort`, and losing every real route costs more than
+ * that residual, low-value leak.
+ */
+function repoRefsFromRoute(value: string | undefined): string[] {
+  if (!value) return [];
+  if (BARE_OWNER_REPO_SHAPED_PATTERN.test(value.trim())) return [];
+  return highConfidenceRepoRefsFromMessage(value);
 }
 
 function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
@@ -355,6 +375,57 @@ function repoRefsFromOperatorMetadata(metadata: OperatorMetadata): string[] {
     ...repoRefsFromBranch(metadata.branch),
     ...repoRefsFromText(metadata.prUrl),
     ...highConfidenceRepoRefsFromMessage(metadata.message)
+  ];
+}
+
+/**
+ * Free text carried by an archive-ready batch's completion report. Prose fields
+ * use the high-confidence message signals; `href`/`path` fields are explicit
+ * locators, so they use the same detector as `prUrl` and `batch.path`.
+ */
+function repoRefsFromCompletion(completion: BatchCompletionReport | undefined): string[] {
+  if (!completion) {
+    return [];
+  }
+  return [
+    ...highConfidenceRepoRefsFromMessage(completion.headline),
+    ...highConfidenceRepoRefsFromMessage(completion.gates),
+    ...highConfidenceRepoRefsFromMessage(completion.finalReport),
+    ...highConfidenceRepoRefsFromMessage(completion.usage || undefined),
+    ...highConfidenceRepoRefsFromMessage(completion.tokensTotal || undefined),
+    ...highConfidenceRepoRefsFromMessage(completion.cost || undefined),
+    ...highConfidenceRepoRefsFromMessage(completion.duration || undefined),
+    ...highConfidenceRepoRefsFromMessage(completion.state.live),
+    ...highConfidenceRepoRefsFromMessage(completion.state.replay || undefined),
+    ...highConfidenceRepoRefsFromMessage(completion.audit.verdict),
+    ...highConfidenceRepoRefsFromMessage(completion.audit.author),
+    ...highConfidenceRepoRefsFromMessage(completion.audit.note),
+    ...completion.receipts.flatMap((receipt) => [
+      ...highConfidenceRepoRefsFromMessage(receipt.label),
+      ...highConfidenceRepoRefsFromMessage(receipt.detail),
+      ...repoRefsFromText(receipt.href)
+    ]),
+    ...(completion.baseline
+      ? [
+          ...highConfidenceRepoRefsFromMessage(completion.baseline.label),
+          ...repoRefsFromText(completion.baseline.path),
+          ...repoRefsFromText(completion.baseline.href)
+        ]
+      : []),
+    ...(completion.outcomes || []).flatMap((outcome) => [
+      ...highConfidenceRepoRefsFromMessage(outcome.lane),
+      ...repoRefsFromRoute(outcome.route),
+      ...highConfidenceRepoRefsFromMessage(outcome.result),
+      ...(outcome.links || []).flatMap((link) => [
+        ...highConfidenceRepoRefsFromMessage(link.label),
+        ...repoRefsFromText(link.href)
+      ])
+    ]),
+    ...(completion.meta || []).flatMap((entry) => [
+      ...highConfidenceRepoRefsFromMessage(entry.k),
+      ...highConfidenceRepoRefsFromMessage(entry.v),
+      ...repoRefsFromText(entry.href)
+    ])
   ];
 }
 
@@ -378,6 +449,11 @@ export function redactOutOfScopeOperatorMetadata<T extends OperatorMetadata>(met
   }
   if (hasOutOfScopeRepoRef(repoRefsFromText(redacted.prUrl), targetRepoSet)) {
     delete redacted.prUrl;
+  }
+  // Redact the contaminated route field itself rather than dropping its record
+  // or lane: a route is telemetry, and `model/effort` values are unverifiable.
+  if (hasOutOfScopeRepoRef(repoRefsFromRoute(redacted.route), targetRepoSet)) {
+    delete redacted.route;
   }
   if (hasOutOfScopeRepoRef(highConfidenceRepoRefsFromMessage(redacted.message), targetRepoSet)) {
     delete redacted.message;
@@ -427,7 +503,8 @@ function hasOutOfScopeMetadata(batch: BatchRecord, targetRepoSet: Set<string>): 
           ...batch.blocker.decisions.flatMap((decision) => highConfidenceRepoRefsFromMessage(decision)),
           ...highConfidenceRepoRefsFromMessage(batch.blocker.recommendedReply)
         ]
-      : [])
+      : []),
+    ...repoRefsFromCompletion(batch.completion)
   ].filter((repo): repo is string => Boolean(repo));
 
   return explicitRepos.some((repo) => !targetRepoSet.has(repo));
@@ -857,7 +934,7 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
       );
       const keptTargets = new Set(targets.map((target) => target.target));
       const structuredTargetNumbers = new Set((batch.targets || []).map((target) => target.target));
-      const lanes =
+      const lanes = (
         batch.targets && batch.targets.length > 0
           ? batch.lanes
               .filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet))
@@ -868,7 +945,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
                 )
               }))
               .filter((lane) => lane.targets.length > 0)
-          : batch.lanes.filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet));
+          : batch.lanes.filter((lane) => !laneHasOutOfScopeMetadata(lane, targetRepoSet))
+      ).map((lane) => redactOutOfScopeOperatorMetadata(lane, targetRepoSet));
       return [
         {
           ...batch,
@@ -881,6 +959,9 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
           launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
           // Free-text blocker (message/decisions/reply) can name another repo; redact like objective/launchPrompt.
           blocker: unsafeMetadata ? undefined : batch.blocker,
+          // The completion report is dense free text (final report, audit, receipts,
+          // outcomes, meta); redact it as a unit like blocker/objective/launchPrompt.
+          completion: unsafeMetadata ? undefined : batch.completion,
           source: batch.source || "manifest",
           lanes
         }
@@ -899,7 +980,8 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
               Boolean(uniqueRepoForBatchTarget(batch.batchId, target)))
         )
       }))
-      .filter((lane) => lane.targets.length > 0);
+      .filter((lane) => lane.targets.length > 0)
+      .map((lane) => redactOutOfScopeOperatorMetadata(lane, targetRepoSet));
     const keptTargets = new Set(lanes.flatMap((lane) => lane.targets));
     const targets = (batch.targets || []).filter((target) => {
       if (safeTargets && !safeTargets.has(target.target)) {
@@ -923,6 +1005,9 @@ export function buildDashboardModel(input: BuildInput): DashboardModel {
             launchPrompt: unsafeMetadata ? undefined : batch.launchPrompt,
             // Free-text blocker (message/decisions/reply) can name another repo; redact like objective/launchPrompt.
             blocker: unsafeMetadata ? undefined : batch.blocker,
+            // The completion report is dense free text (final report, audit, receipts,
+            // outcomes, meta); redact it as a unit like blocker/objective/launchPrompt.
+            completion: unsafeMetadata ? undefined : batch.completion,
             source: batch.source || "manifest",
             lanes
           }
