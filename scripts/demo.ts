@@ -411,7 +411,7 @@ export async function runDemo(): Promise<void> {
   if (degraded) {
     console.log("Degraded demo mode: coordination API returns 401 for every resource.");
   }
-  console.log("Synthetic state ticks every 3 seconds; the dashboard refreshes every 2 seconds. Press Ctrl-C to stop.");
+  console.log("Synthetic coordination state ticks every 3 seconds; use Refresh or an explicit operator action to reload the dashboard. Press Ctrl-C to stop.");
 
   const server = spawn(
     process.execPath,
