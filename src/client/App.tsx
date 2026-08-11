@@ -189,6 +189,16 @@ function isSourceStatus(value: unknown): boolean {
     && (value.httpStatus === undefined || typeof value.httpStatus === "number");
 }
 
+function isGitHubStatus(value: unknown): boolean {
+  if (!isRecord(value) || !hasStrings(value, ["state", "reason", "caller", "checkedAt", "message"])) return false;
+  if (typeof value.state !== "string" || !["available", "degraded", "paused"].includes(value.state)) return false;
+  if (typeof value.reason !== "string" || !["none", "disabled", "per_refresh_limit", "hourly_budget", "rate_limit_low", "rate_limit_exhausted", "probe_failed", "read_failed"].includes(value.reason)) return false;
+  return ["requestsAttempted", "requestsExecuted", "requestsBlocked", "hourlyRequestBudget", "hourlyRequestsRemaining", "perRefreshRequestLimit"]
+    .every((field) => typeof value[field] === "number")
+    && ["targetCount", "rateLimitUsed", "rateLimitRemaining"].every((field) => value[field] === undefined || typeof value[field] === "number")
+    && hasOptionalStrings(value, ["rateLimitResetAt", "pausedUntil"]);
+}
+
 function isCachedDashboardSnapshot(value: unknown): value is CachedDashboardSnapshot {
   if (!isRecord(value) || value.version !== 2 || typeof value.savedAt !== "string") return false;
   if (!isRecord(value.settings)) return false;
@@ -205,6 +215,7 @@ function isCachedDashboardSnapshot(value: unknown): value is CachedDashboardSnap
   // Keep every optional top-level DashboardModel field here in sync before bumping the cache version.
   return (dashboard.sourceStatus === undefined || (Array.isArray(dashboard.sourceStatus) && dashboard.sourceStatus.every(isSourceStatus)))
     && (dashboard.coordinationTokenEnvVar === undefined || (typeof dashboard.coordinationTokenEnvVar === "string" && ["AGENT_COORD_API_TOKEN", "AGENT_COORD_TOKEN"].includes(dashboard.coordinationTokenEnvVar)))
+    && (dashboard.githubStatus === undefined || isGitHubStatus(dashboard.githubStatus))
     && (dashboard.githubMergeTimeStatus === undefined || (typeof dashboard.githubMergeTimeStatus === "string" && ["available", "unavailable"].includes(dashboard.githubMergeTimeStatus)))
     && (dashboard.trulyOpenCount === undefined || typeof dashboard.trulyOpenCount === "number")
     && (dashboard.trulyOpenCountStatus === undefined || (typeof dashboard.trulyOpenCountStatus === "string" && ["available", "unknown"].includes(dashboard.trulyOpenCountStatus)))
@@ -899,7 +910,6 @@ export function App() {
   const selectedRowLaneRoute = selectedRowBatchCard?.lanes.find((lane) => lane.row?.id === selectedRow?.row.id)?.route;
 
   const showItem = Boolean(itemRoute && itemRouteInScope);
-
   return (
     <main className="app-shell">
       <TopBar
@@ -938,6 +948,17 @@ export function App() {
         <section aria-label="Dashboard refresh failed" className="banner banner-error" role="alert">
           <strong>Current coordination data could not be loaded</strong>
           <span>{error}. Showing the last available dashboard snapshot; local write controls are disabled until current data loads.</span>
+        </section>
+      ) : null}
+
+      {dashboard.githubStatus && dashboard.githubStatus.state !== "available" ? (
+        <section aria-label="GitHub enrichment degraded" className="banner banner-github" role="alert">
+          <strong>GitHub enrichment {dashboard.githubStatus.state}</strong>
+          <span>
+            {dashboard.githubStatus.message} Coordination data continues to refresh.
+            {dashboard.githubStatus.rateLimitRemaining !== undefined ? ` ${dashboard.githubStatus.rateLimitRemaining} requests remaining.` : ""}
+            {dashboard.githubStatus.pausedUntil ? ` GitHub reads resume after ${new Date(dashboard.githubStatus.pausedUntil).toLocaleString()}.` : ""}
+          </span>
         </section>
       ) : null}
 

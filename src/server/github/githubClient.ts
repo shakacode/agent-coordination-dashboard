@@ -250,13 +250,13 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     }
   }
 
-  function loadTarget(reference: GitHubTargetReference) {
+  function loadTarget(reference: GitHubTargetReference, activeRunner: GhRunner) {
     const now = Date.now();
     pruneTargetCache(now);
     const key = `${reference.repo}#${reference.target}:${reference.type}`;
     const existing = targetCache.get(key);
     if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
-    const promise = schedule(() => runner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]));
+    const promise = schedule(() => activeRunner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]));
     const entry = { expiresAt: now + ttlMs, promise, settled: false };
     targetCache.set(key, entry);
     const settle = () => { entry.settled = true; pruneTargetCache(Date.now()); };
@@ -278,7 +278,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     });
   }
 
-  async function loadOne(reference: GitHubTargetReference): Promise<GitHubLoadResult> {
+  async function loadOne(reference: GitHubTargetReference, activeRunner: GhRunner): Promise<GitHubLoadResult> {
     try {
       githubApiPath(reference.repo, "issues", reference.target);
     } catch (error) {
@@ -302,8 +302,8 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
 
     // Target and branch evidence are independent lookups; fetch them concurrently.
     const [result, branchResult] = await Promise.all([
-      reference.existingTarget ? undefined : loadTarget(reference),
-      branchPath ? schedule(() => runner.run(["api", branchPath!])) : undefined
+      reference.existingTarget ? undefined : loadTarget(reference, activeRunner),
+      branchPath ? schedule(() => activeRunner.run(["api", branchPath!])) : undefined
     ]);
     if (branchPath && branchResult) {
       if (branchResult.exitCode === 0) {
@@ -343,7 +343,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   }
 
   return {
-    async load(references: GitHubTargetReference[], options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
+    async load(references: GitHubTargetReference[], options: { bypassCache?: boolean; runner?: GhRunner } = {}): Promise<GitHubLoadResult> {
       const unique = references.filter((reference, index) => references.findIndex((candidate) => githubTargetReferenceKey(candidate) === githubTargetReferenceKey(reference)) === index);
       const now = Date.now();
       pruneCache(now);
@@ -355,7 +355,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
         const existing = cache.get(key);
         if (!options.bypassCache && existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
         // loadOne is cheap orchestration; the concurrency cap is applied per gh spawn inside it.
-        const promise = loadOne(reference);
+        const promise = loadOne(reference, options.runner || runner);
         const entry = { expiresAt: now + ttlMs, promise, settled: false };
         cache.set(key, entry);
         const settleEntry = () => {
@@ -374,7 +374,8 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
           ? result.items.map((item) => ({ ...unique[index].existingTarget!, ...(item.branchState ? { branchState: item.branchState } : {}) }))
           : result.items),
         warnings: results.flatMap((result) => result.warnings),
-        references: unique
+        references: unique,
+        ...(results.some((result) => result.failed || result.items.some((item) => item.loadState === "unknown")) ? { failed: true } : {})
       };
     },
     cacheSize: () => cache.size

@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { batchLanesFor, canBypassDashboardCache, createDashboardApp } from "./app";
 import { createOpenGitHubItemsCache } from "./dashboardHotPath";
 import { createGitHubTargetReconciler } from "./github/githubClient";
+import type { GhRunner } from "./github/types";
 import type { ServerConfig } from "./config";
-import type { DashboardModel, WorkItem } from "../shared/types";
+import type { CoordinationWarning, DashboardModel, GitHubPreview, WorkItem } from "../shared/types";
 
 const servers: Server[] = [];
 
@@ -18,6 +19,10 @@ function testConfig(stateRoot: string, overrides: Partial<ServerConfig> = {}): S
     allowedHosts: ["127.0.0.1", "localhost"],
     stateRoot,
     refreshIntervalMs: 0,
+    githubRefreshIntervalMs: 15 * 60 * 1000,
+    githubRequestBudgetPerHour: 1_000,
+    githubRequestsPerRefresh: 50,
+    githubQuotaSafetyThreshold: 500,
     targetRepos: ["shakacode/react_on_rails"],
     settingsPath: join(stateRoot, "settings.json"),
     nodeEnv: "test",
@@ -732,6 +737,70 @@ describe("dashboard app import endpoint", () => {
     expect(githubLoads).toBe(3);
   });
 
+  it("keeps coordination refresh live while GitHub quota exhaustion is cooldown-cached", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-github-quota-"));
+    const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    const claimPath = join(claimDirectory, "45.json");
+    const writeClaim = (agentId: string) => writeFile(claimPath, JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      agent_id: agentId,
+      status: "active"
+    }));
+    await writeClaim("worker-a");
+    const resetAt = Date.now() + 60_000;
+    let baseRunnerCalls = 0;
+    const githubRunner: GhRunner = { run: async (_args) => {
+      baseRunnerCalls += 1;
+      return {
+        stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 0\nx-ratelimit-used: 5000\nx-ratelimit-reset: ${Math.floor(resetAt / 1000)}\n\n{}`,
+        stderr: "",
+        exitCode: 0
+      };
+    } };
+    const guardedLoad = async (
+      repo: string,
+      options?: { runner?: GhRunner }
+    ): Promise<{ items: GitHubPreview[]; warnings: CoordinationWarning[]; failed: true }> => {
+      const result = await options!.runner!.run(["api", `repos/${repo}/issues/45`]);
+      return {
+        items: [],
+        warnings: [{ severity: "warning", repo, message: result.stderr }],
+        failed: true
+      };
+    };
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      githubRunner,
+      loadOpenGitHubItems: guardedLoad,
+      loadGitHubTargets: async (references, options) => {
+        const result = await options!.runner!.run(["api", "repos/shakacode/react_on_rails/issues/45"]);
+        return {
+          references,
+          items: references.map((reference) => ({ ...reference, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], loadState: "unknown" as const })),
+          warnings: [{ severity: "warning", message: result.stderr }]
+        };
+      }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const first = await (await fetch(`${baseUrl}/api/dashboard`)).json() as DashboardModel;
+    expect(first.workItems[0]?.claim?.agentId).toBe("worker-a");
+    expect(first.githubStatus).toMatchObject({ state: "paused", reason: "rate_limit_exhausted", requestsExecuted: 1 });
+    expect(first.trulyOpenCountStatus).toBe("unknown");
+    expect(first.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining("GitHub enrichment paused") })
+    ]));
+
+    await writeClaim("worker-b");
+    const second = await (await fetch(`${baseUrl}/api/dashboard`)).json() as DashboardModel;
+    expect(second.workItems[0]?.claim?.agentId).toBe("worker-b");
+    expect(second.githubStatus).toMatchObject({ state: "paused", reason: "rate_limit_exhausted" });
+    expect(baseRunnerCalls).toBe(1);
+  });
+
   it("defaults the dashboard payload to a hot history window with ?history=full opt-in", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-history-window-"));
     await mkdir(join(stateRoot, "history"), { recursive: true });
@@ -762,7 +831,7 @@ describe("dashboard app import endpoint", () => {
     expect(full.warnings.some((warning) => warning.message.includes("Dashboard history window"))).toBe(false);
   });
 
-  it("reuses cached open GitHub previews across rebuilds while foreground refresh loads live", async () => {
+  it("reuses cached open GitHub previews across background and foreground coordination refreshes", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-preview-cache-"));
     let githubLoads = 0;
     const previewCache = createOpenGitHubItemsCache(async () => {
@@ -779,7 +848,7 @@ describe("dashboard app import endpoint", () => {
 
     const fresh = await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
     expect(fresh.ok).toBe(true);
-    expect(githubLoads).toBe(2);
+    expect(githubLoads).toBe(1);
   });
 
   it("keeps the coordinated issue canonical while mapping a claim's merged implementation PR", async () => {
@@ -1545,7 +1614,7 @@ describe("dashboard app import endpoint", () => {
     expect(body.trulyOpenCount).toBe(2);
   });
 
-  it("propagates foreground GitHub bypass when dashboard caching is disabled", async () => {
+  it("does not let foreground coordination refresh bypass GitHub cache policy", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-zero-cache-bypass-"));
     const directory = join(stateRoot, "claims", "shakacode", "react_on_rails");
     await mkdir(directory, { recursive: true });
@@ -1559,7 +1628,7 @@ describe("dashboard app import endpoint", () => {
     const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
     await fetch(`${baseUrl}/api/dashboard`);
     await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
-    expect(bypasses).toEqual([false, true]);
+    expect(bypasses).toEqual([false, false]);
   });
 
   it("keeps distinct branch evidence when two issue WorkItems share one PR", async () => {

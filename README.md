@@ -109,8 +109,9 @@ not application authentication: it cannot compensate for a host or network that
 permits source-address spoofing, or for a proxy that makes remote clients appear
 local. Keep `HOST` on loopback on shared or untrusted networks. If a non-loopback
 bind is required, use host firewall or equivalent access controls so untrusted
-traffic cannot reach the dashboard. `/api/doctor` and foreground cache bypass
-remain loopback-only.
+traffic cannot reach the dashboard. `/api/doctor` and foreground dashboard-model
+cache bypass remain loopback-only; foreground refresh does not bypass the
+separate GitHub quota guard or GitHub refresh cadence.
 
 ## Component diagnostics
 
@@ -182,13 +183,23 @@ API mode is read-only in this slice; batch import and stop-request writes remain
 local recovery tools for filesystem mode.
 Filesystem mode is still useful for local inspection, offline/recovery work,
 demos, and tests; it renders the same Operator View model over local records.
-API mode also refreshes the dashboard every 5 seconds by default; set
+API mode also refreshes coordination data every 5 seconds by default; set
 `DASHBOARD_REFRESH_MS=0` to disable polling or another non-negative millisecond
-value to tune it. The server coalesces and briefly caches dashboard reads while
-polling is enabled, invalidates that cache after dashboard-owned writes, and
-lets local foreground refreshes bypass it. The read cache is capped at 5 seconds,
-so larger polling intervals reduce polling frequency but not the short
-coalescing window.
+value to tune it. GitHub enrichment has a separate 15-minute default cadence,
+so the 5-second coordination poll does not authorize GitHub calls. The server
+coalesces dashboard reads, GitHub list reads, target reconciliation, and the
+representative quota probe. Local foreground refresh bypasses only the short
+dashboard-model cache; it uses the same GitHub cache, hourly budget,
+per-refresh ceiling, safety threshold, and cooldown as background polling.
+
+Before uncached GitHub work, the server samples authenticated REST quota headers
+from `GET /user`. It pauses GitHub enrichment when remaining quota reaches the
+safety threshold, when the process-wide hourly budget is spent, or when quota
+telemetry cannot be read. The API returns `githubStatus` request totals and the
+UI displays a GitHub degradation banner. Affected GitHub fields stay visibly
+`UNKNOWN`; coordination records continue to refresh. See the
+[GitHub REST quota incident guide](docs/incidents/2026-08-10-github-rest-quota-exhaustion.md)
+for containment and recovery.
 
 The browser keeps one validated last-known dashboard snapshot in local storage.
 On reload it first confirms the server-issued runtime scope and saved target
@@ -274,6 +285,10 @@ until an operator clears them.
 | `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
 | `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling; dashboard read cache is capped at 5s |
+| `GITHUB_REFRESH_MS` | `900000` (15 minutes); separate GitHub cache cadence; set `0` to disable GitHub enrichment while coordination refresh continues |
+| `GITHUB_REQUEST_BUDGET_PER_HOUR` | `1000`; process-wide dashboard ceiling for GitHub CLI requests |
+| `GITHUB_REQUESTS_PER_REFRESH` | `50`; hard ceiling shared by all GitHub work in one dashboard rebuild, including its quota probe |
+| `GITHUB_QUOTA_SAFETY_THRESHOLD` | `500`; pause GitHub enrichment at or below this observed authenticated REST remainder |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
@@ -286,8 +301,10 @@ Target repositories are edited in the dashboard and persisted across restarts.
 `TARGET_REPOS` accepts a comma-separated list only as the first-run fallback
 when no settings file exists yet.
 
-GitHub enrichment uses the local `gh` CLI. If `gh` is unavailable or
-unauthenticated, local coordination state still renders.
+GitHub enrichment uses the local `gh` CLI. If `gh` is unavailable,
+unauthenticated, quota-constrained, or explicitly disabled, local coordination
+state still renders and GitHub-dependent values remain `UNKNOWN` with a visible
+warning.
 
 The coordination root is data only. This repo owns the dashboard code; the
 coordination data root owns runtime records such as `claims/`, `heartbeats/`,

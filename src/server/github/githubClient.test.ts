@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGitHubTargetReconciler, githubApiPath, githubTargetReferenceKey, isGitHubHttpNotFound, loadOpenGitHubItems, parseCiStatus, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
+import { createGitHubRequestGovernor } from "./githubQuotaGuard";
 
 describe("github list parsers", () => {
   afterEach(() => vi.useRealTimers());
@@ -290,6 +291,43 @@ describe("github list parsers", () => {
     } }, 60_000, 2);
     await reconciler.load([1, 2, 3, 4].map((target) => ({ repo: "repo/app", target: String(target), type: "issue" as const, branch: `feature/${target}` })));
     expect(maximum).toBe(2);
+  });
+
+  it("keeps a 500-target fixture within the refresh request ceiling", async () => {
+    const run = vi.fn(async (args: string[]) => {
+      if (args.includes("user")) {
+        return {
+          stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 5000\nx-ratelimit-reset: ${Date.parse("2026-08-11T04:00:00Z") / 1000}\n\n{}`,
+          stderr: "",
+          exitCode: 0
+        };
+      }
+      const target = args[1].split("/").at(-1);
+      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+    });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 1_000,
+      perRefreshRequestLimit: 25,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+    const refresh = governor.beginRefresh("dashboard");
+    const references = Array.from({ length: 500 }, (_, index) => ({ repo: "repo/app", target: String(index + 1), type: "issue" as const }));
+
+    const result = await createGitHubTargetReconciler().load(references, { runner: refresh.runner });
+
+    expect(run).toHaveBeenCalledTimes(25);
+    expect(result.items.filter((item) => item.loadState === "loaded")).toHaveLength(24);
+    expect(result.items.filter((item) => item.loadState === "unknown")).toHaveLength(476);
+    expect(result.failed).toBe(true);
+    expect(refresh.status({ targetCount: references.length })).toMatchObject({
+      state: "degraded",
+      reason: "per_refresh_limit",
+      requestsExecuted: 25,
+      requestsBlocked: 476
+    });
   });
 
   it("coalesces one target lookup while preserving distinct branch lookups", async () => {

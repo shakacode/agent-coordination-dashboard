@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { buildCustodyTimeline } from "../shared/custodyTimeline";
-import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, WorkItem } from "../shared/types";
-import type { ServerConfig } from "./config";
+import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, GitHubQuotaStatus, WorkItem } from "../shared/types";
+import { DEFAULT_GITHUB_QUOTA_SAFETY_THRESHOLD, DEFAULT_GITHUB_REFRESH_INTERVAL_MS, DEFAULT_GITHUB_REQUEST_BUDGET_PER_HOUR, DEFAULT_GITHUB_REQUESTS_PER_REFRESH, type ServerConfig } from "./config";
 import { applyDashboardHistoryWindow, createOpenGitHubItemsCache } from "./dashboardHotPath";
-import { createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubLoadResult, type GitHubTargetReference } from "./github/githubClient";
+import { childProcessGhRunner, createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubLoadResult, type GitHubTargetReference } from "./github/githubClient";
+import { createGitHubRequestGovernor } from "./github/githubQuotaGuard";
+import type { GhRunner } from "./github/types";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { isMachineLocalAddress, type MachineInterfaceMap } from "./security/machineLocal";
@@ -20,11 +22,10 @@ import { buildDashboardModel, hasCoordinationEvidence, redactOutOfScopeBatchEven
 import { readCoordinationState } from "./state/readCoordinationState";
 import { repoRefsFromBranch, repoRefsFromPromptHeaders, repoRefsFromText } from "./repoRefs";
 
-type LoadOpenGitHubItems = (repo: string, options?: { bypassCache?: boolean }) => Promise<GitHubLoadResult>;
+type LoadOpenGitHubItems = (repo: string, options?: { bypassCache?: boolean; runner?: GhRunner }) => Promise<GitHubLoadResult>;
 type LoadGitHubTargets = ReturnType<typeof createGitHubTargetReconciler>["load"];
 type CoordinationSnapshot = { state: Awaited<ReturnType<typeof readCoordinationState>>; now: Date };
 interface BuildScopedDashboardOptions {
-  bypassGitHubCache?: boolean;
   captured?: CoordinationSnapshot;
 }
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
@@ -60,20 +61,35 @@ interface CreateDashboardAppOptions {
   serveFrontend?: boolean;
   loadOpenGitHubItems?: LoadOpenGitHubItems;
   loadGitHubTargets?: LoadGitHubTargets;
+  githubRunner?: GhRunner;
   machineInterfaces?: MachineInterfaceMap;
 }
 
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
   const app = express();
+  const githubRefreshIntervalMs = config.githubRefreshIntervalMs ?? DEFAULT_GITHUB_REFRESH_INTERVAL_MS;
+  const useGovernedOpenRunner = !options.loadOpenGitHubItems || Boolean(options.githubRunner);
+  const useGovernedTargetRunner = !options.loadGitHubTargets || Boolean(options.githubRunner);
   const persistedSettingsPath = settingsPath(config.settingsPath);
   const annotationStore = createAnnotationStore(join(dirname(persistedSettingsPath), "annotations.json"));
   // The default open-list loader is wrapped in a short-TTL cache so repeated
   // dashboard builds do not respawn `gh pr/issue list` per repository; injected
   // loaders (tests) are used as-is so callers keep full control.
   const loadOpenGitHubItems: LoadOpenGitHubItems =
-    options.loadOpenGitHubItems || createOpenGitHubItemsCache(defaultLoadOpenGitHubItems).load;
-  const defaultTargetReconciler = createGitHubTargetReconciler();
+    options.loadOpenGitHubItems || createOpenGitHubItemsCache(
+      (repo, loadOptions) => defaultLoadOpenGitHubItems(repo, loadOptions?.runner),
+      Math.max(1, githubRefreshIntervalMs)
+    ).load;
+  const defaultTargetReconciler = createGitHubTargetReconciler(childProcessGhRunner, Math.max(1, githubRefreshIntervalMs));
   const loadGitHubTargets = options.loadGitHubTargets || defaultTargetReconciler.load;
+  const githubGovernor = createGitHubRequestGovernor(options.githubRunner || childProcessGhRunner, {
+    enabled: githubRefreshIntervalMs > 0,
+    hourlyRequestBudget: config.githubRequestBudgetPerHour ?? DEFAULT_GITHUB_REQUEST_BUDGET_PER_HOUR,
+    perRefreshRequestLimit: config.githubRequestsPerRefresh ?? DEFAULT_GITHUB_REQUESTS_PER_REFRESH,
+    safetyThreshold: config.githubQuotaSafetyThreshold ?? DEFAULT_GITHUB_QUOTA_SAFETY_THRESHOLD,
+    probeIntervalMs: 60_000,
+    fallbackCooldownMs: 60_000
+  });
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
@@ -287,11 +303,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   async function buildScopedDashboard(settings: DashboardSettings, options: BuildScopedDashboardOptions = {}): Promise<DashboardModel> {
+    const githubRefresh = githubGovernor.beginRefresh("dashboard");
     // The coordination snapshot and the per-repo GitHub open lists are
     // independent reads; overlap them instead of paying both latencies serially.
     const [captured, githubResults] = await Promise.all([
       options.captured || captureCoordinationSnapshot(),
-      Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo, { bypassCache: options.bypassGitHubCache })))
+      Promise.all(settings.targetRepos.map((repo) => loadOpenGitHubItems(repo, {
+        bypassCache: false,
+        ...(useGovernedOpenRunner ? { runner: githubRefresh.runner } : {})
+      })))
     ]);
     const now = captured.now;
     const state = captured.state;
@@ -327,7 +347,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     ].filter((reference, index, references) =>
       references.findIndex((candidate) => githubTargetReferenceKey(candidate) === githubTargetReferenceKey(reference)) === index
     );
-    const reconciled = await loadGitHubTargets(reconciliationReferences, { bypassCache: options.bypassGitHubCache });
+    const reconciled = await loadGitHubTargets(reconciliationReferences, {
+      bypassCache: false,
+      ...(useGovernedTargetRunner ? { runner: githubRefresh.runner } : {})
+    });
     const returnedReferences = reconciled.references || reconciliationReferences;
     const resultByReference = new Map(reconciled.items.map((item, index) => [githubTargetReferenceKey(returnedReferences[index]), item]));
     const remappedGithubItems = reconciliationPlans.flatMap((plan) => {
@@ -400,10 +423,21 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
     const annotatedModel = await applyStoredAnnotations(model, now);
+    const rawGithubStatus = githubRefresh.status({ targetCount: reconciliationReferences.length });
+    const githubReadFailed = githubResults.some((result) => result.failed) || Boolean(reconciled.failed);
+    const githubStatus: GitHubQuotaStatus = rawGithubStatus.state === "available" && githubReadFailed
+      ? { ...rawGithubStatus, state: "degraded", reason: "read_failed", message: "One or more GitHub reads failed; affected values remain UNKNOWN while coordination refresh continues." }
+      : rawGithubStatus;
+    const githubGuardWarnings: CoordinationWarning[] = githubStatus.state === "available" ? [] : [{
+      severity: "warning",
+      message: `GitHub enrichment ${githubStatus.state}: ${githubStatus.message} Coordination refresh remains active.`
+    }];
     const scopedModel: DashboardModel = {
       ...annotatedModel,
+      warnings: [...annotatedModel.warnings, ...githubGuardWarnings],
       ...(githubCoverageUnknown || coordinationCoverageUnknown ? { trulyOpenCount: undefined, trulyOpenCountStatus: "unknown" as const } : {}),
       githubMergeTimeStatus: githubCoverageUnknown || coordinationCoverageUnknown || mergeTimeCoverageUnknown ? "unavailable" : "available",
+      githubStatus,
       sourceStatus: state.sourceStatus,
       ...(config.coordApiTokenEnvVar ? { coordinationTokenEnvVar: config.coordApiTokenEnvVar } : {})
     };
@@ -451,14 +485,14 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
     const key = dashboardCacheKey(settings);
     if (dashboardCacheTtlMs <= 0) {
-      return buildScopedDashboard(settings, { bypassGitHubCache: options.bypassCache });
+      return buildScopedDashboard(settings);
     }
 
     if (options.bypassCache) {
       invalidateDashboardCache();
       const generation = dashboardCacheGeneration;
       const sequence = nextCacheableDashboardBuild();
-      const model = await buildScopedDashboard(settings, { bypassGitHubCache: true });
+      const model = await buildScopedDashboard(settings);
       cacheDashboardModel(key, model, generation, sequence, Date.now() + dashboardCacheTtlMs);
       return model;
     }

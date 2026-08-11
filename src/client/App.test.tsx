@@ -248,6 +248,39 @@ describe("App", () => {
     expect(screen.getByText(/Coordination backend unreachable/)).toBeInTheDocument();
   });
 
+  it("shows GitHub quota degradation without presenting coordination as unavailable", async () => {
+    const githubPaused: DashboardModel = {
+      ...model,
+      githubStatus: {
+        state: "paused",
+        reason: "rate_limit_exhausted",
+        caller: "dashboard",
+        checkedAt: "2026-08-11T03:00:00.000Z",
+        requestsAttempted: 4,
+        requestsExecuted: 1,
+        requestsBlocked: 3,
+        hourlyRequestBudget: 1_000,
+        hourlyRequestsRemaining: 999,
+        perRefreshRequestLimit: 50,
+        rateLimitRemaining: 0,
+        rateLimitResetAt: "2026-08-11T04:00:00.000Z",
+        pausedUntil: "2026-08-11T04:00:00.000Z",
+        message: "GitHub reported no authenticated REST requests remaining."
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(githubPaused)
+    ));
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "GitHub enrichment degraded" });
+    expect(within(banner).getByText(/GitHub enrichment paused/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/coordination data continues to refresh/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/0 requests remaining/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+  });
+
   it("adds and removes target repositories through the scope row", async () => {
     const putBodies: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

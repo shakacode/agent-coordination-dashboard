@@ -12,6 +12,10 @@ describe("readConfig", () => {
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");
     expect(config.refreshIntervalMs).toBe(0);
+    expect(config.githubRefreshIntervalMs).toBe(15 * 60 * 1000);
+    expect(config.githubRequestBudgetPerHour).toBe(1_000);
+    expect(config.githubRequestsPerRefresh).toBe(50);
+    expect(config.githubQuotaSafetyThreshold).toBe(500);
     expect(config.targetRepos).toEqual([]);
   });
 
@@ -55,5 +59,23 @@ describe("readConfig", () => {
     expect(readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", DASHBOARD_REFRESH_MS: "2500" }).refreshIntervalMs).toBe(2500);
     expect(readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", DASHBOARD_REFRESH_MS: "0" }).refreshIntervalMs).toBe(0);
     expect(() => readConfig({ DASHBOARD_REFRESH_MS: "-1" })).toThrow(/DASHBOARD_REFRESH_MS/);
+  });
+
+  it("reads conservative GitHub refresh and quota guardrails", () => {
+    expect(readConfig({
+      GITHUB_REFRESH_MS: "600000",
+      GITHUB_REQUEST_BUDGET_PER_HOUR: "800",
+      GITHUB_REQUESTS_PER_REFRESH: "40",
+      GITHUB_QUOTA_SAFETY_THRESHOLD: "250"
+    })).toMatchObject({
+      githubRefreshIntervalMs: 600_000,
+      githubRequestBudgetPerHour: 800,
+      githubRequestsPerRefresh: 40,
+      githubQuotaSafetyThreshold: 250
+    });
+    expect(readConfig({ GITHUB_REFRESH_MS: "0" }).githubRefreshIntervalMs).toBe(0);
+    expect(() => readConfig({ GITHUB_REQUEST_BUDGET_PER_HOUR: "0" })).toThrow(/GITHUB_REQUEST_BUDGET_PER_HOUR/);
+    expect(() => readConfig({ GITHUB_REQUESTS_PER_REFRESH: "-1" })).toThrow(/GITHUB_REQUESTS_PER_REFRESH/);
+    expect(() => readConfig({ GITHUB_QUOTA_SAFETY_THRESHOLD: "-1" })).toThrow(/GITHUB_QUOTA_SAFETY_THRESHOLD/);
   });
 });

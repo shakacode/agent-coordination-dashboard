@@ -591,6 +591,12 @@ h1, h2, h3, h4, h5, h6 {
   border-bottom-color: color-mix(in srgb, var(--bad) 45%, transparent);
 }
 
+.banner-github {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--color-neutral-100);
+  border-bottom-color: color-mix(in srgb, var(--warn) 55%, transparent);
+}
+
 .coordination-degraded-banner {
   display: flex;
   flex-wrap: wrap;
