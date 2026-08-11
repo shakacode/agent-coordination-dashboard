@@ -332,6 +332,11 @@ if [ "$1" != "api" ]; then
   printf '[]\\n'
   exit 0
 fi
+if [ "$2" = "--include" ] && [ "$3" = "user" ]; then
+  reset_at=$(( $(date +%s) + 3600 ))
+  printf 'HTTP/2.0 200 OK\\nX-RateLimit-Used: 1\\nX-RateLimit-Remaining: 4999\\nX-RateLimit-Reset: %s\\nContent-Type: application/json\\n\\n{"login":"demo-offline"}\\n' "$reset_at"
+  exit 0
+fi
 case "$2" in
   */branches/demo%2Fpublish) printf 'HTTP 404: Branch not found\\n' >&2; exit 1 ;;
   */branches/*) printf '{}\\n'; exit 0 ;;
@@ -406,7 +411,7 @@ export async function runDemo(): Promise<void> {
   if (degraded) {
     console.log("Degraded demo mode: coordination API returns 401 for every resource.");
   }
-  console.log("Synthetic state ticks every 3 seconds; the dashboard refreshes every 2 seconds. Press Ctrl-C to stop.");
+  console.log("Synthetic coordination state ticks every 3 seconds; use Refresh or an explicit operator action to reload the dashboard. Press Ctrl-C to stop.");
 
   const server = spawn(
     process.execPath,

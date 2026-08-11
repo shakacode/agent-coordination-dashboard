@@ -16,6 +16,35 @@ export type OperatorRowProvenanceClassification = "observed" | "inferred" | "syn
 export type CoordinationResource = "claims" | "heartbeats" | "batches" | "events";
 export type CoordinationSourceMode = "api" | "fs";
 export type CoordinationSourceState = "ok" | "auth_error" | "unreachable" | "empty";
+export type GitHubQuotaState = "available" | "degraded" | "paused";
+export type GitHubQuotaReason =
+  | "none"
+  | "disabled"
+  | "per_refresh_limit"
+  | "hourly_budget"
+  | "rate_limit_low"
+  | "rate_limit_exhausted"
+  | "probe_failed"
+  | "read_failed";
+
+export interface GitHubQuotaStatus {
+  state: GitHubQuotaState;
+  reason: GitHubQuotaReason;
+  caller: string;
+  checkedAt: string;
+  requestsAttempted: number;
+  requestsExecuted: number;
+  requestsBlocked: number;
+  hourlyRequestBudget: number;
+  hourlyRequestsRemaining: number;
+  perRefreshRequestLimit: number;
+  targetCount?: number;
+  rateLimitUsed?: number;
+  rateLimitRemaining?: number;
+  rateLimitResetAt?: string;
+  pausedUntil?: string;
+  message: string;
+}
 
 export interface CoordinationSourceStatus {
   resource: CoordinationResource;
@@ -436,6 +465,8 @@ export interface DashboardModel {
   warnings: CoordinationWarning[];
   sourceStatus?: CoordinationSourceStatus[];
   coordinationTokenEnvVar?: "AGENT_COORD_API_TOKEN" | "AGENT_COORD_TOKEN";
+  /** Process-wide guardrail state for authenticated GitHub enrichment. */
+  githubStatus?: GitHubQuotaStatus;
   /** Capability flag; unavailable prevents the UI from presenting a false zero merge count. */
   githubMergeTimeStatus?: "available" | "unavailable";
   /** Trustworthy only when every resolvable coordinated target was reconciled. */

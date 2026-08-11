@@ -35,7 +35,7 @@ interface OpenGitHubItemsCacheEntry {
 }
 
 export function createOpenGitHubItemsCache(
-  loader: (repo: string) => Promise<GitHubLoadResult>,
+  loader: (repo: string, options?: { runner?: import("./github/types").GhRunner }) => Promise<GitHubLoadResult>,
   ttlMs = OPEN_GITHUB_ITEMS_CACHE_TTL_MS,
   maxCacheEntries = 100
 ) {
@@ -53,14 +53,14 @@ export function createOpenGitHubItemsCache(
   }
 
   return {
-    load(repo: string, options: { bypassCache?: boolean } = {}): Promise<GitHubLoadResult> {
+    load(repo: string, options: { bypassCache?: boolean; runner?: import("./github/types").GhRunner } = {}): Promise<GitHubLoadResult> {
       const now = Date.now();
       prune(now);
       const existing = cache.get(repo);
       if (!options.bypassCache && existing && (!existing.settled || (existing.reusable && existing.expiresAt > now))) {
         return existing.promise;
       }
-      const promise = loader(repo);
+      const promise = loader(repo, options);
       const entry: OpenGitHubItemsCacheEntry = { expiresAt: now + ttlMs, promise, settled: false, reusable: false };
       cache.set(repo, entry);
       const settle = (result?: GitHubLoadResult) => {

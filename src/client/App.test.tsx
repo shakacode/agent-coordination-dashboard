@@ -7,7 +7,7 @@ import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import type { ItemTimelineResponse } from "./api";
-import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, backgroundRefreshTimeoutMs, batchReferenceFromSearchParams, nextActiveSnoozeDelayMs } from "./App";
+import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, batchReferenceFromSearchParams, startBackgroundRefreshIfActive } from "./App";
 
 const settings: DashboardRuntimeSettings = { targetRepos: ["repo/dashboard"], scopeId: "test-runtime-scope" };
 
@@ -161,17 +161,32 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
-  it("computes the earliest future snooze expiry exactly", () => {
-    const workItems = model.workItems.map((item, index) => ({
-      ...item,
-      ...(index < 2 ? { annotation: { key: item.id, kind: "snooze" as const, until: index === 0 ? "2026-07-12T10:01:00Z" : "2026-07-12T10:02:00Z", createdAt: "2026-07-12T09:00:00Z", active: true as const } } : {})
-    }));
-    expect(nextActiveSnoozeDelayMs(workItems, Date.parse("2026-07-12T10:00:00Z"))).toBe(60_000);
-  });
+  it("starts the production background refresh seam only while the document is visible and focused", () => {
+    vi.useFakeTimers();
+    const documentState = (visibilityState: DocumentVisibilityState, focused: boolean) => ({
+      visibilityState,
+      hasFocus: () => focused
+    });
+    const stateEffect = vi.fn();
+    const networkEffect = vi.fn();
+    const startRefresh = vi.fn(() => {
+      stateEffect();
+      networkEffect();
+      return "started";
+    });
 
-  it("keeps the background refresh timeout above the floor", () => {
-    expect(backgroundRefreshTimeoutMs(0)).toBe(4000);
-    expect(backgroundRefreshTimeoutMs(10_000)).toBe(11_000);
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("visible", false))).toBeUndefined();
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("hidden", true))).toBeUndefined();
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("hidden", false))).toBeUndefined();
+    expect(startRefresh).not.toHaveBeenCalled();
+    expect(stateEffect).not.toHaveBeenCalled();
+    expect(networkEffect).not.toHaveBeenCalled();
+
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("visible", true))).toBe("started");
+    expect(startRefresh).toHaveBeenCalledOnce();
+    expect(stateEffect).toHaveBeenCalledOnce();
+    expect(networkEffect).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("opens on the Batches view with the three-tab shell and host legend", async () => {
@@ -196,6 +211,66 @@ describe("App", () => {
   it("renders an accessible dashboard skeleton when no cached snapshot exists", () => {
     render(<App />);
     expect(screen.getByRole("status", { name: "Loading coordination dashboard" })).toBeInTheDocument();
+  });
+
+  it("does not automatically refresh when legacy settings contain a positive interval", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/settings")) return okJson({ ...settings, refreshIntervalMs: 1_000 });
+      return okJson(model);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("button", { name: /Batches/ });
+    await act(async () => { await Promise.resolve(); });
+    const dashboardCallsAfterInitialLoad = fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard")).length;
+
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard"))).toHaveLength(dashboardCallsAfterInitialLoad);
+  });
+
+  it("does not schedule or request a dashboard refresh when a snooze expires", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: new Date("2026-07-21T12:00:00Z") });
+    const snoozedModel: DashboardModel = {
+      ...model,
+      workItems: model.workItems.map((item, index) => index === 0
+        ? {
+            ...item,
+            annotation: {
+              key: item.id,
+              kind: "snooze",
+              until: "2026-07-21T12:00:01.000Z",
+              createdAt: "2026-07-21T11:00:00.000Z",
+              active: true
+            }
+          }
+        : item)
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(snoozedModel)
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("button", { name: /Batches/ });
+    await act(async () => { await Promise.resolve(); });
+    const dashboardCallsAfterInitialLoad = fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard")).length;
+
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard"))).toHaveLength(dashboardCallsAfterInitialLoad);
   });
 
   it("paints the last-known snapshot after current settings validate its scope", async () => {
@@ -248,6 +323,78 @@ describe("App", () => {
     expect(screen.getByText(/Coordination backend unreachable/)).toBeInTheDocument();
   });
 
+  it("shows GitHub quota degradation without presenting coordination as unavailable", async () => {
+    const githubPaused: DashboardModel = {
+      ...model,
+      githubStatus: {
+        state: "paused",
+        reason: "rate_limit_exhausted",
+        caller: "dashboard",
+        checkedAt: "2026-08-11T03:00:00.000Z",
+        requestsAttempted: 4,
+        requestsExecuted: 1,
+        requestsBlocked: 3,
+        hourlyRequestBudget: 1_000,
+        hourlyRequestsRemaining: 999,
+        perRefreshRequestLimit: 50,
+        rateLimitRemaining: 0,
+        rateLimitResetAt: "2026-08-11T04:00:00.000Z",
+        pausedUntil: "2026-08-11T04:00:00.000Z",
+        message: "GitHub reported no authenticated REST requests remaining."
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(githubPaused)
+    ));
+
+    render(<App />);
+
+    const banner = await screen.findByRole("alert", { name: "GitHub enrichment degraded" });
+    expect(within(banner).getByText(/GitHub enrichment paused/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/GitHub guardrails do not block coordination reads/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/Manual Refresh requests current coordination data/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/0 requests remaining/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+  });
+
+  it("keeps GitHub guardrail copy independent when coordination reads also fail", async () => {
+    const combinedFailure: DashboardModel = {
+      ...model,
+      coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+      sourceStatus: [
+        { resource: "claims", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: model.generatedAt },
+        { resource: "heartbeats", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: model.generatedAt },
+        { resource: "batches", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: model.generatedAt }
+      ],
+      githubStatus: {
+        state: "paused",
+        reason: "rate_limit_exhausted",
+        caller: "dashboard",
+        checkedAt: model.generatedAt,
+        requestsAttempted: 1,
+        requestsExecuted: 1,
+        requestsBlocked: 1,
+        hourlyRequestBudget: 1_000,
+        hourlyRequestsRemaining: 999,
+        perRefreshRequestLimit: 50,
+        rateLimitRemaining: 0,
+        message: "GitHub reported no authenticated REST requests remaining."
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(combinedFailure)
+    ));
+
+    render(<App />);
+
+    const githubBanner = await screen.findByRole("alert", { name: "GitHub enrichment degraded" });
+    const coordinationBanner = screen.getByRole("alert", { name: "Coordination backend degraded" });
+    expect(within(coordinationBanner).getByText(/Coordination backend unreachable.*showing GitHub data only/i)).toBeInTheDocument();
+    expect(within(githubBanner).getByText(/GitHub guardrails do not block coordination reads/i)).toBeInTheDocument();
+    expect(within(githubBanner).getByText(/Manual Refresh requests current coordination data/i)).toBeInTheDocument();
+    expect(githubBanner).not.toHaveTextContent(/coordination data remains available/i);
+  });
+
   it("adds and removes target repositories through the scope row", async () => {
     const putBodies: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -282,7 +429,7 @@ describe("App", () => {
 
   it("persists a snooze from the job drawer through the annotation API", async () => {
     const annotationBodies: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/settings")) return okJson(settings);
       if (url.startsWith("/api/annotations")) {
@@ -291,13 +438,16 @@ describe("App", () => {
       }
       if (url.startsWith("/api/item/")) return okJson(itemTimeline);
       return okJson(model);
-    }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: /Jobs/ }));
     await userEvent.click(await screen.findByRole("button", { name: /Needs input work/ }));
     const drawer = await screen.findByRole("dialog");
+    const dashboardCallsAfterInitialLoad = fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard")).length;
     await userEvent.selectOptions(within(drawer).getByLabelText("Dismiss or snooze"), "snooze-1h");
     await waitFor(() => expect(annotationBodies.some((body) => body.includes("snooze"))).toBe(true));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard"))).toHaveLength(dashboardCallsAfterInitialLoad + 1));
   });
 
   it("requests a batch stop from the batch detail drawer", async () => {
@@ -623,9 +773,9 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await screen.findByRole("button", { name: /Batches/ });
-    const callsAfterLoad = fetchMock.mock.calls.length;
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard"))).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "Refresh dashboard" }));
-    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterLoad));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/dashboard"))).toHaveLength(2));
   });
 
   it("closes a deep-linked item when its repository leaves saved scope", async () => {

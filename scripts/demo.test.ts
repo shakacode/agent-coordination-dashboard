@@ -153,6 +153,9 @@ describe("demo coordination state", () => {
       const rootMatch = await waitForOutput(child, output, /Demo coordination state: (.+)\n/);
       root = rootMatch[1].trim();
       roots.push(root);
+      expect(output.text).toContain(
+        "Synthetic coordination state ticks every 3 seconds; use Refresh or an explicit operator action to reload the dashboard."
+      );
       await waitForOutput(child, output, /listening on http:\/\/127\.0\.0\.1:/);
 
       const health = await fetch(`http://127.0.0.1:${port}/api/health`);
