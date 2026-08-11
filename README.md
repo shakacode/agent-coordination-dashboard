@@ -183,14 +183,18 @@ API mode is read-only in this slice; batch import and stop-request writes remain
 local recovery tools for filesystem mode.
 Filesystem mode is still useful for local inspection, offline/recovery work,
 demos, and tests; it renders the same Operator View model over local records.
-API mode also refreshes coordination data every 5 seconds by default; set
-`DASHBOARD_REFRESH_MS=0` to disable polling or another non-negative millisecond
-value to tune it. GitHub enrichment has a separate 15-minute default cadence,
-so the 5-second coordination poll does not authorize GitHub calls. The server
-coalesces dashboard reads, GitHub list reads, target reconciliation, and the
-representative quota probe. Local foreground refresh bypasses only the short
-dashboard-model cache; it uses the same GitHub cache, hourly budget,
-per-refresh ceiling, safety threshold, and cooldown as background polling.
+The browser loads once at startup and refreshes only for an explicit operator
+action, including the top-bar Refresh button. It does not poll on an interval or
+when a snooze expires. `DASHBOARD_REFRESH_MS` remains in the settings contract
+for compatibility, but its default is `0` in both API and filesystem modes and
+a positive value controls only the short server-side dashboard-model cache; it
+does not schedule browser polling. Any future background refresh entry point
+must use the centralized guard that allows requests only while the document is
+visible and focused. GitHub enrichment has a separate 15-minute default cache
+cadence. The server coalesces dashboard reads, GitHub list reads, target
+reconciliation, and the representative quota probe. A foreground refresh
+bypasses only the short dashboard-model cache; it uses the same GitHub cache,
+hourly budget, per-refresh ceiling, safety threshold, and cooldown.
 
 Before uncached GitHub work, the server samples authenticated REST quota headers
 from `GET /user`. It pauses GitHub enrichment when remaining quota reaches the
@@ -206,10 +210,10 @@ On reload it first confirms the server-issued runtime scope and saved target
 repositories, then may paint the matching snapshot while current data is
 fetched; a snapshot from another state root, API source, settings store, or
 repository scope is never rendered. Cached content is visibly labeled until a
-fresh read succeeds, malformed cache entries are ignored, and background polls
-write at most one snapshot per minute while foreground and operator-triggered
-refreshes persist immediately. A failed background refresh visibly marks the
-displayed data unavailable and disables local writes until polling recovers.
+fresh read succeeds, malformed cache entries are ignored, and foreground or
+operator-triggered refreshes persist immediately. A failed refresh visibly
+marks the displayed data unavailable and disables local writes until a later
+refresh recovers.
 The interface follows the operating system's light or dark color preference;
 all palette values are defined as CSS custom properties.
 
@@ -271,8 +275,9 @@ cleanly; it does not kill processes or release claims by itself.
 Dismiss and snooze actions never write coordination state. They are
 presentation-only annotations, accepted from loopback or exact non-link-local
 same-machine interface peers and persisted in `annotations.json` beside the
-dashboard settings file. Active snoozes expire automatically; dismissals remain
-until an operator clears them.
+dashboard settings file. Snooze eligibility expires at its recorded time and is
+reflected on the next initial, explicit, or operator-action refresh; dismissals
+remain until an operator clears them.
 
 ## Configuration
 
@@ -284,7 +289,7 @@ until an operator clears them.
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
 | `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
-| `DASHBOARD_REFRESH_MS` | `5000` in API mode, otherwise `0`; set `0` to disable polling; dashboard read cache is capped at 5s |
+| `DASHBOARD_REFRESH_MS` | `0`; optional server-side dashboard-model cache TTL (capped at 5 seconds) retained in runtime settings for compatibility; the browser remains manual-only |
 | `GITHUB_REFRESH_MS` | `900000` (15 minutes); separate GitHub cache cadence; set `0` to disable GitHub enrichment while coordination refresh continues |
 | `GITHUB_REQUEST_BUDGET_PER_HOUR` | `1000`; process-wide dashboard ceiling for GitHub CLI requests |
 | `GITHUB_REQUESTS_PER_REFRESH` | `50`; hard ceiling shared by all GitHub work in one dashboard rebuild, including its quota probe |

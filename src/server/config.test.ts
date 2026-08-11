@@ -33,7 +33,7 @@ describe("readConfig", () => {
 
     expect(config.coordApiUrl).toBe("https://coord.example.test");
     expect(config.coordApiToken).toBe("secret");
-    expect(config.refreshIntervalMs).toBe(5000);
+    expect(config.refreshIntervalMs).toBe(0);
   });
 
   it("falls back to the legacy coordination token and prefers the API token", () => {

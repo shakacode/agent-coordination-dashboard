@@ -88,7 +88,7 @@ export function readConfig(env = process.env): ServerConfig {
     coordApiUrl,
     coordApiToken: env.AGENT_COORD_API_TOKEN?.trim() || env.AGENT_COORD_TOKEN?.trim() || "",
     coordApiTokenEnvVar,
-    refreshIntervalMs: refreshIntervalFromEnv(env.DASHBOARD_REFRESH_MS, coordApiUrl ? 5000 : 0),
+    refreshIntervalMs: refreshIntervalFromEnv(env.DASHBOARD_REFRESH_MS, 0),
     githubRefreshIntervalMs: integerFromEnv("GITHUB_REFRESH_MS", env.GITHUB_REFRESH_MS, DEFAULT_GITHUB_REFRESH_INTERVAL_MS, true),
     githubRequestBudgetPerHour: integerFromEnv("GITHUB_REQUEST_BUDGET_PER_HOUR", env.GITHUB_REQUEST_BUDGET_PER_HOUR, DEFAULT_GITHUB_REQUEST_BUDGET_PER_HOUR),
     githubRequestsPerRefresh: integerFromEnv("GITHUB_REQUESTS_PER_REFRESH", env.GITHUB_REQUESTS_PER_REFRESH, DEFAULT_GITHUB_REQUESTS_PER_REFRESH),

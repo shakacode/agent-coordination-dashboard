@@ -25,9 +25,6 @@ import { groupWarnings } from "./signalGroups";
 import { buildFindResults, exactFindResult, type FindResult } from "./universalFind";
 
 type WorkItem = DashboardModel["workItems"][number];
-const MIN_BACKGROUND_REFRESH_TIMEOUT_MS = 4000;
-const BACKGROUND_REFRESH_TIMEOUT_GRACE_MS = 1000;
-const BACKGROUND_CACHE_WRITE_INTERVAL_MS = 60_000;
 const REQUIRED_COORDINATION_RESOURCES: readonly CoordinationResource[] = ["claims", "heartbeats", "batches"];
 const BATCH_ACTION_COORDINATION_RESOURCES: readonly CoordinationResource[] = [
   ...REQUIRED_COORDINATION_RESOURCES,
@@ -280,17 +277,11 @@ export function batchReferenceFromSearchParams(params: URLSearchParams): BatchRe
   return { batchId, repo: params.get("repo")?.trim() || undefined };
 }
 
-export function backgroundRefreshTimeoutMs(refreshIntervalMs: number): number {
-  const intervalMs = Number.isFinite(refreshIntervalMs) && refreshIntervalMs > 0 ? refreshIntervalMs : 0;
-  return Math.max(MIN_BACKGROUND_REFRESH_TIMEOUT_MS, intervalMs + BACKGROUND_REFRESH_TIMEOUT_GRACE_MS);
-}
-
-export function nextActiveSnoozeDelayMs(workItems: WorkItem[], nowMs = Date.now()): number | undefined {
-  const expiries = workItems.flatMap((item) => {
-    const until = item.annotation?.kind === "snooze" ? Date.parse(item.annotation.until || "") : Number.NaN;
-    return Number.isFinite(until) && until > nowMs ? [until] : [];
-  });
-  return expiries.length > 0 ? Math.max(0, Math.min(...expiries) - nowMs) : undefined;
+/** Required gate for any future background refresh entry point. */
+export function canStartBackgroundRefresh(
+  targetDocument: Pick<Document, "visibilityState" | "hasFocus"> = document
+): boolean {
+  return targetDocument.visibilityState === "visible" && targetDocument.hasFocus();
 }
 
 function writeItemLocation(route: ItemRoute | undefined, mode: "push" | "replace") {
@@ -298,22 +289,6 @@ function writeItemLocation(route: ItemRoute | undefined, mode: "push" | "replace
   for (const key of ["batch", "lane", "repo", "target", "operatorFilter", "q", "item"]) url.searchParams.delete(key);
   if (route) url.searchParams.set("item", `${route.repo}/${route.target}`);
   window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
-}
-
-function preserveWorkItemSelections(current: DashboardModel | null, next: DashboardModel): DashboardModel {
-  if (!current) {
-    return next;
-  }
-
-  const selectedIds = new Set(current.workItems.filter((item) => item.selected && isSelectableWorkItem(item)).map((item) => item.id));
-  if (selectedIds.size === 0) {
-    return next;
-  }
-
-  return {
-    ...next,
-    workItems: next.workItems.map((item) => (selectedIds.has(item.id) && isSelectableWorkItem(item) ? { ...item, selected: true } : item))
-  };
 }
 
 function formatClock(date: Date): string {
@@ -349,7 +324,6 @@ export function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [foregroundLoadInFlight, setForegroundLoadInFlight] = useState(false);
   const currentDataUnavailable = Boolean(cachedSnapshotAt || error || foregroundLoadInFlight);
-  const backgroundLoadInFlight = useRef(false);
   const userActionInFlightCount = useRef(0);
   const userActionQueue = useRef<Promise<void>>(Promise.resolve());
   const dashboardRequestVersion = useRef(0);
@@ -358,7 +332,6 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightTimeout = useRef<number | undefined>(undefined);
   const initialBatchReference = useRef(batchReferenceFromSearchParams(new URLSearchParams(window.location.search)));
-  const lastCacheWriteAttemptAt = useRef(0);
 
   const view = useMemo(() => (dashboard ? buildCoordinationView(dashboard) : null), [dashboard]);
   const findResults = useMemo(() => (view ? buildFindResults(view, query) : []), [query, view]);
@@ -374,28 +347,17 @@ export function App() {
     setHighlightBatch(card.identity);
   }, [view]);
 
-  const cacheDashboard = useCallback((nextDashboard: DashboardModel, nextSettings: DashboardRuntimeSettings, background = false) => {
-    const attemptedAt = Date.now();
-    if (background && attemptedAt - lastCacheWriteAttemptAt.current < BACKGROUND_CACHE_WRITE_INTERVAL_MS) {
-      return undefined;
-    }
-    // Count attempts, not only successes, so quota failures cannot cause a tight polling loop.
-    lastCacheWriteAttemptAt.current = attemptedAt;
-    return writeCachedDashboardSnapshot(nextDashboard, nextSettings);
-  }, []);
+  const cacheDashboard = useCallback(writeCachedDashboardSnapshot, []);
 
   const applyFreshDashboard = useCallback((
     nextDashboard: DashboardModel,
-    nextSettings: DashboardRuntimeSettings,
-    options: { background?: boolean; preserveSelections?: boolean } = {}
+    nextSettings: DashboardRuntimeSettings
   ) => {
     assertDashboardScope(nextDashboard, nextSettings);
     currentSettingsRef.current = nextSettings;
     setSettings(nextSettings);
-    setDashboard((current) => options.preserveSelections
-      ? preserveWorkItemSelections(current, nextDashboard)
-      : nextDashboard);
-    cacheDashboard(nextDashboard, nextSettings, options.background);
+    setDashboard(nextDashboard);
+    cacheDashboard(nextDashboard, nextSettings);
     setCachedSnapshotAt(null);
     setError(null);
   }, [cacheDashboard]);
@@ -444,22 +406,11 @@ export function App() {
     return run;
   }
 
-  const loadDashboard = useCallback(async (options: { background?: boolean; backgroundTimeoutMs?: number } = {}) => {
-    const isBackground = Boolean(options.background);
-    if (isBackground && (backgroundLoadInFlight.current || userActionInFlightCount.current > 0)) {
-      return;
-    }
-    if (isBackground) {
-      backgroundLoadInFlight.current = true;
-    } else {
-      setForegroundLoadInFlight(true);
-      setError(null);
-      beginUserAction();
-    }
+  const loadDashboard = useCallback(async () => {
+    setForegroundLoadInFlight(true);
+    setError(null);
+    beginUserAction();
     const abortController = new AbortController();
-    const timeoutId = isBackground
-      ? window.setTimeout(() => abortController.abort(), options.backgroundTimeoutMs ?? MIN_BACKGROUND_REFRESH_TIMEOUT_MS)
-      : undefined;
     const requestVersion = ++dashboardRequestVersion.current;
     let scopeChanged = false;
     let dashboardPromise: Promise<
@@ -468,7 +419,7 @@ export function App() {
     > | undefined;
     try {
       const settingsPromise = fetchSettings({ signal: abortController.signal });
-      dashboardPromise = fetchDashboard({ fresh: !isBackground, signal: abortController.signal }).then(
+      dashboardPromise = fetchDashboard({ fresh: true, signal: abortController.signal }).then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error })
       );
@@ -504,10 +455,7 @@ export function App() {
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
       }
-      applyFreshDashboard(loadedDashboard, loadedSettings, {
-        background: isBackground,
-        preserveSelections: isBackground
-      });
+      applyFreshDashboard(loadedDashboard, loadedSettings);
     } catch (caught: unknown) {
       if (requestVersion !== dashboardRequestVersion.current) {
         return;
@@ -518,15 +466,8 @@ export function App() {
       if (dashboardPromise) {
         await dashboardPromise;
       }
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
-      if (isBackground) {
-        backgroundLoadInFlight.current = false;
-      } else {
-        setForegroundLoadInFlight(false);
-        finishUserAction();
-      }
+      setForegroundLoadInFlight(false);
+      finishUserAction();
     }
   }, [applyFreshDashboard]);
 
@@ -599,27 +540,6 @@ export function App() {
     window.addEventListener("keydown", openFind);
     return () => window.removeEventListener("keydown", openFind);
   }, []);
-
-  useEffect(() => {
-    const refreshIntervalMs = settings?.refreshIntervalMs || 0;
-    if (refreshIntervalMs <= 0) {
-      return undefined;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void loadDashboard({ background: true, backgroundTimeoutMs: backgroundRefreshTimeoutMs(refreshIntervalMs) });
-    }, refreshIntervalMs);
-
-    return () => window.clearInterval(intervalId);
-  }, [loadDashboard, settings?.refreshIntervalMs]);
-
-  useEffect(() => {
-    if (!dashboard || (settings?.refreshIntervalMs || 0) > 0) return undefined;
-    const delay = nextActiveSnoozeDelayMs(dashboard.workItems);
-    if (delay === undefined) return undefined;
-    const timeoutId = window.setTimeout(() => void loadDashboard(), Math.min(delay, 2_147_483_647));
-    return () => window.clearTimeout(timeoutId);
-  }, [dashboard, loadDashboard, settings?.refreshIntervalMs]);
 
   useEffect(() => () => window.clearTimeout(highlightTimeout.current), []);
 
