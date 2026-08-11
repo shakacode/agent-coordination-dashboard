@@ -235,6 +235,21 @@ describe("github list parsers", () => {
     expect(result.warnings[0].message).toContain("auth required");
   });
 
+  it("reuses a successful target lookup while retrying an isolated branch failure", async () => {
+    const run = vi.fn(async (args: string[]) => args[1].includes("/branches/")
+      ? { stdout: "", stderr: "temporary branch lookup failure", exitCode: 1 }
+      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 });
+    const reconciler = createGitHubTargetReconciler({ run });
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work" };
+
+    await reconciler.load([reference]);
+    const retried = await reconciler.load([reference]);
+
+    expect(run.mock.calls.filter(([args]) => args[1].includes("/issues/"))).toHaveLength(1);
+    expect(run.mock.calls.filter(([args]) => args[1].includes("/branches/"))).toHaveLength(2);
+    expect(retried.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "unknown" });
+  });
+
   it.each([
     "HTTP 404",
     "HTTP 404: Branch not found",

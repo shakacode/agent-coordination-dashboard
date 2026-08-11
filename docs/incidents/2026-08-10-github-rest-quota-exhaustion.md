@@ -9,7 +9,8 @@
 
 ## Summary
 
-A dashboard connected to the coordination API refreshed every five seconds.
+Before this mitigation, a dashboard connected to the coordination API refreshed
+every five seconds.
 GitHub target records were cached for only 60 seconds, so hundreds of entries
 expired together and were reconciled with one authenticated REST request per
 target. Approximately 438 synchronized requests per minute could exhaust a
@@ -25,12 +26,13 @@ failure even though the credential itself had not been revoked.
 The dashboard now separates its local/coordination refresh from GitHub
 enrichment:
 
-- coordination API polling remains five seconds by default;
+- the browser loads once at startup and refreshes only for explicit operator
+  actions; it has no interval or snooze-expiry polling;
 - GitHub results use a separate 15-minute default cadence;
-- background, concurrent-client, and foreground refreshes share cached and
+- initial, concurrent-client, and explicit foreground loads share cached and
   in-flight GitHub work;
 - every uncached GitHub cycle uses a process-wide governor with a default
-  1,000-request hourly budget and 50-request per-refresh ceiling;
+  1,000-request rolling 60-minute budget and 50-request per-refresh ceiling;
 - a representative authenticated `GET /user` probe reads
   `X-RateLimit-Used`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`;
 - GitHub work pauses at or below 500 remaining requests, at zero, when the
@@ -39,7 +41,7 @@ enrichment:
 - rate-limit pauses are cached until the observed reset time, with a bounded
   fallback cooldown when GitHub does not provide one;
 - blocked or failed GitHub reads remain `UNKNOWN`, while coordination state
-  continues to refresh.
+  remains available and is reread on manual refresh.
 
 The guard is deliberately process-local. Other applications using the same
 credential are reflected by the representative GitHub headers, but their calls
@@ -61,7 +63,8 @@ The dashboard API exposes a `githubStatus` object on `/api/dashboard` with:
 
 The UI displays a full-width GitHub enrichment banner whenever the state is not
 `available`. This banner is distinct from coordination-backend degradation: it
-explicitly says that coordination data continues to refresh.
+explicitly says that coordination data remains available and updates on manual
+refresh.
 
 For direct confirmation, make one authenticated representative request and
 inspect its response headers:
@@ -77,15 +80,16 @@ endpoints for the same credential returned 403 with zero remaining.
 ## Immediate containment
 
 1. Set `GITHUB_REFRESH_MS=0` and restart the dashboard. This disables only
-   GitHub enrichment; coordination polling can stay active.
+   GitHub enrichment; coordination data remains available for manual refresh.
 2. If guaranteed containment is required, stop the dashboard server.
 3. Avoid repeated GitHub-backed safety or merge commands until the reset time.
 4. Preserve the visible `UNKNOWN` state. Do not substitute unauthenticated,
    GraphQL, or cached results for a workflow that requires authenticated REST
    evidence.
 
-`DASHBOARD_REFRESH_MS=0` disables browser polling entirely and is still
-available, but it is no longer necessary merely to contain GitHub usage.
+`DASHBOARD_REFRESH_MS` is retained as a server-cache compatibility setting; no
+value enables browser polling. Its default value of `0` disables that short
+server-side cache and is not required merely to contain GitHub usage.
 
 ## Recovery
 
@@ -111,5 +115,5 @@ threshold as an authentication workaround.
 Automated tests cover a 500-target reconciliation ceiling, shared concurrent
 quota probes, hourly and per-refresh budgets, low- and zero-quota pauses,
 reset-aware recovery, missing-header fail-closed behavior, disabled enrichment,
-continued coordination refresh during cooldown, foreground cache policy, and
-the user-visible degradation banner.
+manual coordination refresh during cooldown, foreground cache policy, and the
+user-visible degradation banner.

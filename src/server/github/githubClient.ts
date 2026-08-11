@@ -352,7 +352,6 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     try {
       const target = reference.existingTarget || parseGitHubTarget(reference.repo, result?.stdout || "");
       const failed = branchWarnings.length > 0 || branchState === "unknown";
-      if (failed && result) invalidateTarget(reference, result);
       return {
         items: [{ ...target, ...(branchState ? { branchState } : {}) }],
         warnings: branchWarnings,

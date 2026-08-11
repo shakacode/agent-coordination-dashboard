@@ -737,7 +737,7 @@ describe("dashboard app import endpoint", () => {
     expect(githubLoads).toBe(3);
   });
 
-  it("keeps coordination refresh live while GitHub quota exhaustion is cooldown-cached", async () => {
+  it("reloads coordination state manually while GitHub quota exhaustion is cooldown-cached", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-github-quota-"));
     const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
     await mkdir(claimDirectory, { recursive: true });

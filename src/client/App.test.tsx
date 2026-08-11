@@ -351,7 +351,7 @@ describe("App", () => {
 
     const banner = await screen.findByRole("alert", { name: "GitHub enrichment degraded" });
     expect(within(banner).getByText(/GitHub enrichment paused/i)).toBeInTheDocument();
-    expect(within(banner).getByText(/coordination data continues to refresh/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/coordination data remains available and updates on manual refresh/i)).toBeInTheDocument();
     expect(within(banner).getByText(/0 requests remaining/i)).toBeInTheDocument();
     expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
   });

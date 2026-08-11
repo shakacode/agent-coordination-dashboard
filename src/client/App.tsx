@@ -885,7 +885,7 @@ export function App() {
         <section aria-label="GitHub enrichment degraded" className="banner banner-github" role="alert">
           <strong>GitHub enrichment {dashboard.githubStatus.state}</strong>
           <span>
-            {dashboard.githubStatus.message} Coordination data continues to refresh.
+            {dashboard.githubStatus.message} Coordination data remains available and updates on manual refresh.
             {dashboard.githubStatus.rateLimitRemaining !== undefined ? ` ${dashboard.githubStatus.rateLimitRemaining} requests remaining.` : ""}
             {dashboard.githubStatus.pausedUntil ? ` GitHub reads resume after ${new Date(dashboard.githubStatus.pausedUntil).toLocaleString()}.` : ""}
           </span>

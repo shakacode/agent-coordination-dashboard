@@ -29,13 +29,13 @@ const BLOCKED_EXIT_CODE = 75;
 const HOUR_MS = 60 * 60 * 1000;
 
 function positiveInteger(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number.`);
-  return Math.floor(value);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive safe integer.`);
+  return value;
 }
 
 function nonNegativeInteger(value: number, name: string): number {
-  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number.`);
-  return Math.floor(value);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative safe integer.`);
+  return value;
 }
 
 function headerNumber(text: string, name: string): number | undefined {
@@ -68,8 +68,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
     fallbackCooldownMs: positiveInteger(rawOptions.fallbackCooldownMs, "fallbackCooldownMs"),
     now: rawOptions.now || Date.now
   };
-  let hourlyWindowStartedAt = options.now();
-  let hourlyRequestsExecuted = 0;
+  const hourlyRequestTimes: number[] = [];
   let probeFreshUntil = 0;
   let probeInFlight: Promise<void> | undefined;
   let observation: RateLimitObservation = {};
@@ -84,16 +83,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
   }
 
   function refreshWindow(now: number) {
-    if (now >= hourlyWindowStartedAt + HOUR_MS) {
-      hourlyWindowStartedAt = now;
-      hourlyRequestsExecuted = 0;
-      if (pausedReason === "hourly_budget") {
-        pausedUntil = 0;
-        pausedReason = "none";
-        pausedMessage = "";
-        probeFreshUntil = 0;
-      }
-    }
+    while (hourlyRequestTimes.length > 0 && hourlyRequestTimes[0] <= now - HOUR_MS) hourlyRequestTimes.shift();
     if (options.enabled && pausedUntil > 0 && now >= pausedUntil) {
       pausedUntil = 0;
       pausedReason = "none";
@@ -127,15 +117,15 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
   function blockedByGlobalState(now: number): string | undefined {
     refreshWindow(now);
     if (pausedUntil > now) return pausedMessage;
-    if (hourlyRequestsExecuted >= options.hourlyRequestBudget) {
-      const until = hourlyWindowStartedAt + HOUR_MS;
+    if (hourlyRequestTimes.length >= options.hourlyRequestBudget) {
+      const until = hourlyRequestTimes[0] + HOUR_MS;
       pause("hourly_budget", `The dashboard's ${options.hourlyRequestBudget}-request hourly GitHub budget is exhausted.`, until);
       return pausedMessage;
     }
     return undefined;
   }
 
-  function consume(context: RefreshContext, countAttempt = true): string | undefined {
+  function consume(context: RefreshContext, countAttempt = true, reserveObservedQuota = false): string | undefined {
     if (countAttempt) context.requestsAttempted += 1;
     const now = options.now();
     const globalBlock = blockedByGlobalState(now);
@@ -148,8 +138,12 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
       context.reason = "per_refresh_limit";
       return `This refresh reached its ${options.perRefreshRequestLimit}-request GitHub ceiling.`;
     }
+    if (reserveObservedQuota && observation.remaining !== undefined) {
+      observation = { ...observation, remaining: Math.max(0, observation.remaining - 1) };
+      pauseForObservation(now);
+    }
     context.requestsExecuted += 1;
-    hourlyRequestsExecuted += 1;
+    hourlyRequestTimes.push(now);
     return undefined;
   }
 
@@ -196,7 +190,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
       async run(args) {
         context.requestsAttempted += 1;
         await ensureProbe(context);
-        const blocked = consume(context, false);
+        const blocked = consume(context, false, true);
         if (blocked) return blockedResult(blocked);
         const result = await baseRunner.run(args);
         const observed = parseGitHubRateLimitHeaders(`${result.stdout}\n${result.stderr}`);
@@ -232,7 +226,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
           requestsExecuted: context.requestsExecuted,
           requestsBlocked: context.requestsBlocked,
           hourlyRequestBudget: options.hourlyRequestBudget,
-          hourlyRequestsRemaining: Math.max(0, options.hourlyRequestBudget - hourlyRequestsExecuted),
+          hourlyRequestsRemaining: Math.max(0, options.hourlyRequestBudget - hourlyRequestTimes.length),
           perRefreshRequestLimit: options.perRefreshRequestLimit,
           ...details,
           ...(observation.used === undefined ? {} : { rateLimitUsed: observation.used }),

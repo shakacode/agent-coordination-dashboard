@@ -201,7 +201,8 @@ from `GET /user`. It pauses GitHub enrichment when remaining quota reaches the
 safety threshold, when the process-wide hourly budget is spent, or when quota
 telemetry cannot be read. The API returns `githubStatus` request totals and the
 UI displays a GitHub degradation banner. Affected GitHub fields stay visibly
-`UNKNOWN`; coordination records continue to refresh. See the
+`UNKNOWN`; coordination records remain available and are reread on manual
+refresh. See the
 [GitHub REST quota incident guide](docs/incidents/2026-08-10-github-rest-quota-exhaustion.md)
 for containment and recovery.
 
@@ -290,8 +291,8 @@ remain until an operator clears them.
 | `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
 | `DASHBOARD_REFRESH_MS` | `0`; optional server-side dashboard-model cache TTL (capped at 5 seconds) retained in runtime settings for compatibility; the browser remains manual-only |
-| `GITHUB_REFRESH_MS` | `900000` (15 minutes); separate GitHub cache cadence; set `0` to disable GitHub enrichment while coordination refresh continues |
-| `GITHUB_REQUEST_BUDGET_PER_HOUR` | `1000`; process-wide dashboard ceiling for GitHub CLI requests |
+| `GITHUB_REFRESH_MS` | `900000` (15 minutes); separate GitHub cache cadence; set `0` to disable GitHub enrichment while coordination data remains available for manual refresh |
+| `GITHUB_REQUEST_BUDGET_PER_HOUR` | `1000`; process-wide rolling 60-minute dashboard ceiling for GitHub CLI requests |
 | `GITHUB_REQUESTS_PER_REFRESH` | `50`; hard ceiling shared by all GitHub work in one dashboard rebuild, including its quota probe |
 | `GITHUB_QUOTA_SAFETY_THRESHOLD` | `500`; pause GitHub enrichment at or below this observed authenticated REST remainder |
 | `TARGET_REPOS` | empty first-run fallback |
@@ -381,8 +382,8 @@ The npm scripts call package entrypoints through `node` directly for consistent
 local execution.
 
 `npm run demo` starts a disposable local dashboard with synthetic coordination
-state that ticks every 3 seconds and refreshes in the UI every 2 seconds. The
-installed equivalent is:
+state that advances every 3 seconds. The browser shows current state on initial
+load or manual refresh. The installed equivalent is:
 
 ```bash
 npx agent-coordination-dashboard --demo

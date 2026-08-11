@@ -202,7 +202,7 @@ write such as importing a batch manifest or requesting a batch stop.
 | Batch events/history | `events/**/*.jsonl`, `history/**/*.jsonl` | Workers and coordinators | Append at lifecycle moments |
 | Stop requests | `events/batches/<batch-id>.jsonl` | Dashboard explicit button | Only when a user requests stop |
 | QA validation | QA events in `events/` or `history/` | Separate QA worker or process | When QA is requested, started, passed, or failed |
-| Dashboard model | Server memory | Dashboard API | Rebuilt on page load, manual refresh, API polling, and after explicit dashboard writes |
+| Dashboard model | Server memory | Dashboard API | Rebuilt on page load, manual refresh, and after explicit dashboard writes |
 
 ## Join Keys
 

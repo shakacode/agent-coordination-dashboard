@@ -18,6 +18,23 @@ function rateLimitResponse(remaining: number, resetEpochSeconds: number) {
 }
 
 describe("GitHub request governor", () => {
+  it.each([
+    ["hourlyRequestBudget", 1.5],
+    ["perRefreshRequestLimit", 2.5],
+    ["safetyThreshold", 0.5],
+    ["probeIntervalMs", 10.5],
+    ["fallbackCooldownMs", 10.5]
+  ] as const)("rejects a fractional %s option instead of silently flooring it", (name, value) => {
+    expect(() => createGitHubRequestGovernor({ run: vi.fn() }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 0,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      [name]: value
+    })).toThrow(`${name} must be a ${name === "safetyThreshold" ? "non-negative" : "positive"} safe integer.`);
+  });
+
   it("caches quota exhaustion until reset and never executes the blocked request", async () => {
     let nowMs = Date.parse("2026-08-11T03:00:00Z");
     const resetMs = nowMs + 60_000;
@@ -119,6 +136,36 @@ describe("GitHub request governor", () => {
     expect(run).toHaveBeenCalledTimes(3);
   });
 
+  it("reserves sampled remaining quota before concurrent ordinary requests", async () => {
+    const run = vi.fn(async (args: string[]) => args.includes("user")
+      ? rateLimitResponse(501, Date.parse("2026-08-11T04:00:00Z") / 1000)
+      : { stdout: "{}", stderr: "", exitCode: 0 });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 500,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+    const refresh = governor.beginRefresh("dashboard");
+
+    const results = await Promise.all([
+      refresh.runner.run(["api", "repos/repo/app/issues/1"]),
+      refresh.runner.run(["api", "repos/repo/app/issues/2"])
+    ]);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 75]);
+    expect(refresh.status()).toMatchObject({
+      state: "paused",
+      reason: "rate_limit_low",
+      requestsExecuted: 2,
+      requestsBlocked: 1,
+      rateLimitRemaining: 500
+    });
+  });
+
   it("fails closed when the representative response omits quota headers", async () => {
     const run = vi.fn()
       .mockResolvedValueOnce({ stdout: "HTTP/2.0 200 OK\n\n{}", stderr: "", exitCode: 0 })
@@ -175,6 +222,31 @@ describe("GitHub request governor", () => {
 
     expect(run).toHaveBeenCalledTimes(3);
     expect(second.status()).toMatchObject({ state: "paused", reason: "hourly_budget", hourlyRequestsRemaining: 0 });
+  });
+
+  it("accounts for the hourly budget over the prior rolling 60 minutes", async () => {
+    let nowMs = Date.parse("2026-08-11T03:00:00Z");
+    const run = vi.fn(async (args: string[]) => args.includes("user")
+      ? rateLimitResponse(5_000, Date.parse("2026-08-11T07:00:00Z") / 1000)
+      : { stdout: "{}", stderr: "", exitCode: 0 });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 4,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 2 * 60 * 60 * 1000,
+      fallbackCooldownMs: 30_000,
+      now: () => nowMs
+    });
+
+    await governor.beginRefresh("dashboard").runner.run(["api", "repos/repo/app/issues/1"]);
+    nowMs += 30 * 60 * 1000;
+    await governor.beginRefresh("dashboard").runner.run(["api", "repos/repo/app/issues/2"]);
+    nowMs += 30 * 60 * 1000 + 1;
+    const current = governor.beginRefresh("dashboard");
+    await current.runner.run(["api", "repos/repo/app/issues/3"]);
+
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(current.status()).toMatchObject({ hourlyRequestsRemaining: 2 });
   });
 
   it("supports explicitly disabling GitHub enrichment", async () => {

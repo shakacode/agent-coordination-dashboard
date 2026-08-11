@@ -426,11 +426,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const rawGithubStatus = githubRefresh.status({ targetCount: reconciliationReferences.length });
     const githubReadFailed = githubResults.some((result) => result.failed) || Boolean(reconciled.failed);
     const githubStatus: GitHubQuotaStatus = rawGithubStatus.state === "available" && githubReadFailed
-      ? { ...rawGithubStatus, state: "degraded", reason: "read_failed", message: "One or more GitHub reads failed; affected values remain UNKNOWN while coordination refresh continues." }
+      ? { ...rawGithubStatus, state: "degraded", reason: "read_failed", message: "One or more GitHub reads failed; affected values remain UNKNOWN." }
       : rawGithubStatus;
     const githubGuardWarnings: CoordinationWarning[] = githubStatus.state === "available" ? [] : [{
       severity: "warning",
-      message: `GitHub enrichment ${githubStatus.state}: ${githubStatus.message} Coordination refresh remains active.`
+      message: `GitHub enrichment ${githubStatus.state}: ${githubStatus.message} Coordination data remains available and updates on manual refresh.`
     }];
     const scopedModel: DashboardModel = {
       ...annotatedModel,
