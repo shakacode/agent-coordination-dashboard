@@ -330,6 +330,58 @@ describe("github list parsers", () => {
     });
   });
 
+  it("retries an UNKNOWN target after the quota reset instead of reusing failed cache entries", async () => {
+    vi.useFakeTimers();
+    let nowMs = Date.parse("2026-08-11T03:00:00Z");
+    const resetMs = nowMs + 1_000;
+    vi.setSystemTime(new Date(nowMs));
+    const run = vi.fn()
+      .mockResolvedValueOnce({
+        stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 0\nx-ratelimit-reset: ${resetMs / 1000}\n\n{}`,
+        stderr: "",
+        exitCode: 0
+      })
+      .mockResolvedValueOnce({
+        stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 5000\nx-ratelimit-reset: ${(resetMs + 3_600_000) / 1000}\n\n{}`,
+        stderr: "",
+        exitCode: 0
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ number: 45, title: "Recovered", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }),
+        stderr: "",
+        exitCode: 0
+      });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => nowMs
+    });
+    const reconciler = createGitHubTargetReconciler(undefined, 15 * 60 * 1000);
+    const reference = { repo: "repo/app", target: "45", type: "issue" as const };
+
+    const exhausted = await reconciler.load([reference], { runner: governor.beginRefresh("dashboard").runner });
+    expect(exhausted).toMatchObject({ failed: true, items: [{ loadState: "unknown" }] });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(reconciler.cacheSize()).toBe(0);
+
+    nowMs = resetMs + 1;
+    vi.setSystemTime(new Date(nowMs));
+    const recoveredRefresh = governor.beginRefresh("dashboard");
+    const recovered = await reconciler.load([reference], { runner: recoveredRefresh.runner });
+
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(recovered.failed).toBeUndefined();
+    expect(recovered.items[0]).toMatchObject({ title: "Recovered", loadState: "loaded", state: "OPEN" });
+    expect(recoveredRefresh.status()).toMatchObject({ state: "available", requestsExecuted: 2, requestsBlocked: 0 });
+    expect(reconciler.cacheSize()).toBe(1);
+
+    await reconciler.load([reference], { runner: governor.beginRefresh("dashboard").runner });
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
   it("coalesces one target lookup while preserving distinct branch lookups", async () => {
     const calls: string[] = [];
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {

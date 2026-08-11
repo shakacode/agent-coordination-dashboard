@@ -223,8 +223,14 @@ export function parseGitHubTarget(repo: string, stdout: string): GitHubPreview {
 // references; it trades cold reconciliation latency against gh spawn pressure and
 // GitHub secondary rate limits, and stays well below GitHub's <100 concurrent guidance.
 export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRunner, ttlMs = 60_000, maxConcurrency = 24, maxCacheEntries = 2_000) {
+  type TargetCacheEntry = {
+    expiresAt: number;
+    promise: ReturnType<GhRunner["run"]>;
+    settled: boolean;
+    result?: Awaited<ReturnType<GhRunner["run"]>>;
+  };
   const cache = new Map<string, { expiresAt: number; promise: Promise<GitHubLoadResult>; settled: boolean }>();
-  const targetCache = new Map<string, { expiresAt: number; promise: ReturnType<GhRunner["run"]>; settled: boolean }>();
+  const targetCache = new Map<string, TargetCacheEntry>();
   const queue: Array<() => void> = [];
   let activeLoads = 0;
 
@@ -257,11 +263,22 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     const existing = targetCache.get(key);
     if (existing && (!existing.settled || existing.expiresAt > now)) return existing.promise;
     const promise = schedule(() => activeRunner.run(["api", githubApiPath(reference.repo, "issues", reference.target)]));
-    const entry = { expiresAt: now + ttlMs, promise, settled: false };
+    const entry: TargetCacheEntry = { expiresAt: now + ttlMs, promise, settled: false };
     targetCache.set(key, entry);
-    const settle = () => { entry.settled = true; pruneTargetCache(Date.now()); };
-    void promise.then(settle, settle);
+    const settle = (result?: Awaited<ReturnType<GhRunner["run"]>>) => {
+      entry.settled = true;
+      entry.result = result;
+      if ((!result || result.exitCode !== 0) && targetCache.get(key) === entry) targetCache.delete(key);
+      pruneTargetCache(Date.now());
+    };
+    void promise.then(settle, () => settle(undefined));
     return promise;
+  }
+
+  function invalidateTarget(reference: GitHubTargetReference, result: Awaited<ReturnType<GhRunner["run"]>>) {
+    const key = `${reference.repo}#${reference.target}:${reference.type}`;
+    const entry = targetCache.get(key);
+    if (entry?.result === result) targetCache.delete(key);
   }
 
   function schedule<T>(task: () => Promise<T>): Promise<T> {
@@ -328,16 +345,25 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
           ...(branchState ? { branchState } : {}),
           loadState: "unknown"
         }],
-        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation failed for ${reference.repo}#${reference.target}: ${result.stderr || `exit ${result.exitCode}`}` }, ...branchWarnings]
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation failed for ${reference.repo}#${reference.target}: ${result.stderr || `exit ${result.exitCode}`}` }, ...branchWarnings],
+        failed: true
       };
     }
     try {
       const target = reference.existingTarget || parseGitHubTarget(reference.repo, result?.stdout || "");
-      return { items: [{ ...target, ...(branchState ? { branchState } : {}) }], warnings: branchWarnings };
+      const failed = branchWarnings.length > 0 || branchState === "unknown";
+      if (failed && result) invalidateTarget(reference, result);
+      return {
+        items: [{ ...target, ...(branchState ? { branchState } : {}) }],
+        warnings: branchWarnings,
+        ...(failed ? { failed: true } : {})
+      };
     } catch (error) {
+      if (result) invalidateTarget(reference, result);
       return {
         items: [{ repo: reference.repo, target: reference.target, type: reference.type, title: "GitHub state unavailable", url: "", state: "UNKNOWN", labels: [], ...(branchState ? { branchState } : {}), loadState: "unknown" }],
-        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation returned unreadable JSON for ${reference.repo}#${reference.target}: ${error instanceof Error ? error.message : "unknown error"}` }, ...branchWarnings]
+        warnings: [{ severity: "warning", repo: reference.repo, target: reference.target, message: `GitHub target reconciliation returned unreadable JSON for ${reference.repo}#${reference.target}: ${error instanceof Error ? error.message : "unknown error"}` }, ...branchWarnings],
+        failed: true
       };
     }
   }
@@ -358,11 +384,15 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
         const promise = loadOne(reference, options.runner || runner);
         const entry = { expiresAt: now + ttlMs, promise, settled: false };
         cache.set(key, entry);
-        const settleEntry = () => {
+        const settleEntry = (result?: GitHubLoadResult) => {
           entry.settled = true;
+          const reusable = Boolean(result)
+            && !result?.failed
+            && result?.items.every((item) => item.loadState !== "unknown" && item.branchState !== "unknown");
+          if (!reusable && cache.get(key) === entry) cache.delete(key);
           pruneCache(Date.now());
         };
-        void promise.then(settleEntry, settleEntry);
+        void promise.then(settleEntry, () => settleEntry(undefined));
         pruneCache(now);
         return promise;
       }));
