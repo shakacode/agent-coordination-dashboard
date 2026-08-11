@@ -40,8 +40,9 @@ enrichment:
   unreadable;
 - rate-limit pauses are cached until the observed reset time, with a bounded
   fallback cooldown when GitHub does not provide one;
-- blocked or failed GitHub reads remain `UNKNOWN`, while coordination state
-  remains available and is reread on manual refresh.
+- blocked or failed GitHub reads remain `UNKNOWN`; GitHub guardrails do not
+  block coordination reads, and Manual Refresh requests current coordination
+  data.
 
 The guard is deliberately process-local. Other applications using the same
 credential are reflected by the representative GitHub headers, but their calls
@@ -63,8 +64,8 @@ The dashboard API exposes a `githubStatus` object on `/api/dashboard` with:
 
 The UI displays a full-width GitHub enrichment banner whenever the state is not
 `available`. This banner is distinct from coordination-backend degradation: it
-explicitly says that coordination data remains available and updates on manual
-refresh.
+explicitly says that GitHub guardrails do not block coordination reads and that
+Manual Refresh requests current coordination data.
 
 For direct confirmation, make one authenticated representative request and
 inspect its response headers:
@@ -80,7 +81,8 @@ endpoints for the same credential returned 403 with zero remaining.
 ## Immediate containment
 
 1. Set `GITHUB_REFRESH_MS=0` and restart the dashboard. This disables only
-   GitHub enrichment; coordination data remains available for manual refresh.
+   GitHub enrichment and does not block coordination reads; use Manual Refresh
+   to request current coordination data.
 2. If guaranteed containment is required, stop the dashboard server.
 3. Avoid repeated GitHub-backed safety or merge commands until the reset time.
 4. Preserve the visible `UNKNOWN` state. Do not substitute unauthenticated,

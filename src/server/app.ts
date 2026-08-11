@@ -430,7 +430,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       : rawGithubStatus;
     const githubGuardWarnings: CoordinationWarning[] = githubStatus.state === "available" ? [] : [{
       severity: "warning",
-      message: `GitHub enrichment ${githubStatus.state}: ${githubStatus.message} Coordination data remains available and updates on manual refresh.`
+      message: `GitHub enrichment ${githubStatus.state}: ${githubStatus.message} GitHub guardrails do not block coordination reads. Manual Refresh requests current coordination data.`
     }];
     const scopedModel: DashboardModel = {
       ...annotatedModel,

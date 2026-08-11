@@ -351,9 +351,48 @@ describe("App", () => {
 
     const banner = await screen.findByRole("alert", { name: "GitHub enrichment degraded" });
     expect(within(banner).getByText(/GitHub enrichment paused/i)).toBeInTheDocument();
-    expect(within(banner).getByText(/coordination data remains available and updates on manual refresh/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/GitHub guardrails do not block coordination reads/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/Manual Refresh requests current coordination data/i)).toBeInTheDocument();
     expect(within(banner).getByText(/0 requests remaining/i)).toBeInTheDocument();
     expect(screen.queryByRole("alert", { name: "Coordination backend degraded" })).not.toBeInTheDocument();
+  });
+
+  it("keeps GitHub guardrail copy independent when coordination reads also fail", async () => {
+    const combinedFailure: DashboardModel = {
+      ...model,
+      coordinationTokenEnvVar: "AGENT_COORD_API_TOKEN",
+      sourceStatus: [
+        { resource: "claims", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: model.generatedAt },
+        { resource: "heartbeats", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: model.generatedAt },
+        { resource: "batches", mode: "api", status: "auth_error", httpStatus: 401, checkedAt: model.generatedAt }
+      ],
+      githubStatus: {
+        state: "paused",
+        reason: "rate_limit_exhausted",
+        caller: "dashboard",
+        checkedAt: model.generatedAt,
+        requestsAttempted: 1,
+        requestsExecuted: 1,
+        requestsBlocked: 1,
+        hourlyRequestBudget: 1_000,
+        hourlyRequestsRemaining: 999,
+        perRefreshRequestLimit: 50,
+        rateLimitRemaining: 0,
+        message: "GitHub reported no authenticated REST requests remaining."
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/api/settings") ? okJson(settings) : okJson(combinedFailure)
+    ));
+
+    render(<App />);
+
+    const githubBanner = await screen.findByRole("alert", { name: "GitHub enrichment degraded" });
+    const coordinationBanner = screen.getByRole("alert", { name: "Coordination backend degraded" });
+    expect(within(coordinationBanner).getByText(/Coordination backend unreachable.*showing GitHub data only/i)).toBeInTheDocument();
+    expect(within(githubBanner).getByText(/GitHub guardrails do not block coordination reads/i)).toBeInTheDocument();
+    expect(within(githubBanner).getByText(/Manual Refresh requests current coordination data/i)).toBeInTheDocument();
+    expect(githubBanner).not.toHaveTextContent(/coordination data remains available/i);
   });
 
   it("adds and removes target repositories through the scope row", async () => {

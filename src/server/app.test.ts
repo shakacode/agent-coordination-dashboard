@@ -790,9 +790,9 @@ describe("dashboard app import endpoint", () => {
     expect(first.workItems[0]?.claim?.agentId).toBe("worker-a");
     expect(first.githubStatus).toMatchObject({ state: "paused", reason: "rate_limit_exhausted", requestsExecuted: 1 });
     expect(first.trulyOpenCountStatus).toBe("unknown");
-    expect(first.warnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: expect.stringContaining("GitHub enrichment paused") })
-    ]));
+    const githubWarning = first.warnings.find((warning) => warning.message.includes("GitHub enrichment paused"));
+    expect(githubWarning?.message).toContain("GitHub guardrails do not block coordination reads. Manual Refresh requests current coordination data.");
+    expect(githubWarning?.message).not.toContain("Coordination data remains available");
 
     await writeClaim("worker-b");
     const second = await (await fetch(`${baseUrl}/api/dashboard`)).json() as DashboardModel;
