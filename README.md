@@ -188,13 +188,13 @@ action, including the top-bar Refresh button. It does not poll on an interval or
 when a snooze expires. `DASHBOARD_REFRESH_MS` remains in the settings contract
 for compatibility, but its default is `0` in both API and filesystem modes and
 a positive value controls only the short server-side dashboard-model cache; it
-does not schedule browser polling. Any future background refresh entry point
-must use the centralized guard that allows requests only while the document is
-visible and focused. GitHub enrichment has a separate 15-minute default cache
-cadence. The server coalesces dashboard reads, GitHub list reads, target
-reconciliation, and the representative quota probe. A foreground refresh
-bypasses only the short dashboard-model cache; it uses the same GitHub cache,
-hourly budget, per-refresh ceiling, safety threshold, and cooldown.
+does not schedule browser polling. The dormant background refresh seam rejects
+requests unless the document is visible and focused; no scheduler invokes that
+seam. GitHub enrichment has a separate 15-minute default cache cadence. The
+server coalesces dashboard reads, GitHub list reads, target reconciliation, and
+the representative quota probe. A foreground refresh bypasses only the short
+dashboard-model cache; it uses the same GitHub cache, hourly budget, per-refresh
+ceiling, safety threshold, and cooldown.
 
 Before uncached GitHub work, the server samples authenticated REST quota headers
 from `GET /user`. It pauses GitHub enrichment when remaining quota reaches the

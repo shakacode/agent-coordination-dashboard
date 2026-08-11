@@ -7,7 +7,7 @@ import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardModel, DashboardRuntimeSettings } from "../shared/types";
 import type { ItemTimelineResponse } from "./api";
-import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, batchReferenceFromSearchParams, canStartBackgroundRefresh } from "./App";
+import { App, DASHBOARD_SNAPSHOT_CACHE_KEY, batchReferenceFromSearchParams, startBackgroundRefreshIfActive } from "./App";
 
 const settings: DashboardRuntimeSettings = { targetRepos: ["repo/dashboard"], scopeId: "test-runtime-scope" };
 
@@ -161,16 +161,32 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
-  it("allows background refreshes only while the document is visible and focused", () => {
+  it("starts the production background refresh seam only while the document is visible and focused", () => {
+    vi.useFakeTimers();
     const documentState = (visibilityState: DocumentVisibilityState, focused: boolean) => ({
       visibilityState,
       hasFocus: () => focused
     });
+    const stateEffect = vi.fn();
+    const networkEffect = vi.fn();
+    const startRefresh = vi.fn(() => {
+      stateEffect();
+      networkEffect();
+      return "started";
+    });
 
-    expect(canStartBackgroundRefresh(documentState("visible", true))).toBe(true);
-    expect(canStartBackgroundRefresh(documentState("visible", false))).toBe(false);
-    expect(canStartBackgroundRefresh(documentState("hidden", true))).toBe(false);
-    expect(canStartBackgroundRefresh(documentState("hidden", false))).toBe(false);
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("visible", false))).toBeUndefined();
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("hidden", true))).toBeUndefined();
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("hidden", false))).toBeUndefined();
+    expect(startRefresh).not.toHaveBeenCalled();
+    expect(stateEffect).not.toHaveBeenCalled();
+    expect(networkEffect).not.toHaveBeenCalled();
+
+    expect(startBackgroundRefreshIfActive(startRefresh, documentState("visible", true))).toBe("started");
+    expect(startRefresh).toHaveBeenCalledOnce();
+    expect(stateEffect).toHaveBeenCalledOnce();
+    expect(networkEffect).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("opens on the Batches view with the three-tab shell and host legend", async () => {

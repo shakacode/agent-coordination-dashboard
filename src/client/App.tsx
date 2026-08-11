@@ -277,11 +277,14 @@ export function batchReferenceFromSearchParams(params: URLSearchParams): BatchRe
   return { batchId, repo: params.get("repo")?.trim() || undefined };
 }
 
-/** Required gate for any future background refresh entry point. */
-export function canStartBackgroundRefresh(
+export function startBackgroundRefreshIfActive<T>(
+  startRefresh: () => T,
   targetDocument: Pick<Document, "visibilityState" | "hasFocus"> = document
-): boolean {
-  return targetDocument.visibilityState === "visible" && targetDocument.hasFocus();
+): T | undefined {
+  if (targetDocument.visibilityState !== "visible" || !targetDocument.hasFocus()) {
+    return undefined;
+  }
+  return startRefresh();
 }
 
 function writeItemLocation(route: ItemRoute | undefined, mode: "push" | "replace") {
@@ -406,7 +409,7 @@ export function App() {
     return run;
   }
 
-  const loadDashboard = useCallback(async () => {
+  const performDashboardLoad = useCallback(async () => {
     setForegroundLoadInFlight(true);
     setError(null);
     beginUserAction();
@@ -470,6 +473,13 @@ export function App() {
       finishUserAction();
     }
   }, [applyFreshDashboard]);
+
+  const loadDashboard = useCallback((options: { background?: boolean } = {}) => {
+    if (options.background) {
+      return startBackgroundRefreshIfActive(performDashboardLoad);
+    }
+    return performDashboardLoad();
+  }, [performDashboardLoad]);
 
   useEffect(() => {
     void loadDashboard();
