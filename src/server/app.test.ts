@@ -932,7 +932,7 @@ describe("dashboard app import endpoint", () => {
       targetCount: 1,
       cacheHits: 0,
       cacheMisses: 1,
-      githubApiCount: 5,
+      githubApiCount: 4,
       result: "success",
       status: "available",
       githubRequestId: "batch-request-id",
@@ -984,7 +984,7 @@ describe("dashboard app import endpoint", () => {
       state: "degraded",
       reason: "read_failed",
       hourlyRequestBudget: 1_000,
-      hourlyRequestsRemaining: 992
+      hourlyRequestsRemaining: 993
     });
   });
 
@@ -1579,16 +1579,15 @@ describe("dashboard app import endpoint", () => {
 
     expect(reconciliationCalls).toEqual([
       Array.from({ length: 10 }, (_, index) => String(101 + index)),
-      Array.from({ length: 10 }, (_, index) => String(101 + index)),
-      Array.from({ length: 20 }, (_, index) => String(101 + index)),
-      Array.from({ length: 25 }, (_, index) => String(101 + index))
+      [],
+      Array.from({ length: 10 }, (_, index) => String(111 + index)),
+      Array.from({ length: 5 }, (_, index) => String(121 + index))
     ]);
     expect(first.workItems.filter((item) => item.github?.state === "OPEN").map((item) => item.target)).toEqual(
       Array.from({ length: 10 }, (_, index) => String(101 + index))
     );
-    expect(reconciliationCalls.map((targets, index) => index === 0
-      ? targets.length
-      : targets.filter((target) => !reconciliationCalls[index - 1].includes(target)).length)).toEqual([10, 0, 10, 5]);
+    expect(reconciliationCalls.every((targets) => targets.length <= 10)).toBe(true);
+    expect(new Set(reconciliationCalls.flat())).toHaveLength(25);
 
     const restartedCalls: string[][] = [];
     const restarted = await createDashboardApp(testConfig(stateRoot), {
@@ -1600,6 +1599,56 @@ describe("dashboard app import endpoint", () => {
     });
     await fetch(`${await listenServer(restarted.listen(0, "127.0.0.1"))}/api/dashboard`);
     expect(restartedCalls).toEqual([Array.from({ length: 10 }, (_, index) => String(101 + index))]);
+  });
+
+  it("uses the same stable ordering for historical rotation and its cursor", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-historical-cursor-"));
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    const repos = ["repo/_x", "repo/-x", "repo/.x", "repo/0x", "repo/1x", "repo/2x", "repo/ax", "repo/Ax", "repo/bx", "repo/Bx", "repo/zx", "repo/Zx"];
+    await Promise.all(repos.map((repo, index) => writeFile(
+      join(stateRoot, "heartbeats", `worker-${index}.json`),
+      JSON.stringify({
+        schema_version: 1,
+        repo,
+        target: "1",
+        agent_id: `worker-${index}`,
+        status: "completed",
+        updated_at: "2026-07-01T10:00:00Z",
+        expires_at: "2026-07-01T10:05:00Z",
+        pr_url: `https://github.com/${repo}/pull/1`
+      })
+    )));
+    let nowMs = Date.parse("2026-08-12T03:00:00Z");
+    const calls: string[][] = [];
+    const app = await createDashboardApp(testConfig(stateRoot, { targetRepos: repos }), {
+      serveFrontend: false,
+      now: () => new Date(nowMs),
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        calls.push(references.map((reference) => `${reference.repo}#${reference.target}`));
+        return {
+          references,
+          items: references.map((reference) => ({
+            ...reference,
+            title: `Merged ${reference.repo}`,
+            url: `https://github.com/${reference.repo}/pull/${reference.target}`,
+            state: "MERGED",
+            mergedAt: "2026-07-01T10:00:00Z",
+            labels: [],
+            loadState: "loaded" as const
+          })),
+          warnings: []
+        };
+      }
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    await fetch(`${baseUrl}/api/dashboard`);
+    nowMs += 15 * 60 * 1000;
+    await fetch(`${baseUrl}/api/dashboard`);
+
+    expect(calls.map((targets) => targets.length)).toEqual([10, 2]);
+    expect(new Set(calls.flat())).toHaveLength(12);
   });
 
   it("reconciles a completed issue from a linked PR in a later matching batch signal", async () => {

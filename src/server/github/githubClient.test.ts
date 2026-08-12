@@ -233,7 +233,7 @@ describe("github list parsers", () => {
   });
 
   it("fetches target and branch evidence in one GraphQL batch", async () => {
-    const run = vi.fn(async (args: string[]) => graphQlResult(args));
+    const run = vi.fn(async (args: string[], _options?: unknown) => graphQlResult(args));
     const reconciler = createGitHubTargetReconciler({ run });
     const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
     expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "present" });
@@ -241,6 +241,7 @@ describe("github list parsers", () => {
     expect(run.mock.calls[0][0].join(" ")).toContain("issueOrPullRequest");
     expect(run.mock.calls[0][0].join(" ")).toContain("ref(qualifiedName:");
     expect(run.mock.calls[0][0]).toContain("branch0=refs/heads/feature/work");
+    expect(run.mock.calls[0][1]).toEqual({ estimatedGraphQlCost: 3 });
   });
 
   it("passes GraphQL strings without gh type coercion while targets stay numeric", async () => {
@@ -399,6 +400,38 @@ describe("github list parsers", () => {
     } }, 60_000, 2);
     await reconciler.load(Array.from({ length: 120 }, (_, index) => ({ repo: "repo/app", target: String(index + 1), type: "issue" as const })));
     expect(maximum).toBe(2);
+  });
+
+  it("releases the scheduler slot when the active runner throws synchronously", async () => {
+    const unhandledRejections: unknown[] = [];
+    const captureUnhandled = (reason: unknown) => unhandledRejections.push(reason);
+    process.on("unhandledRejection", captureUnhandled);
+    let calls = 0;
+    const reconciler = createGitHubTargetReconciler({
+      run(args) {
+        calls += 1;
+        if (calls === 1) throw new Error("synchronous runner failure");
+        return Promise.resolve(graphQlResult(args));
+      }
+    }, 60_000, 1);
+
+    try {
+      const first = await reconciler.load([{ repo: "repo/app", target: "1", type: "issue" }]);
+      expect(first).toMatchObject({ failed: true, items: [{ target: "1", loadState: "unknown" }] });
+
+      const second = await Promise.race([
+        reconciler.load([{ repo: "repo/app", target: "2", type: "issue" }]),
+        new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 25))
+      ]);
+
+      expect(second).not.toBe("timed_out");
+      expect(second).toMatchObject({ items: [{ target: "2", loadState: "loaded" }] });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandledRejections).toEqual([]);
+      expect(calls).toBe(2);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+    }
   });
 
   it("reconciles 500 cold targets with bounded GraphQL batches instead of one REST request per target", async () => {

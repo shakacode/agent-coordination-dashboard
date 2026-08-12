@@ -339,10 +339,16 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     return new Promise<T>((resolve, reject) => {
       const start = () => {
         activeLoads += 1;
-        void task().then(resolve, reject).finally(() => {
+        const releaseSlot = () => {
           activeLoads -= 1;
           queue.shift()?.();
-        });
+        };
+        try {
+          void task().then(resolve, reject).finally(releaseSlot);
+        } catch (error) {
+          releaseSlot();
+          reject(error);
+        }
       };
       if (activeLoads < Math.max(1, maxConcurrency)) start();
       else queue.push(start);
@@ -374,9 +380,13 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       }
     });
     const query = `query(${declarations.join(",")}){repository(owner:$owner,name:$name){${fields.join(" ")}}}`;
+    const estimatedGraphQlCost = operations.reduce((total, operation) => total + (operation.kind === "target" ? 2 : 1), 0);
     let result: Awaited<ReturnType<GhRunner["run"]>>;
     try {
-      result = await schedule(() => activeRunner.run(["api", "graphql", "--include", "-f", `query=${query}`, ...variables]));
+      result = await schedule(() => activeRunner.run(
+        ["api", "graphql", "--include", "-f", `query=${query}`, ...variables],
+        { estimatedGraphQlCost }
+      ));
     } catch (error) {
       result = { stdout: "", stderr: error instanceof Error ? error.message : "GitHub GraphQL request failed", exitCode: 1 };
     }

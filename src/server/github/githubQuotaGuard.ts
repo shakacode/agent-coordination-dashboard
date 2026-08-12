@@ -1,4 +1,4 @@
-import type { GhRunner } from "./types";
+import type { GhRunner, GhRunOptions } from "./types";
 import type { GitHubQuotaReason, GitHubQuotaState, GitHubQuotaStatus } from "../../shared/types";
 
 interface GitHubRequestGovernorOptions {
@@ -153,6 +153,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
     const pool = pools[poolName];
     if (pool.pausedUntil > now) {
       context.requestsBlocked += 1;
+      context.reason = pool.pausedReason;
       context.poolsUsed.add(poolName);
       return pool.pausedMessage;
     }
@@ -164,7 +165,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
     if (estimatedCost > 0 && pool.observation.remaining !== undefined) {
       pool.observation = { ...pool.observation, remaining: Math.max(0, pool.observation.remaining - estimatedCost) };
       if (poolName === "graphql") context.estimatedGraphQlCostReserved += estimatedCost;
-      pauseForObservation(poolName, now);
+      if (pauseForObservation(poolName, now)) context.reason = pool.pausedReason;
     }
     context.poolsUsed.add(poolName);
     context.requestsExecuted += 1;
@@ -182,7 +183,10 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
     const pool = pools[poolName];
     pool.observation = parseGitHubRateLimitHeaders(`${result.stdout}\n${result.stderr}`);
     context.observedHeaders = pool.observation;
-    if (pauseForObservation(poolName, now)) return;
+    if (pauseForObservation(poolName, now)) {
+      context.reason = pool.pausedReason;
+      return;
+    }
     if (result.exitCode !== 0) {
       const message = result.stderr.trim() || `exit ${result.exitCode}`;
       pause(poolName, "probe_failed", `Representative GitHub ${poolName.toUpperCase()} quota probe failed: ${message}`, now + options.fallbackCooldownMs);
@@ -210,17 +214,17 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
   }
 
   function requestPool(args: string[]): PrimaryRateLimitPool {
-    return args[0] === "api" && args[1] === "graphql" ? "graphql" : "rest";
+    return (args[0] === "api" && args[1] === "graphql")
+      || (["pr", "issue"].includes(args[0]) && args[1] === "list")
+      ? "graphql"
+      : "rest";
   }
 
-  function estimatedGraphQlCost(args: string[]): number {
+  function estimatedGraphQlCost(args: string[], runOptions: GhRunOptions | undefined): number | undefined {
     if (requestPool(args) !== "graphql") return 1;
-    const query = args.find((argument) => argument.startsWith("query="))?.slice("query=".length) || "";
-    const targetFields = query.match(/\btarget\d+:issueOrPullRequest\b/g)?.length || 0;
-    const branchFields = query.match(/\bbranch\d+:ref\b/g)?.length || 0;
-    // This is a local safety reservation, not GitHub's observed operation cost:
-    // reserve a root/object point plus a labels-connection point for every target.
-    return Math.max(1, (targetFields * 2) + branchFields);
+    const hint = runOptions?.estimatedGraphQlCost;
+    if (hint === undefined) return 1;
+    return Number.isSafeInteger(hint) && hint > 0 ? hint : undefined;
   }
 
   function beginRefresh(caller: string) {
@@ -229,16 +233,25 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
       requestsAttempted: 0,
       requestsExecuted: 0,
       requestsBlocked: 0,
-      reason: "none",
+      reason: options.enabled ? "none" : "disabled",
       poolsUsed: new Set(),
       estimatedGraphQlCostReserved: 0
     };
     const runner: GhRunner = {
-      async run(args) {
+      async run(args, runOptions) {
         const poolName = requestPool(args);
         context.requestsAttempted += 1;
+        const estimatedCost = estimatedGraphQlCost(args, runOptions);
+        if (estimatedCost === undefined) {
+          const message = "GraphQL request omitted a valid positive safe-integer cost reservation.";
+          pause(poolName, "probe_failed", message, options.now() + options.fallbackCooldownMs);
+          context.poolsUsed.add(poolName);
+          context.reason = "probe_failed";
+          context.requestsBlocked += 1;
+          return blockedResult(message);
+        }
         await ensureProbe(context, poolName);
-        const blocked = consume(context, poolName, false, estimatedGraphQlCost(args));
+        const blocked = consume(context, poolName, false, estimatedCost);
         if (blocked) return blockedResult(blocked);
         const result = await baseRunner.run(args);
         const observed = parseGitHubRateLimitHeaders(`${result.stdout}\n${result.stderr}`);
@@ -246,12 +259,13 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
         if (observed.used !== undefined || observed.remaining !== undefined || observed.resetAtMs !== undefined) {
           pool.observation = { ...observed, requestId: observed.requestId || pool.observation.requestId };
           context.observedHeaders = { ...observed, requestId: observed.requestId || context.observedHeaders?.requestId };
-          pauseForObservation(poolName, options.now());
+          if (pauseForObservation(poolName, options.now())) context.reason = pool.pausedReason;
         } else if (observed.requestId) {
           pool.observation = { ...pool.observation, requestId: observed.requestId };
           context.observedHeaders = { ...context.observedHeaders, requestId: observed.requestId };
         } else if (result.exitCode !== 0 && /(?:api\s+)?rate.?limit/i.test(result.stderr)) {
           pause(poolName, "rate_limit_exhausted", `GitHub reported authenticated ${poolName.toUpperCase()} API rate limiting.`, options.now() + options.fallbackCooldownMs);
+          context.reason = "rate_limit_exhausted";
         }
         return result;
       }

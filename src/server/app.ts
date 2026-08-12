@@ -229,8 +229,6 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   function isHistoricalTerminal(item: WorkItem): boolean {
     return Boolean(
-      !correctedHistoricalTargets.has(item.id)
-      &&
       item.terminalState
       && item.operatorState === "archived_view"
       && item.lastActivityAt
@@ -238,14 +236,18 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     );
   }
 
+  function compareHistoricalIds(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
   function historicalRechecksForWindow(model: DashboardModel, now: Date): Set<string> {
     const currentWindow = Math.floor(now.getTime() / Math.max(1, githubRefreshIntervalMs));
     if (historicalRecheckWindow === currentWindow) return new Set();
     historicalRecheckWindow = currentWindow;
-    const candidates = model.workItems.filter(isHistoricalTerminal).sort((left, right) => left.id.localeCompare(right.id));
+    const candidates = model.workItems.filter(isHistoricalTerminal).sort((left, right) => compareHistoricalIds(left.id, right.id));
     if (candidates.length === 0) return new Set();
     const afterIndex = historicalRecheckAfterId
-      ? candidates.findIndex((item) => item.id > historicalRecheckAfterId!)
+      ? candidates.findIndex((item) => compareHistoricalIds(item.id, historicalRecheckAfterId!) > 0)
       : 0;
     const startIndex = afterIndex < 0 ? 0 : afterIndex;
     const selected = candidates.slice(startIndex, startIndex + HISTORICAL_RECHECK_LIMIT);
