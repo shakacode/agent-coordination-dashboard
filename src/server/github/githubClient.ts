@@ -270,15 +270,24 @@ function parseGraphQlTarget(repo: string, node: GraphQlIssueOrPullRequest): GitH
 
 type TargetLookup = { preview?: GitHubPreview; warning?: CoordinationWarning; failed: boolean };
 type BranchLookup = { branchState?: GitHubPreview["branchState"]; warning?: CoordinationWarning; failed: boolean };
-type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; readonly settled: boolean };
 type GraphQlOperation =
   | { kind: "target"; repo: string; reference: GitHubTargetReference; deferred: Deferred<TargetLookup> }
   | { kind: "branch"; repo: string; reference: GitHubTargetReference; deferred: Deferred<BranchLookup> };
 
 function deferred<T>(): Deferred<T> {
   let resolve: (value: T) => void = () => undefined;
+  let settled = false;
   const promise = new Promise<T>((resolver) => { resolve = resolver; });
-  return { promise, resolve };
+  return {
+    promise,
+    get settled() { return settled; },
+    resolve(value) {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    }
+  };
 }
 
 function staggeredCacheExpiry(now: number, ttlMs: number, key: string): number {
@@ -314,7 +323,13 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
       if (entry.settled && entry.expiresAt <= now) candidate.delete(key);
     }
     while (candidate.size > Math.max(1, maxCacheEntries)) {
-      const oldestSettled = Array.from(candidate).find(([, entry]) => entry.settled)?.[0];
+      let oldestSettled: string | undefined;
+      for (const [key, entry] of candidate) {
+        if (entry.settled) {
+          oldestSettled = key;
+          break;
+        }
+      }
       if (!oldestSettled) break;
       candidate.delete(oldestSettled);
     }
@@ -335,14 +350,18 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
   }
 
   function graphQlErrorForAlias(response: GraphQlResponse, alias: string): string | undefined {
-    return response.errors?.find((error) => error.path?.includes(alias))?.message;
+    if (response.errors === undefined) return undefined;
+    if (!Array.isArray(response.errors)) throw new Error("GitHub GraphQL returned malformed errors");
+    const error = response.errors.find((candidate) => candidate.path?.includes(alias))
+      || response.errors.find((candidate) => !Array.isArray(candidate.path) || candidate.path.length === 0 || candidate.path.at(-1) === "repository");
+    return error ? error.message || "GitHub GraphQL query failed" : undefined;
   }
 
-  async function executeChunk(operations: GraphQlOperation[], activeRunner: GhRunner): Promise<void> {
+  async function executeChunkUnsafe(operations: GraphQlOperation[], activeRunner: GhRunner): Promise<void> {
     const [owner, name] = operations[0].repo.split("/");
     const declarations = ["$owner:String!", "$name:String!"];
     const fields: string[] = [];
-    const variables: string[] = ["-F", `owner=${owner}`, "-F", `name=${name}`];
+    const variables: string[] = ["-f", `owner=${owner}`, "-f", `name=${name}`];
     operations.forEach((operation, index) => {
       if (operation.kind === "target") {
         declarations.push(`$target${index}:Int!`);
@@ -350,7 +369,7 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
         fields.push(`target${index}:issueOrPullRequest(number:$target${index}){__typename ... on Issue{number title url state closedAt author{login} labels(first:100){nodes{name}}} ... on PullRequest{number title url state closedAt mergedAt author{login} labels(first:100){nodes{name}}}}`);
       } else {
         declarations.push(`$branch${index}:String!`);
-        variables.push("-F", `branch${index}=refs/heads/${operation.reference.branch}`);
+        variables.push("-f", `branch${index}=refs/heads/${operation.reference.branch}`);
         fields.push(`branch${index}:ref(qualifiedName:$branch${index}){name}`);
       }
     });
@@ -420,6 +439,45 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     });
   }
 
+  function settleChunkFailure(operations: GraphQlOperation[], error: unknown) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    for (const operation of operations) {
+      if (operation.deferred.settled) continue;
+      if (operation.kind === "target") {
+        operation.deferred.resolve({
+          failed: true,
+          warning: {
+            severity: "warning",
+            repo: operation.repo,
+            target: operation.reference.target,
+            message: `GitHub target reconciliation failed for ${operation.repo}#${operation.reference.target}: ${message}`
+          }
+        });
+      } else {
+        operation.deferred.resolve({
+          branchState: "unknown",
+          failed: true,
+          warning: {
+            severity: "warning",
+            repo: operation.repo,
+            target: operation.reference.target,
+            message: `GitHub branch lookup failed for ${operation.repo}:${operation.reference.branch}: ${message}`
+          }
+        });
+      }
+    }
+  }
+
+  async function executeChunk(operations: GraphQlOperation[], activeRunner: GhRunner): Promise<void> {
+    try {
+      await executeChunkUnsafe(operations, activeRunner);
+    } catch (error) {
+      settleChunkFailure(operations, error);
+    } finally {
+      settleChunkFailure(operations, new Error("GitHub GraphQL batch ended without a result"));
+    }
+  }
+
   function executeOperations(operations: GraphQlOperation[], activeRunner: GhRunner) {
     const byRepo = new Map<string, GraphQlOperation[]>();
     for (const operation of operations) {
@@ -427,7 +485,12 @@ export function createGitHubTargetReconciler(runner: GhRunner = childProcessGhRu
     }
     for (const repoOperations of byRepo.values()) {
       for (let index = 0; index < repoOperations.length; index += GRAPHQL_RECONCILIATION_BATCH_SIZE) {
-        void executeChunk(repoOperations.slice(index, index + GRAPHQL_RECONCILIATION_BATCH_SIZE), activeRunner);
+        const chunk = repoOperations.slice(index, index + GRAPHQL_RECONCILIATION_BATCH_SIZE);
+        void executeChunk(chunk, activeRunner).catch((error) => {
+          // executeChunk is deliberately detached so target cache entries can
+          // share its work. Keep the boundary rejection-safe as a final guard.
+          settleChunkFailure(chunk, error);
+        });
       }
     }
   }

@@ -5,7 +5,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { batchLanesFor, canBypassDashboardCache, createDashboardApp } from "./app";
 import { createOpenGitHubItemsCache } from "./dashboardHotPath";
-import { createGitHubTargetReconciler } from "./github/githubClient";
+import { createGitHubTargetReconciler, type GitHubTargetReference } from "./github/githubClient";
 import type { GhRunner } from "./github/types";
 import type { ServerConfig } from "./config";
 import type { CoordinationWarning, DashboardModel, GitHubPreview, GitHubTelemetryEvent, WorkItem } from "../shared/types";
@@ -597,7 +597,10 @@ describe("dashboard app import endpoint", () => {
     };
     await writeCurrentState("worker-a", "planning");
 
-    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 });
+    const telemetry: GitHubTelemetryEvent[] = [];
+    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 }, {
+      emitGitHubTelemetry: (event) => telemetry.push(event)
+    });
     await fetch(`${baseUrl}/api/dashboard`);
     await writeCurrentState("worker-b", "implementing");
 
@@ -613,6 +616,37 @@ describe("dashboard app import endpoint", () => {
     expect(item.liveness).toEqual(expect.arrayContaining([expect.objectContaining({ agentId: "worker-b", status: "implementing" })]));
     expect(item.item?.claim).toMatchObject({ agentId: "worker-b" });
     expect(item.item?.heartbeat).toMatchObject({ agentId: "worker-b", status: "implementing" });
+    expect(telemetry.filter((event) => event.route === "/api/item/:repo/:target")).toEqual([
+      expect.objectContaining({
+        route: "/api/item/:repo/:target",
+        refreshKind: "cache_hit",
+        requestId: response.headers.get("x-request-id")
+      })
+    ]);
+  });
+
+  it("attributes an uncached item fallback build to the item route", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-item-telemetry-fallback-"));
+    const claimDirectory = join(root, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(join(claimDirectory, "46.json"), JSON.stringify({
+      repo: "shakacode/react_on_rails", target: "46", agent_id: "worker-a", status: "active"
+    }));
+    const telemetry: GitHubTelemetryEvent[] = [];
+    const baseUrl = await listen(root, { refreshIntervalMs: 5_000 }, {
+      emitGitHubTelemetry: (event) => telemetry.push(event)
+    });
+
+    const response = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    expect(response.ok).toBe(true);
+    await response.json();
+    expect(telemetry).toEqual([
+      expect.objectContaining({
+        route: "/api/item/:repo/:target",
+        refreshKind: "initial",
+        requestId: response.headers.get("x-request-id")
+      })
+    ]);
   });
 
   it("refreshes item state from a captured snapshot without repeating cached dashboard GitHub work", async () => {
@@ -633,6 +667,7 @@ describe("dashboard app import endpoint", () => {
     };
     let openListCalls = 0;
     let reconciliationCalls = 0;
+    const telemetry: GitHubTelemetryEvent[] = [];
     await writeCurrentState("worker-a");
     const baseUrl = await listen(root, { refreshIntervalMs: 5_000 }, {
       loadOpenGitHubItems: async () => {
@@ -642,13 +677,16 @@ describe("dashboard app import endpoint", () => {
       loadGitHubTargets: async (references) => {
         reconciliationCalls += 1;
         return { items: [], warnings: [], references };
-      }
+      },
+      emitGitHubTelemetry: (event) => telemetry.push(event)
     });
     await fetch(`${baseUrl}/api/dashboard`);
     await writeCurrentState("worker-b");
 
-    const first = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { claim?: { agentId: string } }; claims: Array<{ agentId: string }>; warnings: Array<{ message: string }> };
-    const second = await (await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`)).json() as { item?: { heartbeat?: { agentId: string } }; claims: Array<{ agentId: string }> };
+    const firstResponse = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    const first = await firstResponse.json() as { item?: { claim?: { agentId: string } }; claims: Array<{ agentId: string }>; warnings: Array<{ message: string }> };
+    const secondResponse = await fetch(`${baseUrl}/api/item/${encodeURIComponent("shakacode/react_on_rails")}/46`);
+    const second = await secondResponse.json() as { item?: { heartbeat?: { agentId: string } }; claims: Array<{ agentId: string }> };
 
     expect(first.item?.claim).toMatchObject({ agentId: "worker-b" });
     expect(first.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
@@ -657,6 +695,13 @@ describe("dashboard app import endpoint", () => {
     expect(second.claims.at(-1)).toMatchObject({ agentId: "worker-b" });
     expect(openListCalls).toBe(1);
     expect(reconciliationCalls).toBe(1);
+    const itemTelemetry = telemetry.filter((event) => event.route === "/api/item/:repo/:target");
+    expect(itemTelemetry).toHaveLength(2);
+    expect(itemTelemetry).toEqual([
+      expect.objectContaining({ refreshKind: "cache_hit", githubApiCount: 0, requestId: firstResponse.headers.get("x-request-id") }),
+      expect.objectContaining({ refreshKind: "cache_hit", githubApiCount: 0, requestId: secondResponse.headers.get("x-request-id") })
+    ]);
+    expect(itemTelemetry[0].requestId).not.toBe(itemTelemetry[1].requestId);
   });
 
   it("returns runtime refresh settings with target repositories", async () => {
@@ -699,11 +744,19 @@ describe("dashboard app import endpoint", () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-"));
     let githubLoads = 0;
     const telemetry: GitHubTelemetryEvent[] = [];
+    const resetAt = Date.parse("2026-08-12T12:00:00Z");
+    const githubRunner: GhRunner = { run: async () => ({
+      stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 4999\nx-ratelimit-used: 1\nx-ratelimit-reset: ${resetAt / 1000}\nx-github-request-id: coalesced-request\n\n{}`,
+      stderr: "",
+      exitCode: 0
+    }) };
     const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5000 }), {
       serveFrontend: false,
-      loadOpenGitHubItems: async () => {
+      githubRunner,
+      loadOpenGitHubItems: async (_repo, loadOptions) => {
         githubLoads += 1;
         await new Promise((resolve) => setTimeout(resolve, 25));
+        await loadOptions!.runner!.run(["api", "--include", "repos/repo/app"]);
         return { items: [], warnings: [] };
       },
       loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] }),
@@ -735,6 +788,13 @@ describe("dashboard app import endpoint", () => {
       "single_flight"
     ]);
     expect(new Set(telemetry.map((event) => event.requestId)).size).toBe(5);
+    for (const cacheOnly of telemetry.filter((event) => ["cache_hit", "single_flight"].includes(event.refreshKind))) {
+      expect(cacheOnly.githubApiCount).toBe(0);
+      expect(cacheOnly).not.toHaveProperty("githubRequestId");
+      expect(cacheOnly).not.toHaveProperty("rateLimitUsed");
+      expect(cacheOnly).not.toHaveProperty("rateLimitRemaining");
+      expect(cacheOnly).not.toHaveProperty("rateLimitResetAt");
+    }
 
     const saved = await fetch(`${baseUrl}/api/settings`, {
       method: "PUT",
@@ -872,7 +932,7 @@ describe("dashboard app import endpoint", () => {
       targetCount: 1,
       cacheHits: 0,
       cacheMisses: 1,
-      githubApiCount: 4,
+      githubApiCount: 5,
       result: "success",
       status: "available",
       githubRequestId: "batch-request-id",
@@ -889,12 +949,12 @@ describe("dashboard app import endpoint", () => {
       cacheMisses: 0,
       githubApiCount: 0,
       result: "success",
-      status: "available",
-      githubRequestId: "batch-request-id",
-      rateLimitUsed: 3,
-      rateLimitRemaining: 4997,
-      rateLimitResetAt: new Date(resetAt).toISOString()
+      status: "available"
     });
+    expect(telemetry[1]).not.toHaveProperty("githubRequestId");
+    expect(telemetry[1]).not.toHaveProperty("rateLimitUsed");
+    expect(telemetry[1]).not.toHaveProperty("rateLimitRemaining");
+    expect(telemetry[1]).not.toHaveProperty("rateLimitResetAt");
     expect(telemetry[1].requestId).toBe(cachedResponse.headers.get("x-request-id"));
     expect(telemetry[1].requestId).not.toBe(telemetry[0].requestId);
 
@@ -924,7 +984,7 @@ describe("dashboard app import endpoint", () => {
       state: "degraded",
       reason: "read_failed",
       hourlyRequestBudget: 1_000,
-      hourlyRequestsRemaining: 993
+      hourlyRequestsRemaining: 992
     });
   });
 
@@ -1476,37 +1536,70 @@ describe("dashboard app import endpoint", () => {
     expect(body.githubMergeTimeStatus).toBe("available");
   });
 
-  it("excludes provably historical terminal targets from routine GitHub reconciliation", async () => {
+  it("rotates a stable capped historical-terminal recheck without per-load bursts and restarts at the first slice", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-historical-terminal-"));
     await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
-    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
-      schema_version: 1,
-      repo: "shakacode/react_on_rails",
-      target: "54",
-      agent_id: "worker",
-      status: "completed",
-      updated_at: "2026-07-01T10:00:00Z",
-      expires_at: "2026-07-01T10:05:00Z",
-      pr_url: "https://github.com/shakacode/react_on_rails/pull/54"
+    await Promise.all(Array.from({ length: 25 }, async (_, index) => {
+      const target = String(101 + index);
+      await writeFile(join(stateRoot, "heartbeats", `worker-${target}.json`), JSON.stringify({
+        schema_version: 1,
+        repo: "shakacode/react_on_rails",
+        target,
+        agent_id: `worker-${target}`,
+        status: "completed",
+        updated_at: "2026-07-01T10:00:00Z",
+        expires_at: "2026-07-01T10:05:00Z",
+        pr_url: `https://github.com/shakacode/react_on_rails/pull/${target}`
+      }));
     }));
-    const reconciledReferences: Array<{ target: string }> = [];
-    const app = await createDashboardApp(testConfig(stateRoot), {
+    let nowMs = Date.parse("2026-08-12T03:00:00Z");
+    const reconciliationCalls: string[][] = [];
+    const appOptions = {
       serveFrontend: false,
+      now: () => new Date(nowMs),
       loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references: GitHubTargetReference[]) => {
+        reconciliationCalls.push(references.map((reference) => reference.target));
+        return {
+          references,
+          items: references.map((reference) => ({ ...reference, title: `Open ${reference.target}`, url: `https://github.com/${reference.repo}/pull/${reference.target}`, state: "OPEN", labels: [], loadState: "loaded" as const })),
+          warnings: []
+        };
+      }
+    };
+    const app = await createDashboardApp(testConfig(stateRoot), appOptions);
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const first = await (await fetch(`${baseUrl}/api/dashboard`)).json() as { workItems: WorkItem[] };
+    await fetch(`${baseUrl}/api/dashboard`);
+    nowMs += 15 * 60 * 1000;
+    await fetch(`${baseUrl}/api/dashboard`);
+    nowMs += 15 * 60 * 1000;
+    await fetch(`${baseUrl}/api/dashboard`);
+
+    expect(reconciliationCalls).toEqual([
+      Array.from({ length: 10 }, (_, index) => String(101 + index)),
+      Array.from({ length: 10 }, (_, index) => String(101 + index)),
+      Array.from({ length: 20 }, (_, index) => String(101 + index)),
+      Array.from({ length: 25 }, (_, index) => String(101 + index))
+    ]);
+    expect(first.workItems.filter((item) => item.github?.state === "OPEN").map((item) => item.target)).toEqual(
+      Array.from({ length: 10 }, (_, index) => String(101 + index))
+    );
+    expect(reconciliationCalls.map((targets, index) => index === 0
+      ? targets.length
+      : targets.filter((target) => !reconciliationCalls[index - 1].includes(target)).length)).toEqual([10, 0, 10, 5]);
+
+    const restartedCalls: string[][] = [];
+    const restarted = await createDashboardApp(testConfig(stateRoot), {
+      ...appOptions,
       loadGitHubTargets: async (references) => {
-        reconciledReferences.push(...references);
+        restartedCalls.push(references.map((reference) => reference.target));
         return { items: [], references, warnings: [] };
       }
     });
-
-    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as {
-      workItems: Array<{ target: string; operatorState?: string; terminalState?: string }>;
-    };
-
-    expect(reconciledReferences).toEqual([]);
-    expect(body.workItems).toEqual([
-      expect.objectContaining({ target: "54", operatorState: "archived_view", terminalState: "done" })
-    ]);
+    await fetch(`${await listenServer(restarted.listen(0, "127.0.0.1"))}/api/dashboard`);
+    expect(restartedCalls).toEqual([Array.from({ length: 10 }, (_, index) => String(101 + index))]);
   });
 
   it("reconciles a completed issue from a linked PR in a later matching batch signal", async () => {

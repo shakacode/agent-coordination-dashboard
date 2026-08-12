@@ -36,6 +36,7 @@ export interface GitHubQuotaStatus {
   requestsAttempted: number;
   requestsExecuted: number;
   requestsBlocked: number;
+  estimatedGraphQlCostReserved?: number;
   hourlyRequestBudget: number;
   hourlyRequestsRemaining: number;
   perRefreshRequestLimit: number;
