@@ -337,6 +337,39 @@ if [ "$2" = "--include" ] && [ "$3" = "user" ]; then
   printf 'HTTP/2.0 200 OK\\nX-RateLimit-Used: 1\\nX-RateLimit-Remaining: 4999\\nX-RateLimit-Reset: %s\\nContent-Type: application/json\\n\\n{"login":"demo-offline"}\\n' "$reset_at"
   exit 0
 fi
+if [ "$2" = "graphql" ]; then
+  reset_at=$(( $(date +%s) + 3600 ))
+  printf 'HTTP/2.0 200 OK\nX-RateLimit-Used: 2\nX-RateLimit-Remaining: 4998\nX-RateLimit-Reset: %s\nX-GitHub-Request-Id: demo-graphql\nContent-Type: application/json\n\n{"data":{"repository":{' "$reset_at"
+  separator=''
+  for argument in "$@"; do
+    case "$argument" in
+      target*=*)
+        alias="\${argument%%=*}"
+        target="\${argument#*=}"
+        printf '%s"%s":' "$separator" "$alias"
+        case "$target" in
+          202) printf '{"__typename":"PullRequest","number":202,"title":"Merged QA demo lane","url":"https://github.com/${DEMO_REPO}/pull/202","state":"MERGED","closedAt":"2026-07-12T10:00:00Z","mergedAt":"2026-07-12T09:59:00Z","labels":{"nodes":[]}}' ;;
+          203) printf '{"__typename":"Issue","number":203,"title":"Closed publish demo lane","url":"https://github.com/${DEMO_REPO}/issues/203","state":"CLOSED","closedAt":"2026-07-12T09:30:00Z","labels":{"nodes":[]}}' ;;
+          *) printf '{"__typename":"Issue","number":%s,"title":"Open demo lane","url":"https://github.com/${DEMO_REPO}/issues/%s","state":"OPEN","labels":{"nodes":[]}}' "$target" "$target" ;;
+        esac
+        separator=','
+        ;;
+      branch*=*)
+        alias="\${argument%%=*}"
+        branch="\${argument#*=refs/heads/}"
+        printf '%s"%s":' "$separator" "$alias"
+        if [ "$branch" = "demo/publish" ]; then
+          printf 'null'
+        else
+          printf '{"name":"%s"}' "$branch"
+        fi
+        separator=','
+        ;;
+    esac
+  done
+  printf '}}}\n'
+  exit 0
+fi
 case "$2" in
   */branches/demo%2Fpublish) printf 'HTTP 404: Branch not found\\n' >&2; exit 1 ;;
   */branches/*) printf '{}\\n'; exit 0 ;;

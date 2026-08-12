@@ -8,7 +8,7 @@ import { createOpenGitHubItemsCache } from "./dashboardHotPath";
 import { createGitHubTargetReconciler } from "./github/githubClient";
 import type { GhRunner } from "./github/types";
 import type { ServerConfig } from "./config";
-import type { CoordinationWarning, DashboardModel, GitHubPreview, WorkItem } from "../shared/types";
+import type { CoordinationWarning, DashboardModel, GitHubPreview, GitHubTelemetryEvent, WorkItem } from "../shared/types";
 
 const servers: Server[] = [];
 
@@ -698,6 +698,7 @@ describe("dashboard app import endpoint", () => {
   it("coalesces dashboard reads while API refresh caching is active", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-cache-"));
     let githubLoads = 0;
+    const telemetry: GitHubTelemetryEvent[] = [];
     const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5000 }), {
       serveFrontend: false,
       loadOpenGitHubItems: async () => {
@@ -705,7 +706,8 @@ describe("dashboard app import endpoint", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
         return { items: [], warnings: [] };
       },
-      loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] })
+      loadGitHubTargets: async () => ({ items: [], warnings: [], references: [] }),
+      emitGitHubTelemetry: (event) => telemetry.push(event)
     });
     const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
 
@@ -725,6 +727,14 @@ describe("dashboard app import endpoint", () => {
     const cachedAfterFresh = await fetch(`${baseUrl}/api/dashboard`);
     expect(cachedAfterFresh.ok).toBe(true);
     expect(githubLoads).toBe(2);
+    expect(telemetry.map((event) => event.refreshKind).sort()).toEqual([
+      "cache_hit",
+      "cache_hit",
+      "foreground",
+      "initial",
+      "single_flight"
+    ]);
+    expect(new Set(telemetry.map((event) => event.requestId)).size).toBe(5);
 
     const saved = await fetch(`${baseUrl}/api/settings`, {
       method: "PUT",
@@ -799,6 +809,92 @@ describe("dashboard app import endpoint", () => {
     expect(second.workItems[0]?.claim?.agentId).toBe("worker-b");
     expect(second.githubStatus).toMatchObject({ state: "paused", reason: "rate_limit_exhausted" });
     expect(baseRunnerCalls).toBe(1);
+  });
+
+  it("emits caller-attributed GitHub telemetry for refreshed and cached dashboard requests", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-github-telemetry-"));
+    const claimDirectory = join(stateRoot, "claims", "shakacode", "react_on_rails");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(join(claimDirectory, "45.json"), JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "45",
+      agent_id: "worker-a",
+      status: "active"
+    }));
+    const resetAt = Date.parse("2026-08-12T12:00:00Z");
+    const githubRunner: GhRunner = { run: async (args) => {
+      if (args.includes("user")) {
+        return {
+          stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 5000\nx-ratelimit-used: 0\nx-ratelimit-reset: ${resetAt / 1000}\nx-github-request-id: probe-request-id\n\n{}`,
+          stderr: "",
+          exitCode: 0
+        };
+      }
+      if (args[0] === "pr" || args[0] === "issue") return { stdout: "[]", stderr: "", exitCode: 0 };
+      return {
+        stdout: [
+          "HTTP/2.0 200 OK",
+          "x-ratelimit-remaining: 4997",
+          "x-ratelimit-used: 3",
+          `x-ratelimit-reset: ${resetAt / 1000}`,
+          "x-github-request-id: batch-request-id",
+          "",
+          JSON.stringify({ data: { repository: { target0: {
+            __typename: "Issue", number: 45, title: "Telemetry target", url: "https://github.com/shakacode/react_on_rails/issues/45", state: "OPEN", labels: { nodes: [] }
+          } } } })
+        ].join("\n"),
+        stderr: "",
+        exitCode: 0
+      };
+    } };
+    const telemetry: GitHubTelemetryEvent[] = [];
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5_000 }), {
+      serveFrontend: false,
+      githubRunner,
+      emitGitHubTelemetry: (event) => telemetry.push(event)
+    });
+    const baseUrl = await listenServer(app.listen(0, "127.0.0.1"));
+
+    const refreshedResponse = await fetch(`${baseUrl}/api/dashboard`);
+    expect(refreshedResponse.ok).toBe(true);
+    await refreshedResponse.json();
+    const cachedResponse = await fetch(`${baseUrl}/api/dashboard`);
+    expect(cachedResponse.ok).toBe(true);
+    await cachedResponse.json();
+
+    expect(telemetry).toHaveLength(2);
+    expect(telemetry[0]).toMatchObject({
+      route: "/api/dashboard",
+      refreshKind: "initial",
+      targetCount: 1,
+      cacheHits: 0,
+      cacheMisses: 1,
+      githubApiCount: 4,
+      result: "success",
+      status: "available",
+      githubRequestId: "batch-request-id",
+      rateLimitUsed: 3,
+      rateLimitRemaining: 4997,
+      rateLimitResetAt: new Date(resetAt).toISOString()
+    });
+    expect(telemetry[0].requestId).toBe(refreshedResponse.headers.get("x-request-id"));
+    expect(telemetry[1]).toMatchObject({
+      route: "/api/dashboard",
+      refreshKind: "cache_hit",
+      targetCount: 1,
+      cacheHits: 1,
+      cacheMisses: 0,
+      githubApiCount: 0,
+      result: "success",
+      status: "available",
+      githubRequestId: "batch-request-id",
+      rateLimitUsed: 3,
+      rateLimitRemaining: 4997,
+      rateLimitResetAt: new Date(resetAt).toISOString()
+    });
+    expect(telemetry[1].requestId).toBe(cachedResponse.headers.get("x-request-id"));
+    expect(telemetry[1].requestId).not.toBe(telemetry[0].requestId);
   });
 
   it("defaults the dashboard payload to a hot history window with ?history=full opt-in", async () => {
@@ -1157,7 +1253,7 @@ describe("dashboard app import endpoint", () => {
       repo: "shakacode/react_on_rails",
       target: "45",
       pr_url: "https://github.com/shakacode/react_on_rails/pull/54",
-      timestamp: "2026-07-12T10:01:00Z"
+      timestamp: "2099-07-12T10:01:00Z"
     }));
     let reconciledTargets: string[] = [];
     const app = await createDashboardApp(testConfig(stateRoot), {
@@ -1349,6 +1445,39 @@ describe("dashboard app import endpoint", () => {
     expect(body.githubMergeTimeStatus).toBe("available");
   });
 
+  it("excludes provably historical terminal targets from routine GitHub reconciliation", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-historical-terminal-"));
+    await mkdir(join(stateRoot, "heartbeats"), { recursive: true });
+    await writeFile(join(stateRoot, "heartbeats", "worker.json"), JSON.stringify({
+      schema_version: 1,
+      repo: "shakacode/react_on_rails",
+      target: "54",
+      agent_id: "worker",
+      status: "completed",
+      updated_at: "2026-07-01T10:00:00Z",
+      expires_at: "2026-07-01T10:05:00Z",
+      pr_url: "https://github.com/shakacode/react_on_rails/pull/54"
+    }));
+    const reconciledReferences: Array<{ target: string }> = [];
+    const app = await createDashboardApp(testConfig(stateRoot), {
+      serveFrontend: false,
+      loadOpenGitHubItems: async () => ({ items: [], warnings: [] }),
+      loadGitHubTargets: async (references) => {
+        reconciledReferences.push(...references);
+        return { items: [], references, warnings: [] };
+      }
+    });
+
+    const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as {
+      workItems: Array<{ target: string; operatorState?: string; terminalState?: string }>;
+    };
+
+    expect(reconciledReferences).toEqual([]);
+    expect(body.workItems).toEqual([
+      expect.objectContaining({ target: "54", operatorState: "archived_view", terminalState: "done" })
+    ]);
+  });
+
   it("reconciles a completed issue from a linked PR in a later matching batch signal", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "coord-dashboard-multi-batch-pr-"));
     await mkdir(join(stateRoot, "batches"), { recursive: true });
@@ -1357,7 +1486,7 @@ describe("dashboard app import endpoint", () => {
         schema_version: 1,
         batch_id: "older",
         repo: "shakacode/react_on_rails",
-        updated_at: "2026-07-12T09:00:00Z",
+        updated_at: "2099-07-12T09:00:00Z",
         targets: [{ type: "issue", target: "45" }],
         lanes: [{ name: "discovery", owner: "worker-a", targets: ["45"], depends_on: [], status: "completed" }]
       })),
@@ -1365,7 +1494,7 @@ describe("dashboard app import endpoint", () => {
         schema_version: 1,
         batch_id: "newer",
         repo: "shakacode/react_on_rails",
-        updated_at: "2026-07-12T10:00:00Z",
+        updated_at: "2099-07-12T10:00:00Z",
         targets: [{ type: "issue", target: "45" }],
         lanes: [{ name: "implementation", owner: "worker-b", targets: ["45"], depends_on: [], status: "completed", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
       }))
@@ -1450,7 +1579,7 @@ describe("dashboard app import endpoint", () => {
         schema_version: 1,
         batch_id: "implementation",
         repo: "shakacode/react_on_rails",
-        updated_at: "2026-07-12T09:00:00Z",
+        updated_at: "2099-07-12T09:00:00Z",
         targets: [{ type: "issue", target: "45" }],
         lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "completed", branch: "feature/work", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
       })),
@@ -1458,7 +1587,7 @@ describe("dashboard app import endpoint", () => {
         schema_version: 1,
         batch_id: "qa",
         repo: "shakacode/react_on_rails",
-        updated_at: "2026-07-12T10:00:00Z",
+        updated_at: "2099-07-12T10:00:00Z",
         targets: [{ type: "issue", target: "45" }],
         lanes: [{ name: "qa", owner: "qa-worker", targets: ["45"], depends_on: [], status: "completed", branch: "qa-proof" }]
       }))
@@ -1749,11 +1878,17 @@ describe("dashboard app import endpoint", () => {
       targets: [{ type: "issue", target: "45" }],
       lanes: [{ name: "implementation", owner: "worker", targets: ["45"], depends_on: [], status: "running", branch: "has space", pr_url: "https://github.com/shakacode/react_on_rails/pull/54" }]
     }));
-    const ghCalls: string[] = [];
+    const ghCalls: string[][] = [];
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
-      ghCalls.push(args[1]);
+      ghCalls.push(args);
+      const repository = Object.fromEntries(args.flatMap((argument) => {
+        const match = argument.match(/^(target\d+)=\d+$/);
+        return match ? [[match[1], {
+          __typename: "PullRequest", number: 54, title: "Merged PR", url: "https://github.com/shakacode/react_on_rails/pull/54", state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: { nodes: [] }
+        }]] : [];
+      }));
       return {
-        stdout: JSON.stringify({ number: 54, title: "Merged PR", html_url: "https://github.com/shakacode/react_on_rails/pull/54", state: "closed", labels: [], pull_request: { merged_at: "2026-07-12T10:00:00Z" } }),
+        stdout: JSON.stringify({ data: { repository } }),
         stderr: "",
         exitCode: 0
       };
@@ -1765,10 +1900,9 @@ describe("dashboard app import endpoint", () => {
     });
 
     const body = await (await fetch(`${await listenServer(app.listen(0, "127.0.0.1"))}/api/dashboard`)).json() as { workItems: Array<{ id: string; terminalState?: string; github?: { state: string; branchState?: string; loadState: string } }>; trulyOpenCount: number; trulyOpenCountStatus: string; warnings: Array<{ message: string }> };
-    expect(ghCalls).toEqual([
-      "repos/shakacode/react_on_rails/issues/54",
-      "repos/shakacode/react_on_rails/issues/45"
-    ]);
+    expect(ghCalls).toHaveLength(1);
+    expect(ghCalls[0].slice(0, 2)).toEqual(["api", "graphql"]);
+    expect(ghCalls[0]).toEqual(expect.arrayContaining(["target0=54", "target1=45"]));
     expect(body.workItems).toEqual([expect.objectContaining({
       id: "shakacode/react_on_rails#45",
       terminalState: "done",

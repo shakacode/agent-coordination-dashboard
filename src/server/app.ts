@@ -1,11 +1,11 @@
 import express from "express";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { buildCustodyTimeline } from "../shared/custodyTimeline";
-import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, GitHubQuotaStatus, WorkItem } from "../shared/types";
+import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, GitHubQuotaStatus, GitHubRefreshKind, GitHubTelemetryEvent, WorkItem } from "../shared/types";
 import { DEFAULT_GITHUB_QUOTA_SAFETY_THRESHOLD, DEFAULT_GITHUB_REFRESH_INTERVAL_MS, DEFAULT_GITHUB_REQUEST_BUDGET_PER_HOUR, DEFAULT_GITHUB_REQUESTS_PER_REFRESH, type ServerConfig } from "./config";
 import { applyDashboardHistoryWindow, createOpenGitHubItemsCache } from "./dashboardHotPath";
 import { childProcessGhRunner, createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubLoadResult, type GitHubTargetReference } from "./github/githubClient";
@@ -62,7 +62,13 @@ interface CreateDashboardAppOptions {
   loadOpenGitHubItems?: LoadOpenGitHubItems;
   loadGitHubTargets?: LoadGitHubTargets;
   githubRunner?: GhRunner;
+  emitGitHubTelemetry?: (event: GitHubTelemetryEvent) => void;
   machineInterfaces?: MachineInterfaceMap;
+}
+
+interface DashboardReadResult {
+  model: DashboardModel;
+  refreshKind: GitHubRefreshKind;
 }
 
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
@@ -89,6 +95,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     safetyThreshold: config.githubQuotaSafetyThreshold ?? DEFAULT_GITHUB_QUOTA_SAFETY_THRESHOLD,
     probeIntervalMs: 60_000,
     fallbackCooldownMs: 60_000
+  });
+  const emitGitHubTelemetry = options.emitGitHubTelemetry || ((event: GitHubTelemetryEvent) => {
+    if (config.nodeEnv !== "test") console.info(JSON.stringify(event));
   });
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
@@ -210,6 +219,18 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
     if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
+    // Historical terminal rows are retained for coordination visibility, but
+    // their GitHub state no longer changes the operator's active-work view.
+    // Require a real activity timestamp so undated legacy records remain
+    // eligible for one honest reconciliation instead of being silently aged.
+    if (
+      item.terminalState
+      && item.operatorState === "archived_view"
+      && item.lastActivityAt
+      && Number.isFinite(Date.parse(item.lastActivityAt))
+    ) {
+      return undefined;
+    }
     const lanes = batchLanesFor(item, model);
     const branch = item.claim?.branch || item.heartbeat?.branch || lanes.find((lane) => lane.branch)?.branch;
     const events = model.events
@@ -423,7 +444,11 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
     const annotatedModel = await applyStoredAnnotations(model, now);
-    const rawGithubStatus = githubRefresh.status({ targetCount: reconciliationReferences.length });
+    const rawGithubStatus = githubRefresh.status({
+      targetCount: reconciliationReferences.length,
+      cacheHits: reconciled.cacheHits ?? 0,
+      cacheMisses: reconciled.cacheMisses ?? reconciliationReferences.length
+    });
     const githubReadFailed = githubResults.some((result) => result.failed) || Boolean(reconciled.failed);
     const githubStatus: GitHubQuotaStatus = rawGithubStatus.state === "available" && githubReadFailed
       ? { ...rawGithubStatus, state: "degraded", reason: "read_failed", message: "One or more GitHub reads failed; affected values remain UNKNOWN." }
@@ -482,10 +507,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     return applyStoredAnnotations(model, captured.now);
   }
 
-  async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
+  async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardReadResult> {
     const key = dashboardCacheKey(settings);
     if (dashboardCacheTtlMs <= 0) {
-      return buildScopedDashboard(settings);
+      return { model: await buildScopedDashboard(settings), refreshKind: options.bypassCache ? "foreground" : "initial" };
     }
 
     if (options.bypassCache) {
@@ -494,15 +519,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       const sequence = nextCacheableDashboardBuild();
       const model = await buildScopedDashboard(settings);
       cacheDashboardModel(key, model, generation, sequence, Date.now() + dashboardCacheTtlMs);
-      return model;
+      return { model, refreshKind: "foreground" };
     }
 
     const nowMs = Date.now();
     if (cachedDashboard?.key === key && cachedDashboard.expiresAt > nowMs) {
-      return cachedDashboard.model;
+      return { model: cachedDashboard.model, refreshKind: "cache_hit" };
     }
     if (dashboardBuildInFlight?.key === key) {
-      return dashboardBuildInFlight.promise;
+      return { model: await dashboardBuildInFlight.promise, refreshKind: "single_flight" };
     }
 
     const generation = dashboardCacheGeneration;
@@ -519,7 +544,32 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         }
       });
     dashboardBuildInFlight = { key, promise };
-    return promise;
+    return { model: await promise, refreshKind: "initial" };
+  }
+
+  function recordGitHubTelemetry(model: DashboardModel, route: string, refreshKind: GitHubRefreshKind, requestId: string) {
+    const status = model.githubStatus;
+    if (!status) return;
+    const cacheOnly = refreshKind === "cache_hit" || refreshKind === "single_flight";
+    const targetCount = status.targetCount ?? 0;
+    const event: GitHubTelemetryEvent = {
+      event: "github_refresh",
+      route,
+      refreshKind,
+      targetCount,
+      cacheHits: cacheOnly ? targetCount : status.cacheHits ?? 0,
+      cacheMisses: cacheOnly ? 0 : status.cacheMisses ?? targetCount,
+      githubApiCount: cacheOnly ? 0 : status.requestsExecuted,
+      result: status.state === "available" ? "success" : "degraded",
+      status: status.state,
+      reason: status.reason,
+      requestId,
+      ...(status.githubRequestId ? { githubRequestId: status.githubRequestId } : {}),
+      ...(status.rateLimitUsed === undefined ? {} : { rateLimitUsed: status.rateLimitUsed }),
+      ...(status.rateLimitRemaining === undefined ? {} : { rateLimitRemaining: status.rateLimitRemaining }),
+      ...(status.rateLimitResetAt === undefined ? {} : { rateLimitResetAt: status.rateLimitResetAt })
+    };
+    emitGitHubTelemetry(event);
   }
 
   function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
@@ -700,9 +750,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   app.get("/api/dashboard", async (req, res) => {
+    const requestId = randomUUID();
+    res.set("X-Request-ID", requestId);
     const settings = await currentSettings();
     const bypassCache = canBypassDashboardCache(req.get("X-Dashboard-Refresh"), req.socket.remoteAddress);
-    const model = await readScopedDashboard(settings, { bypassCache });
+    const { model, refreshKind } = await readScopedDashboard(settings, { bypassCache });
+    recordGitHubTelemetry(model, "/api/dashboard", refreshKind, requestId);
     // Default to a hot history window; ?history=full opts into the complete
     // payload. Windowing runs per request so the shared cache keeps full history.
     res.json(req.query.history === "full" ? model : applyDashboardHistoryWindow(model, new Date()));

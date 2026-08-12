@@ -17,6 +17,7 @@ export type CoordinationResource = "claims" | "heartbeats" | "batches" | "events
 export type CoordinationSourceMode = "api" | "fs";
 export type CoordinationSourceState = "ok" | "auth_error" | "unreachable" | "empty";
 export type GitHubQuotaState = "available" | "degraded" | "paused";
+export type GitHubRefreshKind = "initial" | "foreground" | "cache_hit" | "single_flight";
 export type GitHubQuotaReason =
   | "none"
   | "disabled"
@@ -39,11 +40,32 @@ export interface GitHubQuotaStatus {
   hourlyRequestsRemaining: number;
   perRefreshRequestLimit: number;
   targetCount?: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+  githubRequestId?: string;
   rateLimitUsed?: number;
   rateLimitRemaining?: number;
   rateLimitResetAt?: string;
   pausedUntil?: string;
   message: string;
+}
+
+export interface GitHubTelemetryEvent {
+  event: "github_refresh";
+  route: string;
+  refreshKind: GitHubRefreshKind;
+  targetCount: number;
+  cacheHits: number;
+  cacheMisses: number;
+  githubApiCount: number;
+  result: "success" | "degraded";
+  status: GitHubQuotaState;
+  reason: GitHubQuotaReason;
+  requestId: string;
+  githubRequestId?: string;
+  rateLimitUsed?: number;
+  rateLimitRemaining?: number;
+  rateLimitResetAt?: string;
 }
 
 export interface CoordinationSourceStatus {

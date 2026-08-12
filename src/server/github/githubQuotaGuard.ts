@@ -23,6 +23,7 @@ interface RateLimitObservation {
   used?: number;
   remaining?: number;
   resetAtMs?: number;
+  requestId?: string;
 }
 
 const BLOCKED_EXIT_CODE = 75;
@@ -45,11 +46,17 @@ function headerNumber(text: string, name: string): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
+function headerValue(text: string, name: string): string | undefined {
+  const match = text.match(new RegExp(`^${name}:\\s*([^\\r\\n]+?)\\s*$`, "im"));
+  return match?.[1]?.trim() || undefined;
+}
+
 export function parseGitHubRateLimitHeaders(text: string): RateLimitObservation {
   const resetEpochSeconds = headerNumber(text, "x-ratelimit-reset");
   return {
     used: headerNumber(text, "x-ratelimit-used"),
     remaining: headerNumber(text, "x-ratelimit-remaining"),
+    requestId: headerValue(text, "x-github-request-id"),
     ...(resetEpochSeconds === undefined ? {} : { resetAtMs: resetEpochSeconds * 1000 })
   };
 }
@@ -107,8 +114,8 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
     pause(
       reason,
       observation.remaining === 0
-        ? "GitHub reported no authenticated REST requests remaining."
-        : `GitHub reported ${observation.remaining} authenticated REST requests remaining, at or below the ${options.safetyThreshold} safety threshold.`,
+        ? "GitHub reported no authenticated API requests remaining."
+        : `GitHub reported ${observation.remaining} authenticated API requests remaining, at or below the ${options.safetyThreshold} safety threshold.`,
       resetAt
     );
     return true;
@@ -195,10 +202,12 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
         const result = await baseRunner.run(args);
         const observed = parseGitHubRateLimitHeaders(`${result.stdout}\n${result.stderr}`);
         if (observed.used !== undefined || observed.remaining !== undefined || observed.resetAtMs !== undefined) {
-          observation = observed;
+          observation = { ...observed, requestId: observed.requestId || observation.requestId };
           pauseForObservation(options.now());
+        } else if (observed.requestId) {
+          observation = { ...observation, requestId: observed.requestId };
         } else if (result.exitCode !== 0 && /(?:api\s+)?rate.?limit/i.test(result.stderr)) {
-          pause("rate_limit_exhausted", "GitHub reported authenticated REST rate limiting.", options.now() + options.fallbackCooldownMs);
+          pause("rate_limit_exhausted", "GitHub reported authenticated API rate limiting.", options.now() + options.fallbackCooldownMs);
         }
         return result;
       }
@@ -206,7 +215,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
 
     return {
       runner,
-      status(details: { targetCount?: number } = {}): GitHubQuotaStatus {
+      status(details: { targetCount?: number; cacheHits?: number; cacheMisses?: number } = {}): GitHubQuotaStatus {
         const now = options.now();
         refreshWindow(now);
         const globallyPaused = pausedUntil > now;
@@ -229,6 +238,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
           hourlyRequestsRemaining: Math.max(0, options.hourlyRequestBudget - hourlyRequestTimes.length),
           perRefreshRequestLimit: options.perRefreshRequestLimit,
           ...details,
+          ...(observation.requestId ? { githubRequestId: observation.requestId } : {}),
           ...(observation.used === undefined ? {} : { rateLimitUsed: observation.used }),
           ...(observation.remaining === undefined ? {} : { rateLimitRemaining: observation.remaining }),
           ...(observation.resetAtMs === undefined ? {} : { rateLimitResetAt: new Date(observation.resetAtMs).toISOString() }),
