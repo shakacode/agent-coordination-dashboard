@@ -17,6 +17,7 @@ interface RefreshContext {
   requestsExecuted: number;
   requestsBlocked: number;
   reason: GitHubQuotaReason;
+  observedHeaders?: RateLimitObservation;
 }
 
 interface RateLimitObservation {
@@ -160,6 +161,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
     const result = await baseRunner.run(["api", "--include", "user"]);
     const now = options.now();
     observation = parseGitHubRateLimitHeaders(`${result.stdout}\n${result.stderr}`);
+    context.observedHeaders = observation;
     if (pauseForObservation(now)) return;
     if (result.exitCode !== 0) {
       const message = result.stderr.trim() || `exit ${result.exitCode}`;
@@ -203,9 +205,11 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
         const observed = parseGitHubRateLimitHeaders(`${result.stdout}\n${result.stderr}`);
         if (observed.used !== undefined || observed.remaining !== undefined || observed.resetAtMs !== undefined) {
           observation = { ...observed, requestId: observed.requestId || observation.requestId };
+          context.observedHeaders = { ...observed, requestId: observed.requestId || context.observedHeaders?.requestId };
           pauseForObservation(options.now());
         } else if (observed.requestId) {
           observation = { ...observation, requestId: observed.requestId };
+          context.observedHeaders = { ...context.observedHeaders, requestId: observed.requestId };
         } else if (result.exitCode !== 0 && /(?:api\s+)?rate.?limit/i.test(result.stderr)) {
           pause("rate_limit_exhausted", "GitHub reported authenticated API rate limiting.", options.now() + options.fallbackCooldownMs);
         }
@@ -226,6 +230,7 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
           : reason === "per_refresh_limit"
             ? `GitHub enrichment was capped at ${options.perRefreshRequestLimit} requests for this dashboard refresh; unreconciled values remain UNKNOWN.`
             : "GitHub enrichment is available.";
+        const observedHeaders = context.observedHeaders || {};
         return {
           state,
           reason,
@@ -238,10 +243,10 @@ export function createGitHubRequestGovernor(baseRunner: GhRunner, rawOptions: Gi
           hourlyRequestsRemaining: Math.max(0, options.hourlyRequestBudget - hourlyRequestTimes.length),
           perRefreshRequestLimit: options.perRefreshRequestLimit,
           ...details,
-          ...(observation.requestId ? { githubRequestId: observation.requestId } : {}),
-          ...(observation.used === undefined ? {} : { rateLimitUsed: observation.used }),
-          ...(observation.remaining === undefined ? {} : { rateLimitRemaining: observation.remaining }),
-          ...(observation.resetAtMs === undefined ? {} : { rateLimitResetAt: new Date(observation.resetAtMs).toISOString() }),
+          ...(observedHeaders.requestId ? { githubRequestId: observedHeaders.requestId } : {}),
+          ...(observedHeaders.used === undefined ? {} : { rateLimitUsed: observedHeaders.used }),
+          ...(observedHeaders.remaining === undefined ? {} : { rateLimitRemaining: observedHeaders.remaining }),
+          ...(observedHeaders.resetAtMs === undefined ? {} : { rateLimitResetAt: new Date(observedHeaders.resetAtMs).toISOString() }),
           ...(globallyPaused && Number.isFinite(pausedUntil) ? { pausedUntil: new Date(pausedUntil).toISOString() } : {}),
           message
         };

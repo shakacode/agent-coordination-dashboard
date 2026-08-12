@@ -162,7 +162,9 @@ describe("GitHub request governor", () => {
       reason: "rate_limit_low",
       requestsExecuted: 2,
       requestsBlocked: 1,
-      rateLimitRemaining: 500
+      // Telemetry reports the probe's observed header. The process-wide
+      // reservation still blocks the second ordinary request at estimated 500.
+      rateLimitRemaining: 501
     });
   });
 

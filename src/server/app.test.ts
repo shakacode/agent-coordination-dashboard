@@ -823,7 +823,9 @@ describe("dashboard app import endpoint", () => {
       status: "active"
     }));
     const resetAt = Date.parse("2026-08-12T12:00:00Z");
+    let githubMode: "success" | "error" = "success";
     const githubRunner: GhRunner = { run: async (args) => {
+      if (githubMode === "error") return { stdout: "", stderr: "network unavailable", exitCode: 1 };
       if (args.includes("user")) {
         return {
           stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 5000\nx-ratelimit-used: 0\nx-ratelimit-reset: ${resetAt / 1000}\nx-github-request-id: probe-request-id\n\n{}`,
@@ -849,7 +851,7 @@ describe("dashboard app import endpoint", () => {
       };
     } };
     const telemetry: GitHubTelemetryEvent[] = [];
-    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5_000 }), {
+    const app = await createDashboardApp(testConfig(stateRoot, { refreshIntervalMs: 5_000, githubRefreshIntervalMs: 1 }), {
       serveFrontend: false,
       githubRunner,
       emitGitHubTelemetry: (event) => telemetry.push(event)
@@ -895,6 +897,35 @@ describe("dashboard app import endpoint", () => {
     });
     expect(telemetry[1].requestId).toBe(cachedResponse.headers.get("x-request-id"));
     expect(telemetry[1].requestId).not.toBe(telemetry[0].requestId);
+
+    githubMode = "error";
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const errorResponse = await fetch(`${baseUrl}/api/dashboard`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+    expect(errorResponse.ok).toBe(true);
+    const errorBody = await errorResponse.json() as DashboardModel;
+    expect(telemetry).toHaveLength(3);
+    expect(telemetry[2]).toMatchObject({
+      route: "/api/dashboard",
+      refreshKind: "foreground",
+      targetCount: 1,
+      cacheHits: 0,
+      cacheMisses: 1,
+      githubApiCount: 3,
+      result: "degraded",
+      status: "degraded",
+      reason: "read_failed"
+    });
+    expect(telemetry[2].requestId).toBe(errorResponse.headers.get("x-request-id"));
+    expect(telemetry[2]).not.toHaveProperty("githubRequestId");
+    expect(telemetry[2]).not.toHaveProperty("rateLimitUsed");
+    expect(telemetry[2]).not.toHaveProperty("rateLimitRemaining");
+    expect(telemetry[2]).not.toHaveProperty("rateLimitResetAt");
+    expect(errorBody.githubStatus).toMatchObject({
+      state: "degraded",
+      reason: "read_failed",
+      hourlyRequestBudget: 1_000,
+      hourlyRequestsRemaining: 993
+    });
   });
 
   it("defaults the dashboard payload to a hot history window with ?history=full opt-in", async () => {
