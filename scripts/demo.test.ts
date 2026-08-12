@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readCoordinationState } from "../src/server/state/readCoordinationState";
 import { buildCustodyTimeline } from "../src/shared/custodyTimeline";
 import { DEMO_REPO, initializeDemoState, tickDemoState } from "./demo";
@@ -25,6 +25,10 @@ async function unusedPort(): Promise<number> {
 }
 
 type DemoChild = ChildProcessByStdio<null, Readable, Readable>;
+type DemoChildStatus = Pick<DemoChild, "exitCode">;
+
+const MANUAL_REFRESH_READY =
+  "Synthetic coordination state ticks every 3 seconds; use Refresh or an explicit operator action to reload the dashboard.";
 
 function captureOutput(child: DemoChild): { text: string } {
   const output = { text: "" };
@@ -38,7 +42,7 @@ function captureOutput(child: DemoChild): { text: string } {
 }
 
 async function waitForOutput(
-  child: DemoChild,
+  child: DemoChildStatus,
   output: { text: string },
   pattern: RegExp,
   timeoutMs = 10_000
@@ -55,6 +59,17 @@ async function waitForOutput(
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for ${pattern}:\n${output.text}`);
+}
+
+async function waitForDemoReadiness(
+  child: DemoChildStatus,
+  output: { text: string }
+): Promise<RegExpMatchArray> {
+  const [rootMatch] = await Promise.all([
+    waitForOutput(child, output, /Demo coordination state: (.+)\n/),
+    waitForOutput(child, output, new RegExp(MANUAL_REFRESH_READY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  ]);
+  return rootMatch;
 }
 
 describe("demo coordination state", () => {
@@ -139,6 +154,30 @@ describe("demo coordination state", () => {
     expect(after.warnings).toEqual([]);
   });
 
+  it("waits for every readiness marker when demo stdout arrives in separate chunks", async () => {
+    vi.useFakeTimers();
+    const child: DemoChildStatus = { exitCode: null };
+    const output = { text: "" };
+    let settled = false;
+    const readiness = waitForDemoReadiness(child, output).then((match) => {
+      settled = true;
+      return match;
+    });
+
+    try {
+      output.text += "Demo coordination state: /tmp/demo-state\n";
+      await vi.advanceTimersByTimeAsync(25);
+      expect(settled).toBe(false);
+
+      output.text += `${MANUAL_REFRESH_READY}\n`;
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(readiness).resolves.toMatchObject({ 1: "/tmp/demo-state" });
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("serves the disposable scenario locally and removes it on termination", async () => {
     const port = await unusedPort();
     const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/demo.ts"], {
@@ -150,12 +189,10 @@ describe("demo coordination state", () => {
     let root = "";
 
     try {
-      const rootMatch = await waitForOutput(child, output, /Demo coordination state: (.+)\n/);
+      const rootMatch = await waitForDemoReadiness(child, output);
       root = rootMatch[1].trim();
       roots.push(root);
-      expect(output.text).toContain(
-        "Synthetic coordination state ticks every 3 seconds; use Refresh or an explicit operator action to reload the dashboard."
-      );
+      expect(output.text).toContain(MANUAL_REFRESH_READY);
       await waitForOutput(child, output, /listening on http:\/\/127\.0\.0\.1:/);
 
       const health = await fetch(`http://127.0.0.1:${port}/api/health`);
