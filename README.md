@@ -3,6 +3,9 @@
 Local dashboard for agent coordination state, coordinator triage, machine/lane
 visibility, batch prompt planning, batch audit, and QA validation tracking.
 
+> **Documentation:** Explore the ShakaCode agent stack at
+> [agents.shakacode.com](https://agents.shakacode.com).
+
 ## License
 
 This local/protocol dashboard is part of the Agent Coordination MIT License
