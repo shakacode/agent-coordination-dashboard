@@ -3,8 +3,13 @@
 Local dashboard for agent coordination state, coordinator triage, machine/lane
 visibility, batch prompt planning, batch audit, and QA validation tracking.
 
-> **Documentation:** Explore the ShakaCode agent stack at
-> [agents.shakacode.com](https://agents.shakacode.com).
+<p align="center">
+  <a href="https://agents.shakacode.com">
+    <img src="https://agents.shakacode.com/og.png" alt="ShakaCode Agent Workflows — Run AI coding agents in fleets, safely" width="100%">
+  </a>
+  <br>
+  <strong><a href="https://agents.shakacode.com">Documentation →</a></strong>
+</p>
 
 ## License
 
