@@ -17,6 +17,11 @@ function rateLimitResponse(remaining: number, resetEpochSeconds: number) {
   };
 }
 
+function graphQlArgs(targetCount = 1) {
+  const fields = Array.from({ length: targetCount }, (_, index) => `target${index}:issueOrPullRequest(number:$target${index}){number}`).join(" ");
+  return ["api", "graphql", "--include", "-f", `query=query($owner:String!){repository(owner:$owner,name:\"app\"){${fields}}}`];
+}
+
 describe("GitHub request governor", () => {
   it.each([
     ["hourlyRequestBudget", 1.5],
@@ -136,6 +141,218 @@ describe("GitHub request governor", () => {
     expect(run).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps a low REST primary pool from blocking an available GraphQL pool", async () => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn(async (args: string[]) => {
+      if (args.includes("user")) return rateLimitResponse(100, reset);
+      if (args.join(" ").includes("rateLimit")) return rateLimitResponse(5_000, reset);
+      return { stdout: "{}", stderr: "", exitCode: 0 };
+    });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+
+    const rest = governor.beginRefresh("rest");
+    await expect(rest.runner.run(["api", "repos/repo/app/issues/1"])).resolves.toMatchObject({ exitCode: 75 });
+    const graphQl = governor.beginRefresh("graphql");
+    await expect(graphQl.runner.run(graphQlArgs())).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(rest.status()).toMatchObject({ state: "paused", reason: "rate_limit_low" });
+    expect(graphQl.status()).toMatchObject({ state: "available", reason: "none" });
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["pr", "issue"])("charges gh %s list to the GraphQL primary pool", async (kind) => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn(async (args: string[]) => {
+      if (args.includes("user")) return rateLimitResponse(100, reset);
+      if (args.join(" ").includes("rateLimit")) return rateLimitResponse(5_000, reset);
+      return { stdout: "[]", stderr: "", exitCode: 0 };
+    });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+
+    const rest = governor.beginRefresh("rest");
+    await expect(rest.runner.run(["api", "repos/repo/app/issues/1"])).resolves.toMatchObject({ exitCode: 75 });
+    const list = governor.beginRefresh("list");
+    await expect(list.runner.run([kind, "list", "--repo", "repo/app"])).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(list.status()).toMatchObject({ state: "available", reason: "none", requestsExecuted: 2 });
+    expect(run.mock.calls.some(([args]) => args[0] === kind && args[1] === "list")).toBe(true);
+  });
+
+  it("retains the pool pause reason on the refresh after the process pause expires", async () => {
+    let nowMs = Date.parse("2026-08-11T03:00:00Z");
+    const resetMs = nowMs + 1_000;
+    const governor = createGitHubRequestGovernor({
+      run: vi.fn(async () => rateLimitResponse(100, resetMs / 1000))
+    }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => nowMs
+    });
+    const refresh = governor.beginRefresh("dashboard");
+
+    await expect(refresh.runner.run(["api", "repos/repo/app/issues/1"])).resolves.toMatchObject({ exitCode: 75 });
+    nowMs = resetMs + 1;
+
+    expect(refresh.status()).toMatchObject({ state: "degraded", reason: "rate_limit_low" });
+  });
+
+  it("keeps a low GraphQL primary pool from blocking an available REST pool", async () => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn(async (args: string[]) => {
+      if (args.includes("user")) return rateLimitResponse(5_000, reset);
+      if (args.join(" ").includes("rateLimit")) return rateLimitResponse(100, reset);
+      return { stdout: "{}", stderr: "", exitCode: 0 };
+    });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+
+    const graphQl = governor.beginRefresh("graphql");
+    await expect(graphQl.runner.run(graphQlArgs())).resolves.toMatchObject({ exitCode: 75 });
+    const rest = governor.beginRefresh("rest");
+    await expect(rest.runner.run(["api", "repos/repo/app/issues/1"])).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(graphQl.status()).toMatchObject({ state: "paused", reason: "rate_limit_low" });
+    expect(rest.status()).toMatchObject({ state: "available", reason: "none" });
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it("conservatively reserves GraphQL cost for 24 concurrent 50-field batches", async () => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn(async (args: string[]) => args.join(" ").includes("rateLimit")
+      ? rateLimitResponse(2_499, reset)
+      : { stdout: "{}", stderr: "", exitCode: 0 });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 30,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+    const refresh = governor.beginRefresh("graphql");
+
+    const results = await Promise.all(Array.from({ length: 24 }, () =>
+      refresh.runner.run(graphQlArgs(50), { estimatedGraphQlCost: 100 })
+    ));
+    const afterReservation = await refresh.runner.run(graphQlArgs(50), { estimatedGraphQlCost: 100 });
+
+    expect(results.every(({ exitCode }) => exitCode === 0)).toBe(true);
+    expect(afterReservation).toMatchObject({ exitCode: 75 });
+    expect(run).toHaveBeenCalledTimes(25);
+    expect(refresh.status()).toMatchObject({
+      state: "paused",
+      reason: "rate_limit_low",
+      requestsExecuted: 25,
+      requestsBlocked: 1,
+      rateLimitRemaining: 2_499,
+      estimatedGraphQlCostReserved: 2_400
+    });
+  });
+
+  it("uses an explicit GraphQL operation-cost hint without parsing query aliases", async () => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn(async (args: string[]) => args.join(" ").includes("rateLimit")
+      ? rateLimitResponse(5_000, reset)
+      : { stdout: "{}", stderr: "", exitCode: 0 });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+    const refresh = governor.beginRefresh("graphql");
+
+    await refresh.runner.run(["api", "graphql", "-f", "query=query{viewer{login}}"], { estimatedGraphQlCost: 37 });
+
+    expect(refresh.status()).toMatchObject({ estimatedGraphQlCostReserved: 37 });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "fails closed on an unsafe GraphQL operation-cost hint: %s",
+    async (estimatedGraphQlCost) => {
+      const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+      const run = vi.fn(async (args: string[]) => args.join(" ").includes("rateLimit")
+        ? rateLimitResponse(5_000, reset)
+        : { stdout: "{}", stderr: "", exitCode: 0 });
+      const governor = createGitHubRequestGovernor({ run }, {
+        hourlyRequestBudget: 100,
+        perRefreshRequestLimit: 10,
+        safetyThreshold: 100,
+        probeIntervalMs: 60_000,
+        fallbackCooldownMs: 30_000,
+        now: () => Date.parse("2026-08-11T03:00:00Z")
+      });
+      const refresh = governor.beginRefresh("graphql");
+
+      const result = await refresh.runner.run(
+        ["api", "graphql", "-f", "query=query{viewer{login}}"],
+        { estimatedGraphQlCost }
+      );
+
+      expect(result).toMatchObject({ exitCode: 75 });
+      expect(run).not.toHaveBeenCalled();
+      expect(refresh.status()).toMatchObject({
+        state: "paused",
+        reason: "probe_failed",
+        requestsExecuted: 0,
+        requestsBlocked: 1,
+        hourlyRequestsRemaining: 100
+      });
+    }
+  );
+
+  it("never reports a GraphQL estimate as observed header evidence", async () => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn()
+      .mockResolvedValueOnce(rateLimitResponse(5_000, reset))
+      .mockResolvedValueOnce({ stdout: "{}", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: "", stderr: "headerless failure", exitCode: 1 });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 10,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+
+    await governor.beginRefresh("first").runner.run(graphQlArgs(50), { estimatedGraphQlCost: 100 });
+    const headerless = governor.beginRefresh("headerless");
+    await headerless.runner.run(graphQlArgs(50), { estimatedGraphQlCost: 100 });
+    const status = headerless.status();
+
+    expect(status).toMatchObject({ estimatedGraphQlCostReserved: 100 });
+    expect(status).not.toHaveProperty("githubRequestId");
+    expect(status).not.toHaveProperty("rateLimitUsed");
+    expect(status).not.toHaveProperty("rateLimitRemaining");
+    expect(status).not.toHaveProperty("rateLimitResetAt");
+  });
+
   it("reserves sampled remaining quota before concurrent ordinary requests", async () => {
     const run = vi.fn(async (args: string[]) => args.includes("user")
       ? rateLimitResponse(501, Date.parse("2026-08-11T04:00:00Z") / 1000)
@@ -162,7 +379,9 @@ describe("GitHub request governor", () => {
       reason: "rate_limit_low",
       requestsExecuted: 2,
       requestsBlocked: 1,
-      rateLimitRemaining: 500
+      // Telemetry reports the probe's observed header. The process-wide
+      // reservation still blocks the second ordinary request at estimated 500.
+      rateLimitRemaining: 501
     });
   });
 
@@ -224,6 +443,34 @@ describe("GitHub request governor", () => {
     expect(second.status()).toMatchObject({ state: "paused", reason: "hourly_budget", hourlyRequestsRemaining: 0 });
   });
 
+  it("applies one per-refresh hard call ceiling across REST and GraphQL pools", async () => {
+    const reset = Date.parse("2026-08-11T04:00:00Z") / 1000;
+    const run = vi.fn(async (args: string[]) => args.includes("user") || args.join(" ").includes("rateLimit")
+      ? rateLimitResponse(5_000, reset)
+      : { stdout: "{}", stderr: "", exitCode: 0 });
+    const governor = createGitHubRequestGovernor({ run }, {
+      hourlyRequestBudget: 100,
+      perRefreshRequestLimit: 4,
+      safetyThreshold: 100,
+      probeIntervalMs: 60_000,
+      fallbackCooldownMs: 30_000,
+      now: () => Date.parse("2026-08-11T03:00:00Z")
+    });
+    const refresh = governor.beginRefresh("mixed");
+
+    await expect(refresh.runner.run(["api", "repos/repo/app/issues/1"])).resolves.toMatchObject({ exitCode: 0 });
+    await expect(refresh.runner.run(graphQlArgs())).resolves.toMatchObject({ exitCode: 0 });
+    await expect(refresh.runner.run(graphQlArgs())).resolves.toMatchObject({ exitCode: 75 });
+
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(refresh.status()).toMatchObject({
+      state: "degraded",
+      reason: "per_refresh_limit",
+      requestsExecuted: 4,
+      requestsBlocked: 1
+    });
+  });
+
   it("accounts for the hourly budget over the prior rolling 60 minutes", async () => {
     let nowMs = Date.parse("2026-08-11T03:00:00Z");
     const run = vi.fn(async (args: string[]) => args.includes("user")
@@ -260,6 +507,8 @@ describe("GitHub request governor", () => {
       fallbackCooldownMs: 30_000
     });
     const refresh = governor.beginRefresh("dashboard");
+
+    expect(refresh.status()).toMatchObject({ state: "paused", reason: "disabled", requestsExecuted: 0, requestsBlocked: 0 });
 
     await refresh.runner.run(["api", "repos/repo/app/issues/1"]);
     expect(run).not.toHaveBeenCalled();

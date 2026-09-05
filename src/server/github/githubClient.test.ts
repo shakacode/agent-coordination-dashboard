@@ -2,6 +2,46 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGitHubTargetReconciler, githubApiPath, githubTargetReferenceKey, isGitHubHttpNotFound, loadOpenGitHubItems, parseCiStatus, parseGitHubTarget, parseIssueList, parsePrList } from "./githubClient";
 import { createGitHubRequestGovernor } from "./githubQuotaGuard";
 
+function graphQlResult(
+  args: string[],
+  options: {
+    target?: (target: string, alias: string) => Record<string, unknown> | null;
+    branch?: (branch: string, alias: string) => "present" | "deleted" | { error: string };
+  } = {}
+) {
+  const repository: Record<string, unknown> = {};
+  const errors: Array<{ message: string; path: string[] }> = [];
+  for (const argument of args) {
+    const target = argument.match(/^(target\d+)=(\d+)$/);
+    if (target) {
+      repository[target[1]] = options.target?.(target[2], target[1]) ?? {
+        __typename: "Issue",
+        number: Number(target[2]),
+        title: `Issue ${target[2]}`,
+        url: `https://github.com/repo/app/issues/${target[2]}`,
+        state: "OPEN",
+        labels: { nodes: [] }
+      };
+    }
+    const branch = argument.match(/^(branch\d+)=(.+)$/);
+    if (branch) {
+      const branchName = branch[2].replace(/^refs\/heads\//, "");
+      const value = options.branch?.(branchName, branch[1]) ?? "present";
+      if (typeof value === "object") {
+        repository[branch[1]] = null;
+        errors.push({ message: value.error, path: ["repository", branch[1]] });
+      } else {
+        repository[branch[1]] = value === "present" ? { name: branchName } : null;
+      }
+    }
+  }
+  return {
+    stdout: JSON.stringify({ data: { repository }, ...(errors.length > 0 ? { errors } : {}) }),
+    stderr: "",
+    exitCode: 0
+  };
+}
+
 describe("github list parsers", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -94,11 +134,10 @@ describe("github list parsers", () => {
   });
 
   it("reconciles valid targets while keeping every invalid branch UNKNOWN without a branch lookup", async () => {
-    const run = vi.fn(async (args: string[]) => ({
-      stdout: JSON.stringify({ number: Number(args[1].split("/").at(-1)), title: "Merged", html_url: `https://github.com/repo/app/pull/${args[1].split("/").at(-1)}`, state: "closed", labels: [], pull_request: { merged_at: "2026-07-12T10:00:00Z" } }),
-      stderr: "",
-      exitCode: 0
-    }));
+    const run = vi.fn(async (args: string[]) => graphQlResult(args, { target: (target) => ({
+      __typename: "PullRequest", number: Number(target), title: "Merged", url: `https://github.com/repo/app/pull/${target}`,
+      state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: { nodes: [] }
+    }) }));
     const invalidBranches = ["-leading", "feature/.hidden", "feature/branch.lock", "feature/has space", "feature/@{upstream}"];
     const result = await createGitHubTargetReconciler({ run }).load(invalidBranches.map((branch, index) => ({
       repo: "repo/app",
@@ -107,8 +146,8 @@ describe("github list parsers", () => {
       branch
     })));
 
-    expect(run).toHaveBeenCalledTimes(invalidBranches.length);
-    expect(run.mock.calls.every(([args]) => args[1].includes("/issues/"))).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0].join(" ")).not.toContain("ref(qualifiedName:");
     expect(result.items).toHaveLength(invalidBranches.length);
     expect(result.items.every((item) => item.state === "MERGED" && item.loadState === "loaded" && item.branchState === "unknown")).toBe(true);
     expect(result.warnings).toHaveLength(invalidBranches.length);
@@ -169,10 +208,10 @@ describe("github list parsers", () => {
     let calls = 0;
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const reconciler = createGitHubTargetReconciler({ run: async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
       calls += 1;
       if (calls === 1) await gate;
-      return { stdout: JSON.stringify({ number: 43, title: "Open", html_url: "https://github.com/repo/app/issues/43", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      return graphQlResult(args);
     } }, 60_000);
     const refs = [{ repo: "repo/app", target: "43", type: "issue" as const }];
     const first = reconciler.load(refs);
@@ -193,60 +232,115 @@ describe("github list parsers", () => {
     expect(result.warnings[0].message).toContain("auth required");
   });
 
-  it("fetches target and branch evidence for one reference concurrently", async () => {
-    let branchRequested: () => void = () => undefined;
-    const branchSeen = new Promise<void>((resolve) => { branchRequested = resolve; });
-    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
-      if (args[1].includes("/branches/")) {
-        branchRequested();
-        return { stdout: "{}", stderr: "", exitCode: 0 };
-      }
-      // The target lookup completes only once the branch lookup has started,
-      // so a serial implementation would deadlock here.
-      await branchSeen;
-      return { stdout: JSON.stringify({ number: 45, title: "Open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
-    } });
+  it("fetches target and branch evidence in one GraphQL batch", async () => {
+    const run = vi.fn(async (args: string[], _options?: unknown) => graphQlResult(args));
+    const reconciler = createGitHubTargetReconciler({ run });
     const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
     expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "present" });
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0][0].join(" ")).toContain("issueOrPullRequest");
+    expect(run.mock.calls[0][0].join(" ")).toContain("ref(qualifiedName:");
+    expect(run.mock.calls[0][0]).toContain("branch0=refs/heads/feature/work");
+    expect(run.mock.calls[0][1]).toEqual({ estimatedGraphQlCost: 3 });
+  });
+
+  it("passes GraphQL strings without gh type coercion while targets stay numeric", async () => {
+    const run = vi.fn(async (args: string[]) => graphQlResult(args));
+    const reconciler = createGitHubTargetReconciler({ run });
+
+    await reconciler.load([{ repo: "123/false", target: "45", type: "issue", branch: "null" }]);
+
+    const args = run.mock.calls[0][0];
+    const flagFor = (value: string) => args[args.indexOf(value) - 1];
+    expect(flagFor("owner=123")).toBe("-f");
+    expect(flagFor("name=false")).toBe("-f");
+    expect(flagFor("branch0=refs/heads/null")).toBe("-f");
+    expect(flagFor("target1=45")).toBe("-F");
   });
 
   it("records branch deletion only as supporting evidence", async () => {
     let calls = 0;
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
       calls += 1;
-      return args[1].includes("/branches/")
-      ? { stdout: "", stderr: "HTTP 404: Branch not found", exitCode: 1 }
-      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      return graphQlResult(args, { branch: () => "deleted" });
     } });
     const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work" };
     const result = await reconciler.load([reference]);
     await reconciler.load([reference]);
     expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "deleted" });
     expect(result.warnings).toEqual([]);
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
   });
 
   it("keeps branch lookup failures UNKNOWN without discarding trustworthy target state", async () => {
-    const reconciler = createGitHubTargetReconciler({ run: async (args) => args[1].includes("/branches/")
-      ? { stdout: "", stderr: "auth required", exitCode: 1 }
-      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 } });
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => graphQlResult(args, { branch: () => ({ error: "auth required" }) }) });
     const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
     expect(result.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "unknown" });
     expect(result.warnings[0].message).toContain("auth required");
   });
 
+  it("attributes a pathless GraphQL error to its chunk without degrading other chunks", async () => {
+    const run = vi.fn(async (args: string[]) => args.includes("target0=1")
+      ? {
+          stdout: JSON.stringify({ data: { repository: null }, errors: [{ message: "query denied by fixture" }] }),
+          stderr: "",
+          exitCode: 0
+        }
+      : graphQlResult(args));
+    const references = Array.from({ length: 51 }, (_, index) => ({
+      repo: "repo/app", target: String(index + 1), type: "issue" as const
+    }));
+
+    const result = await createGitHubTargetReconciler({ run }).load(references);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.items.slice(0, 50).every((item) => item.loadState === "unknown")).toBe(true);
+    expect(result.items[50]).toMatchObject({ target: "51", loadState: "loaded" });
+    expect(result.warnings).toHaveLength(50);
+    expect(result.warnings.every((warning) => warning.message.includes("query denied by fixture"))).toBe(true);
+    expect(result.warnings.every((warning) => !warning.message.includes("target not found"))).toBe(true);
+  });
+
+  it("settles every target UNKNOWN when GraphQL result handling throws", async () => {
+    const unhandledRejections: unknown[] = [];
+    const captureUnhandled = (reason: unknown) => unhandledRejections.push(reason);
+    process.on("unhandledRejection", captureUnhandled);
+    const reconciler = createGitHubTargetReconciler({ run: async () => ({
+      stdout: JSON.stringify({ data: { repository: {} }, errors: {} }),
+      stderr: "",
+      exitCode: 0
+    }) });
+
+    try {
+      const outcome = await Promise.race([
+        reconciler.load([{ repo: "repo/app", target: "45", type: "issue" }]),
+        new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 25))
+      ]);
+
+      expect(outcome).not.toBe("timed_out");
+      expect(outcome).toMatchObject({
+        failed: true,
+        items: [{ target: "45", loadState: "unknown" }],
+        warnings: [expect.objectContaining({ message: expect.stringContaining("malformed errors") })]
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+    }
+  });
+
   it("reuses a successful target lookup while retrying an isolated branch failure", async () => {
-    const run = vi.fn(async (args: string[]) => args[1].includes("/branches/")
-      ? { stdout: "", stderr: "temporary branch lookup failure", exitCode: 1 }
-      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 });
+    const run = vi.fn(async (args: string[]) => graphQlResult(args, { branch: () => ({ error: "temporary branch lookup failure" }) }));
     const reconciler = createGitHubTargetReconciler({ run });
     const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work" };
 
     await reconciler.load([reference]);
     const retried = await reconciler.load([reference]);
 
-    expect(run.mock.calls.filter(([args]) => args[1].includes("/issues/"))).toHaveLength(1);
-    expect(run.mock.calls.filter(([args]) => args[1].includes("/branches/"))).toHaveLength(2);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls.filter(([args]) => args.join(" ").includes("issueOrPullRequest"))).toHaveLength(1);
+    expect(run.mock.calls.filter(([args]) => args.join(" ").includes("ref(qualifiedName:"))).toHaveLength(2);
     expect(retried.items[0]).toMatchObject({ state: "OPEN", loadState: "loaded", branchState: "unknown" });
   });
 
@@ -269,9 +363,9 @@ describe("github list parsers", () => {
   });
 
   it("keeps unrelated stderr containing 404 as UNKNOWN branch evidence", async () => {
-    const reconciler = createGitHubTargetReconciler({ run: async (args) => args[1].includes("/branches/")
-      ? { stdout: "", stderr: "dependency returned 404 while gh authentication failed", exitCode: 1 }
-      : { stdout: JSON.stringify({ number: 45, title: "Still open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 } });
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => graphQlResult(args, {
+      branch: () => ({ error: "dependency returned 404 while gh authentication failed" })
+    }) });
     const result = await reconciler.load([{ repo: "repo/app", target: "45", type: "issue", branch: "feature/work" }]);
     expect(result.items[0]).toMatchObject({ state: "OPEN", branchState: "unknown" });
     expect(result.warnings[0].message).toContain("dependency returned 404");
@@ -281,18 +375,20 @@ describe("github list parsers", () => {
     const calls: string[][] = [];
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
       calls.push(args);
-      return { stdout: "{}", stderr: "", exitCode: 0 };
+      return graphQlResult(args);
     } });
     const existingTarget = { repo: "repo/app", target: "45", type: "issue" as const, title: "Open issue", url: "https://github.com/repo/app/issues/45", state: "OPEN", labels: [], ciStatus: "passing" as const, loadState: "loaded" as const };
     const reference = { repo: "repo/app", target: "45", type: "issue" as const, branch: "feature/work", existingTarget };
     const result = await reconciler.load([reference]);
     const refreshedIdentity = await reconciler.load([{ ...reference, existingTarget: { ...existingTarget, title: "Fresh open title" } }]);
-    expect(calls).toEqual([["api", "repos/repo/app/branches/feature%2Fwork"]]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].join(" ")).toContain("ref(qualifiedName:");
+    expect(calls[0].join(" ")).not.toContain("issueOrPullRequest");
     expect(result.items).toEqual([{ ...existingTarget, branchState: "present" }]);
     expect(refreshedIdentity.items).toEqual([{ ...existingTarget, title: "Fresh open title", branchState: "present" }]);
   });
 
-  it("bounds GitHub target fan-out", async () => {
+  it("bounds concurrent GitHub GraphQL batches", async () => {
     let active = 0;
     let maximum = 0;
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
@@ -300,25 +396,133 @@ describe("github list parsers", () => {
       maximum = Math.max(maximum, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       active -= 1;
-      if (args[1].includes("/branches/")) return { stdout: "{}", stderr: "", exitCode: 0 };
-      const target = args[1].split("/").at(-1);
-      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      return graphQlResult(args);
     } }, 60_000, 2);
-    await reconciler.load([1, 2, 3, 4].map((target) => ({ repo: "repo/app", target: String(target), type: "issue" as const, branch: `feature/${target}` })));
+    await reconciler.load(Array.from({ length: 120 }, (_, index) => ({ repo: "repo/app", target: String(index + 1), type: "issue" as const })));
     expect(maximum).toBe(2);
+  });
+
+  it("releases the scheduler slot when the active runner throws synchronously", async () => {
+    const unhandledRejections: unknown[] = [];
+    const captureUnhandled = (reason: unknown) => unhandledRejections.push(reason);
+    process.on("unhandledRejection", captureUnhandled);
+    let calls = 0;
+    const reconciler = createGitHubTargetReconciler({
+      run(args) {
+        calls += 1;
+        if (calls === 1) throw new Error("synchronous runner failure");
+        return Promise.resolve(graphQlResult(args));
+      }
+    }, 60_000, 1);
+
+    try {
+      const first = await reconciler.load([{ repo: "repo/app", target: "1", type: "issue" }]);
+      expect(first).toMatchObject({ failed: true, items: [{ target: "1", loadState: "unknown" }] });
+
+      const second = await Promise.race([
+        reconciler.load([{ repo: "repo/app", target: "2", type: "issue" }]),
+        new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 25))
+      ]);
+
+      expect(second).not.toBe("timed_out");
+      expect(second).toMatchObject({ items: [{ target: "2", loadState: "loaded" }] });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandledRejections).toEqual([]);
+      expect(calls).toBe(2);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+    }
+  });
+
+  it("reconciles 500 cold targets with bounded GraphQL batches instead of one REST request per target", async () => {
+    const run = vi.fn(async (args: string[]) => {
+      if (args[0] !== "api" || args[1] !== "graphql") {
+        return { stdout: "", stderr: `unexpected unbatched request: ${args.join(" ")}`, exitCode: 1 };
+      }
+      const targets = args
+        .filter((argument) => /^target\d+=\d+$/.test(argument))
+        .map((argument) => argument.split("=")[1]);
+      return {
+        stdout: JSON.stringify({
+          data: {
+            repository: Object.fromEntries(targets.map((target, index) => [
+              `target${index}`,
+              {
+                __typename: "Issue",
+                number: Number(target),
+                title: `Issue ${target}`,
+                url: `https://github.com/repo/app/issues/${target}`,
+                state: "OPEN",
+                labels: { nodes: [] }
+              }
+            ]))
+          }
+        }),
+        stderr: "",
+        exitCode: 0
+      };
+    });
+    const references = Array.from({ length: 500 }, (_, index) => ({
+      repo: "repo/app",
+      target: String(index + 1),
+      type: "issue" as const
+    }));
+
+    const result = await createGitHubTargetReconciler({ run }).load(references);
+
+    expect(run.mock.calls.length).toBeLessThanOrEqual(10);
+    expect(run.mock.calls.every(([args]) => args[0] === "api" && args[1] === "graphql")).toBe(true);
+    expect(result.items).toHaveLength(500);
+    expect(result.items.every((item) => item.loadState === "loaded")).toBe(true);
+    expect(result.failed).toBeUndefined();
+  });
+
+  it("stagger-refreshes 500 targets across two expiry windows while simultaneous clients share each refresh", async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.parse("2026-08-11T03:00:00Z");
+    vi.setSystemTime(startedAt);
+    const run = vi.fn(async (args: string[]) => graphQlResult(args));
+    const reconciler = createGitHubTargetReconciler({ run }, 1_000);
+    const references = Array.from({ length: 500 }, (_, index) => ({
+      repo: "repo/app",
+      target: String(index + 1),
+      type: "issue" as const
+    }));
+
+    await reconciler.load(references);
+    expect(run).toHaveBeenCalledTimes(10);
+
+    const refreshCallsByTick: Array<{ elapsed: number; calls: number }> = [];
+    for (let elapsed = 1_000; elapsed <= 4_000; elapsed += 100) {
+      vi.setSystemTime(startedAt + elapsed);
+      const callsBefore = run.mock.calls.length;
+      await Promise.all(Array.from({ length: 4 }, () => reconciler.load(references)));
+      refreshCallsByTick.push({ elapsed, calls: run.mock.calls.length - callsBefore });
+    }
+
+    const firstWindowCalls = refreshCallsByTick
+      .filter(({ elapsed }) => elapsed < 2_000)
+      .reduce((total, { calls }) => total + calls, 0);
+    const secondWindowCalls = refreshCallsByTick
+      .filter(({ elapsed }) => elapsed >= 2_000 && elapsed < 4_000)
+      .reduce((total, { calls }) => total + calls, 0);
+    expect(firstWindowCalls).toBeGreaterThan(0);
+    expect(firstWindowCalls).toBeLessThan(10);
+    expect(secondWindowCalls).toBeGreaterThan(firstWindowCalls);
+    expect(secondWindowCalls).toBeLessThan(20);
+    expect(Math.max(...refreshCallsByTick.map(({ calls }) => calls))).toBeLessThanOrEqual(2);
   });
 
   it("keeps a 500-target fixture within the refresh request ceiling", async () => {
     const run = vi.fn(async (args: string[]) => {
-      if (args.includes("user")) {
+      if (args.includes("user") || args.join(" ").includes("rateLimit")) {
         return {
           stdout: `HTTP/2.0 200 OK\nx-ratelimit-remaining: 5000\nx-ratelimit-reset: ${Date.parse("2026-08-11T04:00:00Z") / 1000}\n\n{}`,
           stderr: "",
           exitCode: 0
         };
       }
-      const target = args[1].split("/").at(-1);
-      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      return graphQlResult(args);
     });
     const governor = createGitHubRequestGovernor({ run }, {
       hourlyRequestBudget: 1_000,
@@ -333,15 +537,15 @@ describe("github list parsers", () => {
 
     const result = await createGitHubTargetReconciler().load(references, { runner: refresh.runner });
 
-    expect(run).toHaveBeenCalledTimes(25);
-    expect(result.items.filter((item) => item.loadState === "loaded")).toHaveLength(24);
-    expect(result.items.filter((item) => item.loadState === "unknown")).toHaveLength(476);
-    expect(result.failed).toBe(true);
+    expect(run).toHaveBeenCalledTimes(11);
+    expect(result.items.filter((item) => item.loadState === "loaded")).toHaveLength(500);
+    expect(result.items.filter((item) => item.loadState === "unknown")).toHaveLength(0);
+    expect(result.failed).toBeUndefined();
     expect(refresh.status({ targetCount: references.length })).toMatchObject({
-      state: "degraded",
-      reason: "per_refresh_limit",
-      requestsExecuted: 25,
-      requestsBlocked: 476
+      state: "available",
+      reason: "none",
+      requestsExecuted: 11,
+      requestsBlocked: 0
     });
   });
 
@@ -362,7 +566,15 @@ describe("github list parsers", () => {
         exitCode: 0
       })
       .mockResolvedValueOnce({
-        stdout: JSON.stringify({ number: 45, title: "Recovered", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }),
+        stdout: [
+          "HTTP/2.0 200 OK",
+          "x-ratelimit-remaining: 4999",
+          `x-ratelimit-reset: ${(resetMs + 3_600_000) / 1000}`,
+          "",
+          JSON.stringify({ data: { repository: { target0: {
+            __typename: "Issue", number: 45, title: "Recovered", url: "https://github.com/repo/app/issues/45", state: "OPEN", labels: { nodes: [] }
+          } } } })
+        ].join("\n"),
         stderr: "",
         exitCode: 0
       });
@@ -398,27 +610,32 @@ describe("github list parsers", () => {
   });
 
   it("coalesces one target lookup while preserving distinct branch lookups", async () => {
-    const calls: string[] = [];
+    const calls: string[][] = [];
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
-      calls.push(args[1]);
-      if (args[1].includes("/branches/feature%2Fa")) return { stdout: "", stderr: "HTTP 404", exitCode: 1 };
-      if (args[1].includes("/branches/")) return { stdout: "{}", stderr: "", exitCode: 0 };
-      return { stdout: JSON.stringify({ number: 54, title: "Merged", html_url: "https://github.com/repo/app/pull/54", state: "closed", pull_request: { merged_at: "2026-07-12T10:00:00Z" }, labels: [] }), stderr: "", exitCode: 0 };
+      calls.push(args);
+      return graphQlResult(args, {
+        target: (target) => ({
+          __typename: "PullRequest", number: Number(target), title: "Merged", url: `https://github.com/repo/app/pull/${target}`,
+          state: "MERGED", mergedAt: "2026-07-12T10:00:00Z", labels: { nodes: [] }
+        }),
+        branch: (branch) => branch === "feature/a" ? "deleted" : "present"
+      });
     } });
     const result = await reconciler.load([
       { repo: "repo/app", target: "54", type: "pull_request", branch: "feature/a" },
       { repo: "repo/app", target: "54", type: "pull_request", branch: "feature/b" }
     ]);
-    expect(calls.filter((call) => call.includes("/issues/54"))).toHaveLength(1);
-    expect(calls.filter((call) => call.includes("/branches/"))).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].filter((argument) => /^target\d+=54$/.test(argument))).toHaveLength(1);
+    expect(calls[0].filter((argument) => /^branch\d+=refs\/heads\/feature\/(?:a|b)$/.test(argument))).toHaveLength(2);
     expect(result.items.map((item) => item.branchState)).toEqual(["deleted", "present"]);
   });
 
   it("includes target type in reconciliation identity, dedupe, and caches", async () => {
-    const calls: string[] = [];
+    const calls: string[][] = [];
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
-      calls.push(args[1]);
-      return { stdout: JSON.stringify({ number: 45, title: "Target", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      calls.push(args);
+      return graphQlResult(args);
     } });
     const issue = { repo: "repo/app", target: "45", type: "issue" as const };
     const pullRequest = { repo: "repo/app", target: "45", type: "pull_request" as const };
@@ -427,7 +644,8 @@ describe("github list parsers", () => {
     const result = await reconciler.load([issue, pullRequest]);
 
     expect(result.references).toEqual([issue, pullRequest]);
-    expect(calls.filter((call) => call.endsWith("/issues/45"))).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].filter((argument) => /^target\d+=45$/.test(argument))).toHaveLength(2);
   });
 
   it("prunes expired cache entries and caps live entries deterministically", async () => {
@@ -436,8 +654,7 @@ describe("github list parsers", () => {
     let calls = 0;
     const reconciler = createGitHubTargetReconciler({ run: async (args) => {
       calls += 1;
-      const target = args[1].split("/").at(-1);
-      return { stdout: JSON.stringify({ number: Number(target), title: "Open", html_url: `https://github.com/repo/app/issues/${target}`, state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      return graphQlResult(args);
     } }, 10, 8, 2);
     const reference = (target: string) => ({ repo: "repo/app", target, type: "issue" as const });
     await reconciler.load([reference("1"), reference("2")]);
@@ -445,10 +662,11 @@ describe("github list parsers", () => {
     await reconciler.load([reference("3")]);
     expect(reconciler.cacheSize()).toBe(2);
     await reconciler.load([reference("1")]);
-    expect(calls).toBe(4);
-    vi.advanceTimersByTime(11);
+    expect(calls).toBe(3);
+    vi.advanceTimersByTime(20);
     await reconciler.load([reference("4")]);
     expect(reconciler.cacheSize()).toBe(1);
+    expect(calls).toBe(4);
   });
 
   it("coalesces an active target lookup after TTL expiry and refreshes only after settlement", async () => {
@@ -457,10 +675,10 @@ describe("github list parsers", () => {
     let calls = 0;
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const reconciler = createGitHubTargetReconciler({ run: async () => {
+    const reconciler = createGitHubTargetReconciler({ run: async (args) => {
       calls += 1;
       if (calls === 1) await gate;
-      return { stdout: JSON.stringify({ number: 45, title: "Open", html_url: "https://github.com/repo/app/issues/45", state: "open", labels: [] }), stderr: "", exitCode: 0 };
+      return graphQlResult(args);
     } }, 0);
     const reference = { repo: "repo/app", target: "45", type: "issue" as const };
     const first = reconciler.load([reference]);

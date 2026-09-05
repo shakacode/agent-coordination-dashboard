@@ -1,11 +1,11 @@
 import express from "express";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeBatchManifestDraft, type BatchManifestDraft } from "../shared/batchManifest";
 import { repoLessBatchLaneMatchesWorkItem } from "../shared/batchSignal";
 import { buildCustodyTimeline } from "../shared/custodyTimeline";
-import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, GitHubQuotaStatus, WorkItem } from "../shared/types";
+import type { BatchRecord, CoordinationWarning, DashboardModel, DashboardSettings, GitHubPreview, GitHubQuotaStatus, GitHubRefreshKind, GitHubTelemetryEvent, WorkItem } from "../shared/types";
 import { DEFAULT_GITHUB_QUOTA_SAFETY_THRESHOLD, DEFAULT_GITHUB_REFRESH_INTERVAL_MS, DEFAULT_GITHUB_REQUEST_BUDGET_PER_HOUR, DEFAULT_GITHUB_REQUESTS_PER_REFRESH, type ServerConfig } from "./config";
 import { applyDashboardHistoryWindow, createOpenGitHubItemsCache } from "./dashboardHotPath";
 import { childProcessGhRunner, createGitHubTargetReconciler, githubTargetReferenceKey, loadOpenGitHubItems as defaultLoadOpenGitHubItems, type GitHubLoadResult, type GitHubTargetReference } from "./github/githubClient";
@@ -29,6 +29,7 @@ interface BuildScopedDashboardOptions {
   captured?: CoordinationSnapshot;
 }
 const MAX_DASHBOARD_CACHE_TTL_MS = 5000;
+const HISTORICAL_RECHECK_LIMIT = 10;
 
 export function batchLanesFor(item: WorkItem, model: DashboardModel) {
   return (item.batchSignals || [])
@@ -62,7 +63,16 @@ interface CreateDashboardAppOptions {
   loadOpenGitHubItems?: LoadOpenGitHubItems;
   loadGitHubTargets?: LoadGitHubTargets;
   githubRunner?: GhRunner;
+  emitGitHubTelemetry?: (event: GitHubTelemetryEvent) => void;
   machineInterfaces?: MachineInterfaceMap;
+  now?: () => Date;
+}
+
+interface DashboardReadResult {
+  model: DashboardModel;
+  refreshKind: GitHubRefreshKind;
+  /** Source model carrying GitHub status when an item rebuild reuses cached previews. */
+  telemetryModel?: DashboardModel;
 }
 
 export async function createDashboardApp(config: ServerConfig, options: CreateDashboardAppOptions = {}) {
@@ -90,6 +100,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     probeIntervalMs: 60_000,
     fallbackCooldownMs: 60_000
   });
+  const emitGitHubTelemetry = options.emitGitHubTelemetry || ((event: GitHubTelemetryEvent) => {
+    if (config.nodeEnv !== "test") console.info(JSON.stringify(event));
+  });
   const coordApiUrl = config.coordApiUrl?.trim() || "";
   const coordApiToken = config.coordApiToken || "";
   const displayedStateRoot = coordApiUrl ? "coordination-api" : config.stateRoot;
@@ -103,6 +116,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   let cachedDashboard: { expiresAt: number; key: string; model: DashboardModel } | undefined;
   let dashboardBuildInFlight: { key: string; promise: Promise<DashboardModel> } | undefined;
   const githubWarningsByDashboard = new WeakMap<DashboardModel, CoordinationWarning[]>();
+  const correctedHistoricalTargets = new Map<string, GitHubPreview>();
+  let historicalRecheckWindow: number | undefined;
+  let historicalRecheckAfterId: string | undefined;
 
   app.use(createHostGuard(config.allowedHosts));
   app.use(express.json({ limit: "256kb" }));
@@ -137,7 +153,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   async function captureCoordinationSnapshot(): Promise<CoordinationSnapshot> {
-    const now = new Date();
+    const now = options.now?.() || new Date();
     const state = await readCoordinationState(config.stateRoot, now, {
       apiUrl: coordApiUrl,
       token: coordApiToken
@@ -156,6 +172,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   }
 
   app.get("/api/item/:repo/:target", async (req, res) => {
+    const requestId = randomUUID();
+    res.set("X-Request-ID", requestId);
     const repo = req.params.repo;
     const target = req.params.target;
     const settings = await currentSettings();
@@ -165,7 +183,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
 
     const captured = await captureCoordinationSnapshot();
-    const model = await buildItemScopedDashboard(settings, captured);
+    const { model, refreshKind, telemetryModel } = await buildItemScopedDashboard(settings, captured);
+    recordGitHubTelemetry(telemetryModel || model, "/api/item/:repo/:target", refreshKind, requestId);
     const item = model.workItems.find((candidate) => candidate.repo === repo && candidate.target === target);
     const targetRepoSet = new Set(settings.targetRepos);
     res.json({
@@ -208,8 +227,43 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     }
   }
 
-  function reconciliationReference(item: WorkItem, model: DashboardModel): GitHubTargetReference | undefined {
+  function isHistoricalTerminal(item: WorkItem): boolean {
+    return Boolean(
+      item.terminalState
+      && item.operatorState === "archived_view"
+      && item.lastActivityAt
+      && Number.isFinite(Date.parse(item.lastActivityAt))
+    );
+  }
+
+  function compareHistoricalIds(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
+  function historicalRechecksForWindow(model: DashboardModel, now: Date): Set<string> {
+    const currentWindow = Math.floor(now.getTime() / Math.max(1, githubRefreshIntervalMs));
+    if (historicalRecheckWindow === currentWindow) return new Set();
+    historicalRecheckWindow = currentWindow;
+    const candidates = model.workItems.filter(isHistoricalTerminal).sort((left, right) => compareHistoricalIds(left.id, right.id));
+    if (candidates.length === 0) return new Set();
+    const afterIndex = historicalRecheckAfterId
+      ? candidates.findIndex((item) => compareHistoricalIds(item.id, historicalRecheckAfterId!) > 0)
+      : 0;
+    const startIndex = afterIndex < 0 ? 0 : afterIndex;
+    const selected = candidates.slice(startIndex, startIndex + HISTORICAL_RECHECK_LIMIT);
+    historicalRecheckAfterId = selected.at(-1)?.id;
+    return new Set(selected.map((item) => item.id));
+  }
+
+  function reconciliationReference(item: WorkItem, model: DashboardModel, recheckHistorical = false): GitHubTargetReference | undefined {
     if (!hasCoordinationEvidence(item) || !/^\d+$/.test(item.target)) return undefined;
+    // Historical terminal rows are retained for coordination visibility, but
+    // their GitHub state no longer changes the operator's active-work view.
+    // Require a real activity timestamp so undated legacy records remain
+    // eligible for one honest reconciliation instead of being silently aged.
+    if (isHistoricalTerminal(item) && !recheckHistorical) {
+      return undefined;
+    }
     const lanes = batchLanesFor(item, model);
     const branch = item.claim?.branch || item.heartbeat?.branch || lanes.find((lane) => lane.branch)?.branch;
     const events = model.events
@@ -320,6 +374,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
     // Intentionally build twice: the preliminary pass derives canonical WorkItems
     // and reconciliation plans; the final pass applies fetched GitHub evidence.
+    const currentGithubItems = new Map<string, GitHubPreview>(correctedHistoricalTargets);
+    for (const item of openGithubItems) currentGithubItems.set(`${item.repo}#${item.target}`, item);
     const preliminaryModel = buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
@@ -327,19 +383,24 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       heartbeats: state.heartbeats,
       batches: state.batches,
       events: state.events,
-      githubItems: openGithubItems,
+      githubItems: [...currentGithubItems.values()],
       warnings: [...state.warnings, ...openGithubWarnings],
       now
     });
+    const visibleIds = new Set(preliminaryModel.workItems.map((item) => item.id));
+    for (const id of correctedHistoricalTargets.keys()) {
+      if (!visibleIds.has(id)) correctedHistoricalTargets.delete(id);
+    }
+    const historicalRecheckIds = historicalRechecksForWindow(preliminaryModel, now);
     const reconciliationPlans = preliminaryModel.workItems.flatMap((item) => {
-      const reference = reconciliationReference(item, preliminaryModel);
+      const reference = reconciliationReference(item, preliminaryModel, historicalRecheckIds.has(item.id));
       if (!reference) return [];
       const targetReference =
         reference.target !== item.target
         && !(item.github?.target === item.target && item.github.loadState === "loaded")
           ? { repo: item.repo, target: item.target, type: item.type }
           : undefined;
-      return [{ workItemId: item.id, item, reference, targetReference }];
+      return [{ workItemId: item.id, item, reference, targetReference, historicalRecheck: historicalRecheckIds.has(item.id) }];
     });
     const reconciliationReferences = [
       ...reconciliationPlans.map((plan) => plan.reference),
@@ -418,12 +479,26 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       warnings: [...state.warnings, ...openGithubWarnings, ...reconciled.warnings],
       now
     });
+    for (const plan of reconciliationPlans) {
+      if (!plan.historicalRecheck && !correctedHistoricalTargets.has(plan.workItemId)) continue;
+      const refreshed = model.workItems.find((item) => item.id === plan.workItemId)?.github;
+      const observed = [refreshed, refreshed?.implementationPr].filter((item): item is GitHubPreview => Boolean(item));
+      if (observed.some((item) => item.loadState === "loaded" && item.state === "OPEN") && refreshed) {
+        correctedHistoricalTargets.set(plan.workItemId, refreshed);
+      } else if (observed.length > 0 && observed.every((item) => item.loadState === "loaded")) {
+        correctedHistoricalTargets.delete(plan.workItemId);
+      }
+    }
     // The headline is scope-wide: any missing GitHub evidence makes the whole count untrusted.
     const githubCoverageUnknown = openGithubWarnings.length > 0 || reconciled.items.some((item) => item.loadState === "unknown");
     const coordinationCoverageUnknown = state.sourceStatus.some((source) => ["auth_error", "unreachable"].includes(source.status));
     const mergeTimeCoverageUnknown = explicitlyDeclaredMergedWithoutGitHubTime(model);
     const annotatedModel = await applyStoredAnnotations(model, now);
-    const rawGithubStatus = githubRefresh.status({ targetCount: reconciliationReferences.length });
+    const rawGithubStatus = githubRefresh.status({
+      targetCount: reconciliationReferences.length,
+      cacheHits: reconciled.cacheHits ?? 0,
+      cacheMisses: reconciled.cacheMisses ?? reconciliationReferences.length
+    });
     const githubReadFailed = githubResults.some((result) => result.failed) || Boolean(reconciled.failed);
     const githubStatus: GitHubQuotaStatus = rawGithubStatus.state === "available" && githubReadFailed
       ? { ...rawGithubStatus, state: "degraded", reason: "read_failed", message: "One or more GitHub reads failed; affected values remain UNKNOWN." }
@@ -456,18 +531,23 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     };
   }
 
-  async function cachedDashboardForItem(settings: DashboardSettings): Promise<DashboardModel | undefined> {
+  async function cachedDashboardForItem(settings: DashboardSettings): Promise<DashboardReadResult | undefined> {
     const key = dashboardCacheKey(settings);
-    if (cachedDashboard?.key === key && cachedDashboard.expiresAt > Date.now()) return cachedDashboard.model;
-    return dashboardBuildInFlight?.key === key ? dashboardBuildInFlight.promise : undefined;
+    if (cachedDashboard?.key === key && cachedDashboard.expiresAt > Date.now()) {
+      return { model: cachedDashboard.model, refreshKind: "cache_hit" };
+    }
+    if (dashboardBuildInFlight?.key === key) {
+      return { model: await dashboardBuildInFlight.promise, refreshKind: "single_flight" };
+    }
+    return undefined;
   }
 
-  async function buildItemScopedDashboard(settings: DashboardSettings, captured: CoordinationSnapshot): Promise<DashboardModel> {
+  async function buildItemScopedDashboard(settings: DashboardSettings, captured: CoordinationSnapshot): Promise<DashboardReadResult> {
     const cached = await cachedDashboardForItem(settings);
-    if (!cached) return buildScopedDashboard(settings, { captured });
+    if (!cached) return { model: await buildScopedDashboard(settings, { captured }), refreshKind: "initial" };
     // Item refreshes need fresh coordination state, but can safely reuse the
     // already-loaded GitHub previews from the current dashboard cache.
-    const githubItems = cached.workItems.flatMap((item) => item.github ? [item.github] : []);
+    const githubItems = cached.model.workItems.flatMap((item) => item.github ? [item.github] : []);
     const model = buildDashboardModel({
       stateRoot: displayedStateRoot,
       targetRepos: settings.targetRepos,
@@ -476,16 +556,20 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       batches: captured.state.batches,
       events: captured.state.events,
       githubItems,
-      warnings: [...captured.state.warnings, ...(githubWarningsByDashboard.get(cached) || [])],
+      warnings: [...captured.state.warnings, ...(githubWarningsByDashboard.get(cached.model) || [])],
       now: captured.now
     });
-    return applyStoredAnnotations(model, captured.now);
+    return {
+      model: await applyStoredAnnotations(model, captured.now),
+      refreshKind: cached.refreshKind,
+      telemetryModel: cached.model
+    };
   }
 
-  async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardModel> {
+  async function readScopedDashboard(settings: DashboardSettings, options: { bypassCache?: boolean } = {}): Promise<DashboardReadResult> {
     const key = dashboardCacheKey(settings);
     if (dashboardCacheTtlMs <= 0) {
-      return buildScopedDashboard(settings);
+      return { model: await buildScopedDashboard(settings), refreshKind: options.bypassCache ? "foreground" : "initial" };
     }
 
     if (options.bypassCache) {
@@ -494,15 +578,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       const sequence = nextCacheableDashboardBuild();
       const model = await buildScopedDashboard(settings);
       cacheDashboardModel(key, model, generation, sequence, Date.now() + dashboardCacheTtlMs);
-      return model;
+      return { model, refreshKind: "foreground" };
     }
 
     const nowMs = Date.now();
     if (cachedDashboard?.key === key && cachedDashboard.expiresAt > nowMs) {
-      return cachedDashboard.model;
+      return { model: cachedDashboard.model, refreshKind: "cache_hit" };
     }
     if (dashboardBuildInFlight?.key === key) {
-      return dashboardBuildInFlight.promise;
+      return { model: await dashboardBuildInFlight.promise, refreshKind: "single_flight" };
     }
 
     const generation = dashboardCacheGeneration;
@@ -519,7 +603,32 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         }
       });
     dashboardBuildInFlight = { key, promise };
-    return promise;
+    return { model: await promise, refreshKind: "initial" };
+  }
+
+  function recordGitHubTelemetry(model: DashboardModel, route: string, refreshKind: GitHubRefreshKind, requestId: string) {
+    const status = model.githubStatus;
+    if (!status) return;
+    const cacheOnly = refreshKind === "cache_hit" || refreshKind === "single_flight";
+    const targetCount = status.targetCount ?? 0;
+    const event: GitHubTelemetryEvent = {
+      event: "github_refresh",
+      route,
+      refreshKind,
+      targetCount,
+      cacheHits: cacheOnly ? targetCount : status.cacheHits ?? 0,
+      cacheMisses: cacheOnly ? 0 : status.cacheMisses ?? targetCount,
+      githubApiCount: cacheOnly ? 0 : status.requestsExecuted,
+      result: status.state === "available" ? "success" : "degraded",
+      status: status.state,
+      reason: status.reason,
+      requestId,
+      ...(!cacheOnly && status.githubRequestId ? { githubRequestId: status.githubRequestId } : {}),
+      ...(!cacheOnly && status.rateLimitUsed !== undefined ? { rateLimitUsed: status.rateLimitUsed } : {}),
+      ...(!cacheOnly && status.rateLimitRemaining !== undefined ? { rateLimitRemaining: status.rateLimitRemaining } : {}),
+      ...(!cacheOnly && status.rateLimitResetAt !== undefined ? { rateLimitResetAt: status.rateLimitResetAt } : {})
+    };
+    emitGitHubTelemetry(event);
   }
 
   function batchContainsRepo(batch: BatchRecord, repo: string): boolean {
@@ -700,9 +809,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   });
 
   app.get("/api/dashboard", async (req, res) => {
+    const requestId = randomUUID();
+    res.set("X-Request-ID", requestId);
     const settings = await currentSettings();
     const bypassCache = canBypassDashboardCache(req.get("X-Dashboard-Refresh"), req.socket.remoteAddress);
-    const model = await readScopedDashboard(settings, { bypassCache });
+    const { model, refreshKind } = await readScopedDashboard(settings, { bypassCache });
+    recordGitHubTelemetry(model, "/api/dashboard", refreshKind, requestId);
     // Default to a hot history window; ?history=full opts into the complete
     // payload. Windowing runs per request so the shared cache keeps full history.
     res.json(req.query.history === "full" ? model : applyDashboardHistoryWindow(model, new Date()));
