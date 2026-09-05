@@ -33,7 +33,7 @@ describe("public package manifest", () => {
     expect(manifest.publishConfig).toEqual({ access: "public" });
     expect(Object.keys(manifest.dependencies || {}).sort()).toEqual(["express", "tsx"]);
     expect(Object.keys(manifest.devDependencies || {})).toEqual(
-      expect.arrayContaining(["@vitejs/plugin-react", "lucide-react", "react", "react-dom", "vite"])
+      expect.arrayContaining(["@vitejs/plugin-react", "react", "react-dom", "vite"])
     );
   });
 });

@@ -1,11 +1,16 @@
 # Agent Coordination Dashboard
 
-Local dashboard for agent coordination state, coordinator triage, machine/lane
-visibility, batch prompt planning, batch audit, and QA validation tracking.
+Local dashboard service for agent coordination state: a detached lifecycle CLI,
+machine-local security boundaries, target repository settings, and component
+diagnostics over the coordination backend.
 
 [![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
 
 **[Documentation →](https://agents.shakacode.com)**
+
+The browser page currently renders a placeholder. The read-only Human Attention
+view over agent-coordination attention records lands in later pull requests;
+see tracker issue #134.
 
 ## License
 
@@ -107,15 +112,14 @@ than being mistaken for a failed start. For a specific IP address assigned to
 the local machine, lifecycle diagnostics connect from a loopback source address;
 the dashboard's machine-local `/api/doctor` boundary remains unchanged.
 
-Write routes recognize a same-machine peer from the kernel-reported TCP source
-address, not from forwarded headers. Exact non-link-local interface matching is
-not application authentication: it cannot compensate for a host or network that
-permits source-address spoofing, or for a proxy that makes remote clients appear
-local. Keep `HOST` on loopback on shared or untrusted networks. If a non-loopback
-bind is required, use host firewall or equivalent access controls so untrusted
-traffic cannot reach the dashboard. `/api/doctor` and foreground dashboard-model
-cache bypass remain loopback-only; foreground refresh does not bypass the
-separate GitHub quota guard or GitHub refresh cadence.
+Settings writes recognize a same-machine peer from the kernel-reported TCP
+source address, not from forwarded headers. Exact non-link-local interface
+matching is not application authentication: it cannot compensate for a host or
+network that permits source-address spoofing, or for a proxy that makes remote
+clients appear local. Keep `HOST` on loopback on shared or untrusted networks.
+If a non-loopback bind is required, use host firewall or equivalent access
+controls so untrusted traffic cannot reach the dashboard. `/api/doctor` remains
+loopback-only.
 
 ## Component diagnostics
 
@@ -150,11 +154,17 @@ malformed or redirected health response is `failed`. The command only observes
 the installed package and running service; it does not start the dashboard or
 change coordination state.
 
+`/api/doctor` reports backend reachability only. In filesystem mode it counts
+directory entries for each resource without reading or parsing records: a
+populated directory is `ok`, an absent or empty one is `empty`, and an
+unreadable one is `unreachable`. In API mode it issues one bounded authenticated
+list request per resource: `200` is `ok`, `401` and `403` are `auth_error`, any
+other status or a network failure is `unreachable`, and the configured token is
+never echoed in the response.
+
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
-If it has not been populated yet, the dashboard shows a setup notice rather
-than coordination data. To inspect an existing coordination run, point
-`AGENT_COORD_STATE_ROOT` at the data root that already contains `claims/`,
-`heartbeats/`, and `batches/`:
+To inspect an existing coordination run, point `AGENT_COORD_STATE_ROOT` at the
+data root that already contains `claims/`, `heartbeats/`, and `batches/`:
 
 ```bash
 AGENT_COORD_STATE_ROOT="$HOME/Documents/agent-coordination/agent-coordination-pr2" \
@@ -165,8 +175,8 @@ The server binds to `127.0.0.1` by default because it exposes private local
 coordination metadata. Set `HOST=0.0.0.0` only when you intentionally want to
 make it reachable from another machine on the network, and set `ALLOWED_HOSTS`
 to the exact hostnames or IP addresses you will use in the browser.
-Changing target repositories through the UI uses the same exact same-machine
-socket-peer boundary described above; other network peers remain read-only.
+Changing target repositories uses the same exact same-machine socket-peer
+boundary described above; other network peers remain read-only.
 
 To read from the HTTP coordination backend instead of the local filesystem
 state root, set the same API variables used by `agent-coord`:
@@ -177,112 +187,9 @@ AGENT_COORD_API_TOKEN="..." \
 npm run dev
 ```
 
-In API mode the dashboard reads `claims`, `heartbeats`, `batches`, and
-append-only `events` from the Worker state API and keeps file mode as the
-fallback when `AGENT_COORD_API_URL` is unset. Remote dashboard responses label
-the source as `coordination-api` instead of echoing the configured backend URL.
-Older Worker deployments that do not expose the `events` prefix still render the
-rest of API mode with a visible warning. `history/` remains filesystem-only.
-API mode is read-only in this slice; batch import and stop-request writes remain
-local recovery tools for filesystem mode.
-Filesystem mode is still useful for local inspection, offline/recovery work,
-demos, and tests; it renders the same Operator View model over local records.
-The browser loads once at startup and refreshes only for an explicit operator
-action, including the top-bar Refresh button. It does not poll on an interval or
-when a snooze expires. `DASHBOARD_REFRESH_MS` remains in the settings contract
-for compatibility, but its default is `0` in both API and filesystem modes and
-a positive value controls only the short server-side dashboard-model cache; it
-does not schedule browser polling. The dormant background refresh seam rejects
-requests unless the document is visible and focused; no scheduler invokes that
-seam. GitHub enrichment has a separate 15-minute default cache cadence. The
-server coalesces dashboard reads, GitHub list reads, target reconciliation, and
-the representative quota probe. A foreground refresh bypasses only the short
-dashboard-model cache; it uses the same GitHub cache, hourly budget, per-refresh
-ceiling, safety threshold, and cooldown.
-
-Before uncached GitHub work, the server samples authenticated REST quota headers
-from `GET /user`. It pauses GitHub enrichment when remaining quota reaches the
-safety threshold, when the process-wide hourly budget is spent, or when quota
-telemetry cannot be read. The API returns `githubStatus` request totals and the
-UI displays a GitHub degradation banner. Affected GitHub fields stay visibly
-`UNKNOWN`. GitHub guardrails do not block coordination reads; Manual Refresh
-requests current coordination data. See the
-[GitHub REST quota incident guide](docs/incidents/2026-08-10-github-rest-quota-exhaustion.md)
-for containment and recovery.
-
-The browser keeps one validated last-known dashboard snapshot in local storage.
-On reload it first confirms the server-issued runtime scope and saved target
-repositories, then may paint the matching snapshot while current data is
-fetched; a snapshot from another state root, API source, settings store, or
-repository scope is never rendered. Cached content is visibly labeled until a
-fresh read succeeds, malformed cache entries are ignored, and foreground or
-operator-triggered refreshes persist immediately. A failed refresh visibly
-marks the displayed data unavailable and disables local writes until a later
-refresh recovers.
-The interface follows the operating system's light or dark color preference;
-all palette values are defined as CSS custom properties.
-
-## What It Shows
-
-- **Overview**: needs-attention queue, active/recoverable work, batch repairs,
-  QA validation gaps, ready work, and high-level counts. This is the default
-  landing view so large coordination roots do not open into a dense ledger.
-- **Operator View**: dense searchable drill-down keyed by `repo + target` when
-  a PR/issue target exists, with `batch_id + lane_name` fallback rows for
-  batch-only telemetry. It shows state, liveness age, work, owner/thread,
-  batch/branch, activity, PR links, and warning counts.
-- **Work**: open GitHub issues and pull requests joined to coordination state,
-  grouped as recovery, active, and ready-to-batch queues.
-- **Batches**: saved batch plans, inferred batches from `batch_id` claims/heartbeats,
-  lanes, dependencies, liveness, blocked-on refs, coordination prompt status, and
-  recent history events, stop-request status, audit counts, and QA counts.
-- **Machines**: machines, agents, heartbeats, claims, liveness, warnings, and current work.
-  A single strict legacy `m<number>` token in an agent id is shown as inferred
-  machine metadata when no coordination record supplies a machine id; ambiguous
-  ids remain unattributed.
-- **Health**: missing machine IDs, missing heartbeats, missing batch plans,
-  missing coordination prompts, prompt/target drift, missing history, and other
-  coordination data gaps.
-- **Prompt drawer**: collapsed copyable `$pr-batch` handoff built from work
-  selected in Find.
-
-Operator tab search is client-side over loaded rows. It matches target numbers
-such as `123`, `#123`, `PR #123`, and `issue #123`, plus branch names, thread
-handles, agent ids, machine ids, operators, hosts, and PR URLs. Query parameters
-on the root route can deep-link loaded rows: `?target=<target>&repo=<owner/repo>`,
-`?batch=<batch_id>&lane=<lane_name>`, or `?q=<search>`. Deep links open the
-Operator tab, but do not widen target repository scope or fetch hidden data.
-
-Operator states are `running`, `wedged`, `paused`, `blocked`, `stale`, `dead`,
-`ready`, `done`, and `unknown`. A row is `wedged` when it has a live heartbeat
-but no phase/event transition for 15 minutes.
-
-Work items show three scheduling states:
-
-- **In process**: an active claim has a live or stale heartbeat.
-- **Started, not processing**: a claim or heartbeat exists, but no live/stale
-  holder is currently processing the item.
-- **Ready for batch**: the item is open in GitHub and has no active scheduling
-  signal.
-
-The dashboard does not launch Codex agents, edit code, merge PRs, resolve
-reviews, or mutate claims or heartbeats. Coordination-state writes are limited
-to explicit actions whose socket peer is loopback or exactly matches a
-non-link-local address currently assigned to the dashboard machine. Other LAN
-and remote peers remain read-only:
-
-- Save an imported batch plan to `batches/<batch-id>.json`.
-- Append a `batch.stop_requested` event to `events/batches/<batch-id>.jsonl`.
-
-A stop request is a coordination/audit signal so a batch can be restarted
-cleanly; it does not kill processes or release claims by itself.
-
-Dismiss and snooze actions never write coordination state. They are
-presentation-only annotations, accepted from loopback or exact non-link-local
-same-machine interface peers and persisted in `annotations.json` beside the
-dashboard settings file. Snooze eligibility expires at its recorded time and is
-reflected on the next initial, explicit, or operator-action refresh; dismissals
-remain until an operator clears them.
+API mode keeps file mode as the fallback when `AGENT_COORD_API_URL` is unset.
+Diagnostics label an API-mode source as `coordination-api` instead of echoing
+the configured backend URL or the local state root.
 
 ## Configuration
 
@@ -292,13 +199,8 @@ remain until an operator clears them.
 | `HOST` | `127.0.0.1` |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` plus non-wildcard `HOST` |
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
-| `AGENT_COORD_API_URL` | unset; when set, read coordination state from the HTTP backend |
+| `AGENT_COORD_API_URL` | unset; when set, probe the HTTP backend instead of the state root |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
-| `DASHBOARD_REFRESH_MS` | `0`; optional server-side dashboard-model cache TTL (capped at 5 seconds) retained in runtime settings for compatibility; the browser remains manual-only |
-| `GITHUB_REFRESH_MS` | `900000` (15 minutes); separate GitHub cache cadence; set `0` to disable GitHub enrichment without blocking coordination reads |
-| `GITHUB_REQUEST_BUDGET_PER_HOUR` | `1000`; process-wide rolling 60-minute dashboard ceiling for GitHub CLI requests |
-| `GITHUB_REQUESTS_PER_REFRESH` | `50`; hard ceiling shared by all GitHub work in one dashboard rebuild, including its quota probe |
-| `GITHUB_QUOTA_SAFETY_THRESHOLD` | `500`; pause GitHub enrichment at or below this observed authenticated REST remainder |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
@@ -307,55 +209,13 @@ lifecycle children do not inherit it from the launching shell. Lifecycle-managed
 dashboards do not support Node runtime options through `NODE_OPTIONS`, keeping
 restart behavior independent of the caller's working directory.
 
-Target repositories are edited in the dashboard and persisted across restarts.
+Target repositories are persisted across restarts in the settings file.
 `TARGET_REPOS` accepts a comma-separated list only as the first-run fallback
 when no settings file exists yet.
-
-GitHub enrichment uses the local `gh` CLI. If `gh` is unavailable,
-unauthenticated, quota-constrained, or explicitly disabled, local coordination
-state still renders and GitHub-dependent values remain `UNKNOWN` with a visible
-warning.
 
 The coordination root is data only. This repo owns the dashboard code; the
 coordination data root owns runtime records such as `claims/`, `heartbeats/`,
 `batches/`, `events/`, and `history/`.
-
-Local coordination records are scoped to the saved target repositories; records
-outside those repos are skipped with count-based warnings.
-
-When no saved `batches/<batch-id>.json` batch plan exists, the dashboard infers
-batch cards from scoped claims and heartbeats that include `batch_id`. Inferred
-batches are labeled and produce Health warnings because they do not replace a
-saved batch plan.
-
-Saved batch plans include the batch id, repository scope, objective, targets,
-lanes, reservations, creation metadata, and optional coordination prompt text so
-planned batches stay visible before workers write their own telemetry. They are
-stored as JSON under `batches/<batch-id>.json`.
-
-The Batches view can import a planned `$pr-batch` run by pasting the coordination
-prompt, reviewing the parsed batch plan, and explicitly saving it to
-`batches/<batch-id>.json` under the configured coordination root. This write is
-accepted only from the machine running the dashboard and does not launch agents
-or touch claims, heartbeats, events, or history.
-
-Batch history is read from optional `events/**/*.json`, `events/**/*.jsonl`,
-`history/**/*.json`, and `history/**/*.jsonl` files. See
-[`docs/coordination-telemetry-contract.md`](docs/coordination-telemetry-contract.md)
-for the fields batches should write so the dashboard can show machine ownership,
-token-limit pauses, continues, stop requests, QA validation, and reliable
-history.
-
-Rollout note: older telemetry that used `host` as a machine label should start
-writing `machine_id`, `machine`, or `hostname`. The dashboard now treats `host`
-as the app/runner surface (`codex`, `claude`, etc.) and no longer uses it as a
-machine-id fallback; records without a machine identity intentionally produce
-machine health warnings.
-
-For a system-level map of where coordination data lives, how often it is
-updated, how PRs join to claims/heartbeats/batches/machines, and how to view
-the diagrams full-size, see
-[`docs/coordination-architecture.md`](docs/coordination-architecture.md).
 
 ## Data And Tooling Boundary
 
@@ -385,14 +245,14 @@ npm run demo
 The npm scripts call package entrypoints through `node` directly for consistent
 local execution.
 
-`npm run demo` starts a disposable local dashboard with synthetic coordination
-state that advances every 3 seconds. The browser shows current state on initial
-load or manual refresh. The installed equivalent is:
+`npm run demo` starts a disposable local dashboard over an empty temporary
+coordination state root, so it serves the placeholder page and `/api/doctor`
+reports every resource as `empty`. The installed equivalent is:
 
 ```bash
 npx agent-coordination-dashboard --demo
 ```
 
 Demo mode removes coordination API credentials from the child environment,
-uses an offline `gh` stub, binds to loopback, and deletes its temporary state
-when it stops.
+binds to loopback, writes its settings file inside the temporary root, and
+deletes that root when it stops.
