@@ -120,6 +120,9 @@ async function probeApiResource(
       },
       signal: controller.signal
     });
+    // Only the status is used, so release the body immediately: an unread
+    // large or streaming list response would otherwise hold the connection.
+    await response.body?.cancel().catch(() => undefined);
     if (response.status === 200) {
       return resourceStatus(resource, "api", "ok", checkedAt, response.status);
     }

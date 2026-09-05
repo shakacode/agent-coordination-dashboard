@@ -138,6 +138,35 @@ describe("readDoctorReport", () => {
     expect(new Set(prefixes)).toEqual(new Set(["claims", "heartbeats", "batches", "events"]));
   });
 
+  it("releases each API response body instead of holding the connection open", async () => {
+    let opened = 0;
+    let cancelled = 0;
+
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl: "https://coord.example.test",
+      token: "api-token",
+      fetchImpl: async () => {
+        opened += 1;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"entries":[]}'));
+            },
+            cancel() {
+              cancelled += 1;
+            }
+          }),
+          { status: 200 }
+        );
+      }
+    });
+
+    expect(opened).toBe(4);
+    expect(cancelled).toBe(4);
+    expect(report.perResource.every((status) => status.status === "ok" && status.httpStatus === 200)).toBe(true);
+  });
+
   it("reports an unexpected coordination API status as unreachable", async () => {
     const apiUrl = await listenCoordinationApi(respondWith(503, { error: "unavailable" }));
 
