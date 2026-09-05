@@ -3,6 +3,10 @@
 Local dashboard for agent coordination state, coordinator triage, machine/lane
 visibility, batch prompt planning, batch audit, and QA validation tracking.
 
+[![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
+
+**[Documentation →](https://agents.shakacode.com)**
+
 ## License
 
 This local/protocol dashboard is part of the Agent Coordination MIT License
