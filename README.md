@@ -188,8 +188,9 @@ npm run dev
 ```
 
 API mode keeps file mode as the fallback when `AGENT_COORD_API_URL` is unset.
-Diagnostics label an API-mode source as `coordination-api` instead of echoing
-the configured backend URL or the local state root.
+`/api/doctor` reports the configured state root as-is and reports the API URL
+with any embedded credentials, query string, and fragment stripped; an
+unparseable URL is reported as `UNKNOWN`. The token is never echoed.
 
 ## Configuration
 

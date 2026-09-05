@@ -34,8 +34,24 @@ export interface DoctorOptions {
 const DOCTOR_RESOURCES: readonly DoctorResource[] = ["claims", "heartbeats", "batches", "events"];
 const API_FETCH_TIMEOUT_MS = 5000;
 const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-/** Reported in place of the filesystem path so API-mode diagnostics never echo a local root. */
-const API_STATE_ROOT_LABEL = "coordination-api";
+
+/**
+ * Report the configured backend without its secrets: credentials embedded in
+ * the URL, the query string, and the fragment can all carry tokens. An
+ * unparseable URL is reported as UNKNOWN rather than echoed back.
+ */
+function reportableApiUrl(apiUrl: string): string {
+  try {
+    const url = new URL(apiUrl);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch {
+    return "UNKNOWN";
+  }
+}
 
 function parseApiBaseUrl(apiUrl: string): URL {
   const url = new URL(apiUrl);
@@ -139,9 +155,9 @@ export async function readDoctorReport(options: DoctorOptions): Promise<DoctorRe
   }
 
   const apiReport = (perResource: DoctorResourceStatus[]): DoctorReport => ({
-    apiUrl,
+    apiUrl: reportableApiUrl(apiUrl),
     tokenEnvVar,
-    stateRoot: API_STATE_ROOT_LABEL,
+    stateRoot: options.stateRoot,
     perResource
   });
 

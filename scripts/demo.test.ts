@@ -62,7 +62,15 @@ describe("demo dashboard", () => {
     const port = await unusedPort();
     const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/demo.ts"], {
       cwd: process.cwd(),
-      env: { ...process.env, PORT: String(port) },
+      env: {
+        ...process.env,
+        PORT: String(port),
+        // The demo must strip inherited API settings; the fs-mode doctor
+        // assertions below fail if any of these reach the child.
+        AGENT_COORD_API_URL: "https://coord.example.invalid",
+        AGENT_COORD_API_TOKEN: "must-not-be-used",
+        AGENT_COORD_TOKEN: "must-not-be-used"
+      },
       stdio: ["ignore", "pipe", "pipe"]
     });
     const output = captureOutput(child);

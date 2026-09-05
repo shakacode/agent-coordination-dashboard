@@ -105,9 +105,9 @@ describe("readDoctorReport", () => {
     });
 
     expect(report).toEqual({
-      apiUrl,
+      apiUrl: new URL(apiUrl).href,
       tokenEnvVar: "AGENT_COORD_API_TOKEN",
-      stateRoot: "coordination-api",
+      stateRoot: "/unused/state/root",
       perResource: ["claims", "heartbeats", "batches", "events"].map((resource) =>
         expect.objectContaining({ resource, mode: "api", status: "auth_error", httpStatus: 401 })
       )
@@ -127,7 +127,7 @@ describe("readDoctorReport", () => {
 
     const report = await readDoctorReport({ stateRoot: "/unused/state/root", apiUrl, token: "api-token" });
 
-    expect(report.stateRoot).toBe("coordination-api");
+    expect(report.stateRoot).toBe("/unused/state/root");
     expect(report.perResource).toEqual([
       expect.objectContaining({ resource: "claims", mode: "api", status: "ok", httpStatus: 200 }),
       expect.objectContaining({ resource: "heartbeats", mode: "api", status: "ok", httpStatus: 200 }),
@@ -163,7 +163,7 @@ describe("readDoctorReport", () => {
     await expect(
       readDoctorReport({ stateRoot: "/unused/state/root", apiUrl: "http://coord.example.test", token: "api-token" })
     ).resolves.toMatchObject({
-      stateRoot: "coordination-api",
+      stateRoot: "/unused/state/root",
       perResource: [
         expect.objectContaining({ status: "unreachable" }),
         expect.objectContaining({ status: "unreachable" }),
@@ -182,6 +182,27 @@ describe("readDoctorReport", () => {
         expect.objectContaining({ status: "auth_error" })
       ]
     });
+  });
+
+  it("reports the API URL without credentials, query, or fragment", async () => {
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl: "https://user:URLSECRET@coord.example.test/path?token=URLSECRET#frag",
+      token: "api-token",
+      fetchImpl: async () => new Response("{}", { status: 200 })
+    });
+
+    expect(report.apiUrl).toBe("https://coord.example.test/path");
+    expect(JSON.stringify(report)).not.toContain("URLSECRET");
+    expect(JSON.stringify(report)).not.toContain("user");
+    expect(report.perResource.every((status) => status.status === "ok")).toBe(true);
+  });
+
+  it("reports an unparseable coordination API URL as UNKNOWN", async () => {
+    const report = await readDoctorReport({ stateRoot: "/unused/state/root", apiUrl: "not a url", token: "api-token" });
+
+    expect(report.apiUrl).toBe("UNKNOWN");
+    expect(report.perResource.every((status) => status.status === "unreachable")).toBe(true);
   });
 
   it("treats a blank coordination API URL as filesystem mode", async () => {

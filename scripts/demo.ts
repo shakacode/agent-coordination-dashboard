@@ -29,6 +29,7 @@ export async function runDemo(): Promise<void> {
   delete serverEnv.AGENT_COORD_TOKEN;
   Object.assign(serverEnv, {
     AGENT_COORD_STATE_ROOT: root,
+    ALLOWED_HOSTS: "localhost,127.0.0.1,::1",
     DASHBOARD_SETTINGS_PATH: join(root, "settings.json"),
     HOST: "127.0.0.1",
     NODE_ENV: process.env.AGENT_COORD_DASHBOARD_DEMO_NODE_ENV || "development",
