@@ -37,6 +37,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.scripts.json"
   },
   "dependencies": {
+    "ajv": "8.20.0",
     "express": "^5.2.1",
     "tsx": "^4.23.1"
   },
