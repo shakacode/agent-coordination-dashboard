@@ -193,6 +193,10 @@ describe("readStatePrefix", () => {
     expect(result.sourceStatus).not.toHaveProperty("httpStatus");
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0].startsWith(`Could not read coordination API ${PREFIX}: `)).toBe(true);
+    // Pin this to the JSON.parse path: the malformed-wrapper branch above
+    // reports the same prefix with a fixed suffix, and `startsWith` alone
+    // would accept it.
+    expect(result.warnings[0]).not.toBe(`Could not read coordination API ${PREFIX}: malformed response`);
   });
 
   it("falls back to the HTTP status line when a non-2xx body is not JSON", async () => {
@@ -344,7 +348,12 @@ describe("readStatePrefix", () => {
 
   it.each([
     ["a query string", "https://coord.example.test/?tenant=a"],
-    ["a fragment", "https://coord.example.test/#tenant"]
+    ["a fragment", "https://coord.example.test/#tenant"],
+    // WHATWG URL reports `search`/`hash` as "" for a bare marker while
+    // `toString()` keeps it, so these two shapes slip past a component-level
+    // guard and still fold `/v1/state` into the query or the fragment.
+    ["a bare query marker", "https://coord.example.test/?"],
+    ["a bare fragment marker", "https://coord.example.test/#"]
   ])("refuses a base URL carrying %s rather than misrouting the state request", async (_label, apiUrl) => {
     const fetchImpl = vi.fn();
 

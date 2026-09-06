@@ -105,7 +105,11 @@ function parseApiBaseUrl(apiUrl: string): URL {
   // already carries a query string or fragment would swallow that suffix into
   // the query (or hash) and send an authenticated request to the origin root
   // instead, so the misconfiguration is refused here rather than misrouted.
-  if (url.search || url.hash) {
+  // The test is on the serialized URL, not on `url.search`/`url.hash`: both
+  // read as "" for a bare `?` or `#`, which `toString()` still preserves and
+  // the concatenation still swallows. A path may only hold `?`/`#`
+  // percent-encoded, so this cannot reject an otherwise valid base.
+  if (/[?#]/.test(url.toString())) {
     throw new Error("expected an http(s) URL with no query string or fragment");
   }
   return url;
