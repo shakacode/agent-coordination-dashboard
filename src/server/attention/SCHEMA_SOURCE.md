@@ -50,9 +50,20 @@ ignored in schema at path "#/properties/open_uri"`), so the schema's two `format
 `date-time` on `$defs.timestamp` and `uri` on `source.open_uri` — are switched off rather than
 strict mode.
 
-Nothing is lost on the timestamp side: the `timestamp` `pattern` is stricter than the `date-time`
-format check (it requires an explicit offset and excludes leap-second spellings) and `maxLength`
-bounds the string.
+The `timestamp` `pattern` is stricter than the `date-time` format check in one direction — it
+requires an explicit offset and excludes leap-second spellings — and `maxLength` bounds the string.
+It is weaker in another: it only bounds digit shapes, so `2026-99-99T99:99:00+99:99` satisfies it.
+
+Because the `date-time` annotation is inert with format checks off, `validator.ts` adds an explicit
+RFC 3339 check of its own on every timestamp field, applied after the Ajv pass clears. It bounds the
+calendar (month 1-12, day valid for the month, 29 February only in leap years), the clock (hour
+0-23, minute and second 0-59), and the offset (`Z`, or hours 0-23 with minutes 0-59), and does not
+use `Date.parse`, which rolls `2026-02-30` forward into March instead of rejecting it. The field
+list is derived by following `$ref`s to `$defs.timestamp` rather than hardcoded — today
+`created_at`, `refreshed_at`, `resolved_at`, and `source.last_seen_at` — and the module throws at
+load if a re-vendor puts a timestamp somewhere the walk does not reach. A failure returns
+`{ ok: false, errors }` with one Ajv-shaped error per bad field (`keyword: "format"`), so consumers
+see a single error surface.
 
 URL validation is deliberately not this validator's job. `target` carries no `format` at all, `uri`
 on `source.open_uri` is inert with format checks off, and `walkthrough_url` is one of
