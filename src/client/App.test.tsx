@@ -1,9 +1,22 @@
 import { render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { emptyPayload } from "./attention/fixtures";
 
-it("renders the placeholder until the attention view lands", () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+it("renders the attention view as the only page", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => emptyPayload
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
   render(<App />);
 
-  expect(screen.getByText("Attention view arrives in PR 1a")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 1, name: "0 actions need Justin" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/attention", expect.objectContaining({ method: "GET" }));
 });
