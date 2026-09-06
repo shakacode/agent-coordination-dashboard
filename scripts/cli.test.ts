@@ -205,7 +205,6 @@ describe("agent-coordination-dashboard CLI", () => {
       host: "0.0.0.0",
       allowedHosts: ["dashboard.local"],
       stateRoot: root,
-      refreshIntervalMs: 0,
       targetRepos: [],
       settingsPath: join(root, "settings.json"),
       nodeEnv: "test"

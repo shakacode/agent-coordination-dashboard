@@ -11,11 +11,6 @@ describe("readConfig", () => {
     expect(config.stateRoot).toContain(".local/state/agent-coordination");
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");
-    expect(config.refreshIntervalMs).toBe(0);
-    expect(config.githubRefreshIntervalMs).toBe(15 * 60 * 1000);
-    expect(config.githubRequestBudgetPerHour).toBe(1_000);
-    expect(config.githubRequestsPerRefresh).toBe(50);
-    expect(config.githubQuotaSafetyThreshold).toBe(500);
     expect(config.targetRepos).toEqual([]);
   });
 
@@ -33,7 +28,6 @@ describe("readConfig", () => {
 
     expect(config.coordApiUrl).toBe("https://coord.example.test");
     expect(config.coordApiToken).toBe("secret");
-    expect(config.refreshIntervalMs).toBe(0);
   });
 
   it("falls back to the legacy coordination token and prefers the API token", () => {
@@ -52,30 +46,21 @@ describe("readConfig", () => {
 
     expect(config.coordApiUrl).toBe("");
     expect(config.coordApiToken).toBe("");
-    expect(config.refreshIntervalMs).toBe(0);
   });
 
-  it("allows dashboard refresh interval overrides", () => {
-    expect(readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", DASHBOARD_REFRESH_MS: "2500" }).refreshIntervalMs).toBe(2500);
-    expect(readConfig({ AGENT_COORD_API_URL: "https://coord.example.test", DASHBOARD_REFRESH_MS: "0" }).refreshIntervalMs).toBe(0);
-    expect(() => readConfig({ DASHBOARD_REFRESH_MS: "-1" })).toThrow(/DASHBOARD_REFRESH_MS/);
-  });
-
-  it("reads conservative GitHub refresh and quota guardrails", () => {
+  it("reads the remaining coordination and target settings", () => {
     expect(readConfig({
-      GITHUB_REFRESH_MS: "600000",
-      GITHUB_REQUEST_BUDGET_PER_HOUR: "800",
-      GITHUB_REQUESTS_PER_REFRESH: "40",
-      GITHUB_QUOTA_SAFETY_THRESHOLD: "250"
+      PORT: "5000",
+      AGENT_COORD_STATE_ROOT: "/tmp/coordination",
+      TARGET_REPOS: "owner/one, owner/two",
+      DASHBOARD_SETTINGS_PATH: "/tmp/settings.json",
+      NODE_ENV: "production"
     })).toMatchObject({
-      githubRefreshIntervalMs: 600_000,
-      githubRequestBudgetPerHour: 800,
-      githubRequestsPerRefresh: 40,
-      githubQuotaSafetyThreshold: 250
+      port: 5000,
+      stateRoot: "/tmp/coordination",
+      targetRepos: ["owner/one", "owner/two"],
+      settingsPath: "/tmp/settings.json",
+      nodeEnv: "production"
     });
-    expect(readConfig({ GITHUB_REFRESH_MS: "0" }).githubRefreshIntervalMs).toBe(0);
-    expect(() => readConfig({ GITHUB_REQUEST_BUDGET_PER_HOUR: "0" })).toThrow(/GITHUB_REQUEST_BUDGET_PER_HOUR/);
-    expect(() => readConfig({ GITHUB_REQUESTS_PER_REFRESH: "-1" })).toThrow(/GITHUB_REQUESTS_PER_REFRESH/);
-    expect(() => readConfig({ GITHUB_QUOTA_SAFETY_THRESHOLD: "-1" })).toThrow(/GITHUB_QUOTA_SAFETY_THRESHOLD/);
   });
 });
