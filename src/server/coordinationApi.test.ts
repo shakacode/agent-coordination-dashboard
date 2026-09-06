@@ -113,7 +113,8 @@ describe("readStatePrefix", () => {
       "https://coord.example.test/v1/state?prefix=attention%2Fdefault%2Fshakacode%2Fagent-coordination-dashboard"
     );
     expect(init.headers).toEqual({ authorization: "Bearer test-token" });
-    expect(Object.keys(init).sort()).toEqual(["headers", "signal"]);
+    expect(init.redirect).toBe("manual");
+    expect(Object.keys(init).sort()).toEqual(["headers", "redirect", "signal"]);
   });
 
   it("reads entries and reports the prefix as ok", async () => {
@@ -177,6 +178,30 @@ describe("readStatePrefix", () => {
     expect(result.entries).toEqual([]);
     expect(result.sourceStatus).toMatchObject({ status: "unreachable", httpStatus: 400 });
     expect(result.warnings).toEqual([`Could not read coordination API ${PREFIX}: 400 invalid_prefix`]);
+  });
+
+  it("classifies a redirect as unreachable without following it or reading its body", async () => {
+    const readBody = vi.fn(async () => ({ error: "never read" }));
+    const fetchImpl = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          status: 302,
+          statusText: "Found",
+          headers: new Headers({ location: "https://coord.example.test/v1/state-mirror" }),
+          json: readBody
+        }) as unknown as Response
+    );
+
+    const result = await readStatePrefix(options({ fetchImpl }), PREFIX);
+
+    // One request only: the bearer token never travels to the `Location` path,
+    // same-origin or not.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(readBody).not.toHaveBeenCalled();
+    expect(result.entries).toEqual([]);
+    expect(result.sourceStatus).toMatchObject({ status: "unreachable", httpStatus: 302 });
+    expect(result.warnings).toEqual([`Could not read coordination API ${PREFIX}: unexpected redirect (HTTP 302)`]);
   });
 
   it("classifies a network failure as unreachable", async () => {
@@ -273,7 +298,11 @@ describe("readStatePrefix", () => {
     expect(result.entries).toEqual([IN_SCOPE_ENTRY]);
     expect(result.sourceStatus).toMatchObject({ mode: "api", status: "unreachable" });
     expect(result.sourceStatus).not.toHaveProperty("httpStatus");
-    expect(result.warnings).toEqual([`Out-of-scope coordination API ${APP_PREFIX} entry at index 1: ${path}`]);
+    expect(result.warnings).toEqual([`Out-of-scope coordination API ${APP_PREFIX} entry at index 1`]);
+    // The warning locates the offending entry by requested prefix and index.
+    // Echoing the rejected path would republish the very repository and target
+    // the scope check just dropped, to every caller that displays warnings.
+    expect(result.warnings[0]).not.toContain(path);
   });
 
   it("keeps an entry that sits exactly under the requested prefix", async () => {

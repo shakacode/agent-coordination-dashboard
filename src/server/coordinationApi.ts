@@ -180,6 +180,11 @@ async function fetchStatePrefix(
       headers: {
         authorization: `Bearer ${token}`
       },
+      // Redirects are surfaced, never followed. `fetch` strips the bearer
+      // header only when a redirect crosses origins, so a same-origin
+      // `Location` from a misbehaving backend would otherwise receive the
+      // token at a path nobody configured.
+      redirect: "manual",
       signal: controller.signal
     });
     // Headers arrived within the request budget. Reading the body is a second
@@ -187,6 +192,19 @@ async function fetchStatePrefix(
     // not inherit whatever is left of the request's five seconds.
     clearTimeout(timeoutId);
     timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
+
+    // The state endpoint has no redirects to offer, so a 3xx is a
+    // misconfiguration or a hostile backend either way. It is classified
+    // without reading the body and without a second request, which keeps the
+    // never-throws contract and leaves the token on exactly one origin.
+    if (response.status >= 300 && response.status < 400) {
+      warnings.push(`Could not read coordination API ${prefix}: unexpected redirect (HTTP ${response.status})`);
+      return {
+        entries: [],
+        warnings,
+        sourceStatus: sourceStatus(prefix, "unreachable", checkedAt, response.status)
+      };
+    }
 
     if (!response.ok) {
       const authFailure = response.status === 401 || response.status === 403;
@@ -225,9 +243,14 @@ async function fetchStatePrefix(
       // which the read-only scope rule in AGENTS.md forbids. An out-of-scope
       // path is dropped exactly like a malformed wrapper: the in-scope entries
       // still come back, but the listing can no longer be called healthy.
+      //
+      // The warning names the requested prefix and the entry's index but never
+      // the rejected path: repeating it would hand the other repository's name
+      // and target to every caller that displays warnings, which is the leak
+      // this check exists to prevent.
       if (!entry.path.startsWith(`${prefix}/`)) {
         rejectedEntry = true;
-        warnings.push(`Out-of-scope coordination API ${prefix} entry at index ${index}: ${entry.path}`);
+        warnings.push(`Out-of-scope coordination API ${prefix} entry at index ${index}`);
         return;
       }
       entries.push({ path: entry.path, data: entry.data });
