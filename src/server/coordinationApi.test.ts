@@ -180,6 +180,31 @@ describe("readStatePrefix", () => {
     expect(result.warnings).toEqual([`Could not read coordination API ${PREFIX}: malformed response`]);
   });
 
+  it("classifies an unparseable 2xx body as unreachable", async () => {
+    // What a proxy or captive portal returns: HTTP 200 carrying HTML. The body
+    // never reaches the wrapper check, so this is the JSON.parse failure path
+    // rather than the malformed-wrapper path above.
+    const fetchImpl = vi.fn(async () => new Response("<html>gateway</html>", { status: 200 }));
+
+    const result = await readStatePrefix(options({ fetchImpl }), PREFIX);
+
+    expect(result.entries).toEqual([]);
+    expect(result.sourceStatus).toMatchObject({ mode: "api", status: "unreachable" });
+    expect(result.sourceStatus).not.toHaveProperty("httpStatus");
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].startsWith(`Could not read coordination API ${PREFIX}: `)).toBe(true);
+  });
+
+  it("falls back to the HTTP status line when a non-2xx body is not JSON", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 502, statusText: "Bad Gateway" }));
+
+    const result = await readStatePrefix(options({ fetchImpl }), PREFIX);
+
+    expect(result.entries).toEqual([]);
+    expect(result.sourceStatus).toMatchObject({ status: "unreachable", httpStatus: 502 });
+    expect(result.warnings).toEqual([`Could not read coordination API ${PREFIX}: 502 Bad Gateway`]);
+  });
+
   it("marks the prefix unreachable when every entry wrapper is malformed", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ entries: [null, { path: 42, data: {} }] }));
 
@@ -314,6 +339,21 @@ describe("readStatePrefix", () => {
     expect(result.sourceStatus).toMatchObject({ status: "unreachable" });
     expect(result.warnings).toEqual([
       "Invalid AGENT_COORD_API_URL: HTTP coordination API URLs must use https unless they point at localhost"
+    ]);
+  });
+
+  it.each([
+    ["a query string", "https://coord.example.test/?tenant=a"],
+    ["a fragment", "https://coord.example.test/#tenant"]
+  ])("refuses a base URL carrying %s rather than misrouting the state request", async (_label, apiUrl) => {
+    const fetchImpl = vi.fn();
+
+    const result = await readStatePrefix(options({ coordApiUrl: apiUrl, fetchImpl }), PREFIX);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.sourceStatus).toMatchObject({ status: "unreachable" });
+    expect(result.warnings).toEqual([
+      "Invalid AGENT_COORD_API_URL: expected an http(s) URL with no query string or fragment"
     ]);
   });
 

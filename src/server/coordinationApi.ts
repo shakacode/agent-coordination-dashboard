@@ -101,6 +101,13 @@ function parseApiBaseUrl(apiUrl: string): URL {
   if (url.protocol === "http:" && !LOOPBACK_API_HOSTS.has(url.hostname)) {
     throw new Error("HTTP coordination API URLs must use https unless they point at localhost");
   }
+  // `apiStateListUrl` appends `/v1/state` to the base as text. A base that
+  // already carries a query string or fragment would swallow that suffix into
+  // the query (or hash) and send an authenticated request to the origin root
+  // instead, so the misconfiguration is refused here rather than misrouted.
+  if (url.search || url.hash) {
+    throw new Error("expected an http(s) URL with no query string or fragment");
+  }
   return url;
 }
 
