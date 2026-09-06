@@ -57,6 +57,7 @@ export interface CoordinationApiOptions
 }
 
 const API_FETCH_TIMEOUT_MS = 5000;
+// `URL.hostname` keeps the brackets on IPv6 literals per the WHATWG URL spec, so `[::1]` is deliberate, not a typo.
 const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const DEFAULT_TOKEN_ENV_VAR = "AGENT_COORD_API_TOKEN";
 const PREFIX_SEGMENT_PATTERN = /^[^/\s]+$/;
@@ -112,6 +113,12 @@ function parseApiBaseUrl(apiUrl: string): URL {
   if (/[?#]/.test(url.toString())) {
     throw new Error("expected an http(s) URL with no query string or fragment");
   }
+  // Same reasoning one step further: userinfo in the base would ride along in
+  // every state request URL beside the bearer token, so an operator who pasted
+  // credentials into AGENT_COORD_API_URL is told rather than quietly obeyed.
+  if (url.username || url.password) {
+    throw new Error("expected an http(s) URL with no embedded username or password");
+  }
   return url;
 }
 
@@ -139,17 +146,23 @@ function unreadable(
   return { entries: [], warnings, sourceStatus: sourceStatus(prefix, status, checkedAt) };
 }
 
-/** Prefer the backend's own error text; fall back to the HTTP status line. */
+/**
+ * Prefer the backend's own error text; fall back to the HTTP status line.
+ *
+ * The whole read is guarded, not just the JSON parse. Reading an error body is
+ * a second network wait that can stall past the body timeout and reject with
+ * `AbortError`; the HTTP status has already classified the failure by then, so
+ * a body that never arrives may cost the operator the backend's wording but
+ * must never throw away an `auth_error`. This function therefore never throws.
+ */
 async function responseErrorMessage(response: Response): Promise<string> {
+  const statusLine = response.statusText || `HTTP ${response.status}`;
   try {
     const body = (await response.json()) as unknown;
-    if (isRecord(body) && typeof body.error === "string") {
-      return body.error;
-    }
+    return isRecord(body) && typeof body.error === "string" ? body.error : statusLine;
   } catch {
-    // Use the status text below.
+    return statusLine;
   }
-  return response.statusText || `HTTP ${response.status}`;
 }
 
 async function fetchStatePrefix(
@@ -203,6 +216,18 @@ async function fetchStatePrefix(
       if (!isRecord(entry) || typeof entry.path !== "string" || !isRecord(entry.data)) {
         rejectedEntry = true;
         warnings.push(`Malformed coordination API ${prefix} entry at index ${index}`);
+        return;
+      }
+      // `GET /v1/state?prefix=` is a string match on the backend, so a listing
+      // for `attention/default/shakacode/app` can also carry
+      // `attention/default/shakacode/app2/...`. Requiring the `/` boundary keeps
+      // one repository's records from reaching a caller that asked for another,
+      // which the read-only scope rule in AGENTS.md forbids. An out-of-scope
+      // path is dropped exactly like a malformed wrapper: the in-scope entries
+      // still come back, but the listing can no longer be called healthy.
+      if (!entry.path.startsWith(`${prefix}/`)) {
+        rejectedEntry = true;
+        warnings.push(`Out-of-scope coordination API ${prefix} entry at index ${index}: ${entry.path}`);
         return;
       }
       entries.push({ path: entry.path, data: entry.data });

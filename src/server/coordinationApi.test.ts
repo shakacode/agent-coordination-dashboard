@@ -20,6 +20,12 @@ function prefixFor(owner: string, name: string, workspace = "default"): Attentio
 
 const PREFIX = prefixFor("shakacode", "agent-coordination-dashboard");
 const OTHER_PREFIX = prefixFor("shakacode", "react_on_rails");
+/** Short enough that other repository names can share it as a string prefix. */
+const APP_PREFIX = prefixFor("shakacode", "app");
+const IN_SCOPE_ENTRY = {
+  path: "attention/default/shakacode/app/123.json",
+  data: { repo: "shakacode/app", target: "123" }
+};
 
 function options(overrides: Partial<Parameters<typeof readStatePrefix>[0]> = {}) {
   return {
@@ -32,6 +38,22 @@ function options(overrides: Partial<Parameters<typeof readStatePrefix>[0]> = {})
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/** A body reader that never settles until the request's abort signal fires. */
+function stalledBodyRead(signal: AbortSignal | null | undefined) {
+  return () =>
+    new Promise((_resolve, reject) => {
+      if (!signal) {
+        reject(new Error("missing abort signal"));
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    });
 }
 
 /** A fetch that never settles until its abort signal fires. */
@@ -238,6 +260,32 @@ describe("readStatePrefix", () => {
     expect(result.warnings).toEqual([`Malformed coordination API ${PREFIX} entry at index 1`]);
   });
 
+  it.each([
+    ["a sibling repository directory", "attention/default/shakacode/app2/x.json"],
+    ["a neighbour that shares the prefix string without the slash boundary", "attention/default/shakacode/append.json"]
+  ])("drops an entry under %s and marks the prefix unreachable", async (_label, path) => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ entries: [IN_SCOPE_ENTRY, { path, data: { repo: "shakacode/other", target: "9" } }] })
+    );
+
+    const result = await readStatePrefix(options({ fetchImpl }), APP_PREFIX);
+
+    expect(result.entries).toEqual([IN_SCOPE_ENTRY]);
+    expect(result.sourceStatus).toMatchObject({ mode: "api", status: "unreachable" });
+    expect(result.sourceStatus).not.toHaveProperty("httpStatus");
+    expect(result.warnings).toEqual([`Out-of-scope coordination API ${APP_PREFIX} entry at index 1: ${path}`]);
+  });
+
+  it("keeps an entry that sits exactly under the requested prefix", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ entries: [IN_SCOPE_ENTRY] }));
+
+    const result = await readStatePrefix(options({ fetchImpl }), APP_PREFIX);
+
+    expect(result.entries).toEqual([IN_SCOPE_ENTRY]);
+    expect(result.warnings).toEqual([]);
+    expect(result.sourceStatus).toMatchObject({ status: "ok", httpStatus: 200 });
+  });
+
   it("times out a stalled request after five seconds", async () => {
     vi.useFakeTimers();
     const fetchImpl = stalledFetch();
@@ -255,19 +303,7 @@ describe("readStatePrefix", () => {
   it("times out a stalled response body on its own budget after the headers arrive", async () => {
     vi.useFakeTimers();
     const fetchImpl = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
-      const signal = init?.signal;
-      const stalledBody = () =>
-        new Promise((_resolve, reject) => {
-          if (!signal) {
-            reject(new Error("missing abort signal"));
-            return;
-          }
-          signal.addEventListener("abort", () => {
-            const error = new Error("aborted");
-            error.name = "AbortError";
-            reject(error);
-          });
-        });
+      const stalledBody = stalledBodyRead(init?.signal);
       // Headers arrive three seconds in, well inside the request budget.
       return new Promise<Response>((resolve) => {
         setTimeout(() => resolve({ ok: true, status: 200, json: stalledBody } as Response), 3000);
@@ -292,6 +328,32 @@ describe("readStatePrefix", () => {
     expect(result.entries).toEqual([]);
     expect(result.sourceStatus).toMatchObject({ status: "unreachable" });
     expect(result.warnings).toEqual([`Could not read coordination API ${PREFIX}: timed out after 5000ms`]);
+  });
+
+  it("keeps the auth_error classification when a 403 error body stalls past the body timeout", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+      // Headers say 403 immediately; the explanatory body never arrives. The
+      // status has already classified the failure, so the stalled body may cost
+      // the operator the backend's error text but never the auth_error signal.
+      ({ ok: false, status: 403, statusText: "Forbidden", json: stalledBodyRead(init?.signal) }) as Response
+    );
+
+    const pending = readStatePrefix(options({ coordApiToken: "expired-token", fetchImpl }), PREFIX);
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(result.entries).toEqual([]);
+    expect(result.sourceStatus).toEqual({
+      prefix: PREFIX,
+      mode: "api",
+      status: "auth_error",
+      httpStatus: 403,
+      checkedAt: CHECKED_AT.toISOString()
+    });
+    expect(result.warnings).toEqual([
+      `Could not read coordination API ${PREFIX}: 403 Forbidden. The coordination token needs read access to the ${PREFIX} prefix.`
+    ]);
   });
 
   it("reports auth_error without a request when the token is missing", async () => {
@@ -363,6 +425,21 @@ describe("readStatePrefix", () => {
     expect(result.sourceStatus).toMatchObject({ status: "unreachable" });
     expect(result.warnings).toEqual([
       "Invalid AGENT_COORD_API_URL: expected an http(s) URL with no query string or fragment"
+    ]);
+  });
+
+  it.each([
+    ["a username and password", "https://user:pass@coord.example.test"],
+    ["a username alone", "https://user@coord.example.test"]
+  ])("refuses a base URL carrying %s rather than forwarding the credentials", async (_label, apiUrl) => {
+    const fetchImpl = vi.fn();
+
+    const result = await readStatePrefix(options({ coordApiUrl: apiUrl, fetchImpl }), PREFIX);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.sourceStatus).toMatchObject({ status: "unreachable" });
+    expect(result.warnings).toEqual([
+      "Invalid AGENT_COORD_API_URL: expected an http(s) URL with no embedded username or password"
     ]);
   });
 
