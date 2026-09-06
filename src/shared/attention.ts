@@ -12,21 +12,29 @@
  * fields proposed in shakacode/agent-coordination#301.
  */
 
-/** Lifecycle of a decision record. */
-export type AttentionStatus = "open" | "resolved";
+/**
+ * Lifecycle of a decision record. The literal sets below are declared as values
+ * so the projection can check membership at runtime and the types can never
+ * drift from what {@link projectAttentionRecord} accepts.
+ */
+const ATTENTION_STATUSES = ["open", "resolved"] as const;
+export type AttentionStatus = (typeof ATTENTION_STATUSES)[number];
 
 /** Canonical priority vocabulary; the record schema is the source of truth. */
-export type AttentionPriorityClass =
-  | "urgent-risk"
-  | "unblocks-work"
-  | "current-head-merge"
-  | "product-architecture";
+const ATTENTION_PRIORITY_CLASSES = [
+  "urgent-risk",
+  "unblocks-work",
+  "current-head-merge",
+  "product-architecture"
+] as const;
+export type AttentionPriorityClass = (typeof ATTENTION_PRIORITY_CLASSES)[number];
 
 /** Capability truth only: untested behavior stays `unknown`. */
 export type AttentionCapabilityState = "available" | "unavailable" | "unknown";
 
 /** Walkthrough offer state from the desk contract (absent means none). */
-export type AttentionWalkthroughMode = "automatic" | "requested";
+const ATTENTION_WALKTHROUGH_MODES = ["automatic", "requested"] as const;
+export type AttentionWalkthroughMode = (typeof ATTENTION_WALKTHROUGH_MODES)[number];
 
 export interface AttentionSourceCapabilities {
   native_open: AttentionCapabilityState;
@@ -287,7 +295,12 @@ function projectValue(value: unknown): string | number | boolean | string[] | un
     return value;
   }
   if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string").map(truncateForRender);
+    // One bad entry drops the whole field: filtering entries would silently shift
+    // the surviving indices, and a card cannot tell that an entry went missing.
+    const entries = value as readonly unknown[];
+    return entries.every((item): item is string => typeof item === "string")
+      ? entries.map(truncateForRender)
+      : undefined;
   }
   return undefined;
 }
@@ -308,7 +321,8 @@ function projectCapabilities(value: unknown): Partial<AttentionSourceCapabilitie
   if (isCapabilityState(raw.prompt_forwarding)) {
     view.prompt_forwarding = raw.prompt_forwarding;
   }
-  return view;
+  // No valid subfield left: omit `capabilities` rather than claim an empty one.
+  return Object.keys(view).length > 0 ? view : undefined;
 }
 
 function projectSource(value: unknown): AttentionRenderSourceView | undefined {
@@ -339,6 +353,18 @@ function projectSource(value: unknown): AttentionRenderSourceView | undefined {
   }
   return view as AttentionRenderSourceView;
 }
+
+/**
+ * The allowlisted fields the render view declares as a narrow literal union,
+ * with the only values each may carry. The projection checks membership here so
+ * a bare `string` never reaches those types through the final assertion; an
+ * out-of-set value is omitted, exactly as an unaccepted link is.
+ */
+const LITERAL_UNION_FIELDS: Partial<Record<AttentionRenderField, readonly string[]>> = {
+  status: ATTENTION_STATUSES,
+  priority_class: ATTENTION_PRIORITY_CLASSES,
+  walkthrough_mode: ATTENTION_WALKTHROUGH_MODES
+};
 
 /**
  * Projects a record through {@link renderAllowlist}: unknown fields are dropped,
@@ -378,11 +404,21 @@ export function projectAttentionRecord(record: AttentionRecord): AttentionRender
       view[field] = validateWalkthroughUrl(raw[field], raw.repository);
       continue;
     }
+    const literals = LITERAL_UNION_FIELDS[field];
+    if (literals) {
+      const value: unknown = raw[field];
+      if (typeof value === "string" && literals.includes(value)) {
+        view[field] = value;
+      }
+      continue;
+    }
     const projected = projectValue(raw[field]);
     if (projected !== undefined) {
       view[field] = projected;
     }
   }
+  // Links, literal unions, and the source view are validated above; every other
+  // field is a plain text or numeric value that projectValue has already checked.
   return view as AttentionRenderView;
 }
 

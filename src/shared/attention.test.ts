@@ -159,6 +159,30 @@ describe("renderAllowlist", () => {
     expect(view).not.toHaveProperty("walkthrough_mode");
   });
 
+  it("omits a narrow-union value outside its literal set", () => {
+    const view = projectAttentionRecord(
+      makeAttentionRecord({
+        status: "archived",
+        priority_class: "brand-new-class",
+        walkthrough_mode: "some-new-mode"
+      } as unknown as Partial<AttentionRecord>)
+    );
+
+    expect(view).not.toHaveProperty("status");
+    expect(view).not.toHaveProperty("priority_class");
+    expect(view).not.toHaveProperty("walkthrough_mode");
+    expect(view.id).toBe(openAttentionRecord.id);
+  });
+
+  it("projects narrow-union values inside their literal sets unchanged", () => {
+    const view = projectAttentionRecord(deskContractAttentionRecord);
+
+    expect(view.status).toBe("open");
+    expect(view.priority_class).toBe("current-head-merge");
+    expect(view.walkthrough_mode).toBe("requested");
+    expect(projectAttentionRecord(resolvedAttentionRecord).status).toBe("resolved");
+  });
+
   it("caps every text value with a visible truncation marker", () => {
     const view = projectAttentionRecord(
       makeAttentionRecord({ question: oversizedRenderText, choices: [oversizedRenderText, "short"] })
@@ -169,6 +193,16 @@ describe("renderAllowlist", () => {
     expect(view.choices?.[0]).toHaveLength(ATTENTION_TEXT_LIMIT);
     expect(view.choices?.[0]?.endsWith(ATTENTION_TRUNCATION_MARKER)).toBe(true);
     expect(view.choices?.[1]).toBe("short");
+  });
+
+  it("omits an array field carrying a non-string entry instead of shifting indices", () => {
+    const view = projectAttentionRecord(
+      makeAttentionRecord({ choices: ["Acknowledge", 42, "Rebuild"] as unknown as string[] })
+    );
+
+    expect(view).not.toHaveProperty("choices");
+    expect(view.question).toBe(openAttentionRecord.question);
+    expect(projectAttentionRecord(openAttentionRecord).choices).toEqual(openAttentionRecord.choices);
   });
 
   it("leaves values at the bound untouched", () => {
@@ -199,6 +233,19 @@ describe("renderAllowlist", () => {
     expect(view.source).not.toHaveProperty("prompt");
     expect(view.source?.open_uri).toBe(openAttentionRecord.source.open_uri);
     expect(view.source?.capabilities).toEqual({ native_open: "available" });
+  });
+
+  it("omits source capabilities when no subfield survives validation", () => {
+    const bogus = {
+      ...openAttentionRecord.source,
+      capabilities: { native_open: "bogus", prompt_forwarding: "bogus" }
+    } as unknown as AttentionSource;
+
+    const view = projectAttentionRecord(makeAttentionRecord({ source: bogus }));
+
+    expect(view.source).toBeDefined();
+    expect(view.source).not.toHaveProperty("capabilities");
+    expect(view.source?.task_id).toBe(openAttentionRecord.source.task_id);
   });
 
   it("returns an empty view for a non-record value", () => {
