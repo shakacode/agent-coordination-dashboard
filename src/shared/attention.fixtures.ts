@@ -307,6 +307,11 @@ export const openUriCases: AttentionOpenUriCase[] = [
     expected: null
   },
   {
+    label: "a codex task id containing dots",
+    source: { ...codexSource, task_id: "task.v2.1", open_uri: "codex://threads/task.v2.1" },
+    expected: "codex://threads/task.v2.1"
+  },
+  {
     label: "a task id with path traversal",
     source: {
       ...codexSource,
@@ -316,12 +321,64 @@ export const openUriCases: AttentionOpenUriCase[] = [
     expected: null
   },
   {
+    label: "a task id that is a single dot",
+    source: { ...codexSource, task_id: ".", open_uri: "codex://threads/." },
+    expected: null
+  },
+  {
+    label: "a task id that is a parent-directory segment",
+    source: { ...codexSource, task_id: "..", open_uri: "codex://threads/.." },
+    expected: null
+  },
+  {
+    label: "a task id that is only dots",
+    source: { ...codexSource, task_id: "...", open_uri: "codex://threads/..." },
+    expected: null
+  },
+  {
     label: "a task id with whitespace",
     source: { ...codexSource, task_id: "task one", open_uri: "codex://threads/task one" },
     expected: null
   },
   { label: "a missing source", source: undefined, expected: null },
   { label: "a null source", source: null, expected: null }
+];
+
+export interface AttentionLinkProjectionCase {
+  label: string;
+  record: AttentionRecord;
+  /** The projected field that must come back as `null` for this record. */
+  field: "target" | "walkthrough_url" | "open_uri";
+}
+
+/**
+ * Records whose link fields must project to `null` instead of reaching a card as
+ * raw text, so a card can never turn one of them into an href.
+ */
+export const rejectedLinkProjectionCases: AttentionLinkProjectionCase[] = [
+  {
+    label: "a javascript: target",
+    record: makeAttentionRecord({ target: "javascript:alert(1)" }),
+    field: "target"
+  },
+  {
+    label: "a target pointing at another repository",
+    record: makeAttentionRecord({ target: "https://github.com/evil/agent-coordination/pull/284" }),
+    field: "target"
+  },
+  {
+    label: "a walkthrough URL on another host",
+    record: makeAttentionRecord({
+      ...deskContractAttentionRecord,
+      walkthrough_url: "https://evil.test/shakacode/agent-coordination/pull/284"
+    }),
+    field: "walkthrough_url"
+  },
+  {
+    label: "a source open_uri that is not a codex thread URI",
+    record: makeAttentionRecord({ source: { ...codexSource, open_uri: "https://evil.test/steal" } }),
+    field: "open_uri"
+  }
 ];
 
 export interface AttentionRankingFixture {

@@ -102,8 +102,15 @@ const WALKTHROUGH_URL_PATTERN =
 
 const CODEX_PROVIDER = "codex";
 
-/** Safe path segment grammar shared with agent-coord storage keys. */
-const SAFE_TASK_ID_PATTERN = /^[A-Za-z0-9_.:-]+$/;
+/**
+ * Safe path segment grammar shared with agent-coord storage keys: ASCII
+ * alphanumerics, underscore, dot, colon, and hyphen, and never a dot-only
+ * segment. A `task_id` of `.`, `..`, or any run of dots is rejected because a
+ * standard URI parser normalizes `codex://threads/.` and `codex://threads/..`
+ * back to `codex://threads/`, which no longer identifies the source task.
+ * Dot-prefixed ids such as `.hidden` stay valid, as upstream allows.
+ */
+const SAFE_TASK_ID_PATTERN = /^(?![.]+$)[A-Za-z0-9_.:-]+$/;
 
 function splitRepository(repository: unknown): { owner: string; name: string } | null {
   if (typeof repository !== "string" || repository.length > REPOSITORY_LIMIT) {
@@ -185,7 +192,16 @@ export function validateOpenUri(source: AttentionSource | null | undefined): str
   return openUri === `codex://threads/${taskId}` ? openUri : null;
 }
 
-/** The only record fields an attention card may read. */
+/**
+ * The only record fields an attention card may read.
+ *
+ * A card may render a link only from the values {@link projectAttentionRecord}
+ * returns, never from the raw record: the projection is what applies the link
+ * validators to `target`, `walkthrough_url`, and `source.open_uri`.
+ * @see validateAttentionTarget
+ * @see validateWalkthroughUrl
+ * @see validateOpenUri
+ */
 export const renderAllowlist = [
   "id",
   "repository",
@@ -231,12 +247,19 @@ export interface AttentionRenderSourceView {
   provider?: string;
   host_id?: string;
   task_id?: string;
-  open_uri?: string;
+  /** Validated by {@link validateOpenUri}; `null` when the source offers no safe launch URI. */
+  open_uri?: string | null;
   last_seen_at?: string;
   capabilities?: Partial<AttentionSourceCapabilities>;
 }
 
-export type AttentionRenderView = Partial<Pick<AttentionRecord, Exclude<AttentionRenderField, "source">>> & {
+export type AttentionRenderView = Partial<
+  Pick<AttentionRecord, Exclude<AttentionRenderField, "source" | "target" | "walkthrough_url">>
+> & {
+  /** Validated by {@link validateAttentionTarget}; `null` when the record's target is not its own pull request. */
+  target?: string | null;
+  /** Validated by {@link validateWalkthroughUrl}; `null` when the walkthrough URL is not accepted. */
+  walkthrough_url?: string | null;
   source?: AttentionRenderSourceView;
 };
 
@@ -305,6 +328,10 @@ function projectSource(value: unknown): AttentionRenderSourceView | undefined {
       }
       continue;
     }
+    if (field === "open_uri") {
+      view[field] = validateOpenUri(raw as unknown as AttentionSource);
+      continue;
+    }
     const projected = projectValue(raw[field]);
     if (projected !== undefined) {
       view[field] = projected;
@@ -316,6 +343,15 @@ function projectSource(value: unknown): AttentionRenderSourceView | undefined {
 /**
  * Projects a record through {@link renderAllowlist}: unknown fields are dropped,
  * text values are capped, and nothing outside the allowlist can reach a card.
+ *
+ * The three link-bearing fields are validated here rather than left to each call
+ * site, so a card may only render links from these projected values: `target`,
+ * `walkthrough_url`, and `source.open_uri` come back either validated or `null`,
+ * never as raw record text. A card that reads a link off the raw record instead
+ * loses that guarantee and can render an attacker-supplied URL.
+ * @see validateAttentionTarget
+ * @see validateWalkthroughUrl
+ * @see validateOpenUri
  */
 export function projectAttentionRecord(record: AttentionRecord): AttentionRenderView {
   if (typeof record !== "object" || record === null || Array.isArray(record)) {
@@ -332,6 +368,14 @@ export function projectAttentionRecord(record: AttentionRecord): AttentionRender
       if (source) {
         view[field] = source;
       }
+      continue;
+    }
+    if (field === "target") {
+      view[field] = validateAttentionTarget(raw[field], raw.repository);
+      continue;
+    }
+    if (field === "walkthrough_url") {
+      view[field] = validateWalkthroughUrl(raw[field], raw.repository);
       continue;
     }
     const projected = projectValue(raw[field]);

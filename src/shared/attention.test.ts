@@ -27,6 +27,7 @@ import {
   openUriCases,
   oversizedRenderText,
   rankingFixtures,
+  rejectedLinkProjectionCases,
   rejectedTargetUrls,
   rejectedWalkthroughUrls,
   resolvedAttentionRecord,
@@ -203,6 +204,40 @@ describe("renderAllowlist", () => {
   it("returns an empty view for a non-record value", () => {
     expect(projectAttentionRecord(null as unknown as AttentionRecord)).toEqual({});
     expect(projectAttentionRecord([] as unknown as AttentionRecord)).toEqual({});
+  });
+});
+
+describe("projectAttentionRecord link validation", () => {
+  for (const linkCase of rejectedLinkProjectionCases) {
+    it(`projects ${linkCase.label} as null`, () => {
+      const view = projectAttentionRecord(linkCase.record);
+
+      if (linkCase.field === "open_uri") {
+        expect(view.source?.open_uri).toBeNull();
+      } else {
+        expect(view[linkCase.field]).toBeNull();
+      }
+
+      expect(view.id).toBe(linkCase.record.id);
+      expect(view.question).toBe(linkCase.record.question);
+      expect(view.choices).toEqual(linkCase.record.choices);
+      expect(view.source?.task_id).toBe(linkCase.record.source.task_id);
+    });
+  }
+
+  it("projects the links of a valid record unchanged", () => {
+    const view = projectAttentionRecord(deskContractAttentionRecord);
+
+    expect(view.target).toBe(deskContractAttentionRecord.target);
+    expect(view.walkthrough_url).toBe(deskContractAttentionRecord.walkthrough_url);
+    expect(view.source?.open_uri).toBe(deskContractAttentionRecord.source.open_uri);
+  });
+
+  it("omits an absent link field instead of projecting null", () => {
+    const view = projectAttentionRecord(openAttentionRecord);
+
+    expect(view).not.toHaveProperty("walkthrough_url");
+    expect(projectAttentionRecord(resolvedAttentionRecord).source).not.toHaveProperty("open_uri");
   });
 });
 
