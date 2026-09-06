@@ -31,7 +31,10 @@ describe("public package manifest", () => {
     ]);
     expect(manifest.scripts?.prepack).toBe("npm run build");
     expect(manifest.publishConfig).toEqual({ access: "public" });
-    expect(Object.keys(manifest.dependencies || {}).sort()).toEqual(["express", "tsx"]);
+    expect(Object.keys(manifest.dependencies || {}).sort()).toEqual(["ajv", "express", "tsx"]);
+    // The vendored attention schema is compiled against a pinned Ajv; a caret range would let the
+    // validator's behaviour drift on an unrelated install.
+    expect(manifest.dependencies?.ajv).toMatch(/^\d+\.\d+\.\d+$/);
     expect(Object.keys(manifest.devDependencies || {})).toEqual(
       expect.arrayContaining(["@vitejs/plugin-react", "react", "react-dom", "vite"])
     );
