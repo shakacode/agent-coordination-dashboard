@@ -947,6 +947,52 @@ describe("diagnostics", () => {
     });
   });
 
+  it("keeps the payload-wide diagnostics ahead of a flood of repository diagnostics", () => {
+    const question = "May this exact head proceed despite unmappable repair authors?";
+    const diagnosticsFor = (repository: string): AttentionReadDiagnostic[] =>
+      Array.from({ length: ATTENTION_DIAGNOSTIC_CAP_PER_REPOSITORY + 50 }, (_unused, index) =>
+        readerDiagnostic({
+          repository,
+          path: `attention/${ATTENTION_WORKSPACE}/${repository}/broken-${index}.json`
+        })
+      );
+
+    const payload = build(
+      readResult(
+        repositoryRead({
+          diagnostics: diagnosticsFor(REPOSITORY),
+          records: [freshRecord({ id: "dup-a", question, created_at: at(-30 * MS_PER_DAY) })]
+        }),
+        repositoryRead({
+          repository: OTHER_REPOSITORY,
+          diagnostics: diagnosticsFor(OTHER_REPOSITORY),
+          records: [
+            freshRecord({
+              id: "dup-b",
+              question,
+              repository: OTHER_REPOSITORY,
+              source: sourceWith({ task_id: "second" })
+            })
+          ]
+        })
+      ),
+      { machineId: "laptop" }
+    );
+
+    expect(kindsOf(payload).slice(0, 4)).toEqual([
+      "dashboard_host_unknown",
+      "producer_duplicate",
+      "cross_host_count",
+      "open_age_flagged"
+    ]);
+    expect(payload.diagnostics).toHaveLength(ATTENTION_DIAGNOSTIC_CAP_TOTAL + 1);
+    expect(payload.diagnostics[ATTENTION_DIAGNOSTIC_CAP_TOTAL]).toEqual({
+      repository: null,
+      kind: "diagnostics_truncated",
+      message: `The payload raised 6 more diagnostics than the ${ATTENTION_DIAGNOSTIC_CAP_TOTAL} shown.`
+    });
+  });
+
   it("takes the per-repository diagnostic cap from the options", () => {
     const payload = build(
       readResult(repositoryRead({ diagnostics: [readerDiagnostic(), readerDiagnostic(), readerDiagnostic()] })),
@@ -1057,6 +1103,14 @@ describe("robustness", () => {
 
     expect(payload.cards[0].record.question).toHaveLength(ATTENTION_TEXT_LIMIT);
     expect(payload.cards[0].record.question?.endsWith(ATTENTION_TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it("caps an oversized id on the card, not only inside the projected record", () => {
+    const payload = build(readOf(freshRecord({ id: "i".repeat(ATTENTION_TEXT_LIMIT + 100) })));
+
+    expect(payload.cards[0].id).toHaveLength(ATTENTION_TEXT_LIMIT);
+    expect(payload.cards[0].id.endsWith(ATTENTION_TRUNCATION_MARKER)).toBe(true);
+    expect(payload.cards[0].id).toBe(payload.cards[0].record.id);
   });
 });
 

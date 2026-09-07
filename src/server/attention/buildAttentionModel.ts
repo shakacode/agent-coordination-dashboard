@@ -690,7 +690,11 @@ export function buildAttentionModel(
     const nativeOpen: AttentionCapabilityState = view.source?.capabilities?.native_open ?? "unknown";
     return {
       number: index + 1,
-      id: textOrEmpty(fields(candidate.record).id),
+      // The id comes off the projection too, so the card carries one capped
+      // copy of it rather than a capped one inside `record` and a raw one
+      // beside it. A record whose id is not text still renders with an empty
+      // id, exactly as it did when the raw record was read.
+      id: textOrEmpty(view.id),
       repository: candidate.model.repository,
       record: view,
       host: candidate.host,
@@ -736,7 +740,18 @@ export function buildAttentionModel(
 
   const diagnostics = capDiagnostics(
     [
-      // One contiguous block per repository, each capped on its own: read
+      // The payload-wide block leads, for the reason the resolved trail comes
+      // last inside a repository block: the payload cap must drop the entries
+      // that carry the least. This block is bounded by the number of
+      // repositories rather than by the number of records, and a
+      // cross-repository `producer_duplicate` is the only place the payload
+      // records that two producers are asking the same question, while one
+      // more read failure among hundreds names a path the rest already
+      // characterize.
+      ...dashboardDiagnostics,
+      ...crossRepositoryDuplicates,
+      ...totals,
+      // Then one contiguous block per repository, each capped on its own: read
       // failures first, then this repository's suppressions and notices, and
       // the resolved trail last so it can never crowd out a warning.
       ...models.flatMap((model) =>
@@ -745,10 +760,7 @@ export function buildAttentionModel(
           settings.diagnosticCapPerRepository,
           model.repository
         )
-      ),
-      ...dashboardDiagnostics,
-      ...crossRepositoryDuplicates,
-      ...totals
+      )
     ],
     ATTENTION_DIAGNOSTIC_CAP_TOTAL,
     null
