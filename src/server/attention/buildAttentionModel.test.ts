@@ -8,6 +8,7 @@ import {
   ATTENTION_DIAGNOSTIC_CAP_PER_REPOSITORY,
   ATTENTION_DIAGNOSTIC_CAP_TOTAL,
   ATTENTION_DIAGNOSTIC_MESSAGE_LIMIT,
+  ATTENTION_MAX_REFRESH_INTERVAL_SECONDS,
   ATTENTION_MODEL_DIAGNOSTIC_KINDS,
   ATTENTION_OPEN_AGE_FLAG_DAYS,
   ATTENTION_RESOLVED_TOTAL_WARNING_THRESHOLD,
@@ -50,6 +51,8 @@ const OTHER_REPOSITORY = "shakacode/agent-coordination-dashboard";
  */
 const CASE_VARIANT_REPOSITORY = "ShakaCode/Agent-Coordination";
 const TARGET = "https://github.com/shakacode/agent-coordination/pull/284";
+/** {@link TARGET}'s pull request spelled the way GitHub displays the repository. */
+const CASE_VARIANT_TARGET = "https://github.com/ShakaCode/Agent-Coordination/pull/284";
 const OTHER_TARGET = "https://github.com/shakacode/agent-coordination/pull/301";
 const OTHER_REPOSITORY_TARGET = "https://github.com/shakacode/agent-coordination-dashboard/pull/127";
 /** Rejected by `validateAttentionTarget`: another repository's pull request. */
@@ -210,10 +213,17 @@ describe("payload shape", () => {
     expect(payload.cards[0].repository).toBe(OTHER_REPOSITORY);
   });
 
-  it("leaves generated_at empty rather than throwing on an unusable clock", () => {
-    const payload = build(readOf(freshRecord()), { now: new Date(Number.NaN) });
+  it("leaves generated_at empty and suppresses every record on an unusable clock", () => {
+    const payload = build(readOf(freshRecord({ id: "unaged-a" }), freshRecord({ id: "unaged-b" })), {
+      now: new Date(Number.NaN)
+    });
 
     expect(payload.generated_at).toBe("");
+    expect(payload.cards).toEqual([]);
+    expect(ofKind(payload, "stale_source").map((entry) => entry.message)).toEqual([
+      "Record unaged-a cannot be aged because the dashboard clock is not a usable instant; the card is suppressed.",
+      "Record unaged-b cannot be aged because the dashboard clock is not a usable instant; the card is suppressed."
+    ]);
   });
 });
 
@@ -365,6 +375,26 @@ describe("one card per record, adjacent by target", () => {
     }
   });
 
+  it("groups two accepted targets that name one pull request under different casing", () => {
+    const payload = build(
+      readOf(
+        freshRecord({ id: "cased-a", target: TARGET, created_at: "2026-09-03T06:00:00Z" }),
+        freshRecord({ id: "middle", target: OTHER_TARGET, created_at: "2026-09-03T07:00:00Z" }),
+        freshRecord({
+          id: "cased-b",
+          repository: CASE_VARIANT_REPOSITORY,
+          target: CASE_VARIANT_TARGET,
+          created_at: "2026-09-03T08:00:00Z"
+        })
+      )
+    );
+
+    expect(cardIds(payload)).toEqual(["cased-a", "cased-b", "middle"]);
+    expect(payload.cards.map((card) => card.same_pr)).toEqual([true, true, false]);
+    // Grouping is canonical; each card still shows the URL its own record spelled.
+    expect(payload.cards.map((card) => card.record.target)).toEqual([TARGET, CASE_VARIANT_TARGET, OTHER_TARGET]);
+  });
+
   it("never relates two records that carry no target at all", () => {
     const withoutTarget = (id: string, createdAt: string): AttentionRecord => {
       const record = { ...freshRecord({ id, created_at: createdAt }) } as Partial<AttentionRecord>;
@@ -475,6 +505,53 @@ describe("producer duplicates", () => {
     expect(cardIds(payload)).toEqual(["dup-a", "dup-b"]);
     expect(payload.cards.map((card) => card.record.target)).toEqual([null, null]);
     expect(ofKind(payload, "producer_duplicate")).toEqual([]);
+  });
+
+  it("reports a duplicate across targets that name one pull request under different casing", () => {
+    const payload = build(
+      readOf(
+        freshRecord({ id: "cased-a", question, target: TARGET }),
+        freshRecord({
+          id: "cased-b",
+          question,
+          repository: CASE_VARIANT_REPOSITORY,
+          target: CASE_VARIANT_TARGET,
+          source: sourceWith({ task_id: "second" })
+        })
+      )
+    );
+
+    expect(cardIds(payload)).toEqual(["cased-a", "cased-b"]);
+    expect(onlyOfKind(payload, "producer_duplicate").message).toContain("cased-a, cased-b");
+  });
+
+  it("treats one host spelled differently as one producer", () => {
+    const spellings = ["m1", "M1", "  M1  "];
+    const oneProducer = build(
+      readOf(
+        ...spellings.map((host_id, index) =>
+          freshRecord({ id: `spelling-${index}`, question, source: sourceWith({ host_id }) })
+        )
+      )
+    );
+
+    expect(oneProducer.cards.map((card) => card.host)).toEqual(["M1", "M1", "M1"]);
+    expect(ofKind(oneProducer, "producer_duplicate")).toEqual([]);
+
+    const twoProducers = build(
+      readOf(
+        ...spellings.map((host_id, index) =>
+          freshRecord({ id: `spelling-${index}`, question, source: sourceWith({ host_id }) })
+        ),
+        freshRecord({ id: "other-task", question, source: sourceWith({ host_id: "M1", task_id: "second" }) })
+      )
+    );
+
+    // The ids are named in card order, which ties on created_at and falls to id.
+    expect(cardIds(twoProducers)).toEqual(["other-task", "spelling-0", "spelling-1", "spelling-2"]);
+    expect(onlyOfKind(twoProducers, "producer_duplicate").message).toContain(
+      "other-task, spelling-0, spelling-1, spelling-2"
+    );
   });
 
   it("still reports a duplicate when the shared target is one the projection accepts", () => {
@@ -656,6 +733,42 @@ describe("freshness", () => {
         entry.message.includes(`${ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS}-second refresh interval`)
       )
     ).toBe(true);
+  });
+
+  it("accepts a record interval up to the seven-day bound", () => {
+    const payload = build(
+      readOf(
+        freshRecord({
+          id: "weekly",
+          refresh_interval_seconds: ATTENTION_MAX_REFRESH_INTERVAL_SECONDS,
+          refreshed_at: at(-8 * MS_PER_DAY)
+        })
+      )
+    );
+
+    expect(cardIds(payload)).toEqual(["weekly"]);
+  });
+
+  it("falls back to the default for an interval past the bound, so an ancient record is stale", () => {
+    const refreshedAt = at(-8 * MS_PER_DAY);
+    const payload = build(
+      readOf(
+        freshRecord({ id: "unbounded", refresh_interval_seconds: 1e308, refreshed_at: refreshedAt }),
+        freshRecord({
+          id: "past-bound",
+          refresh_interval_seconds: ATTENTION_MAX_REFRESH_INTERVAL_SECONDS + 1,
+          refreshed_at: refreshedAt
+        })
+      )
+    );
+
+    expect(payload.cards).toEqual([]);
+    expect(ofKind(payload, "stale_source").map((entry) => entry.message)).toEqual([
+      `Record unbounded refreshed_at "${refreshedAt}" is older than twice its ` +
+        `${ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS}-second refresh interval; the card is suppressed.`,
+      `Record past-bound refreshed_at "${refreshedAt}" is older than twice its ` +
+        `${ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS}-second refresh interval; the card is suppressed.`
+    ]);
   });
 
   it("takes the default interval from the options", () => {

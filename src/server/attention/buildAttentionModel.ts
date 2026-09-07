@@ -34,6 +34,16 @@ import type { AttentionReadResult, AttentionRepositoryRead } from "./readAttenti
 /** Fallback refresh interval when a record does not carry one; PR 1b makes it a setting. */
 export const ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS = 900;
 
+/**
+ * Seven days, the longest refresh interval a record may claim.
+ *
+ * The staleness window is twice the interval, so an unbounded interval is an
+ * unbounded window: a record carrying `1e308` would never be stale and would
+ * keep rendering a question no producer has refreshed in years. A record that
+ * asks for longer than a week falls back to the default instead.
+ */
+export const ATTENTION_MAX_REFRESH_INTERVAL_SECONDS = 604800;
+
 /** A record is stale once it is older than this many refresh intervals. */
 export const ATTENTION_STALE_INTERVAL_MULTIPLE = 2;
 
@@ -132,6 +142,18 @@ const MS_PER_DAY = 86400000;
  */
 const KEY_SEPARATOR = "\u0000";
 
+/**
+ * The shape {@link validateAttentionTarget} accepts, used only to take an
+ * already-accepted URL apart.
+ *
+ * The shared module keeps its own copy of this grammar private and this lane
+ * may add only types there, so the pattern is restated rather than imported. It
+ * is never a second acceptance rule: it runs on the validator's output, and a
+ * string it fails to match yields no identity at all, so a record can only lose
+ * a grouping it might have had, never gain one.
+ */
+const PULL_URL_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/;
+
 function resolveSettings(options: BuildAttentionModelOptions): ModelSettings {
   return {
     nowMs: options.now instanceof Date ? options.now.getTime() : Number.NaN,
@@ -214,16 +236,47 @@ function instant(value: unknown): number {
 }
 
 /**
+ * ASCII-only case folding: no locale can map another letter onto one of the
+ * ASCII letters this module compares, as a Turkish dotless `ı` would under
+ * `toLocaleUpperCase`.
+ */
+function asciiUpper(value: string): string {
+  return value.replace(/[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+/**
  * `m5` and `M5` are the same host; anything else is not a host this dashboard
- * knows. Case folding is ASCII-only so no locale can map another letter onto
- * `M`.
+ * knows.
  */
 function normalizeHost(value: unknown): AttentionCardHost | null {
   if (typeof value !== "string") {
     return null;
   }
-  const folded = value.trim().replace(/[a-z]/g, (letter) => letter.toUpperCase());
+  const folded = asciiUpper(value.trim());
   return folded === "M5" || folded === "M1" ? folded : null;
+}
+
+/**
+ * The `owner/name/number` of an accepted target URL, or `null` when there is
+ * none.
+ *
+ * GitHub owner and repository names are ASCII and case-insensitive, so two
+ * records may spell the same pull request differently and
+ * {@link validateAttentionTarget} accepts both. This is the identity the
+ * same-pull-request rules compare, while each card keeps the URL its own record
+ * spelled. The grammar is the validator's, so a rejected target never reaches
+ * here.
+ */
+function pullIdentity(target: string | null): string | null {
+  if (target === null) {
+    return null;
+  }
+  const match = PULL_URL_PATTERN.exec(target);
+  if (match === null) {
+    return null;
+  }
+  const [, owner, name, number] = match;
+  return `${asciiUpper(owner)}${KEY_SEPARATOR}${asciiUpper(name)}${KEY_SEPARATOR}${number}`;
 }
 
 function diagnostic(repository: string | null, kind: string, message: string): AttentionDiagnosticPayload {
@@ -237,10 +290,16 @@ interface Candidate {
   host: AttentionCardHost;
   /**
    * The record's target as {@link validateAttentionTarget} accepts it, or
-   * `null` when the record does not point at its own pull request. This is the
-   * value the same-pull-request rules relate cards by, never the raw field.
+   * `null` when the record does not point at its own pull request. The card
+   * shows this URL, spelled as its own record spelled it.
    */
   target: string | null;
+  /**
+   * The same target as a canonical pull request, or `null` when there is none.
+   * This is what the same-pull-request rules relate cards by, never the raw
+   * field and never the URL's spelling.
+   */
+  pull: string | null;
   openDays: number;
   verifyOpenAge: boolean;
 }
@@ -266,20 +325,54 @@ interface Suppression {
 }
 
 /**
+ * The interval a record's freshness is measured in.
+ *
+ * A record may ask for a longer interval than the default, up to a week. It may
+ * not ask for an unbounded one: the staleness window is twice this value, so a
+ * record claiming `1e308` seconds would never be stale. A value that is not a
+ * positive finite number of seconds within that bound falls back to the
+ * default, which {@link resolveSettings} has already made positive and finite,
+ * so the window is always finite.
+ */
+function refreshIntervalSeconds(value: unknown, settings: ModelSettings): number {
+  const seconds = positiveFinite(value);
+  return seconds !== null && seconds <= ATTENTION_MAX_REFRESH_INTERVAL_SECONDS
+    ? seconds
+    : settings.defaultRefreshIntervalSeconds;
+}
+
+/**
  * Freshness against the dashboard clock.
  *
  * An unparseable timestamp is stale rather than fresh: a record whose age
  * cannot be established has not been shown to be current, and a producer that
  * stopped writing must not keep a card alive by writing a timestamp nobody can
- * read.
+ * read. An unusable clock is the same rule one level up, applied to every
+ * record at once.
  */
 function freshnessSuppressions(record: AttentionRecord, settings: ModelSettings): Suppression[] {
   const own = fields(record);
   const source = sourceFields(record);
-  const intervalSeconds = positiveFinite(own.refresh_interval_seconds) ?? settings.defaultRefreshIntervalSeconds;
+  const id = idText(record);
+
+  if (!Number.isFinite(settings.nowMs)) {
+    // Nothing can be aged against a clock that is not an instant, and a record
+    // that has not been shown to be current does not render. This is reported
+    // once per record, like every other suppression, so the view shows why the
+    // list is empty rather than an unexplained absence.
+    return [
+      {
+        kind: "stale_source",
+        message:
+          `Record ${id} cannot be aged because the dashboard clock is not a usable instant; ` +
+          "the card is suppressed."
+      }
+    ];
+  }
+
+  const intervalSeconds = refreshIntervalSeconds(own.refresh_interval_seconds, settings);
   const staleAfterMs = intervalSeconds * ATTENTION_STALE_INTERVAL_MULTIPLE * MS_PER_SECOND;
   const skewToleranceMs = ATTENTION_CLOCK_SKEW_TOLERANCE_SECONDS * MS_PER_SECOND;
-  const id = idText(record);
   const suppressions: Suppression[] = [];
 
   const refreshedAt = instant(own.refreshed_at);
@@ -456,13 +549,15 @@ function buildRepositoryModel(read: AttentionRepositoryRead, settings: ModelSett
     }
     const openDays = openDaysFor(record, settings);
     const own = fields(record);
+    // The same validator the projection applies, so the card and the rules that
+    // relate cards agree on what this record points at.
+    const target = validateAttentionTarget(own.target, own.repository);
     model.candidates.push({
       model,
       record,
       host,
-      // The same validator the projection applies, so the card and the rules
-      // that relate cards agree on what this record points at.
-      target: validateAttentionTarget(own.target, own.repository),
+      target,
+      pull: pullIdentity(target),
       openDays,
       verifyOpenAge: openDays > settings.openAgeFlagDays
     });
@@ -504,17 +599,18 @@ function rankCandidates(candidates: readonly Candidate[]): Candidate[] {
 }
 
 /**
- * The grouping key for the same-pull-request rules: exact equality of the
- * validated target.
+ * The grouping key for the same-pull-request rules: the canonical pull request
+ * behind a validated target.
  *
- * Two cards are related only by a link the projection accepted. Keying on the
- * raw field instead would let a rejected `javascript:` target, or one naming
- * another repository's pull request, relate two cards that the view cannot
- * even link to the same place, and would let a record claim kinship with
- * another repository's records by spelling their target.
+ * Two cards are related only by a link the projection accepted, and then by
+ * which pull request it names rather than how it is spelled. Keying on the raw
+ * field instead would let a rejected `javascript:` target, or one naming
+ * another repository's pull request, relate two cards the view cannot even link
+ * to the same place; keying on the accepted URL's text would split two records
+ * that point at one pull request under different repository casing.
  */
 function targetKey(candidate: Candidate): string | null {
-  return candidate.target;
+  return candidate.pull;
 }
 
 interface AdjacencyResult {
@@ -572,10 +668,16 @@ function applySameTargetAdjacency(ranked: readonly Candidate[]): AdjacencyResult
   return { order, samePr };
 }
 
-/** Which producer wrote a record: the pair the duplicate rule compares. */
-function producerKey(record: AttentionRecord): string {
-  const source = sourceFields(record);
-  return `${textOrEmpty(source.host_id)}${KEY_SEPARATOR}${textOrEmpty(source.task_id)}`;
+/**
+ * Which producer wrote a record: the pair the duplicate rule compares.
+ *
+ * The host is the normalized one the card carries, not the raw field, so `m1`,
+ * `M1`, and a padded spelling are one producer. Comparing the raw spellings
+ * would report a control tower as duplicating its own question whenever it
+ * changed how it writes its host.
+ */
+function producerKey(candidate: Candidate): string {
+  return `${candidate.host}${KEY_SEPARATOR}${textOrEmpty(sourceFields(candidate.record).task_id)}`;
 }
 
 /**
@@ -608,7 +710,7 @@ function producerDuplicateGroups(order: readonly Candidate[]): Candidate[][] {
     }
   }
   return [...groups.values()].filter(
-    (group) => group.length > 1 && new Set(group.map((member) => producerKey(member.record))).size > 1
+    (group) => group.length > 1 && new Set(group.map(producerKey)).size > 1
   );
 }
 
