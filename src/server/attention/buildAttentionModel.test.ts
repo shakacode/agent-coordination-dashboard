@@ -42,9 +42,18 @@ import {
 
 const REPOSITORY = attentionRepository;
 const OTHER_REPOSITORY = "shakacode/agent-coordination-dashboard";
+/**
+ * {@link REPOSITORY} spelled the way GitHub displays it. Two configured
+ * repositories can only validate the same target when they are the same
+ * repository under different spellings, so this is what a cross-repository
+ * duplicate looks like once grouping keys on the validated target.
+ */
+const CASE_VARIANT_REPOSITORY = "ShakaCode/Agent-Coordination";
 const TARGET = "https://github.com/shakacode/agent-coordination/pull/284";
 const OTHER_TARGET = "https://github.com/shakacode/agent-coordination/pull/301";
 const OTHER_REPOSITORY_TARGET = "https://github.com/shakacode/agent-coordination-dashboard/pull/127";
+/** Rejected by `validateAttentionTarget`: another repository's pull request. */
+const FOREIGN_TARGET = "https://github.com/evil/agent-coordination/pull/284";
 
 /** The model's clock for every test; the shared fixtures are fresh against it. */
 const NOW = new Date("2026-09-03T09:30:00.000Z");
@@ -337,6 +346,39 @@ describe("one card per record, adjacent by target", () => {
 
     expect(payload.cards[0].same_pr).toBe(false);
   });
+
+  it("never relates two records by a target the projection rejects", () => {
+    for (const target of [FOREIGN_TARGET, "javascript:alert(1)"]) {
+      const payload = build(
+        readOf(
+          freshRecord({ id: "unlinked-a", target, created_at: "2026-09-03T06:00:00Z" }),
+          freshRecord({ id: "grouped-a", target: OTHER_TARGET, created_at: "2026-09-03T07:00:00Z" }),
+          freshRecord({ id: "unlinked-b", target, created_at: "2026-09-03T08:00:00Z" }),
+          freshRecord({ id: "grouped-b", target: OTHER_TARGET, created_at: "2026-09-03T09:00:00Z" })
+        )
+      );
+
+      // The two rejected targets never join, so the accepted pair is the only
+      // group and the unlinked records keep their own rank positions.
+      expect(cardIds(payload)).toEqual(["unlinked-a", "grouped-a", "grouped-b", "unlinked-b"]);
+      expect(payload.cards.map((card) => card.same_pr)).toEqual([false, true, true, false]);
+    }
+  });
+
+  it("never relates two records that carry no target at all", () => {
+    const withoutTarget = (id: string, createdAt: string): AttentionRecord => {
+      const record = { ...freshRecord({ id, created_at: createdAt }) } as Partial<AttentionRecord>;
+      delete record.target;
+      return record as AttentionRecord;
+    };
+
+    const payload = build(
+      readOf(withoutTarget("no-target-a", "2026-09-03T06:00:00Z"), withoutTarget("no-target-b", "2026-09-03T07:00:00Z"))
+    );
+
+    expect(cardIds(payload)).toEqual(["no-target-a", "no-target-b"]);
+    expect(payload.cards.map((card) => card.same_pr)).toEqual([false, false]);
+  });
 });
 
 describe("producer duplicates", () => {
@@ -400,12 +442,12 @@ describe("producer duplicates", () => {
       readResult(
         repositoryRead({ records: [freshRecord({ id: "dup-a", question })] }),
         repositoryRead({
-          repository: OTHER_REPOSITORY,
+          repository: CASE_VARIANT_REPOSITORY,
           records: [
             freshRecord({
               id: "dup-b",
               question,
-              repository: OTHER_REPOSITORY,
+              repository: CASE_VARIANT_REPOSITORY,
               source: sourceWith({ task_id: "second" })
             })
           ]
@@ -413,7 +455,43 @@ describe("producer duplicates", () => {
       )
     );
 
+    expect(cardIds(payload)).toEqual(["dup-a", "dup-b"]);
     expect(onlyOfKind(payload, "producer_duplicate").repository).toBeNull();
+  });
+
+  it("says nothing when the shared target is one the projection rejects", () => {
+    const payload = build(
+      readOf(
+        freshRecord({ id: "dup-a", question, target: FOREIGN_TARGET }),
+        freshRecord({
+          id: "dup-b",
+          question,
+          target: FOREIGN_TARGET,
+          source: sourceWith({ task_id: "second" })
+        })
+      )
+    );
+
+    expect(cardIds(payload)).toEqual(["dup-a", "dup-b"]);
+    expect(payload.cards.map((card) => card.record.target)).toEqual([null, null]);
+    expect(ofKind(payload, "producer_duplicate")).toEqual([]);
+  });
+
+  it("still reports a duplicate when the shared target is one the projection accepts", () => {
+    const payload = build(
+      readOf(
+        freshRecord({ id: "dup-a", question, target: OTHER_TARGET }),
+        freshRecord({
+          id: "dup-b",
+          question,
+          target: OTHER_TARGET,
+          source: sourceWith({ task_id: "second" })
+        })
+      )
+    );
+
+    expect(payload.cards.map((card) => card.record.target)).toEqual([OTHER_TARGET, OTHER_TARGET]);
+    expect(onlyOfKind(payload, "producer_duplicate").message).toContain("dup-a, dup-b");
   });
 });
 
@@ -964,13 +1042,13 @@ describe("diagnostics", () => {
           records: [freshRecord({ id: "dup-a", question, created_at: at(-30 * MS_PER_DAY) })]
         }),
         repositoryRead({
-          repository: OTHER_REPOSITORY,
-          diagnostics: diagnosticsFor(OTHER_REPOSITORY),
+          repository: CASE_VARIANT_REPOSITORY,
+          diagnostics: diagnosticsFor(CASE_VARIANT_REPOSITORY),
           records: [
             freshRecord({
               id: "dup-b",
               question,
-              repository: OTHER_REPOSITORY,
+              repository: CASE_VARIANT_REPOSITORY,
               source: sourceWith({ task_id: "second" })
             })
           ]

@@ -235,6 +235,12 @@ interface Candidate {
   model: RepositoryModel;
   record: AttentionRecord;
   host: AttentionCardHost;
+  /**
+   * The record's target as {@link validateAttentionTarget} accepts it, or
+   * `null` when the record does not point at its own pull request. This is the
+   * value the same-pull-request rules relate cards by, never the raw field.
+   */
+  target: string | null;
   openDays: number;
   verifyOpenAge: boolean;
 }
@@ -449,10 +455,14 @@ function buildRepositoryModel(read: AttentionRepositoryRead, settings: ModelSett
       continue;
     }
     const openDays = openDaysFor(record, settings);
+    const own = fields(record);
     model.candidates.push({
       model,
       record,
       host,
+      // The same validator the projection applies, so the card and the rules
+      // that relate cards agree on what this record points at.
+      target: validateAttentionTarget(own.target, own.repository),
       openDays,
       verifyOpenAge: openDays > settings.openAgeFlagDays
     });
@@ -493,10 +503,18 @@ function rankCandidates(candidates: readonly Candidate[]): Candidate[] {
   return ordered;
 }
 
-/** The grouping key for the same-pull-request rule: exact `target` equality. */
-function targetKey(record: AttentionRecord): string | null {
-  const target: unknown = fields(record).target;
-  return typeof target === "string" ? target : null;
+/**
+ * The grouping key for the same-pull-request rules: exact equality of the
+ * validated target.
+ *
+ * Two cards are related only by a link the projection accepted. Keying on the
+ * raw field instead would let a rejected `javascript:` target, or one naming
+ * another repository's pull request, relate two cards that the view cannot
+ * even link to the same place, and would let a record claim kinship with
+ * another repository's records by spelling their target.
+ */
+function targetKey(candidate: Candidate): string | null {
+  return candidate.target;
 }
 
 interface AdjacencyResult {
@@ -514,7 +532,7 @@ interface AdjacencyResult {
 function applySameTargetAdjacency(ranked: readonly Candidate[]): AdjacencyResult {
   const groups = new Map<string, Candidate[]>();
   for (const candidate of ranked) {
-    const key = targetKey(candidate.record);
+    const key = targetKey(candidate);
     if (key === null) {
       continue;
     }
@@ -532,7 +550,7 @@ function applySameTargetAdjacency(ranked: readonly Candidate[]): AdjacencyResult
     if (placed.has(candidate)) {
       continue;
     }
-    const key = targetKey(candidate.record);
+    const key = targetKey(candidate);
     const group = key === null ? [candidate] : (groups.get(key) ?? [candidate]);
     for (const member of group) {
       if (placed.has(member)) {
@@ -567,14 +585,18 @@ function producerKey(record: AttentionRecord): string {
  * Both still render: the model cannot tell which producer is authoritative, and
  * dropping one would hide a live question. The diagnostic is what tells the
  * operator that two control towers are writing the same decision.
+ *
+ * The pull request is the validated target, so a record whose link the
+ * projection rejected is never anyone's duplicate: it points at nothing this
+ * view can open, and a producer could otherwise be accused of duplicating a
+ * question it never answered by another producer spelling its target.
  */
 function producerDuplicateGroups(order: readonly Candidate[]): Candidate[][] {
   const groups = new Map<string, Candidate[]>();
   for (const candidate of order) {
-    const own = fields(candidate.record);
-    const target: unknown = own.target;
-    const question: unknown = own.question;
-    if (typeof target !== "string" || typeof question !== "string") {
+    const target = targetKey(candidate);
+    const question: unknown = fields(candidate.record).question;
+    if (target === null || typeof question !== "string") {
       continue;
     }
     const key = `${target}${KEY_SEPARATOR}${question}`;
@@ -593,7 +615,7 @@ function producerDuplicateGroups(order: readonly Candidate[]): Candidate[][] {
 function duplicateDiagnostic(group: readonly Candidate[]): AttentionDiagnosticPayload {
   const ids = group.map((member) => idText(member.record)).join(", ");
   const repositories = new Set(group.map((member) => member.model.repository));
-  const target = quoted(fields(group[0].record).target);
+  const target = quoted(group[0].target);
   return diagnostic(
     // One repository owns the duplicate only when every record in it does;
     // otherwise it is a dashboard-wide observation, not one repository's.
