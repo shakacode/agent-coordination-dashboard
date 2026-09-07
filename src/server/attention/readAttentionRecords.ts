@@ -45,6 +45,20 @@ export const ATTENTION_READ_TIME_BUDGET_MS = 2000;
 export const ATTENTION_RECORD_MAX_BYTES = 262144;
 
 /**
+ * The record file suffix from the schema's storage key,
+ * `attention/{workspace}/{owner}/{name}/{id}.json`.
+ *
+ * It is the whole candidate rule in filesystem mode. The `agent-coord` local
+ * store writes each record under a lock and leaves a persistent zero-byte
+ * `<id>.json.lock` beside it that it never removes, so a reader that treated
+ * every regular file as a record would raise one spurious diagnostic per record
+ * and spend half its budget on sidecars. Matching the storage key instead of
+ * excluding one known suffix also covers the next sidecar or editor backup
+ * without another rule.
+ */
+export const ATTENTION_RECORD_FILE_SUFFIX = ".json";
+
+/**
  * Every outcome a single candidate record can have. The set is closed: a file
  * or listing entry produces exactly one of these, or none at all when it is
  * not a candidate (a directory, a socket, an entry the budget never reached).
@@ -96,12 +110,15 @@ export interface AttentionReadDiagnostic {
 /**
  * Counts for one repository's read, with the invariant `seen === read + skipped`.
  *
- * - `seen`: every entry in the listing, whether or not the budget reached it.
+ * - `seen`: every entry in the listing, candidate or not, whether or not the
+ *   budget reached it.
  * - `read`: entries whose bytes were read and parsed, so exactly the entries
  *   that produced `ok`, `invalid_json`, `schema_invalid`, or
  *   `repository_mismatch`.
- * - `skipped`: everything else — non-regular entries, oversize files, files
- *   that vanished or could not be read, and entries the budget stopped short of.
+ * - `skipped`: everything else — names that are not
+ *   {@link ATTENTION_RECORD_FILE_SUFFIX} candidates, non-regular entries,
+ *   zero-byte and oversize files, files that vanished or could not be read, and
+ *   candidates the budget stopped short of.
  * - `outcomes`: the per-outcome tally, including the silent `vanished` count.
  */
 export interface AttentionReadCounts {
@@ -225,6 +242,21 @@ function schemaReason(errors: AttentionRecordValidationError[]): string {
 }
 
 /**
+ * The parse offset alone, when the engine reports one.
+ *
+ * The rest of a `JSON.parse` message is dropped because V8 quotes the input's
+ * first bytes back inside it (`Unexpected token 'A', "AGENT_COOR"... is not
+ * valid JSON`). A diagnostic is rendered by the attention view, and the walk
+ * follows symlinks that may resolve outside the state root, so a reason that
+ * carried file contents would make the dashboard a read oracle for the opening
+ * bytes of any file a record name can point at.
+ */
+function parsePosition(error: unknown): string {
+  const match = /\bat position (\d+)\b/.exec(errorMessage(error));
+  return match === null ? "" : ` at position ${match[1]}`;
+}
+
+/**
  * GitHub owner and repository names are ASCII and case-insensitive, the same
  * rule `src/shared/attention.ts` applies when it matches a record against its
  * own pull request URL.
@@ -241,6 +273,15 @@ function sameRepository(left: unknown, right: string): boolean {
     return false;
   }
   return leftOwner.toLowerCase() === rightOwner.toLowerCase() && leftName.toLowerCase() === rightName.toLowerCase();
+}
+
+/**
+ * True for a listing name that can be a record file. `<id>.json.lock` and every
+ * other sidecar fail here, and a bare `.json` is a name the storage key cannot
+ * produce.
+ */
+function isCandidateName(name: string): boolean {
+  return name.length > ATTENTION_RECORD_FILE_SUFFIX.length && name.endsWith(ATTENTION_RECORD_FILE_SUFFIX);
 }
 
 /** One repository's read in progress. */
@@ -408,10 +449,20 @@ async function readRepositoryFromFilesystem(
   // `readdir` order is otherwise filesystem-defined.
   const names = [...entries].sort();
   let examined = 0;
+  let stopped = false;
   for (const name of names) {
-    // The limit counts examined entries rather than files actually read, so a
-    // directory full of subdirectories cannot walk past the budget.
+    if (!isCandidateName(name)) {
+      // Not a record name, so it is skipped before anything touches it: no
+      // stat, no read, no diagnostic, and no charge against the budget. The
+      // `agent-coord` local store leaves a persistent `<id>.json.lock` beside
+      // every record, and a lock owned by another user on a shared root would
+      // otherwise turn into a permanent `unreadable` warning per record.
+      continue;
+    }
+    // The limit counts candidates examined rather than files actually read, so
+    // a directory full of `.json` subdirectories cannot walk past the budget.
     if (examined >= budget.maxEntries || budget.monotonicNow() - startedAt >= budget.timeBudgetMs) {
+      stopped = true;
       break;
     }
     examined += 1;
@@ -437,6 +488,12 @@ async function readRepositoryFromFilesystem(
     if (!stats.isFile()) {
       // Directories, sockets, and symlinks that do not resolve to a regular
       // file are skipped and never followed; the walk is not recursive.
+      continue;
+    }
+    if (stats.size === 0) {
+      // An empty file is never a record, and a writer that renames into place
+      // never exposes one at its final name, so a zero-byte candidate is a
+      // sidecar or a half-made file rather than a fault: skipped, not reported.
       continue;
     }
     if (stats.size > budget.maxFileBytes) {
@@ -468,14 +525,13 @@ async function readRepositoryFromFilesystem(
     try {
       parsed = JSON.parse(text);
     } catch (error) {
-      // `JSON.parse` reports the offending token and offset, never a path.
-      outcome(read, "invalid_json", path, `Could not parse the record file as JSON: ${errorMessage(error)}`);
+      outcome(read, "invalid_json", path, `Could not parse the record file as JSON${parsePosition(error)}.`);
       continue;
     }
     ingest(read, path, parsed);
   }
 
-  return finish(read, names.length === 0 ? "empty" : "ok", checkedAt, names.length, examined < names.length);
+  return finish(read, names.length === 0 ? "empty" : "ok", checkedAt, names.length, stopped);
 }
 
 function readRepositoryFromApi(

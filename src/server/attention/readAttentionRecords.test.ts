@@ -8,6 +8,7 @@ import {
   ATTENTION_READ_ENTRY_LIMIT,
   ATTENTION_READ_OUTCOME_KINDS,
   ATTENTION_READ_TIME_BUDGET_MS,
+  ATTENTION_RECORD_FILE_SUFFIX,
   ATTENTION_RECORD_MAX_BYTES,
   ATTENTION_WORKSPACE,
   readAttentionRecords,
@@ -170,6 +171,7 @@ describe("readAttentionRecords module boundary", () => {
     expect(ATTENTION_READ_ENTRY_LIMIT).toBe(2000);
     expect(ATTENTION_READ_TIME_BUDGET_MS).toBe(2000);
     expect(ATTENTION_RECORD_MAX_BYTES).toBe(262144);
+    expect(ATTENTION_RECORD_FILE_SUFFIX).toBe(".json");
     expect(ATTENTION_WORKSPACE).toBe("default");
     expect([...ATTENTION_READ_OUTCOME_KINDS]).toEqual([
       "ok",
@@ -253,14 +255,120 @@ describe("readAttentionRecords filesystem mode", () => {
     expect(repository.records[0].repository).toBe(REPOSITORY);
   });
 
-  it("reads every regular file regardless of extension", async () => {
+  it("reads only .json candidates and skips other names silently", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "record-without-extension": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, {
+      "open.json": OPEN_RECORD_JSON,
+      "record-without-extension": OPEN_RECORD_JSON,
+      "notes.json.bak": OPEN_RECORD_JSON,
+      ".json": OPEN_RECORD_JSON
+    });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
 
+    // The storage key is `attention/<workspace>/<owner>/<name>/<id>.json`, so a
+    // name that cannot come from it is not a record and is not a fault either.
     expect(repository.records).toHaveLength(1);
-    expect(repository.counts.read).toBe(1);
+    expect(repository.diagnostics).toEqual([]);
+    expect(repository.counts).toMatchObject({ seen: 4, read: 1, skipped: 3 });
+  });
+
+  it("ignores the agent-coord lock sidecar beside a record", async () => {
+    const root = await stateRoot();
+    const touched: string[] = [];
+    // `LocalStore#with_file_lock` creates this zero-byte sidecar (mode 0600)
+    // beside every record and never removes it.
+    await seedRepository(root, REPOSITORY, {
+      "record-1.json": OPEN_RECORD_JSON,
+      "record-1.json.lock": ""
+    });
+
+    const repository = only(
+      await readAttentionRecords(
+        fsOptions({
+          stateRoot: root,
+          fileSystem: seam({
+            stat: (path) => {
+              touched.push(path);
+              return stat(path);
+            },
+            readFile: (path) => {
+              touched.push(path);
+              return readFile(path, "utf8");
+            }
+          })
+        })
+      )
+    );
+
+    expect(repository.records).toHaveLength(1);
+    expect(repository.sourceStatus.status).toBe("ok");
+    expect(repository.diagnostics).toEqual([]);
+    expect(repository.counts).toMatchObject({ seen: 2, read: 1, skipped: 1 });
+    expect(repository.counts.outcomes.invalid_json).toBe(0);
+    // The sidecar is never stat'd and never read, so a lock owned by another
+    // user on a shared coordination root cannot raise an `unreadable` warning.
+    expect(touched.filter((path) => path.endsWith(".lock"))).toEqual([]);
+  });
+
+  it("never reads a non-candidate even when reading it would fail", async () => {
+    const root = await stateRoot();
+    await seedRepository(root, REPOSITORY, {
+      "record-1.json": OPEN_RECORD_JSON,
+      "record-1.json.lock": ""
+    });
+
+    const repository = only(
+      await readAttentionRecords(
+        fsOptions({
+          stateRoot: root,
+          // Stands in for a mode-0600 sidecar owned by another user, which a
+          // test cannot create without root.
+          fileSystem: seam({
+            stat: (path) => (path.endsWith(".lock") ? Promise.reject(codedError("EACCES")) : stat(path)),
+            readFile: (path) =>
+              path.endsWith(".lock") ? Promise.reject(codedError("EACCES")) : readFile(path, "utf8")
+          })
+        })
+      )
+    );
+
+    expect(repository.records).toHaveLength(1);
+    expect(repository.diagnostics).toEqual([]);
+    expect(repository.counts.outcomes.unreadable).toBe(0);
+  });
+
+  it("skips a zero-byte candidate without reporting it", async () => {
+    const root = await stateRoot();
+    await seedRepository(root, REPOSITORY, { "empty.json": "", "open.json": OPEN_RECORD_JSON });
+
+    const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
+
+    // An atomic-rename writer never exposes an empty file at its final name.
+    expect(repository.records).toHaveLength(1);
+    expect(repository.diagnostics).toEqual([]);
+    expect(repository.counts).toMatchObject({ seen: 2, read: 1, skipped: 1 });
+    expect(repository.counts.outcomes.invalid_json).toBe(0);
+  });
+
+  it("does not spend the entry budget on lock sidecars", async () => {
+    const root = await stateRoot();
+    const files: Record<string, string> = {};
+    for (const index of [1, 2, 3, 4]) {
+      files[`record-${index}.json`] = OPEN_RECORD_JSON;
+      files[`record-${index}.json.lock`] = "";
+    }
+    await seedRepository(root, REPOSITORY, files);
+
+    const repository = only(
+      await readAttentionRecords(fsOptions({ stateRoot: root, maxEntriesPerRepository: 4 }))
+    );
+
+    // Four records under a budget of four: the four sidecars cost nothing, so
+    // the effective capacity is the documented one rather than half of it.
+    expect(repository.records).toHaveLength(4);
+    expect(repository.partial).toBe(false);
+    expect(repository.counts).toMatchObject({ seen: 8, read: 4, skipped: 4 });
   });
 
   it("reports an empty source for a state root that does not exist", async () => {
@@ -356,9 +464,28 @@ describe("readAttentionRecords filesystem mode", () => {
     const diagnostic = repository.diagnostics[0];
     expect(diagnostic.kind).toBe("invalid_json");
     expect(diagnostic.path).toBe(`${PREFIX}/broken.json`);
-    expect(diagnostic.reason).toContain("Could not parse the record file as JSON");
+    // The offset survives; the engine's message, which quotes the input, does not.
+    expect(diagnostic.reason).toBe("Could not parse the record file as JSON at position 2.");
     // Diagnostics stay relative to the state root; no absolute path leaks.
     expect(diagnostic.reason).not.toContain(root);
+  });
+
+  it("keeps the unparseable file's own bytes out of the invalid_json reason", async () => {
+    const root = await stateRoot();
+    // V8 answers this with `Unexpected token 'A', "AGENT_COOR"... is not valid
+    // JSON`, quoting the first bytes of the input back. The walk follows
+    // symlinks, so a reason that carried them would make the view a read oracle.
+    const secret = "AGENT_COORD_API_TOKEN=sk-live-DEADBEEF-supersecret";
+    await seedRepository(root, REPOSITORY, { "secret.json": secret });
+
+    const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
+
+    const diagnostic = repository.diagnostics[0];
+    expect(diagnostic.kind).toBe("invalid_json");
+    expect(diagnostic.reason).toBe("Could not parse the record file as JSON.");
+    for (const fragment of [secret, "AGENT_COOR", "sk-live", root]) {
+      expect(diagnostic.reason).not.toContain(fragment);
+    }
   });
 
   it("reports a schema failure with the serializable error list and drops the record", async () => {
@@ -535,8 +662,10 @@ describe("readAttentionRecords filesystem mode", () => {
   it("skips non-regular entries without following them and without recursing", async () => {
     const root = await stateRoot();
     const directory = await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
-    await mkdir(join(directory, "nested"), { recursive: true });
-    await writeFile(join(directory, "nested", "open.json"), OPEN_RECORD_JSON, "utf8");
+    // A candidate name that is a directory: the name rule admits it, so only
+    // the `isFile` check can keep the walk from descending into it.
+    await mkdir(join(directory, "nested.json"), { recursive: true });
+    await writeFile(join(directory, "nested.json", "open.json"), OPEN_RECORD_JSON, "utf8");
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
 
