@@ -509,3 +509,73 @@ export function rank(records: readonly AttentionRecord[]): AttentionRecord[] {
     return compareText(left.id, right.id);
   });
 }
+
+/**
+ * The dashboard's own display host, normalized exactly as a record's
+ * `source.host_id` is. `UNKNOWN` covers both an unset and an unrecognized
+ * machine id, and the model reports it as a diagnostic.
+ */
+export type AttentionDashboardHost = "M5" | "M1" | "UNKNOWN";
+
+/**
+ * One rendered attention card.
+ *
+ * `record` is the projection, never the raw record: it is the only path by
+ * which record text or a link reaches a card.
+ * @see projectAttentionRecord
+ */
+export interface AttentionCardPayload {
+  /** Position in the rendered list, `1..N` and contiguous. */
+  number: number;
+  id: string;
+  /** The configured `owner/name` whose records this one was read with. */
+  repository: string;
+  record: AttentionRenderView;
+  /** The record's normalized `source.host_id`; an unknown host never renders. */
+  host: "M5" | "M1";
+  /** True only when {@link AttentionCardPayload.host} equals a known dashboard host. */
+  host_matches: boolean;
+  native_open: AttentionCapabilityState;
+  /** True when another rendered card shares this record's `target`. */
+  same_pr: boolean;
+  /** Whole days between `created_at` and the model's clock. */
+  open_days: number;
+  verify_open_age: boolean;
+}
+
+/** One configured repository's read outcome; one entry per repository. */
+export interface AttentionSourcePayload {
+  repository: string;
+  mode: "fs" | "api";
+  status: "ok" | "empty" | "auth_error" | "unreachable";
+  checked_at: string;
+  /** True when the read budget stopped before the whole listing was examined. */
+  partial: boolean;
+  /** True when the per-repository card cap dropped records. */
+  truncated: boolean;
+  /** Resolved records the read returned, whether or not they are in the trail. */
+  resolved_total: number;
+  /** Present only when the status is `auth_error` or `unreachable`. */
+  message?: string;
+}
+
+/**
+ * One warning. `kind` is a plain string so a reader diagnostic can pass through
+ * under its own kind without widening a union the client would have to know.
+ * `repository` is `null` for a diagnostic about the dashboard as a whole.
+ */
+export interface AttentionDiagnosticPayload {
+  repository: string | null;
+  kind: string;
+  message: string;
+}
+
+/** Everything the read-only attention view renders, and nothing else. */
+export interface AttentionPayload {
+  /** The model's clock as ISO 8601. */
+  generated_at: string;
+  dashboard_host: AttentionDashboardHost;
+  cards: AttentionCardPayload[];
+  sources: AttentionSourcePayload[];
+  diagnostics: AttentionDiagnosticPayload[];
+}
