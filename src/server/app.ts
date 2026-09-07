@@ -134,13 +134,19 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return;
     }
 
-    const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
+    // An operator reaches this endpoint precisely when the configuration is
+    // broken, so a corrupt or unreadable settings.json must not replace the
+    // report with an error: the attention scope falls back to the configured
+    // targets, exactly as a first run with no settings file does.
+    const targetRepos = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos })
+      .then((settings) => settings.targetRepos)
+      .catch(() => config.targetRepos);
     res.json(await readDoctorReport({
       stateRoot: config.stateRoot,
       apiUrl: config.coordApiUrl,
       token: config.coordApiToken,
       tokenEnvVar: config.coordApiTokenEnvVar,
-      targetRepos: settings.targetRepos
+      targetRepos
     }));
   });
 

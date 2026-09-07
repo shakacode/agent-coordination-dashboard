@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, IncomingMessage, ServerResponse, type Server } from "node:http";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -222,6 +222,31 @@ describe("dashboard app", () => {
           }
         ]
       }
+    });
+  });
+
+  it("still answers a report when the saved settings cannot be read", async () => {
+    const stateRoot = await coordinationRoot("coord-doctor-corrupt-settings-");
+    const corruptSettingsPath = join(stateRoot, "settings.json");
+    await writeFile(corruptSettingsPath, "{ this is not json", "utf8");
+    const baseUrl = await listen(stateRoot);
+
+    const response = await fetch(`${baseUrl}/api/doctor`);
+    const text = await response.text();
+    const body = JSON.parse(text) as Record<string, unknown>;
+
+    // The endpoint an operator reaches when the configuration is broken keeps
+    // answering a report, and the report leaks neither the settings path, the
+    // parser message, nor a stack.
+    expect(response.status).toBe(200);
+    expect(text).not.toContain(corruptSettingsPath);
+    expect(text).not.toContain("Could not read dashboard settings");
+    expect(text).not.toContain("src/server/settings.ts");
+    expect(text).not.toContain("<!DOCTYPE html>");
+    // The attention scope falls back to the configured targets.
+    expect(body.attention).toMatchObject({
+      mode: "fs",
+      repositories: [expect.objectContaining({ repository: "shakacode/react_on_rails", status: "empty" })]
     });
   });
 
