@@ -1,11 +1,13 @@
 /**
  * Polling for the Human Attention view.
  *
- * Fetches once on mount, then every {@link ATTENTION_POLL_INTERVAL_MS} while the
- * tab is visible. A hidden tab polls nothing at all; returning to a visible tab
- * refetches immediately when the last good payload is older than the interval.
- * A failed poll keeps the last good payload so the view can stay useful behind a
- * stale marker instead of blanking the desk.
+ * Fetches on mount when the tab is visible, then every
+ * {@link ATTENTION_POLL_INTERVAL_MS} for as long as it stays visible. A hidden
+ * tab asks the backend for nothing at all, including at mount: a tab restored
+ * into the background, or opened behind the current one, waits for its first
+ * visibilitychange, where the stale-on-return rule fires the first fetch because
+ * there is no last success yet. A failed poll keeps the last good payload so the
+ * view can stay useful behind a stale marker instead of blanking the desk.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -162,7 +164,11 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    run(false);
+    // A hidden tab issues no request at all; onVisibilityChange runs the first
+    // fetch when it is shown, because a null last success is always stale.
+    if (isVisible()) {
+      run(false);
+    }
 
     return () => {
       disposed = true;

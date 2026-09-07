@@ -24,7 +24,12 @@ import {
   makeAttentionRecord,
   openAttentionRecord
 } from "../../shared/attention.fixtures";
-import type { AttentionCardPayload, AttentionPayload, AttentionSourcePayload } from "../api";
+import type {
+  AttentionCardPayload,
+  AttentionDiagnosticPayload,
+  AttentionPayload,
+  AttentionSourcePayload
+} from "../api";
 
 /** Fixed clock every fixture age and timestamp is expressed against. */
 export const FIXTURE_NOW_ISO = "2026-09-06T12:00:00Z";
@@ -62,6 +67,29 @@ export const unreachableSource: AttentionSourcePayload = {
 };
 
 export const authErrorSource: AttentionSourcePayload = { ...okSource, mode: "api", status: "auth_error" };
+
+/** Read some of its records: the card count is a floor, not a total. */
+export const partialSource: AttentionSourcePayload = { ...okSource, partial: true };
+
+/** Hit its read bound, so the tail of the repository never reached the payload. */
+export const truncatedSource: AttentionSourcePayload = {
+  ...okSource,
+  mode: "api",
+  truncated: true,
+  message: "Stopped after the first page of attention records"
+};
+
+export const unreadableRecordDiagnostic: AttentionDiagnosticPayload = {
+  repository: attentionRepository,
+  kind: "record_unreadable",
+  message: "One attention record failed to parse and was skipped"
+};
+
+export const unknownRepositoryDiagnostic: AttentionDiagnosticPayload = {
+  repository: null,
+  kind: "state_root_missing",
+  message: "A configured state root does not exist"
+};
 
 export const authErrorSourceWithMessage: AttentionSourcePayload = {
   ...authErrorSource,
@@ -171,6 +199,36 @@ export const openAgeRecord: AttentionRecord = makeAttentionRecord({
   refreshed_at: "2026-09-06T11:00:00Z"
 });
 
+/** One day open, so the age flag has to say "day" rather than "days". */
+export const singleOpenDayRecord: AttentionRecord = makeAttentionRecord({
+  ...deskContractAttentionRecord,
+  id: "agent-coordination-pr284-open-one-day",
+  hil_task_title: "Merge gate opened yesterday",
+  created_at: "2026-09-05T11:00:00Z",
+  refreshed_at: "2026-09-06T11:00:00Z"
+});
+
+/**
+ * The schema's logical key is repository plus id, so two repositories may carry
+ * the same record id. These two do, which is what the card list must key by.
+ */
+export const sharedIdFirstRecord: AttentionRecord = makeAttentionRecord({
+  ...deskContractAttentionRecord,
+  id: "shared-attention-record-id",
+  hil_task_title: "Merge gate on the coordination repository",
+  created_at: "2026-09-06T09:15:00Z"
+});
+
+export const sharedIdSecondRecord: AttentionRecord = makeAttentionRecord({
+  ...deskContractAttentionRecord,
+  id: "shared-attention-record-id",
+  repository: "shakacode/agent-coordination-dashboard",
+  target: "https://github.com/shakacode/agent-coordination-dashboard/pull/150",
+  walkthrough_url: "https://github.com/shakacode/agent-coordination-dashboard/pull/150/files",
+  hil_task_title: "Merge gate on the dashboard repository",
+  created_at: "2026-09-06T09:45:00Z"
+});
+
 export const samePrFirstRecord: AttentionRecord = makeAttentionRecord({
   ...deskContractAttentionRecord,
   id: "agent-coordination-pr284-same-pr-review",
@@ -207,6 +265,16 @@ export const openAgeCard: AttentionCardPayload = toCard(openAgeRecord, {
   verify_open_age: true
 });
 
+export const singleOpenDayCard: AttentionCardPayload = toCard(singleOpenDayRecord, {
+  open_days: 1,
+  verify_open_age: true
+});
+
+export const sharedIdCards: AttentionCardPayload[] = [
+  toCard(sharedIdFirstRecord),
+  toCard(sharedIdSecondRecord)
+];
+
 export const samePrCards: AttentionCardPayload[] = [
   toCard(samePrFirstRecord, { same_pr: true }),
   toCard(samePrSecondRecord, { same_pr: true })
@@ -224,6 +292,42 @@ export const deskPayload: AttentionPayload = makeAttentionPayload([
 export const samePrPayload: AttentionPayload = makeAttentionPayload(samePrCards);
 
 export const markdownQuestionPayload: AttentionPayload = makeAttentionPayload([markdownQuestionCard]);
+
+export const sharedIdPayload: AttentionPayload = makeAttentionPayload(sharedIdCards);
+
+/** Cards arrived, but one repository admits it did not read everything. */
+export const partialSourcePayload: AttentionPayload = makeAttentionPayload([fullCard, reducedCard], {
+  sources: [okSource, partialSource]
+});
+
+export const truncatedSourcePayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [truncatedSource]
+});
+
+/** Every source read cleanly, yet the payload still reports lost records. */
+export const diagnosticsOnlyPayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [okSource],
+  diagnostics: [unreadableRecordDiagnostic]
+});
+
+export const partialSourceEmptyPayload: AttentionPayload = makeAttentionPayload([], {
+  sources: [okSource, partialSource]
+});
+
+export const truncatedSourceEmptyPayload: AttentionPayload = makeAttentionPayload([], {
+  sources: [truncatedSource]
+});
+
+export const diagnosticsOnlyEmptyPayload: AttentionPayload = makeAttentionPayload([], {
+  sources: [okSource],
+  diagnostics: [unreadableRecordDiagnostic, unknownRepositoryDiagnostic]
+});
+
+/** Unreachable outranks both auth_error and incomplete when all three apply. */
+export const unreachableAndIncompletePayload: AttentionPayload = makeAttentionPayload([], {
+  sources: [partialSource, authErrorSource, unreachableSource],
+  diagnostics: [unreadableRecordDiagnostic]
+});
 
 export const emptyPayload: AttentionPayload = makeAttentionPayload([], { sources: [emptySource] });
 

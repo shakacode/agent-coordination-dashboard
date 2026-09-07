@@ -35,27 +35,69 @@ export function formatClockTime(instantMs: number): string {
   return `${hours}:${minutes}`;
 }
 
+/** The count headline, with a verb that agrees with a single action. */
+function countHeadline(total: number): string {
+  return total === 1 ? `1 action needs ${OPERATOR_NAME}` : `${total} actions need ${OPERATOR_NAME}`;
+}
+
+type DegradationKind = "unreachable" | "auth_error" | "incomplete";
+
+type Degradation =
+  | { kind: "unreachable"; source: AttentionSourcePayload }
+  | { kind: "auth_error"; source: AttentionSourcePayload }
+  | { kind: "incomplete"; incompleteSources: number; diagnostics: number };
+
 /**
- * The one source the degraded line speaks for: an unreachable source outranks
- * an auth error, because an unreachable backend hides the scope answer too.
+ * The one degradation the page speaks for, in the decided precedence:
+ * unreachable, then auth_error, then incomplete. An unreachable backend hides
+ * the scope answer, and either of those hides whether the rest of the read was
+ * complete, so the worse fact is the one that gets the line.
+ *
+ * Incomplete covers a source that read only part of its records and a payload
+ * that reports diagnostics: in both the card count is a floor, not a total.
  */
-function findDegradedSource(payload: AttentionPayload | null): AttentionSourcePayload | null {
+function findDegradation(payload: AttentionPayload | null): Degradation | null {
   if (payload === null) {
     return null;
   }
-  return (
-    payload.sources.find((source) => source.status === "unreachable") ??
-    payload.sources.find((source) => source.status === "auth_error") ??
-    null
-  );
+  const unreachable = payload.sources.find((source) => source.status === "unreachable");
+  if (unreachable !== undefined) {
+    return { kind: "unreachable", source: unreachable };
+  }
+  const authError = payload.sources.find((source) => source.status === "auth_error");
+  if (authError !== undefined) {
+    return { kind: "auth_error", source: authError };
+  }
+  const incompleteSources = payload.sources.filter((source) => source.partial || source.truncated).length;
+  const diagnostics = payload.diagnostics.length;
+  if (incompleteSources > 0 || diagnostics > 0) {
+    return { kind: "incomplete", incompleteSources, diagnostics };
+  }
+  return null;
 }
 
-function degradedLine(source: AttentionSourcePayload, degradedSinceMs: number): string {
-  if (source.status === "auth_error") {
-    const message = source.message;
+function degradationNotice(degradation: Degradation, sinceMs: number): string {
+  if (degradation.kind === "unreachable") {
+    return `Backend unreachable since ${formatClockTime(sinceMs)}`;
+  }
+  if (degradation.kind === "auth_error") {
+    const message = degradation.source.message;
     return typeof message === "string" && message.trim().length > 0 ? message : MISSING_SCOPE_MESSAGE;
   }
-  return `Backend unreachable since ${formatClockTime(degradedSinceMs)}`;
+  return `Some records may be missing: ${degradation.incompleteSources} repositories reported incomplete reads and ${degradation.diagnostics} diagnostics`;
+}
+
+/**
+ * The header when no card arrived: a count reads as "nothing to do" when the
+ * truth is "nothing readable", so the degradation takes the header instead.
+ * Unreachable and auth_error say the whole story there and need no second line;
+ * the incomplete header names the state and leaves its counts to the notice.
+ */
+function degradedHeadline(degradation: Degradation, sinceMs: number): string {
+  if (degradation.kind === "incomplete") {
+    return `Attention data incomplete since ${formatClockTime(sinceMs)}`;
+  }
+  return degradationNotice(degradation, sinceMs);
 }
 
 export interface AttentionViewProps {
@@ -71,15 +113,17 @@ export interface AttentionViewProps {
 }
 
 export function AttentionView({ payload, lastSuccessAt, failure, onRefresh, now }: AttentionViewProps): ReactNode {
-  const degradedSource = findDegradedSource(payload);
-  // "since HH:MM" is when this run first saw the degradation, so the instant is
-  // captured on the render that observes it and released when it clears.
-  const [degradedSince, setDegradedSince] = useState<number | null>(null);
-  if (degradedSource !== null && degradedSince === null) {
-    setDegradedSince(now());
-  }
-  if (degradedSource === null && degradedSince !== null) {
+  const degradation = findDegradation(payload);
+  const degradationKind: DegradationKind | null = degradation === null ? null : degradation.kind;
+  // "since HH:MM" is when this run first saw this degradation, so the instant is
+  // captured on the render that observes it, replaced when the kind changes, and
+  // released when it clears.
+  const [degradedSince, setDegradedSince] = useState<{ kind: DegradationKind; at: number } | null>(null);
+  if (degradationKind === null && degradedSince !== null) {
     setDegradedSince(null);
+  }
+  if (degradationKind !== null && (degradedSince === null || degradedSince.kind !== degradationKind)) {
+    setDegradedSince({ kind: degradationKind, at: now() });
   }
 
   const refreshButton = (
@@ -102,10 +146,14 @@ export function AttentionView({ payload, lastSuccessAt, failure, onRefresh, now 
 
   const cards = payload.cards;
   const total = cards.length;
-  const notice = degradedSource === null ? null : degradedLine(degradedSource, degradedSince ?? now());
-  // With no cards and a degraded source the count is not the truth, so the
-  // degraded line takes the header instead of claiming zero actions.
-  const degradedEmpty = total === 0 && notice !== null;
+  const sinceMs = degradedSince !== null && degradedSince.kind === degradationKind ? degradedSince.at : now();
+  const headline =
+    total === 0 && degradation !== null ? degradedHeadline(degradation, sinceMs) : countHeadline(total);
+  // The unreachable and auth_error headers already carry their whole notice.
+  const notice =
+    degradation !== null && (total > 0 || degradation.kind === "incomplete")
+      ? degradationNotice(degradation, sinceMs)
+      : null;
   const staleMarker =
     failure !== null && lastSuccessAt !== null
       ? `last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`
@@ -114,18 +162,18 @@ export function AttentionView({ payload, lastSuccessAt, failure, onRefresh, now 
   return (
     <main className="attention">
       <header className="attention__header">
-        <h1 className="attention__heading">
-          {degradedEmpty ? notice : `${total} actions need ${OPERATOR_NAME}`}
-        </h1>
+        <h1 className="attention__heading">{headline}</h1>
         {refreshButton}
       </header>
-      {notice !== null && !degradedEmpty ? <p className="attention__notice">{notice}</p> : null}
+      {notice === null ? null : <p className="attention__notice">{notice}</p>}
       {staleMarker === null ? null : <p className="attention__stale">{staleMarker}</p>}
-      {total === 0 && notice === null ? <p className="attention__empty">{EMPTY_STATE_LINE}</p> : null}
+      {total === 0 && degradation === null ? <p className="attention__empty">{EMPTY_STATE_LINE}</p> : null}
       {total === 0 ? null : (
         <ol className="attention__cards">
           {cards.map((card, index) => (
-            <li className="attention__card-item" key={card.id}>
+            // The record's logical key is repository plus id, so two
+            // repositories may carry the same id without colliding here.
+            <li className="attention__card-item" key={`${card.repository}#${card.id}`}>
               <AttentionCard card={card} position={index + 1} total={total} now={now} />
             </li>
           ))}

@@ -115,7 +115,9 @@ export function AttentionCard({ card, position, total, now }: AttentionCardProps
         <span className="attention-card__repository">{card.repository}</span>
         {card.same_pr ? <span className="attention-card__flag">same PR</span> : null}
         {card.verify_open_age ? (
-          <span className="attention-card__flag">{`verify: open ${card.open_days} days`}</span>
+          <span className="attention-card__flag">
+            {`verify: open ${card.open_days} ${card.open_days === 1 ? "day" : "days"}`}
+          </span>
         ) : null}
       </p>
       <dl className="attention-card__fields">

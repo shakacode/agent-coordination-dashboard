@@ -109,9 +109,10 @@ describe("useAttention", () => {
     Reflect.deleteProperty(document, "visibilityState");
   });
 
-  it("fetches once on mount and keeps the payload with the success instant", async () => {
+  it("fetches once on mount of a visible tab and keeps the payload with the success instant", async () => {
     const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
 
+    expect(document.visibilityState).toEqual("visible");
     const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
     await flush();
 
@@ -120,6 +121,33 @@ describe("useAttention", () => {
     expect(result.current.payload).toEqual(deskPayload);
     expect(result.current.lastSuccessAt).toEqual(FIXTURE_NOW_MS);
     expect(result.current.failure).toBeNull();
+  });
+
+  it("asks the backend for nothing while a tab that started hidden stays hidden", async () => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
+
+    const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
+    await flush();
+
+    expect(fetchAttentionMock).not.toHaveBeenCalled();
+    expect(result.current.payload).toBeNull();
+
+    clock += ATTENTION_POLL_INTERVAL_MS * 2;
+    await act(async () => {
+      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS * 2);
+    });
+    expect(fetchAttentionMock).not.toHaveBeenCalled();
+
+    // No last success means the payload is stale on arrival, so showing the tab
+    // is what issues the first request.
+    await act(async () => {
+      setVisibility("visible");
+    });
+
+    expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
+    expect(fetchAttentionMock).toHaveBeenCalledWith({ foreground: false });
+    expect(result.current.payload).toEqual(deskPayload);
   });
 
   it("polls again one interval later while the tab stays visible", async () => {

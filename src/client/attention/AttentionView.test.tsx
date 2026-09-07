@@ -18,6 +18,8 @@ import {
   crossHostRecord,
   degradedWithCardsPayload,
   deskPayload,
+  diagnosticsOnlyEmptyPayload,
+  diagnosticsOnlyPayload,
   emptyPayload,
   fullCard,
   fullRecord,
@@ -30,9 +32,16 @@ import {
   nonContiguousNumberPayload,
   openAgeCard,
   openAgeRecord,
+  partialSourceEmptyPayload,
+  partialSourcePayload,
   reducedCard,
   reducedRecord,
   samePrPayload,
+  sharedIdPayload,
+  singleOpenDayCard,
+  truncatedSourceEmptyPayload,
+  truncatedSourcePayload,
+  unreachableAndIncompletePayload,
   unreachablePayload
 } from "./fixtures";
 
@@ -145,6 +154,35 @@ describe("card contents", () => {
 
     expect(screen.getByText("verify: open 10 days")).toBeVisible();
     expect(screen.getByText("10 days old")).toBeVisible();
+  });
+
+  it("uses the singular header when exactly one action needs a decision", () => {
+    renderView(makeAttentionPayload([fullCard]));
+
+    expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+  });
+
+  it("uses the singular day in the open-age flag", () => {
+    renderView(makeAttentionPayload([singleOpenDayCard]));
+
+    expect(screen.getByText("verify: open 1 day")).toBeVisible();
+    expect(screen.getByText("1 day old")).toBeVisible();
+  });
+
+  it("keys cards by repository and id so two repositories may share an id", () => {
+    const [first, second] = sharedIdPayload.cards;
+    expect(first.id).toEqual(second.id);
+    expect(first.repository).not.toEqual(second.repository);
+
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      renderView(sharedIdPayload);
+
+      expect(screen.getAllByRole("article")).toHaveLength(2);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("does not show the open-age flag when the payload leaves it unset", () => {
@@ -279,6 +317,79 @@ describe("empty and degraded states", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("2 actions need Justin");
     expect(screen.getByText(`Backend unreachable since ${formatClockTime(FIXTURE_NOW_MS)}`)).toBeVisible();
     expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
+  it("warns that records may be missing when a source read only part of them", () => {
+    renderView(partialSourcePayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "2 actions need Justin" })).toBeVisible();
+    expect(
+      screen.getByText("Some records may be missing: 1 repositories reported incomplete reads and 0 diagnostics")
+    ).toBeVisible();
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
+  it("warns that records may be missing when a source truncated its read", () => {
+    renderView(truncatedSourcePayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+    expect(
+      screen.getByText("Some records may be missing: 1 repositories reported incomplete reads and 0 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("warns that records may be missing when only diagnostics report losses", () => {
+    renderView(diagnosticsOnlyPayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 1 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("never claims zero actions when a partial read produced no cards", () => {
+    renderView(partialSourceEmptyPayload);
+
+    expect(screen.queryByText("0 actions need Justin")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      `Attention data incomplete since ${formatClockTime(FIXTURE_NOW_MS)}`
+    );
+    expect(
+      screen.getByText("Some records may be missing: 1 repositories reported incomplete reads and 0 diagnostics")
+    ).toBeVisible();
+    expect(screen.queryByText(EMPTY_STATE_LINE)).toBeNull();
+  });
+
+  it("never claims zero actions when a truncated read produced no cards", () => {
+    renderView(truncatedSourceEmptyPayload);
+
+    expect(screen.queryByText("0 actions need Justin")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      `Attention data incomplete since ${formatClockTime(FIXTURE_NOW_MS)}`
+    );
+    expect(screen.queryByText(EMPTY_STATE_LINE)).toBeNull();
+  });
+
+  it("never claims zero actions when diagnostics alone report losses", () => {
+    renderView(diagnosticsOnlyEmptyPayload);
+
+    expect(screen.queryByText("0 actions need Justin")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      `Attention data incomplete since ${formatClockTime(FIXTURE_NOW_MS)}`
+    );
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 2 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("speaks for the unreachable source when incompleteness applies too", () => {
+    renderView(unreachableAndIncompletePayload);
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      `Backend unreachable since ${formatClockTime(FIXTURE_NOW_MS)}`
+    );
+    expect(screen.queryByText(/^Some records may be missing/)).toBeNull();
+    expect(screen.queryByText(/^Attention data incomplete/)).toBeNull();
   });
 
   it("marks the payload stale after a failed poll and keeps the last good cards", () => {
