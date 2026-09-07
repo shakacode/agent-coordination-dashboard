@@ -8,7 +8,7 @@ is absent means that capability is n/a in this repository.
 | Script | Purpose | This repo runs |
 | --- | --- | --- |
 | `setup` | Install dependencies | `npm ci` |
-| `validate` | Pre-push gate | `npm run typecheck` |
+| `validate` | Pre-push gate | `npm run typecheck`, then the attention contract test (skips without `agent-coord` and `ruby`) |
 | `test` | Run tests | `npm test` |
 | `lint` | Lint / format | n/a |
 | `build` | Build / type-check | `npm run build` |
