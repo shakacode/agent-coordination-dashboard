@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { API_FETCH_TIMEOUT_MS, apiStateListUrl, parseApiBaseUrl } from "./security/coordinationApiUrl";
 
 export type DoctorResource = "claims" | "heartbeats" | "batches" | "events";
 export type DoctorResourceMode = "fs" | "api";
@@ -32,8 +33,6 @@ export interface DoctorOptions {
 }
 
 const DOCTOR_RESOURCES: readonly DoctorResource[] = ["claims", "heartbeats", "batches", "events"];
-const API_FETCH_TIMEOUT_MS = 5000;
-const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
  * Report the configured backend without its secrets: credentials embedded in
@@ -51,23 +50,6 @@ function reportableApiUrl(apiUrl: string): string {
   } catch {
     return "UNKNOWN";
   }
-}
-
-function parseApiBaseUrl(apiUrl: string): URL {
-  const url = new URL(apiUrl);
-  if (!["http:", "https:"].includes(url.protocol) || !url.host) {
-    throw new Error("expected http(s) URL with host");
-  }
-  if (url.protocol === "http:" && !LOOPBACK_API_HOSTS.has(url.hostname)) {
-    throw new Error("HTTP coordination API URLs must use https unless they point at localhost");
-  }
-  return url;
-}
-
-function apiStateListUrl(baseUrl: URL, prefix: DoctorResource): URL {
-  const url = new URL(`${baseUrl.toString().replace(/\/+$/, "")}/v1/state`);
-  url.searchParams.set("prefix", prefix);
-  return url;
 }
 
 function resourceStatus(

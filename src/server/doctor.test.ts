@@ -224,7 +224,46 @@ describe("readDoctorReport", () => {
     expect(report.apiUrl).toBe("https://coord.example.test/path");
     expect(JSON.stringify(report)).not.toContain("URLSECRET");
     expect(JSON.stringify(report)).not.toContain("user");
-    expect(report.perResource.every((status) => status.status === "ok")).toBe(true);
+  });
+
+  it.each([
+    ["a query string", "https://coord.example.test/?tenant=a"],
+    ["a fragment", "https://coord.example.test/#tenant"]
+  ])("refuses a base URL carrying %s rather than misrouting the state request", async (_label, apiUrl) => {
+    let requests = 0;
+
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl,
+      token: "api-token",
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response("{}", { status: 200 });
+      }
+    });
+
+    expect(requests).toBe(0);
+    expect(report.perResource.every((status) => status.status === "unreachable")).toBe(true);
+  });
+
+  it.each([
+    ["a username and password", "https://user:pass@coord.example.test"],
+    ["a username alone", "https://user@coord.example.test"]
+  ])("refuses a base URL carrying %s rather than sending it beside the token", async (_label, apiUrl) => {
+    let requests = 0;
+
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl,
+      token: "api-token",
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response("{}", { status: 200 });
+      }
+    });
+
+    expect(requests).toBe(0);
+    expect(report.perResource.every((status) => status.status === "unreachable")).toBe(true);
   });
 
   it("reports an unparseable coordination API URL as UNKNOWN", async () => {
