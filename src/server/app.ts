@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { buildAttentionModel as buildAttentionModelImpl } from "./attention/buildAttentionModel";
 import { readAttentionRecords as readAttentionRecordsImpl } from "./attention/readAttentionRecords";
 import type { ServerConfig } from "./config";
-import { readDoctorReport } from "./doctor";
+import { readDoctorReport, type DoctorSettingsStatus } from "./doctor";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { isMachineLocalAddress, type MachineInterfaceMap } from "./security/machineLocal";
@@ -62,6 +62,51 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   let cachedAttention: { expiresAt: number; payload: AttentionPayload } | undefined;
   let attentionBuildInFlight: Promise<AttentionPayload> | undefined;
+  /**
+   * Bumped by every successful settings write. A build carries the generation
+   * it started in, so a payload read for a scope that has since been replaced
+   * is served to the requests already waiting on it but never cached.
+   */
+  let attentionScopeGeneration = 0;
+
+  /**
+   * Drop the payload built for the previous target repositories.
+   *
+   * Displayed records are scoped to the saved settings, so a removed or
+   * replaced repository must not keep appearing for up to a TTL — a remote
+   * viewer cannot force a refresh, and the foreground header is loopback-only.
+   */
+  function invalidateAttentionScope(): void {
+    cachedAttention = undefined;
+    attentionScopeGeneration += 1;
+  }
+
+  /**
+   * Resolve the attention scope `/api/doctor` reports, and say which settings
+   * state produced it.
+   *
+   * `readDashboardSettings` returns its fallback only when the file does not
+   * exist and rejects every other failure, and a settings file that parses
+   * always names at least one target, so an empty result means "no settings
+   * file yet". That is the one state in which the configured `TARGET_REPOS`
+   * may stand in. A file that exists but cannot be read is not a first run:
+   * substituting the configured targets would hide the failure and report
+   * repositories the operator never saved, so the scope is unreadable and
+   * nothing is probed.
+   */
+  async function resolveDoctorSettingsScope(): Promise<{
+    settings: DoctorSettingsStatus;
+    targetRepos: readonly string[];
+  }> {
+    try {
+      const saved = await readDashboardSettings(persistedSettingsPath, { targetRepos: [] });
+      return saved.targetRepos.length > 0
+        ? { settings: "saved", targetRepos: saved.targetRepos }
+        : { settings: "first_run_default", targetRepos: config.targetRepos };
+    } catch {
+      return { settings: "unreadable", targetRepos: [] };
+    }
+  }
 
   /**
    * One attention read and one model build.
@@ -92,9 +137,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
    */
   function startAttentionBuild(): Promise<AttentionPayload> {
     const expiresAt = now().getTime() + attentionTtlMs;
+    const generation = attentionScopeGeneration;
     const build = buildAttentionPayload()
       .then((payload) => {
-        cachedAttention = { expiresAt, payload };
+        // A settings write landed while this build was reading, so the payload
+        // describes a scope that is no longer saved: the requests waiting on
+        // the build still get it, but it never becomes the cached answer.
+        if (generation === attentionScopeGeneration) {
+          cachedAttention = { expiresAt, payload };
+        }
         return payload;
       })
       .finally(() => {
@@ -136,17 +187,17 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
     // An operator reaches this endpoint precisely when the configuration is
     // broken, so a corrupt or unreadable settings.json must not replace the
-    // report with an error: the attention scope falls back to the configured
-    // targets, exactly as a first run with no settings file does.
-    const targetRepos = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos })
-      .then((settings) => settings.targetRepos)
-      .catch(() => config.targetRepos);
+    // report with an error. The report says which settings state produced the
+    // scope instead, and reports no scope at all when the saved settings
+    // cannot be read.
+    const scope = await resolveDoctorSettingsScope();
     res.json(await readDoctorReport({
       stateRoot: config.stateRoot,
       apiUrl: config.coordApiUrl,
       token: config.coordApiToken,
       tokenEnvVar: config.coordApiTokenEnvVar,
-      targetRepos
+      targetRepos: scope.targetRepos,
+      settings: scope.settings
     }));
   });
 
@@ -194,7 +245,12 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return;
     }
 
-    res.json(await writeDashboardSettings(persistedSettingsPath, { targetRepos }));
+    const saved = await writeDashboardSettings(persistedSettingsPath, { targetRepos });
+    // Only a write that actually landed changes the scope; a rejected
+    // authorization or an invalid body returns above and leaves the cache
+    // alone.
+    invalidateAttentionScope();
+    res.json(saved);
   });
 
   if (options.serveFrontend !== false) {

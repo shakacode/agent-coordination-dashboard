@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { readAttentionRecords as readAttentionRecordsImpl } from "./attention/readAttentionRecords";
+import { ATTENTION_WORKSPACE, readAttentionRecords as readAttentionRecordsImpl } from "./attention/readAttentionRecords";
 import { API_FETCH_TIMEOUT_MS, apiStateListUrl, parseApiBaseUrl } from "./security/coordinationApiUrl";
 
 export type DoctorResource = "claims" | "heartbeats" | "batches" | "events";
@@ -28,6 +28,18 @@ export interface DoctorAttentionRepositoryStatus {
 }
 
 /**
+ * Which settings state produced the reported attention scope.
+ *
+ * `first_run_default` is the only state in which the configured `TARGET_REPOS`
+ * stand in for saved settings (AGENTS.md: they are a first-run fallback for
+ * when settings have never been saved). `unreadable` means a settings file
+ * exists but could not be read, so no repository is in scope and none is
+ * probed: naming the configured repositories there would hide the
+ * configuration failure and report repositories the operator never saved.
+ */
+export type DoctorSettingsStatus = "saved" | "first_run_default" | "unreadable";
+
+/**
  * Where `/api/attention` reads from, and whether each configured repository
  * answers.
  *
@@ -38,6 +50,8 @@ export interface DoctorAttentionRepositoryStatus {
 export interface DoctorAttentionScope {
   mode: DoctorResourceMode;
   workspace: string;
+  /** Where the repositories below came from, including "nowhere readable". */
+  settings: DoctorSettingsStatus;
   repositories: DoctorAttentionRepositoryStatus[];
 }
 
@@ -60,6 +74,12 @@ export interface DoctorOptions {
    * than an error.
    */
   targetRepos?: readonly string[];
+  /**
+   * How the caller resolved {@link DoctorOptions.targetRepos}. Defaults to
+   * `saved`, the state a caller that hands over a scope is in; `unreadable`
+   * reports an empty scope and reads nothing.
+   */
+  settings?: DoctorSettingsStatus;
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
   /** Injectable for tests; defaults to the current time. */
@@ -173,6 +193,16 @@ async function probeApiResource(
  * arrives as an `unreachable` or `auth_error` status like any other.
  */
 async function readAttentionScope(options: DoctorOptions): Promise<DoctorAttentionScope> {
+  const settings = options.settings || "saved";
+  if (settings === "unreadable") {
+    // No repository is in scope, so nothing is probed: the report states that
+    // the saved scope could not be read instead of substituting a scope the
+    // operator never saved. The same rule the reader and `config.ts` use
+    // decides the mode, which is configuration rather than a read.
+    const mode: DoctorResourceMode = (options.apiUrl || "").trim() === "" ? "fs" : "api";
+    return { mode, workspace: ATTENTION_WORKSPACE, settings, repositories: [] };
+  }
+
   const read = await (options.readAttentionRecords || readAttentionRecordsImpl)({
     stateRoot: options.stateRoot,
     coordApiUrl: options.apiUrl,
@@ -186,6 +216,7 @@ async function readAttentionScope(options: DoctorOptions): Promise<DoctorAttenti
   return {
     mode: read.mode,
     workspace: read.workspace,
+    settings,
     repositories: read.repositories.map((repository) => ({
       repository: repository.repository,
       status: repository.sourceStatus.status,

@@ -211,6 +211,9 @@ describe("dashboard app", () => {
       attention: {
         mode: "fs",
         workspace: ATTENTION_WORKSPACE,
+        // No settings file exists yet, so the configured targets stand in and
+        // the report says so.
+        settings: "first_run_default",
         repositories: [
           {
             // The scope comes from the saved settings, which fall back to the
@@ -243,11 +246,35 @@ describe("dashboard app", () => {
     expect(text).not.toContain("Could not read dashboard settings");
     expect(text).not.toContain("src/server/settings.ts");
     expect(text).not.toContain("<!DOCTYPE html>");
-    // The attention scope falls back to the configured targets.
-    expect(body.attention).toMatchObject({
+    // The configured targets are a first-run fallback only. A settings file
+    // that exists but cannot be read is not a first run, so the scope is
+    // reported as unreadable rather than silently replaced by repositories the
+    // operator never saved.
+    expect(body.attention).toEqual({
       mode: "fs",
-      repositories: [expect.objectContaining({ repository: "shakacode/react_on_rails", status: "empty" })]
+      workspace: ATTENTION_WORKSPACE,
+      settings: "unreadable",
+      repositories: []
     });
+    expect(JSON.stringify(body)).not.toContain("shakacode/react_on_rails");
+  });
+
+  it("scopes the reported attention read to the saved settings", async () => {
+    const stateRoot = await coordinationRoot("coord-doctor-saved-settings-");
+    await writeFile(join(stateRoot, "settings.json"), JSON.stringify({ targetRepos: ["repo-a/app"] }), "utf8");
+    const baseUrl = await listen(stateRoot);
+
+    const body = (await (await fetch(`${baseUrl}/api/doctor`)).json()) as Record<string, unknown>;
+
+    // Saved settings win over the configured targets, and the report says the
+    // scope came from them.
+    expect(body.attention).toEqual({
+      mode: "fs",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "saved",
+      repositories: [{ repository: "repo-a/app", status: "empty", checkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), partial: false }]
+    });
+    expect(JSON.stringify(body)).not.toContain("shakacode/react_on_rails");
   });
 
   it("rejects coordination diagnostics requested from a non-loopback client", async () => {
@@ -514,6 +541,108 @@ describe("GET /api/attention", () => {
     // A remote viewer still reads the payload; it just cannot force a rebuild.
     expect(second.status).toBe(200);
     await expect(second.json()).resolves.toEqual(firstBody);
+    expect(reader.calls).toHaveLength(1);
+  });
+
+  it("rebuilds against the new scope after a settings write, inside the TTL", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-settings-write-");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    await fetch(`${baseUrl}/api/attention`);
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.status).toBe(200);
+
+    // The clock never moves, so the entry is still inside its TTL: the write is
+    // the only thing that can have dropped it. A remote viewer cannot force a
+    // refresh, so a stale scope would keep serving records from a repository
+    // that is no longer saved.
+    await fetch(`${baseUrl}/api/attention`);
+
+    expect(reader.calls).toHaveLength(2);
+    expect(reader.calls[0].targetRepos).toEqual([attentionRepository]);
+    expect(reader.calls[1].targetRepos).toEqual(["repo-a/app"]);
+  });
+
+  it("does not cache a payload whose scope a settings write replaced mid-build", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-write-in-flight-");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reads: ReadAttentionRecordsOptions[] = [];
+    const read = async (options: ReadAttentionRecordsOptions): Promise<AttentionReadResult> => {
+      reads.push(options);
+      if (reads.length === 1) {
+        await gate;
+      }
+      return attentionRead();
+    };
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: read,
+      now: () => NOW
+    });
+
+    const pending = fetch(`${baseUrl}/api/attention`);
+    while (reads.length < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.status).toBe(200);
+    release();
+
+    // The request that was already waiting still gets the build it joined; what
+    // must not happen is that build becoming the cached answer for the new
+    // scope.
+    expect((await pending).status).toBe(200);
+    await fetch(`${baseUrl}/api/attention`);
+
+    expect(reads).toHaveLength(2);
+    expect(reads[1].targetRepos).toEqual(["repo-a/app"]);
+  });
+
+  it("answers 500 without detail when the saved settings cannot be read, and recovers once they are repaired", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-corrupt-settings-");
+    const settingsFile = join(stateRoot, "settings.json");
+    await writeFile(settingsFile, "{ this is not json", "utf8");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    const failure = await fetch(`${baseUrl}/api/attention`);
+    const failureText = await failure.text();
+
+    // Falling back to the configured targets here would serve cards for
+    // repositories the operator never saved, so the route reports the failure
+    // and reads nothing.
+    expect(failure.status).toBe(500);
+    expect(JSON.parse(failureText)).toEqual({ error: "Attention payload could not be built." });
+    expect(failureText).not.toContain(settingsFile);
+    expect(failureText).not.toContain("Could not read dashboard settings");
+    expect(failureText).not.toContain("src/server/settings.ts");
+    expect(failureText).not.toContain("<!DOCTYPE html>");
+    expect(failureText).not.toContain(attentionRepository);
+    expect(reader.calls).toHaveLength(0);
+
+    await writeFile(settingsFile, JSON.stringify({ targetRepos: [attentionRepository] }), "utf8");
+    const repaired = await fetch(`${baseUrl}/api/attention`);
+
+    // The failure poisoned nothing: the next request builds normally.
+    expect(repaired.status).toBe(200);
+    expect((await attentionPayloadOf(repaired)).cards).toHaveLength(1);
     expect(reader.calls).toHaveLength(1);
   });
 
