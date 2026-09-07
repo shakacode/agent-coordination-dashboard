@@ -75,7 +75,8 @@ export const ATTENTION_READ_OUTCOME_KINDS = [
   "oversize",
   "schema_invalid",
   "repository_mismatch",
-  "workspace_mismatch"
+  "workspace_mismatch",
+  "id_mismatch"
 ] as const;
 
 export type AttentionReadOutcomeKind = (typeof ATTENTION_READ_OUTCOME_KINDS)[number];
@@ -114,9 +115,9 @@ export interface AttentionReadDiagnostic {
  * - `seen`: every entry in the listing, candidate or not, whether or not the
  *   budget reached it.
  * - `read`: entries whose bytes were read, so exactly the entries that produced
- *   `ok`, `invalid_json`, `schema_invalid`, `repository_mismatch`, or
- *   `workspace_mismatch`. A zero-byte candidate is read (and reported as
- *   `invalid_json`), not skipped.
+ *   `ok`, `invalid_json`, `schema_invalid`, `repository_mismatch`,
+ *   `workspace_mismatch`, or `id_mismatch`. A zero-byte candidate is read (and
+ *   reported as `invalid_json`), not skipped.
  * - `skipped`: everything else — names that are not
  *   {@link ATTENTION_RECORD_FILE_SUFFIX} candidates, non-regular entries,
  *   oversize files, files that vanished or could not be read, and candidates
@@ -152,7 +153,7 @@ export interface AttentionRepositoryRead {
   /** `attention/<workspace>/<owner>/<name>`. */
   prefix: string;
   sourceStatus: AttentionReadSourceStatus;
-  /** Schema-valid records naming this repository and workspace. Both statuses; see below. */
+  /** Schema-valid records at their own storage key in this repository and workspace. */
   records: AttentionRecord[];
   diagnostics: AttentionReadDiagnostic[];
   /** True when the read budget stopped before the whole listing was examined. */
@@ -271,7 +272,8 @@ function emptyOutcomes(): Record<AttentionReadOutcomeKind, number> {
     oversize: 0,
     schema_invalid: 0,
     repository_mismatch: 0,
-    workspace_mismatch: 0
+    workspace_mismatch: 0,
+    id_mismatch: 0
   };
 }
 
@@ -338,6 +340,15 @@ function sameRepository(left: unknown, right: string): boolean {
  * other sidecar fail here, and a bare `.json` is a name the storage key cannot
  * produce.
  */
+/**
+ * The one location a record may occupy:
+ * `attention/<workspace>/<owner>/<name>/<id>.json`. Filesystem paths are built
+ * from the same prefix, so this is the whole rule in both modes.
+ */
+function storageKey(prefix: string, id: string): string {
+  return `${prefix}/${id}${ATTENTION_RECORD_FILE_SUFFIX}`;
+}
+
 function isCandidateName(name: string): boolean {
   return name.length > ATTENTION_RECORD_FILE_SUFFIX.length && name.endsWith(ATTENTION_RECORD_FILE_SUFFIX);
 }
@@ -407,6 +418,16 @@ function ingest(read: RepositoryRead, path: string, value: unknown): void {
     // not case-folded like GitHub owner and repository names, and the claimed
     // one is withheld from the reason for the reason given above.
     outcome(read, "workspace_mismatch", path, `Record does not name workspace ${ATTENTION_WORKSPACE}.`);
+    return;
+  }
+  if (path !== storageKey(read.prefix, record.id)) {
+    // The last axis of the storage key. The record's own id has to be the one
+    // its location spells, so a stale copy left beside the record it was taken
+    // from, or any other in-prefix entry, cannot surface as a duplicate or
+    // under someone else's id. In filesystem mode this is exactly "the file is
+    // named `<id>.json`"; in API mode it is the listing path. The reason names
+    // the path, never the claimed id, as above.
+    outcome(read, "id_mismatch", path, `Record id does not match its storage key ${path}.`);
     return;
   }
   outcome(read, "ok", path, "");

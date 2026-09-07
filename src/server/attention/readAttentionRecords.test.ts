@@ -38,12 +38,26 @@ const OPEN_RECORD_JSON = readFileSync(join(FIXTURES_DIR, "valid", "attention-ope
 const RESOLVED_RECORD_JSON = readFileSync(join(FIXTURES_DIR, "valid", "attention-resolved.json"), "utf8");
 /** Fails the schema on the `timestamp` pattern and names {@link REPOSITORY}. */
 const SCHEMA_INVALID_JSON = readFileSync(join(FIXTURES_DIR, "invalid", "attention-leap-second.json"), "utf8");
+const BASE_OPEN_RECORD = JSON.parse(OPEN_RECORD_JSON) as Record<string, unknown>;
+const BASE_RESOLVED_RECORD = JSON.parse(RESOLVED_RECORD_JSON) as Record<string, unknown>;
+
+/**
+ * The vendored fixture rewritten for one id.
+ *
+ * Every seeded record lives at its own storage key, `<id>.json`, exactly as the
+ * agent-coord CLI writes it, so a test that means to exercise some other rule
+ * cannot trip the id check by accident.
+ */
+function recordFor(id: string, overrides: Record<string, unknown> = {}): string {
+  return `${JSON.stringify({ ...BASE_OPEN_RECORD, id, ...overrides }, null, 2)}\n`;
+}
+
+function resolvedRecordFor(id: string): string {
+  return `${JSON.stringify({ ...BASE_RESOLVED_RECORD, id }, null, 2)}\n`;
+}
+
 /** Schema-valid and for the right repository, but written for another workspace. */
-const OTHER_WORKSPACE_RECORD_JSON = `${JSON.stringify(
-  { ...(JSON.parse(OPEN_RECORD_JSON) as Record<string, unknown>), workspace: "staging" },
-  null,
-  2
-)}\n`;
+const OTHER_WORKSPACE_RECORD_JSON = recordFor("other-workspace", { workspace: "staging" });
 
 const roots: string[] = [];
 
@@ -80,8 +94,8 @@ function seam(overrides: Partial<AttentionFileSystem>): AttentionFileSystem {
  * A schema-valid record padded to an exact byte length with an unknown optional
  * top-level field, which the vendored schema admits.
  */
-function paddedRecord(bytes: number): string {
-  const record = { ...(JSON.parse(OPEN_RECORD_JSON) as Record<string, unknown>), padding: "" };
+function paddedRecord(id: string, bytes: number): string {
+  const record = { ...BASE_OPEN_RECORD, id, padding: "" };
   const overhead = Buffer.byteLength(JSON.stringify(record), "utf8");
   const text = JSON.stringify({ ...record, padding: "p".repeat(bytes - overhead) });
   if (Buffer.byteLength(text, "utf8") !== bytes) {
@@ -196,13 +210,14 @@ describe("readAttentionRecords module boundary", () => {
       "oversize",
       "schema_invalid",
       "repository_mismatch",
-      "workspace_mismatch"
+      "workspace_mismatch",
+      "id_mismatch"
     ]);
   });
 
   it("applies the default limits when no budget is injected", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "open.json": recordFor("open") });
     const sizes: number[] = [];
     const entryCounts: number[] = [];
 
@@ -237,8 +252,8 @@ describe("readAttentionRecords filesystem mode", () => {
   it("returns schema-valid records with an ok status and no diagnostics", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "open.json": OPEN_RECORD_JSON,
-      "resolved.json": RESOLVED_RECORD_JSON
+      "open.json": recordFor("open"),
+      "resolved.json": resolvedRecordFor("resolved")
     });
 
     const result = await readAttentionRecords(fsOptions({ stateRoot: root }));
@@ -264,7 +279,8 @@ describe("readAttentionRecords filesystem mode", () => {
         oversize: 0,
         schema_invalid: 0,
         repository_mismatch: 0,
-        workspace_mismatch: 0
+        workspace_mismatch: 0,
+        id_mismatch: 0
       }
     });
     // The `status=open` filter is not applied here; both statuses come back.
@@ -275,7 +291,7 @@ describe("readAttentionRecords filesystem mode", () => {
   it("reads only .json candidates and skips other names silently", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "open.json": OPEN_RECORD_JSON,
+      "open.json": recordFor("open"),
       "record-without-extension": OPEN_RECORD_JSON,
       "notes.json.bak": OPEN_RECORD_JSON,
       ".json": OPEN_RECORD_JSON
@@ -296,7 +312,7 @@ describe("readAttentionRecords filesystem mode", () => {
     // `LocalStore#with_file_lock` creates this zero-byte sidecar (mode 0600)
     // beside every record and never removes it.
     await seedRepository(root, REPOSITORY, {
-      "record-1.json": OPEN_RECORD_JSON,
+      "record-1.json": recordFor("record-1"),
       "record-1.json.lock": ""
     });
 
@@ -331,7 +347,7 @@ describe("readAttentionRecords filesystem mode", () => {
   it("never reads a non-candidate even when reading it would fail", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "record-1.json": OPEN_RECORD_JSON,
+      "record-1.json": recordFor("record-1"),
       "record-1.json.lock": ""
     });
 
@@ -359,7 +375,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("reports a zero-byte candidate as invalid_json naming the empty file", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "empty.json": "", "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "empty.json": "", "open.json": recordFor("open") });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
 
@@ -385,7 +401,7 @@ describe("readAttentionRecords filesystem mode", () => {
     const root = await stateRoot();
     const files: Record<string, string> = {};
     for (const index of [1, 2, 3, 4]) {
-      files[`record-${index}.json`] = OPEN_RECORD_JSON;
+      files[`record-${index}.json`] = recordFor(`record-${index}`);
       files[`record-${index}.json.lock`] = "";
     }
     await seedRepository(root, REPOSITORY, files);
@@ -414,7 +430,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("reports an empty source for a missing repository directory under an existing root", async () => {
     const root = await stateRoot();
-    await seedRepository(root, OTHER_REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, OTHER_REPOSITORY, { "open.json": recordFor("open") });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
 
@@ -435,7 +451,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("reports an unreachable source with the error code when the root exists but cannot be read", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "open.json": recordFor("open") });
 
     const repository = only(
       await readAttentionRecords(
@@ -462,7 +478,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("keeps a non-ENOENT listing failure out of the empty status for every error code", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "open.json": recordFor("open") });
 
     for (const code of ["EPERM", "ENOTDIR", "EIO"]) {
       const repository = only(
@@ -483,7 +499,7 @@ describe("readAttentionRecords filesystem mode", () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
       "broken.json": "{ not json",
-      "open.json": OPEN_RECORD_JSON
+      "open.json": recordFor("open")
     });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
@@ -541,7 +557,7 @@ describe("readAttentionRecords filesystem mode", () => {
     const root = await stateRoot();
     // A valid record for `shakacode/agent-coordination` filed under a different
     // repository's directory (PR #143 Codex P1).
-    await seedRepository(root, MISMATCH_REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, MISMATCH_REPOSITORY, { "open.json": recordFor("open") });
 
     const repository = only(
       await readAttentionRecords(fsOptions({ stateRoot: root, targetRepos: [MISMATCH_REPOSITORY] }))
@@ -566,7 +582,7 @@ describe("readAttentionRecords filesystem mode", () => {
   it("accepts a record whose repository differs only by ASCII case", async () => {
     const root = await stateRoot();
     const mixedCase = "ShakaCode/Agent-Coordination";
-    await seedRepository(root, mixedCase, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, mixedCase, { "open.json": recordFor("open") });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root, targetRepos: [mixedCase] })));
 
@@ -574,11 +590,41 @@ describe("readAttentionRecords filesystem mode", () => {
     expect(repository.counts.outcomes.repository_mismatch).toBe(0);
   });
 
+  it("rejects a record whose file name is not its id as id_mismatch", async () => {
+    const root = await stateRoot();
+    // A stale copy of a record left beside the one it was taken from: schema
+    // valid, right repository, right workspace, wrong storage key.
+    await seedRepository(root, REPOSITORY, {
+      "stale-copy.json": recordFor("record-1"),
+      "record-1.json": recordFor("record-1")
+    });
+
+    const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
+
+    // The record surfaces once, from its own storage key, never as a duplicate.
+    expect(repository.records).toHaveLength(1);
+    expect(repository.records[0].id).toBe("record-1");
+    expect(repository.counts).toMatchObject({ seen: 2, read: 2, skipped: 0 });
+    expect(repository.counts.outcomes.id_mismatch).toBe(1);
+    expect(repository.diagnostics).toEqual([
+      {
+        repository: REPOSITORY,
+        workspace: ATTENTION_WORKSPACE,
+        mode: "fs",
+        kind: "id_mismatch",
+        path: `${PREFIX}/stale-copy.json`,
+        reason: `Record id does not match its storage key ${PREFIX}/stale-copy.json.`
+      }
+    ]);
+    // The claimed id is withheld exactly as a claimed repository or workspace is.
+    expect(repository.diagnostics[0].reason).not.toContain("record-1");
+  });
+
   it("rejects a record that names another workspace as workspace_mismatch", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
       "other-workspace.json": OTHER_WORKSPACE_RECORD_JSON,
-      "open.json": OPEN_RECORD_JSON
+      "open.json": recordFor("open")
     });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
@@ -604,14 +650,15 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("skips a file one byte over the size limit before parsing it", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "big.json": OPEN_RECORD_JSON });
+    const record = recordFor("big");
+    await seedRepository(root, REPOSITORY, { "big.json": record });
     const reads: string[] = [];
 
     const repository = only(
       await readAttentionRecords(
         fsOptions({
           stateRoot: root,
-          maxFileBytes: Buffer.byteLength(OPEN_RECORD_JSON, "utf8") - 1,
+          maxFileBytes: Buffer.byteLength(record, "utf8") - 1,
           fileSystem: seam({
             readBounded: (path, maxBytes) => {
               reads.push(path);
@@ -634,11 +681,12 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("reads a file whose size is exactly the limit", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "exact.json": OPEN_RECORD_JSON });
+    const record = recordFor("exact");
+    await seedRepository(root, REPOSITORY, { "exact.json": record });
 
     const repository = only(
       await readAttentionRecords(
-        fsOptions({ stateRoot: root, maxFileBytes: Buffer.byteLength(OPEN_RECORD_JSON, "utf8") })
+        fsOptions({ stateRoot: root, maxFileBytes: Buffer.byteLength(record, "utf8") })
       )
     );
 
@@ -649,8 +697,8 @@ describe("readAttentionRecords filesystem mode", () => {
   it("reads a candidate of exactly the default limit and rejects one byte more", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "exact.json": paddedRecord(ATTENTION_RECORD_MAX_BYTES),
-      "over.json": paddedRecord(ATTENTION_RECORD_MAX_BYTES + 1)
+      "exact.json": paddedRecord("exact", ATTENTION_RECORD_MAX_BYTES),
+      "over.json": paddedRecord("over", ATTENTION_RECORD_MAX_BYTES + 1)
     });
 
     // The real limit and the real bounded read: 262,144 bytes is exactly four
@@ -666,8 +714,9 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("reports a candidate that grows past the limit between stat and read as oversize", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "grows.json": OPEN_RECORD_JSON });
-    const maxFileBytes = Buffer.byteLength(OPEN_RECORD_JSON, "utf8");
+    const record = recordFor("grows");
+    await seedRepository(root, REPOSITORY, { "grows.json": record });
+    const maxFileBytes = Buffer.byteLength(record, "utf8");
 
     const repository = only(
       await readAttentionRecords(
@@ -699,8 +748,8 @@ describe("readAttentionRecords filesystem mode", () => {
   it("counts a file that vanishes between the listing and the read without reporting it", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "gone.json": OPEN_RECORD_JSON,
-      "open.json": OPEN_RECORD_JSON
+      "gone.json": recordFor("gone"),
+      "open.json": recordFor("open")
     });
 
     const repository = only(
@@ -727,7 +776,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("counts a file that vanishes before its stat without reporting it", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "gone.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "gone.json": recordFor("gone") });
 
     const repository = only(
       await readAttentionRecords(
@@ -744,7 +793,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("reports an unreadable file as a diagnostic", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "denied.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "denied.json": recordFor("denied") });
 
     const repository = only(
       await readAttentionRecords(
@@ -771,7 +820,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("skips non-regular entries without following them and without recursing", async () => {
     const root = await stateRoot();
-    const directory = await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    const directory = await seedRepository(root, REPOSITORY, { "open.json": recordFor("open") });
     // A candidate name that is a directory: the name rule admits it, so only
     // the `isFile` check can keep the walk from descending into it.
     await mkdir(join(directory, "nested.json"), { recursive: true });
@@ -787,9 +836,9 @@ describe("readAttentionRecords filesystem mode", () => {
   it("stops at the entry budget and reports partial with counts", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "a.json": OPEN_RECORD_JSON,
-      "b.json": OPEN_RECORD_JSON,
-      "c.json": OPEN_RECORD_JSON
+      "a.json": recordFor("a"),
+      "b.json": recordFor("b"),
+      "c.json": recordFor("c")
     });
 
     const repository = only(
@@ -805,9 +854,9 @@ describe("readAttentionRecords filesystem mode", () => {
   it("stops at the time budget and reports partial without waiting", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
-      "a.json": OPEN_RECORD_JSON,
-      "b.json": OPEN_RECORD_JSON,
-      "c.json": OPEN_RECORD_JSON
+      "a.json": recordFor("a"),
+      "b.json": recordFor("b"),
+      "c.json": recordFor("c")
     });
 
     const repository = only(
@@ -829,7 +878,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("is not partial when the listing ends exactly at the entry budget", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "a.json": OPEN_RECORD_JSON, "b.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "a.json": recordFor("a"), "b.json": recordFor("b") });
 
     const repository = only(
       await readAttentionRecords(fsOptions({ stateRoot: root, maxEntriesPerRepository: 2 }))
@@ -841,7 +890,7 @@ describe("readAttentionRecords filesystem mode", () => {
 
   it("keeps each repository's status, counts, and diagnostics independent", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "open.json": recordFor("open") });
 
     const result = await readAttentionRecords(
       fsOptions({
@@ -890,7 +939,7 @@ describe("readAttentionRecords API mode", () => {
     const fetchImpl = (async (input: string | URL | Request) => {
       const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       requested.push(new URL(href).searchParams.get("prefix") ?? "");
-      return new Response(JSON.stringify({ entries: [entryFor("open.json", OPEN_RECORD_JSON)] }), {
+      return new Response(JSON.stringify({ entries: [entryFor("open.json", recordFor("open"))] }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
@@ -1032,6 +1081,39 @@ describe("readAttentionRecords API mode", () => {
     expect(diagnostic.reason).toContain("does not match the attention record schema");
   });
 
+  it("rejects a listing entry whose path is not the record's storage key as id_mismatch", async () => {
+    const repository = only(
+      await readAttentionRecords(
+        apiOptions({
+          fetchImpl: apiFetch({
+            [PREFIX]: listing([
+              // In prefix, so the client hands it over, but not at the storage
+              // key the record's own id spells.
+              entryFor("stale-copy.json", recordFor("record-1")),
+              entryFor("record-1.json", recordFor("record-1"))
+            ])
+          })
+        })
+      )
+    );
+
+    expect(repository.records).toHaveLength(1);
+    expect(repository.records[0].id).toBe("record-1");
+    expect(repository.counts).toMatchObject({ seen: 2, read: 2, skipped: 0 });
+    expect(repository.counts.outcomes.id_mismatch).toBe(1);
+    expect(repository.diagnostics).toEqual([
+      {
+        repository: REPOSITORY,
+        workspace: ATTENTION_WORKSPACE,
+        mode: "api",
+        kind: "id_mismatch",
+        path: `${PREFIX}/stale-copy.json`,
+        reason: `Record id does not match its storage key ${PREFIX}/stale-copy.json.`
+      }
+    ]);
+    expect(repository.diagnostics[0].reason).not.toContain("record-1");
+  });
+
   it("rejects a listing entry that names another workspace as workspace_mismatch", async () => {
     const repository = only(
       await readAttentionRecords(
@@ -1039,7 +1121,7 @@ describe("readAttentionRecords API mode", () => {
           fetchImpl: apiFetch({
             [PREFIX]: listing([
               entryFor("other-workspace.json", OTHER_WORKSPACE_RECORD_JSON),
-              entryFor("open.json", OPEN_RECORD_JSON)
+              entryFor("open.json", recordFor("open"))
             ])
           })
         })
@@ -1065,7 +1147,7 @@ describe("readAttentionRecords API mode", () => {
   it("rejects a listing entry that names another repository as repository_mismatch", async () => {
     const mismatched = {
       path: `${MISMATCH_PREFIX}/open.json`,
-      data: JSON.parse(OPEN_RECORD_JSON) as unknown
+      data: JSON.parse(recordFor("open")) as unknown
     };
 
     const repository = only(
@@ -1101,8 +1183,8 @@ describe("readAttentionRecords API mode", () => {
             [PREFIX]: {
               body: {
                 entries: [
-                  entryFor("open.json", OPEN_RECORD_JSON),
-                  { path: `${OTHER_PREFIX}/open.json`, data: JSON.parse(OPEN_RECORD_JSON) as unknown }
+                  entryFor("open.json", recordFor("open")),
+                  { path: `${OTHER_PREFIX}/open.json`, data: JSON.parse(recordFor("open")) as unknown }
                 ]
               }
             }
@@ -1125,9 +1207,9 @@ describe("readAttentionRecords API mode", () => {
           maxEntriesPerRepository: 1,
           fetchImpl: apiFetch({
             [PREFIX]: listing([
-              entryFor("a.json", OPEN_RECORD_JSON),
-              entryFor("b.json", OPEN_RECORD_JSON),
-              entryFor("c.json", OPEN_RECORD_JSON)
+              entryFor("a.json", recordFor("a")),
+              entryFor("b.json", recordFor("b")),
+              entryFor("c.json", recordFor("c"))
             ])
           })
         })
@@ -1147,9 +1229,9 @@ describe("readAttentionRecords API mode", () => {
           monotonicNow: fakeClock([0, 10, 500]),
           fetchImpl: apiFetch({
             [PREFIX]: listing([
-              entryFor("a.json", OPEN_RECORD_JSON),
-              entryFor("b.json", OPEN_RECORD_JSON),
-              entryFor("c.json", OPEN_RECORD_JSON)
+              entryFor("a.json", recordFor("a")),
+              entryFor("b.json", recordFor("b")),
+              entryFor("c.json", recordFor("c"))
             ])
           })
         })
@@ -1180,7 +1262,7 @@ describe("readAttentionRecords API mode", () => {
       apiOptions({
         targetRepos: [REPOSITORY, OTHER_REPOSITORY],
         fetchImpl: apiFetch({
-          [PREFIX]: listing([entryFor("open.json", OPEN_RECORD_JSON)]),
+          [PREFIX]: listing([entryFor("open.json", recordFor("open"))]),
           [OTHER_PREFIX]: { status: 500, body: { error: "boom" } }
         })
       })
@@ -1194,7 +1276,7 @@ describe("readAttentionRecords API mode", () => {
 
   it("selects API mode from a configured URL and filesystem mode without one", async () => {
     const root = await stateRoot();
-    await seedRepository(root, REPOSITORY, { "open.json": OPEN_RECORD_JSON });
+    await seedRepository(root, REPOSITORY, { "open.json": recordFor("open") });
 
     const withoutUrl = await readAttentionRecords(fsOptions({ stateRoot: root, coordApiUrl: "   " }));
     const withUrl = await readAttentionRecords(
