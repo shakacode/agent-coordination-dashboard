@@ -70,14 +70,25 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   let attentionScopeGeneration = 0;
 
   /**
-   * Drop the payload built for the previous target repositories.
+   * Drop everything built for the previous target repositories.
    *
    * Displayed records are scoped to the saved settings, so a removed or
    * replaced repository must not keep appearing for up to a TTL — a remote
    * viewer cannot force a refresh, and the foreground header is loopback-only.
+   *
+   * The running build, if there is one, is reading the scope that was just
+   * replaced, so it is orphaned rather than left joinable: a request that
+   * arrives after the write starts its own build instead of being handed
+   * records from a repository that is no longer saved. The orphan still
+   * answers whoever was already waiting on it — cancelling a read in progress
+   * is the only way to avoid that — but it caches nothing, because
+   * `startAttentionBuild` compares the generation it captured, and its
+   * `finally` compares promise identity, so it cannot clear the newer build's
+   * entry either.
    */
   function invalidateAttentionScope(): void {
     cachedAttention = undefined;
+    attentionBuildInFlight = undefined;
     attentionScopeGeneration += 1;
   }
 

@@ -612,6 +612,64 @@ describe("GET /api/attention", () => {
     expect(reads[1].targetRepos).toEqual(["repo-a/app"]);
   });
 
+  it("does not join a request arriving after a settings write to the build reading the replaced scope", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-write-join-");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let secondReadStarted!: () => void;
+    const secondRead = new Promise<void>((resolve) => {
+      secondReadStarted = resolve;
+    });
+    const reads: ReadAttentionRecordsOptions[] = [];
+    // Each read reports the scope it was asked for, so a payload can be traced
+    // back to the settings it was built from.
+    const read = async (options: ReadAttentionRecordsOptions): Promise<AttentionReadResult> => {
+      reads.push(options);
+      if (reads.length === 1) {
+        await gate;
+      } else {
+        secondReadStarted();
+      }
+      return attentionRead(repositoryRead({ repository: options.targetRepos[0] }));
+    };
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: read,
+      now: () => NOW
+    });
+
+    const joinedBeforeWrite = fetch(`${baseUrl}/api/attention`);
+    while (reads.length < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.status).toBe(200);
+
+    // This request arrives after the write, so it must read the saved scope
+    // rather than join the build that is still reading the replaced one. The
+    // race is bounded rather than spun on, so a regression fails here instead
+    // of hanging.
+    const afterWrite = fetch(`${baseUrl}/api/attention`);
+    await Promise.race([secondRead, new Promise((resolve) => setTimeout(resolve, 250))]);
+    release();
+
+    const afterWriteBody = await attentionPayloadOf(await afterWrite);
+    expect(afterWriteBody.sources).toEqual([expect.objectContaining({ repository: "repo-a/app" })]);
+    expect(reads).toHaveLength(2);
+    expect(reads[1].targetRepos).toEqual(["repo-a/app"]);
+
+    // The request that had already joined the old build still gets the old
+    // payload: cancelling a read in progress is the only alternative, and it is
+    // out of scope here.
+    const joinedBody = await attentionPayloadOf(await joinedBeforeWrite);
+    expect(joinedBody.sources).toEqual([expect.objectContaining({ repository: attentionRepository })]);
+  });
+
   it("answers 500 without detail when the saved settings cannot be read, and recovers once they are repaired", async () => {
     const stateRoot = await coordinationRoot("coord-attention-corrupt-settings-");
     const settingsFile = join(stateRoot, "settings.json");
