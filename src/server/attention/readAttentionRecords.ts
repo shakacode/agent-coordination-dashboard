@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { validateAttentionRecord, type AttentionRecordValidationError } from "./validator";
@@ -74,7 +74,8 @@ export const ATTENTION_READ_OUTCOME_KINDS = [
   "invalid_json",
   "oversize",
   "schema_invalid",
-  "repository_mismatch"
+  "repository_mismatch",
+  "workspace_mismatch"
 ] as const;
 
 export type AttentionReadOutcomeKind = (typeof ATTENTION_READ_OUTCOME_KINDS)[number];
@@ -112,13 +113,14 @@ export interface AttentionReadDiagnostic {
  *
  * - `seen`: every entry in the listing, candidate or not, whether or not the
  *   budget reached it.
- * - `read`: entries whose bytes were read and parsed, so exactly the entries
- *   that produced `ok`, `invalid_json`, `schema_invalid`, or
- *   `repository_mismatch`.
+ * - `read`: entries whose bytes were read, so exactly the entries that produced
+ *   `ok`, `invalid_json`, `schema_invalid`, `repository_mismatch`, or
+ *   `workspace_mismatch`. A zero-byte candidate is read (and reported as
+ *   `invalid_json`), not skipped.
  * - `skipped`: everything else — names that are not
  *   {@link ATTENTION_RECORD_FILE_SUFFIX} candidates, non-regular entries,
- *   zero-byte and oversize files, files that vanished or could not be read, and
- *   candidates the budget stopped short of.
+ *   oversize files, files that vanished or could not be read, and candidates
+ *   the budget stopped short of.
  * - `outcomes`: the per-outcome tally, including the silent `vanished` count.
  */
 export interface AttentionReadCounts {
@@ -150,7 +152,7 @@ export interface AttentionRepositoryRead {
   /** `attention/<workspace>/<owner>/<name>`. */
   prefix: string;
   sourceStatus: AttentionReadSourceStatus;
-  /** Schema-valid records that name this repository. Both statuses; see below. */
+  /** Schema-valid records naming this repository and workspace. Both statuses; see below. */
   records: AttentionRecord[];
   diagnostics: AttentionReadDiagnostic[];
   /** True when the read budget stopped before the whole listing was examined. */
@@ -171,16 +173,28 @@ export interface AttentionFileStats {
   size: number;
 }
 
+/** The outcome of one bounded candidate read. */
+export interface AttentionFileRead {
+  /** The whole file, or `""` when {@link AttentionFileRead.oversize} is true. */
+  text: string;
+  /** True when the descriptor still had bytes past the limit. */
+  oversize: boolean;
+}
+
 /**
  * Filesystem seam. The default delegates to `node:fs/promises`; a test
- * substitutes it to force `ENOENT` between the listing and the read, or an
+ * substitutes it to force `ENOENT` between the listing and the read, an
  * `EACCES` that a `chmod` fixture cannot produce deterministically for every
- * user the suite runs as.
+ * user the suite runs as, or a file that grows past the limit after its `stat`.
  */
 export interface AttentionFileSystem {
   readdir(path: string): Promise<readonly string[]>;
   stat(path: string): Promise<AttentionFileStats>;
-  readFile(path: string): Promise<string>;
+  /**
+   * Read at most `maxBytes + 1` bytes through one descriptor, reporting
+   * `oversize` rather than returning more than `maxBytes`.
+   */
+  readBounded(path: string, maxBytes: number): Promise<AttentionFileRead>;
 }
 
 export interface ReadAttentionRecordsOptions extends CoordinationApiOptions {
@@ -200,10 +214,50 @@ export interface ReadAttentionRecordsOptions extends CoordinationApiOptions {
   fileSystem?: AttentionFileSystem;
 }
 
-const nodeFileSystem: AttentionFileSystem = {
+/** Chunk size for {@link readBoundedFile}; a record is far smaller than this. */
+const READ_CHUNK_BYTES = 65536;
+
+/**
+ * Read a candidate through a single descriptor, stopping one byte past the
+ * limit.
+ *
+ * `stat` is only a pre-check: between it and the read the file can be replaced
+ * or appended to, so a size read from `stat` is not a bound on what a later
+ * `readFile` would return. Bounding the read itself keeps a file that grows
+ * past the limit from being pulled into memory and parsed, and reports it as
+ * `oversize` exactly as the pre-check would have. Reads are positional against
+ * one open handle, so no second `open` can land on a different file.
+ */
+async function readBoundedFile(path: string, maxBytes: number): Promise<AttentionFileRead> {
+  const handle = await open(path, "r");
+  try {
+    const limit = maxBytes + 1;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total < limit) {
+      const chunk = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, limit - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+      if (bytesRead === 0) {
+        break;
+      }
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    // One byte past the limit is enough to know the file is over it; the bytes
+    // themselves are dropped rather than decoded.
+    return total > maxBytes
+      ? { text: "", oversize: true }
+      : { text: Buffer.concat(chunks).toString("utf8"), oversize: false };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The default seam, exported so a test can wrap one operation and keep the rest real. */
+export const nodeAttentionFileSystem: AttentionFileSystem = {
   readdir: (path) => readdir(path),
   stat: (path) => stat(path),
-  readFile: (path) => readFile(path, "utf8")
+  readBounded: (path, maxBytes) => readBoundedFile(path, maxBytes)
 };
 
 function emptyOutcomes(): Record<AttentionReadOutcomeKind, number> {
@@ -216,7 +270,8 @@ function emptyOutcomes(): Record<AttentionReadOutcomeKind, number> {
     invalid_json: 0,
     oversize: 0,
     schema_invalid: 0,
-    repository_mismatch: 0
+    repository_mismatch: 0,
+    workspace_mismatch: 0
   };
 }
 
@@ -240,6 +295,9 @@ function fsReason(prose: string, error: unknown): string {
 function schemaReason(errors: AttentionRecordValidationError[]): string {
   return `Record does not match the attention record schema: ${JSON.stringify(errors)}`;
 }
+
+/** Lead of every `invalid_json` reason; nothing after it may quote the file. */
+const INVALID_JSON_REASON = "Could not parse the record file as JSON";
 
 /**
  * The parse offset alone, when the engine reports one.
@@ -340,6 +398,15 @@ function ingest(read: RepositoryRead, path: string, value: unknown): void {
     // out-of-scope listing path — echoing it would hand an unrelated
     // repository's name to every caller that displays warnings.
     outcome(read, "repository_mismatch", path, `Record does not name repository ${read.repository}.`);
+    return;
+  }
+  if (record.workspace !== ATTENTION_WORKSPACE) {
+    // Same rule one axis over: the prefix and the directory both fix the
+    // workspace, so a record that names another one is another workspace's
+    // state and must not be mixed into this result. Workspace names are exact,
+    // not case-folded like GitHub owner and repository names, and the claimed
+    // one is withheld from the reason for the reason given above.
+    outcome(read, "workspace_mismatch", path, `Record does not name workspace ${ATTENTION_WORKSPACE}.`);
     return;
   }
   outcome(read, "ok", path, "");
@@ -490,13 +557,8 @@ async function readRepositoryFromFilesystem(
       // file are skipped and never followed; the walk is not recursive.
       continue;
     }
-    if (stats.size === 0) {
-      // An empty file is never a record, and a writer that renames into place
-      // never exposes one at its final name, so a zero-byte candidate is a
-      // sidecar or a half-made file rather than a fault: skipped, not reported.
-      continue;
-    }
     if (stats.size > budget.maxFileBytes) {
+      // The cheap pre-check: a file already over the limit is never opened.
       outcome(
         read,
         "oversize",
@@ -506,9 +568,9 @@ async function readRepositoryFromFilesystem(
       continue;
     }
 
-    let text: string;
+    let contents: AttentionFileRead;
     try {
-      text = await fileSystem.readFile(filePath);
+      contents = await fileSystem.readBounded(filePath, budget.maxFileBytes);
     } catch (error) {
       const code = errorCode(error);
       outcome(
@@ -519,13 +581,26 @@ async function readRepositoryFromFilesystem(
       );
       continue;
     }
+    if (contents.oversize) {
+      // The pre-check passed but the file was larger by the time it was read.
+      outcome(read, "oversize", path, `Record file grew past the ${budget.maxFileBytes}-byte limit while it was read.`);
+      continue;
+    }
 
     read.read += 1;
+    if (contents.text.length === 0) {
+      // A writer that renames into place never exposes an empty file at a
+      // record's final name, and the lock sidecar is already excluded by the
+      // name rule, so an empty `<id>.json` is corrupted local state and stays
+      // visible. There are no bytes to quote, so the reason can name it.
+      outcome(read, "invalid_json", path, `${INVALID_JSON_REASON}: empty file.`);
+      continue;
+    }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(contents.text);
     } catch (error) {
-      outcome(read, "invalid_json", path, `Could not parse the record file as JSON${parsePosition(error)}.`);
+      outcome(read, "invalid_json", path, `${INVALID_JSON_REASON}${parsePosition(error)}.`);
       continue;
     }
     ingest(read, path, parsed);
@@ -600,7 +675,7 @@ export async function readAttentionRecords(options: ReadAttentionRecordsOptions)
   const mode: AttentionReadMode = (options.coordApiUrl ?? "").trim() === "" ? "fs" : "api";
 
   if (mode === "fs") {
-    const fileSystem = options.fileSystem ?? nodeFileSystem;
+    const fileSystem = options.fileSystem ?? nodeAttentionFileSystem;
     return {
       workspace: ATTENTION_WORKSPACE,
       mode,

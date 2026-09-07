@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
   ATTENTION_RECORD_FILE_SUFFIX,
   ATTENTION_RECORD_MAX_BYTES,
   ATTENTION_WORKSPACE,
+  nodeAttentionFileSystem,
   readAttentionRecords,
   type AttentionFileSystem,
   type AttentionReadResult,
@@ -37,6 +38,12 @@ const OPEN_RECORD_JSON = readFileSync(join(FIXTURES_DIR, "valid", "attention-ope
 const RESOLVED_RECORD_JSON = readFileSync(join(FIXTURES_DIR, "valid", "attention-resolved.json"), "utf8");
 /** Fails the schema on the `timestamp` pattern and names {@link REPOSITORY}. */
 const SCHEMA_INVALID_JSON = readFileSync(join(FIXTURES_DIR, "invalid", "attention-leap-second.json"), "utf8");
+/** Schema-valid and for the right repository, but written for another workspace. */
+const OTHER_WORKSPACE_RECORD_JSON = `${JSON.stringify(
+  { ...(JSON.parse(OPEN_RECORD_JSON) as Record<string, unknown>), workspace: "staging" },
+  null,
+  2
+)}\n`;
 
 const roots: string[] = [];
 
@@ -64,15 +71,23 @@ async function seedRepository(
   return directory;
 }
 
-const realFileSystem: AttentionFileSystem = {
-  readdir: (path) => readdir(path),
-  stat: (path) => stat(path),
-  readFile: (path) => readFile(path, "utf8")
-};
-
-/** The real filesystem with individual operations replaced. */
+/** The module's own filesystem seam with individual operations replaced. */
 function seam(overrides: Partial<AttentionFileSystem>): AttentionFileSystem {
-  return { ...realFileSystem, ...overrides };
+  return { ...nodeAttentionFileSystem, ...overrides };
+}
+
+/**
+ * A schema-valid record padded to an exact byte length with an unknown optional
+ * top-level field, which the vendored schema admits.
+ */
+function paddedRecord(bytes: number): string {
+  const record = { ...(JSON.parse(OPEN_RECORD_JSON) as Record<string, unknown>), padding: "" };
+  const overhead = Buffer.byteLength(JSON.stringify(record), "utf8");
+  const text = JSON.stringify({ ...record, padding: "p".repeat(bytes - overhead) });
+  if (Buffer.byteLength(text, "utf8") !== bytes) {
+    throw new Error(`Padded fixture is ${Buffer.byteLength(text, "utf8")} bytes, expected ${bytes}.`);
+  }
+  return text;
 }
 
 function codedError(code: string): Error {
@@ -140,7 +155,7 @@ function entryFor(name: string, json: string): { path: string; data: unknown } {
 const forbiddenFileSystem: AttentionFileSystem = {
   readdir: () => Promise.reject(new Error("API mode must not read the filesystem")),
   stat: () => Promise.reject(new Error("API mode must not read the filesystem")),
-  readFile: () => Promise.reject(new Error("API mode must not read the filesystem"))
+  readBounded: () => Promise.reject(new Error("API mode must not read the filesystem"))
 };
 
 describe("readAttentionRecords module boundary", () => {
@@ -180,7 +195,8 @@ describe("readAttentionRecords module boundary", () => {
       "invalid_json",
       "oversize",
       "schema_invalid",
-      "repository_mismatch"
+      "repository_mismatch",
+      "workspace_mismatch"
     ]);
   });
 
@@ -247,7 +263,8 @@ describe("readAttentionRecords filesystem mode", () => {
         invalid_json: 0,
         oversize: 0,
         schema_invalid: 0,
-        repository_mismatch: 0
+        repository_mismatch: 0,
+        workspace_mismatch: 0
       }
     });
     // The `status=open` filter is not applied here; both statuses come back.
@@ -292,9 +309,9 @@ describe("readAttentionRecords filesystem mode", () => {
               touched.push(path);
               return stat(path);
             },
-            readFile: (path) => {
+            readBounded: (path, maxBytes) => {
               touched.push(path);
-              return readFile(path, "utf8");
+              return nodeAttentionFileSystem.readBounded(path, maxBytes);
             }
           })
         })
@@ -326,8 +343,10 @@ describe("readAttentionRecords filesystem mode", () => {
           // test cannot create without root.
           fileSystem: seam({
             stat: (path) => (path.endsWith(".lock") ? Promise.reject(codedError("EACCES")) : stat(path)),
-            readFile: (path) =>
-              path.endsWith(".lock") ? Promise.reject(codedError("EACCES")) : readFile(path, "utf8")
+            readBounded: (path, maxBytes) =>
+              path.endsWith(".lock")
+                ? Promise.reject(codedError("EACCES"))
+                : nodeAttentionFileSystem.readBounded(path, maxBytes)
           })
         })
       )
@@ -338,17 +357,28 @@ describe("readAttentionRecords filesystem mode", () => {
     expect(repository.counts.outcomes.unreadable).toBe(0);
   });
 
-  it("skips a zero-byte candidate without reporting it", async () => {
+  it("reports a zero-byte candidate as invalid_json naming the empty file", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, { "empty.json": "", "open.json": OPEN_RECORD_JSON });
 
     const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
 
-    // An atomic-rename writer never exposes an empty file at its final name.
+    // An atomic-rename writer never exposes an empty file at a record's final
+    // name, so an empty `<id>.json` is corrupted local state and stays visible.
+    // The lock sidecar is excluded by the name rule, not by this one.
     expect(repository.records).toHaveLength(1);
-    expect(repository.diagnostics).toEqual([]);
-    expect(repository.counts).toMatchObject({ seen: 2, read: 1, skipped: 1 });
-    expect(repository.counts.outcomes.invalid_json).toBe(0);
+    expect(repository.counts).toMatchObject({ seen: 2, read: 2, skipped: 0 });
+    expect(repository.counts.outcomes.invalid_json).toBe(1);
+    expect(repository.diagnostics).toEqual([
+      {
+        repository: REPOSITORY,
+        workspace: ATTENTION_WORKSPACE,
+        mode: "fs",
+        kind: "invalid_json",
+        path: `${PREFIX}/empty.json`,
+        reason: "Could not parse the record file as JSON: empty file."
+      }
+    ]);
   });
 
   it("does not spend the entry budget on lock sidecars", async () => {
@@ -544,6 +574,34 @@ describe("readAttentionRecords filesystem mode", () => {
     expect(repository.counts.outcomes.repository_mismatch).toBe(0);
   });
 
+  it("rejects a record that names another workspace as workspace_mismatch", async () => {
+    const root = await stateRoot();
+    await seedRepository(root, REPOSITORY, {
+      "other-workspace.json": OTHER_WORKSPACE_RECORD_JSON,
+      "open.json": OPEN_RECORD_JSON
+    });
+
+    const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
+
+    // The directory fixes the workspace, so another workspace's record can
+    // never be mixed into this one's result even when the repository matches.
+    expect(repository.records).toHaveLength(1);
+    expect(repository.records[0].workspace).toBe(ATTENTION_WORKSPACE);
+    expect(repository.counts.outcomes.workspace_mismatch).toBe(1);
+    expect(repository.diagnostics).toEqual([
+      {
+        repository: REPOSITORY,
+        workspace: ATTENTION_WORKSPACE,
+        mode: "fs",
+        kind: "workspace_mismatch",
+        path: `${PREFIX}/other-workspace.json`,
+        reason: `Record does not name workspace ${ATTENTION_WORKSPACE}.`
+      }
+    ]);
+    // The claimed workspace is withheld exactly as the claimed repository is.
+    expect(repository.diagnostics[0].reason).not.toContain("staging");
+  });
+
   it("skips a file one byte over the size limit before parsing it", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, { "big.json": OPEN_RECORD_JSON });
@@ -555,9 +613,9 @@ describe("readAttentionRecords filesystem mode", () => {
           stateRoot: root,
           maxFileBytes: Buffer.byteLength(OPEN_RECORD_JSON, "utf8") - 1,
           fileSystem: seam({
-            readFile: (path) => {
+            readBounded: (path, maxBytes) => {
               reads.push(path);
-              return readFile(path, "utf8");
+              return nodeAttentionFileSystem.readBounded(path, maxBytes);
             }
           })
         })
@@ -588,6 +646,56 @@ describe("readAttentionRecords filesystem mode", () => {
     expect(repository.counts.outcomes.oversize).toBe(0);
   });
 
+  it("reads a candidate of exactly the default limit and rejects one byte more", async () => {
+    const root = await stateRoot();
+    await seedRepository(root, REPOSITORY, {
+      "exact.json": paddedRecord(ATTENTION_RECORD_MAX_BYTES),
+      "over.json": paddedRecord(ATTENTION_RECORD_MAX_BYTES + 1)
+    });
+
+    // The real limit and the real bounded read: 262,144 bytes is exactly four
+    // read chunks, so this is where an off-by-one in the loop would show.
+    const repository = only(await readAttentionRecords(fsOptions({ stateRoot: root })));
+
+    expect(repository.records).toHaveLength(1);
+    expect(repository.counts).toMatchObject({ seen: 2, read: 1, skipped: 1 });
+    expect(repository.counts.outcomes.ok).toBe(1);
+    expect(repository.counts.outcomes.oversize).toBe(1);
+    expect(repository.diagnostics[0].path).toBe(`${PREFIX}/over.json`);
+  });
+
+  it("reports a candidate that grows past the limit between stat and read as oversize", async () => {
+    const root = await stateRoot();
+    await seedRepository(root, REPOSITORY, { "grows.json": OPEN_RECORD_JSON });
+    const maxFileBytes = Buffer.byteLength(OPEN_RECORD_JSON, "utf8");
+
+    const repository = only(
+      await readAttentionRecords(
+        fsOptions({
+          stateRoot: root,
+          // The file is exactly at the limit when `stat` sees it and over the
+          // limit by the time it is opened, so only a bounded read can catch it.
+          maxFileBytes,
+          fileSystem: seam({
+            readBounded: async (path, maxBytes) => {
+              await appendFile(path, "x".repeat(64), "utf8");
+              return nodeAttentionFileSystem.readBounded(path, maxBytes);
+            }
+          })
+        })
+      )
+    );
+
+    expect(repository.records).toEqual([]);
+    expect(repository.counts).toMatchObject({ seen: 1, read: 0, skipped: 1 });
+    expect(repository.counts.outcomes.oversize).toBe(1);
+    expect(repository.counts.outcomes.invalid_json).toBe(0);
+    const diagnostic = repository.diagnostics[0];
+    expect(diagnostic.kind).toBe("oversize");
+    expect(diagnostic.path).toBe(`${PREFIX}/grows.json`);
+    expect(diagnostic.reason).toBe(`Record file grew past the ${maxFileBytes}-byte limit while it was read.`);
+  });
+
   it("counts a file that vanishes between the listing and the read without reporting it", async () => {
     const root = await stateRoot();
     await seedRepository(root, REPOSITORY, {
@@ -600,8 +708,10 @@ describe("readAttentionRecords filesystem mode", () => {
         fsOptions({
           stateRoot: root,
           fileSystem: seam({
-            readFile: (path) =>
-              path.endsWith("gone.json") ? Promise.reject(codedError("ENOENT")) : readFile(path, "utf8")
+            readBounded: (path, maxBytes) =>
+              path.endsWith("gone.json")
+                ? Promise.reject(codedError("ENOENT"))
+                : nodeAttentionFileSystem.readBounded(path, maxBytes)
           })
         })
       )
@@ -640,7 +750,7 @@ describe("readAttentionRecords filesystem mode", () => {
       await readAttentionRecords(
         fsOptions({
           stateRoot: root,
-          fileSystem: seam({ readFile: () => Promise.reject(codedError("EACCES")) })
+          fileSystem: seam({ readBounded: () => Promise.reject(codedError("EACCES")) })
         })
       )
     );
@@ -920,6 +1030,36 @@ describe("readAttentionRecords API mode", () => {
     expect(diagnostic.mode).toBe("api");
     expect(diagnostic.path).toBe(`${PREFIX}/leap-second.json`);
     expect(diagnostic.reason).toContain("does not match the attention record schema");
+  });
+
+  it("rejects a listing entry that names another workspace as workspace_mismatch", async () => {
+    const repository = only(
+      await readAttentionRecords(
+        apiOptions({
+          fetchImpl: apiFetch({
+            [PREFIX]: listing([
+              entryFor("other-workspace.json", OTHER_WORKSPACE_RECORD_JSON),
+              entryFor("open.json", OPEN_RECORD_JSON)
+            ])
+          })
+        })
+      )
+    );
+
+    expect(repository.records).toHaveLength(1);
+    expect(repository.records[0].workspace).toBe(ATTENTION_WORKSPACE);
+    expect(repository.counts.outcomes.workspace_mismatch).toBe(1);
+    expect(repository.diagnostics).toEqual([
+      {
+        repository: REPOSITORY,
+        workspace: ATTENTION_WORKSPACE,
+        mode: "api",
+        kind: "workspace_mismatch",
+        path: `${PREFIX}/other-workspace.json`,
+        reason: `Record does not name workspace ${ATTENTION_WORKSPACE}.`
+      }
+    ]);
+    expect(repository.diagnostics[0].reason).not.toContain("staging");
   });
 
   it("rejects a listing entry that names another repository as repository_mismatch", async () => {
