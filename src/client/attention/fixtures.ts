@@ -11,7 +11,11 @@
  * scaffolding only, so no fixture-serving code path exists in the app.
  */
 
-import { projectAttentionRecord, type AttentionRecord } from "../../shared/attention";
+import {
+  projectAttentionRecord,
+  type AttentionCapabilityState,
+  type AttentionRecord
+} from "../../shared/attention";
 import {
   attentionRepository,
   attentionTaskId,
@@ -117,6 +121,31 @@ export const crossHostRecord: AttentionRecord = makeAttentionRecord({
   created_at: "2026-09-06T10:00:00Z"
 });
 
+/**
+ * A session on the dashboard's own host whose agent cannot be opened natively.
+ * `native_open` comes from the record's own capabilities, so the card and the
+ * record agree, and the bare-URI rule's second half has something to fail on.
+ */
+function withNativeOpen(nativeOpen: AttentionCapabilityState, id: string): AttentionRecord {
+  return makeAttentionRecord({
+    ...deskContractAttentionRecord,
+    id,
+    hil_task_title: "Merge gate with no native open",
+    source: { ...codexSource, capabilities: { native_open: nativeOpen, prompt_forwarding: "unknown" } },
+    created_at: "2026-09-06T10:30:00Z"
+  });
+}
+
+export const nativeOpenUnavailableRecord: AttentionRecord = withNativeOpen(
+  "unavailable",
+  "agent-coordination-pr284-native-open-unavailable"
+);
+
+export const nativeOpenUnknownRecord: AttentionRecord = withNativeOpen(
+  "unknown",
+  "agent-coordination-pr284-native-open-unknown"
+);
+
 /** Both link fields are rejected by the shared validators, so both project to null. */
 export const invalidLinksRecord: AttentionRecord = makeAttentionRecord({
   ...deskContractAttentionRecord,
@@ -164,6 +193,10 @@ export const crossHostCard: AttentionCardPayload = toCard(crossHostRecord, {
   host: FIXTURE_OTHER_HOST,
   host_matches: false
 });
+
+export const nativeOpenUnavailableCard: AttentionCardPayload = toCard(nativeOpenUnavailableRecord);
+
+export const nativeOpenUnknownCard: AttentionCardPayload = toCard(nativeOpenUnknownRecord);
 
 export const invalidLinksCard: AttentionCardPayload = toCard(invalidLinksRecord);
 

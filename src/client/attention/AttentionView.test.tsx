@@ -1,9 +1,11 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { AttentionPayload } from "../api";
+import type { AttentionCapabilityState } from "../../shared/attention";
+import type { AttentionCardPayload, AttentionPayload } from "../api";
 import { MISSING_TARGET_TEXT, formatAge } from "./AttentionCard";
 import { AttentionView, EMPTY_STATE_LINE, MISSING_SCOPE_MESSAGE, formatClockTime } from "./AttentionView";
 import {
+  FIXTURE_HOST,
   FIXTURE_MARKDOWN_QUESTION,
   FIXTURE_NOW_MS,
   FIXTURE_OPEN_URI,
@@ -23,6 +25,8 @@ import {
   makeAttentionPayload,
   markdownQuestionPayload,
   markdownQuestionRecord,
+  nativeOpenUnavailableCard,
+  nativeOpenUnknownCard,
   nonContiguousNumberPayload,
   openAgeCard,
   openAgeRecord,
@@ -201,6 +205,28 @@ describe("links", () => {
     expect(screen.queryByRole("link", { name: FIXTURE_OPEN_URI })).toBeNull();
   });
 
+  const nativeOpenCases: Array<[AttentionCapabilityState, AttentionCardPayload]> = [
+    ["unavailable", nativeOpenUnavailableCard],
+    ["unknown", nativeOpenUnknownCard]
+  ];
+
+  it.each(nativeOpenCases)(
+    "prefixes the codex URI on this very host when native open is %s",
+    (state, card) => {
+      // The card is local: only native_open may send it down the prefixed path.
+      expect(card.host_matches).toBe(true);
+      expect(card.native_open).toEqual(state);
+
+      const { container } = renderView(makeAttentionPayload([card]));
+
+      const title = must(card.record.hil_task_title, "hil_task_title");
+      expect(screen.getByText(`open on ${FIXTURE_HOST}: ${title}`)).toBeVisible();
+      expect(screen.getByText(FIXTURE_OPEN_URI)).toBeVisible();
+      expect(container.querySelector('a[href^="codex:"]')).toBeNull();
+      expect(screen.queryByRole("link", { name: FIXTURE_OPEN_URI })).toBeNull();
+    }
+  );
+
   it("falls back to the record id when a non-local card has no companion title", () => {
     const untitled = { ...crossHostCard, record: { ...crossHostCard.record, hil_task_title: undefined } };
     renderView(makeAttentionPayload([untitled]));
@@ -265,6 +291,19 @@ describe("empty and degraded states", () => {
     expect(screen.getByText(`last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`)).toBeVisible();
     expect(screen.getAllByRole("article")).toHaveLength(1);
     expect(screen.getByText(must(fullRecord.what_changes, "what_changes"))).toBeVisible();
+  });
+
+  it("keeps the stale marker over an empty last-good payload", () => {
+    const lastSuccessAt = FIXTURE_NOW_MS - 5 * 60 * 1000;
+    renderView(emptyPayload, { failure: "attention request failed: network", lastSuccessAt });
+
+    // Zero cards is still the truth, but a dead backend may not be hidden with it.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("0 actions need Justin");
+    expect(screen.getByText(`last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`)).toBeVisible();
+    expect(screen.getByText(EMPTY_STATE_LINE)).toBeVisible();
+
+    const main = screen.getByRole("main");
+    expect(main.children).toHaveLength(3);
   });
 
   it("reports an unreachable backend before any payload has arrived", () => {
