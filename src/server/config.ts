@@ -14,6 +14,12 @@ export interface ServerConfig {
   targetRepos: string[];
   settingsPath: string;
   nodeEnv: string;
+  /**
+   * `AGENT_COORD_MACHINE_ID`: which machine this dashboard runs on, as the
+   * attention model's `dashboard_host`. Undefined when it is not set, which the
+   * model reports as `UNKNOWN` rather than guessing.
+   */
+  machineId?: string;
 }
 
 function listFromEnv(value: string): string[] {
@@ -57,6 +63,7 @@ export function readConfig(env = process.env): ServerConfig {
     coordApiTokenEnvVar,
     targetRepos: env.TARGET_REPOS ? listFromEnv(env.TARGET_REPOS) : [],
     settingsPath: env.DASHBOARD_SETTINGS_PATH || "",
-    nodeEnv: env.NODE_ENV || "development"
+    nodeEnv: env.NODE_ENV || "development",
+    machineId: env.AGENT_COORD_MACHINE_ID?.trim() || undefined
   };
 }

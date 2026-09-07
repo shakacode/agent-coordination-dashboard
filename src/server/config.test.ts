@@ -48,6 +48,12 @@ describe("readConfig", () => {
     expect(config.coordApiToken).toBe("");
   });
 
+  it("reads the dashboard machine id and treats a blank one as unset", () => {
+    expect(readConfig({ AGENT_COORD_MACHINE_ID: " M5\n" }).machineId).toBe("M5");
+    expect(readConfig({ AGENT_COORD_MACHINE_ID: "   " }).machineId).toBeUndefined();
+    expect(readConfig({}).machineId).toBeUndefined();
+  });
+
   it("reads the remaining coordination and target settings", () => {
     expect(readConfig({
       PORT: "5000",
