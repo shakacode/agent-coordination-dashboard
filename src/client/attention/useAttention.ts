@@ -8,6 +8,12 @@
  * visibilitychange, where the stale-on-return rule fires the first fetch because
  * there is no last success yet. A failed poll keeps the last good payload so the
  * view can stay useful behind a stale marker instead of blanking the desk.
+ *
+ * Every request is owned by an `AbortController`: starting a new one cancels the
+ * request it supersedes, and the effect cleanup cancels whatever is in flight,
+ * so React StrictMode's setup/cleanup/setup preflight and an unmount leave no
+ * duplicate and no orphaned request behind. An abort is not a failure and never
+ * raises the stale marker.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -17,7 +23,13 @@ export const ATTENTION_POLL_INTERVAL_MS = 60_000;
 
 export type AttentionTimerHandle = ReturnType<typeof setTimeout>;
 
-export type AttentionFetcher = (options: { foreground: boolean }) => Promise<AttentionPayload>;
+export interface AttentionRequest {
+  foreground: boolean;
+  /** Aborted when the request is superseded, or when the view goes away. */
+  signal: AbortSignal;
+}
+
+export type AttentionFetcher = (request: AttentionRequest) => Promise<AttentionPayload>;
 
 export interface UseAttentionOptions {
   /** Injectable for tests; defaults to a real `GET /api/attention`. */
@@ -57,7 +69,7 @@ interface ResolvedOptions {
 // Resolved per call so fake timers installed after mount still take effect.
 function resolveOptions(options: UseAttentionOptions): ResolvedOptions {
   return {
-    fetchAttention: options.fetchAttention ?? fetchAttentionOverHttp,
+    fetchAttention: options.fetchAttention ?? ((request) => fetchAttentionOverHttp(request)),
     now: options.now ?? (() => Date.now()),
     setTimer: options.setTimer ?? ((handler, delayMs) => setTimeout(handler, delayMs)),
     clearTimer:
@@ -85,6 +97,7 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
   useEffect(() => {
     let disposed = false;
     let handle: AttentionTimerHandle | null = null;
+    let activeController: AbortController | null = null;
     // Only the newest request may write state, so a slow poll cannot land on top
     // of a foreground refresh the operator asked for later.
     let sequence = 0;
@@ -93,6 +106,13 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
       if (handle !== null) {
         resolveOptions(optionsRef.current).clearTimer(handle);
         handle = null;
+      }
+    };
+
+    const abortActiveRequest = (): void => {
+      if (activeController !== null) {
+        activeController.abort();
+        activeController = null;
       }
     };
 
@@ -118,12 +138,27 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
     };
 
     const run = (foreground: boolean): void => {
+      if (disposed) {
+        return;
+      }
       clearPendingTimer();
+      // One request at a time: whatever is still in flight is superseded.
+      abortActiveRequest();
+      const controller = new AbortController();
+      activeController = controller;
       const ticket = ++sequence;
       const { fetchAttention, now } = resolveOptions(optionsRef.current);
-      void fetchAttention({ foreground }).then(
+      const settled = (): boolean => {
+        if (activeController === controller) {
+          activeController = null;
+        }
+        // An aborted request was cancelled on purpose: it is neither a success
+        // to record nor a failure to show.
+        return !controller.signal.aborted && !disposed && ticket === sequence;
+      };
+      void fetchAttention({ foreground, signal: controller.signal }).then(
         (payload) => {
-          if (disposed || ticket !== sequence) {
+          if (!settled()) {
             return;
           }
           const at = now();
@@ -133,7 +168,7 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
           schedule();
         },
         (error: unknown) => {
-          if (disposed || ticket !== sequence) {
+          if (!settled()) {
             return;
           }
           // Keep the last good payload; the view marks it stale.
@@ -174,6 +209,7 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
       disposed = true;
       document.removeEventListener("visibilitychange", onVisibilityChange);
       clearPendingTimer();
+      abortActiveRequest();
     };
   }, []);
 

@@ -11,7 +11,17 @@
  * coordination state, and never reaches GitHub from the render path.
  */
 
-import type { AttentionCapabilityState, AttentionRenderView } from "../shared/attention";
+import {
+  validateAttentionTarget,
+  validateOpenUri,
+  validateWalkthroughUrl,
+  type AttentionCapabilityState,
+  type AttentionPriorityClass,
+  type AttentionRenderView,
+  type AttentionSource,
+  type AttentionStatus,
+  type AttentionWalkthroughMode
+} from "../shared/attention";
 
 /** Same-origin path; the dev server proxies `/api` to the dashboard server. */
 export const ATTENTION_ENDPOINT = "/api/attention";
@@ -31,6 +41,47 @@ const SOURCE_STATUSES = ["ok", "empty", "auth_error", "unreachable"] as const;
 export type AttentionSourceStatus = (typeof SOURCE_STATUSES)[number];
 
 const NATIVE_OPEN_STATES: readonly AttentionCapabilityState[] = ["available", "unavailable", "unknown"];
+
+/**
+ * The projected record's own vocabulary. Each array is typed against the shared
+ * union, so dropping or renaming a member upstream fails this build rather than
+ * letting the guard drift away from `projectAttentionRecord`.
+ */
+const RECORD_STATUSES: readonly AttentionStatus[] = ["open", "resolved"];
+
+const RECORD_PRIORITY_CLASSES: readonly AttentionPriorityClass[] = [
+  "urgent-risk",
+  "unblocks-work",
+  "current-head-merge",
+  "product-architecture"
+];
+
+const RECORD_WALKTHROUGH_MODES: readonly AttentionWalkthroughMode[] = ["automatic", "requested"];
+
+/** Allowlisted render fields whose value is plain text when present. */
+const RECORD_TEXT_FIELDS = [
+  "id",
+  "repository",
+  "kind",
+  "question",
+  "priority_reason",
+  "safe_resume",
+  "what_changes",
+  "risk_downside",
+  "recommendation",
+  "one_action",
+  "unlocks",
+  "hil_task_title",
+  "created_at",
+  "refreshed_at",
+  "resolved_at"
+] as const;
+
+/** Allowlisted render fields whose value is a number when present. */
+const RECORD_NUMBER_FIELDS = ["unlocks_count", "refresh_interval_seconds"] as const;
+
+/** Allowlisted source fields whose value is plain text when present. */
+const SOURCE_TEXT_FIELDS = ["provider", "host_id", "task_id", "last_seen_at"] as const;
 
 export interface AttentionCardPayload {
   /**
@@ -91,6 +142,8 @@ export interface FetchAttentionOptions {
   foreground?: boolean;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetch?: AttentionFetch;
+  /** Aborts the request; an abort surfaces as the `network` failure class. */
+  signal?: AbortSignal;
 }
 
 /** Prefix of every rejection so a caller can log one recognizable failure. */
@@ -120,6 +173,101 @@ function isOneOf(values: readonly string[], value: unknown): boolean {
   return isString(value) && values.includes(value);
 }
 
+/**
+ * The projected `source` view: text fields are text, capability states are in
+ * the shared set, and `open_uri` is `null` or exactly the codex thread URI that
+ * {@link validateOpenUri} accepts for this source's own task id.
+ */
+function isRenderSource(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (!isObject(value)) {
+    return false;
+  }
+  for (const field of SOURCE_TEXT_FIELDS) {
+    if (value[field] !== undefined && !isString(value[field])) {
+      return false;
+    }
+  }
+  const capabilities = value.capabilities;
+  if (capabilities !== undefined) {
+    if (!isObject(capabilities)) {
+      return false;
+    }
+    if (capabilities.native_open !== undefined && !isOneOf(NATIVE_OPEN_STATES, capabilities.native_open)) {
+      return false;
+    }
+    if (capabilities.prompt_forwarding !== undefined && !isOneOf(NATIVE_OPEN_STATES, capabilities.prompt_forwarding)) {
+      return false;
+    }
+  }
+  const openUri = value.open_uri;
+  if (openUri === undefined || openUri === null) {
+    return true;
+  }
+  // The shared validator is the only open-URI rule; this asks it whether the
+  // value in hand is what it would have produced.
+  return validateOpenUri(value as unknown as AttentionSource) === openUri;
+}
+
+/**
+ * The card's record must be what `projectAttentionRecord` produced, not merely
+ * an object. Until #128 serves the route nothing upstream proves that, and a
+ * card renders links straight out of these fields, so a record whose `target`,
+ * `walkthrough_url`, or `source.open_uri` would not survive the shared
+ * validators is rejected here rather than trusted at render time.
+ *
+ * The link rules are not reimplemented: each field is handed to the shared
+ * validator and must come back unchanged.
+ */
+function isRenderView(value: unknown): value is AttentionRenderView {
+  if (!isObject(value)) {
+    return false;
+  }
+  for (const field of RECORD_TEXT_FIELDS) {
+    if (value[field] !== undefined && !isString(value[field])) {
+      return false;
+    }
+  }
+  for (const field of RECORD_NUMBER_FIELDS) {
+    if (value[field] !== undefined && !isFiniteNumber(value[field])) {
+      return false;
+    }
+  }
+  if (value.status !== undefined && !isOneOf(RECORD_STATUSES, value.status)) {
+    return false;
+  }
+  if (value.priority_class !== undefined && !isOneOf(RECORD_PRIORITY_CLASSES, value.priority_class)) {
+    return false;
+  }
+  if (
+    value.walkthrough_mode !== undefined &&
+    value.walkthrough_mode !== null &&
+    !isOneOf(RECORD_WALKTHROUGH_MODES, value.walkthrough_mode)
+  ) {
+    return false;
+  }
+  const choices = value.choices;
+  if (choices !== undefined && (!Array.isArray(choices) || !choices.every(isString))) {
+    return false;
+  }
+  const repository = value.repository;
+  const target = value.target;
+  if (target !== undefined && target !== null && validateAttentionTarget(target, repository) !== target) {
+    return false;
+  }
+  const walkthroughUrl = value.walkthrough_url;
+  if (
+    walkthroughUrl !== undefined &&
+    walkthroughUrl !== null &&
+    validateWalkthroughUrl(walkthroughUrl, repository) !== walkthroughUrl
+  ) {
+    return false;
+  }
+  return isRenderSource(value.source);
+}
+
 function isCard(value: unknown): value is AttentionCardPayload {
   if (!isObject(value)) {
     return false;
@@ -128,7 +276,7 @@ function isCard(value: unknown): value is AttentionCardPayload {
     isFiniteNumber(value.number) &&
     isString(value.id) &&
     isString(value.repository) &&
-    isObject(value.record) &&
+    isRenderView(value.record) &&
     isString(value.host) &&
     isBoolean(value.host_matches) &&
     isOneOf(NATIVE_OPEN_STATES, value.native_open) &&
@@ -199,7 +347,9 @@ export async function fetchAttention(options: FetchAttentionOptions = {}): Promi
 
   let response: Response;
   try {
-    response = await request(ATTENTION_ENDPOINT, { method: "GET", headers });
+    // An abort lands here too, and reads as `network`: in both cases no answer
+    // arrived, and the caller that aborted already knows it did.
+    response = await request(ATTENTION_ENDPOINT, { method: "GET", headers, signal: options.signal });
   } catch {
     throw new Error(`${FAILURE_PREFIX}: network`);
   }

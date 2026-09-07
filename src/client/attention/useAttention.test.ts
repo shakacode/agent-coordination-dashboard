@@ -1,7 +1,9 @@
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AttentionPayload } from "../api";
 import { DASHBOARD_REFRESH_HEADER, fetchAttention } from "../api";
-import { deskPayload, emptyPayload, FIXTURE_NOW_MS } from "./fixtures";
+import { deskPayload, emptyPayload, fullCard, FIXTURE_NOW_MS, FIXTURE_OPEN_URI, makeAttentionPayload } from "./fixtures";
 import { ATTENTION_POLL_INTERVAL_MS, useAttention } from "./useAttention";
 
 /** Minimal `Response` stand-in: jsdom does not implement fetch. */
@@ -68,6 +70,57 @@ describe("fetchAttention", () => {
     await expect(fetchAttention({ fetch: fetchMock })).rejects.toThrow(/malformed/);
   });
 
+  it("names a network failure when the caller aborts the request", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(
+      (_input: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        })
+    );
+
+    const pending = fetchAttention({ fetch: fetchMock, signal: controller.signal });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(init?.signal).toBe(controller.signal);
+
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/network/);
+  });
+
+  it("accepts a payload whose records really are the shared projection's output", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(deskPayload));
+
+    await expect(fetchAttention({ fetch: fetchMock })).resolves.toEqual(deskPayload);
+  });
+
+  it("names a malformed body when a card's record is not a projected record", async () => {
+    const base = makeAttentionPayload([fullCard]);
+    const withRecord = (overrides: Record<string, unknown>): unknown => ({
+      ...base,
+      cards: [{ ...base.cards[0], record: { ...base.cards[0].record, ...overrides } }]
+    });
+    const source = base.cards[0].record.source ?? {};
+
+    const rejected: Array<[string, unknown]> = [
+      ["a javascript: target", withRecord({ target: "javascript:alert(1)" })],
+      [
+        "a walkthrough URL on another host",
+        withRecord({ walkthrough_url: "https://evil.test/shakacode/agent-coordination/pull/284" })
+      ],
+      ["an open_uri carrying a query string", withRecord({ source: { ...source, open_uri: `${FIXTURE_OPEN_URI}?resume=1` } })],
+      ["a non-string among the choices", withRecord({ choices: ["acknowledge", 7] })],
+      ["a status outside the schema's set", withRecord({ status: "escalated" })]
+    ];
+
+    for (const [label, body] of rejected) {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(body));
+      await expect(fetchAttention({ fetch: fetchMock }), label).rejects.toThrow(/malformed/);
+    }
+  });
+
   it("names a malformed body when the JSON is not payload-shaped", async () => {
     const bodies: unknown[] = [
       null,
@@ -117,7 +170,7 @@ describe("useAttention", () => {
     await flush();
 
     expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
-    expect(fetchAttentionMock).toHaveBeenCalledWith({ foreground: false });
+    expect(fetchAttentionMock).toHaveBeenCalledWith({ foreground: false, signal: expect.any(AbortSignal) });
     expect(result.current.payload).toEqual(deskPayload);
     expect(result.current.lastSuccessAt).toEqual(FIXTURE_NOW_MS);
     expect(result.current.failure).toBeNull();
@@ -146,7 +199,7 @@ describe("useAttention", () => {
     });
 
     expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
-    expect(fetchAttentionMock).toHaveBeenCalledWith({ foreground: false });
+    expect(fetchAttentionMock).toHaveBeenCalledWith({ foreground: false, signal: expect.any(AbortSignal) });
     expect(result.current.payload).toEqual(deskPayload);
   });
 
@@ -299,7 +352,7 @@ describe("useAttention", () => {
     });
 
     expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
-    expect(fetchAttentionMock).toHaveBeenLastCalledWith({ foreground: true });
+    expect(fetchAttentionMock).toHaveBeenLastCalledWith({ foreground: true, signal: expect.any(AbortSignal) });
 
     // The interval restarts from the refresh, not from the original mount.
     clock += 30_000;
@@ -313,6 +366,75 @@ describe("useAttention", () => {
       vi.advanceTimersByTime(30_000);
     });
     expect(fetchAttentionMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("aborts the in-flight request on cleanup without recording a failure", async () => {
+    let observed: AbortSignal | undefined;
+    const fetchAttentionMock = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<AttentionPayload>((_resolve, reject) => {
+          observed = signal;
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        })
+    );
+
+    const { result, unmount } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
+    expect(observed?.aborted).toBe(false);
+
+    unmount();
+    expect(observed?.aborted).toBe(true);
+    await flush();
+
+    // The request was cancelled on purpose, so nothing about it is a failure.
+    expect(result.current.failure).toBeNull();
+    expect(result.current.payload).toBeNull();
+  });
+
+  it("leaves exactly one live request after a StrictMode double mount", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchAttentionMock = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return deskPayload;
+    });
+
+    const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }), {
+      wrapper: StrictMode
+    });
+    await flush();
+
+    // React's development preflight runs setup, cleanup, setup: two requests
+    // start and the first one is cancelled, leaving exactly one live.
+    expect(signals).toHaveLength(2);
+    expect(signals.filter((signal) => !signal.aborted)).toHaveLength(1);
+    expect(result.current.payload).toEqual(deskPayload);
+    expect(result.current.failure).toBeNull();
+  });
+
+  it("cancels a poll that a foreground refresh supersedes", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchAttentionMock = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<AttentionPayload>((resolve) => {
+          signals.push(signal);
+          signal.addEventListener("abort", () => {
+            resolve(deskPayload);
+          });
+        })
+    );
+
+    const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
+    expect(signals).toHaveLength(1);
+
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+    expect(result.current.failure).toBeNull();
   });
 
   it("stops polling once the view unmounts", async () => {
