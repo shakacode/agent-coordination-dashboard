@@ -376,7 +376,7 @@ describe("GET /api/attention", () => {
   it("builds the payload once and serves the cached copy inside the TTL", async () => {
     const stateRoot = await coordinationRoot("coord-attention-hit-");
     const reader = countingReader();
-    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot, { machineId: "m5" }), {
       readAttentionRecords: reader.read,
       now: () => NOW
     });
@@ -388,6 +388,9 @@ describe("GET /api/attention", () => {
     expect(first.status).toBe(200);
     expect(first.headers.get("cache-control")).toBe("no-store");
     expect(firstBody.cards).toHaveLength(1);
+    // The configured machine id reaches the model, so the payload names this
+    // dashboard's host instead of falling back to UNKNOWN.
+    expect(firstBody.dashboard_host).toBe("M5");
     expect(firstBody.sources).toEqual([expect.objectContaining({ repository: attentionRepository, status: "ok" })]);
     await expect(second.json()).resolves.toEqual(firstBody);
     expect(reader.calls).toHaveLength(1);
