@@ -169,9 +169,11 @@ whether that scope came from the saved settings file (`saved`), from
 from nowhere because the settings file exists but could not be read
 (`unreadable`). Deriving a per-repository status means actually reading, so this
 section runs the attention reader and discards the records. The reader bounds
-it with a per-repository entry count and time budget and a per-file size cap, so
-the work scales with the number of configured repositories rather than with the
-size of the coordination root. It reports statuses only:
+the work with a per-repository entry count and time budget, applied as it walks
+the listing, and a per-file size cap. Those are processing limits rather than a
+bound on the listing itself: the directory listing, or the API list response, is
+materialized in full before they apply, so a very large coordination root still
+costs memory here. It reports statuses only:
 no record content, target, question, or diagnostic text appears in the report.
 
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
