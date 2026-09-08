@@ -168,8 +168,10 @@ whether that scope came from the saved settings file (`saved`), from
 `TARGET_REPOS` because no settings file exists yet (`first_run_default`), or
 from nowhere because the settings file exists but could not be read
 (`unreadable`). Deriving a per-repository status means actually reading, so this
-section runs the attention reader and discards the records, bounded by the
-reader's per-repository entry, time, and byte budgets. It reports statuses only:
+section runs the attention reader and discards the records. The reader bounds
+it with a per-repository entry count and time budget and a per-file size cap, so
+the work scales with the number of configured repositories rather than with the
+size of the coordination root. It reports statuses only:
 no record content, target, question, or diagnostic text appears in the report.
 
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
@@ -221,11 +223,11 @@ Data problems are reported inside a `200` rather than as an error: a repository
 that cannot be read arrives with its own source status and diagnostics. The only
 `5xx` is a build that threw, and it carries no detail.
 
-Records name the machine they came from, and the dashboard recognises the host
+Records name the machine they came from, and the dashboard recognizes the host
 identifiers `M5` and `M1`. A record naming any other host is suppressed with a
 diagnostic, so records produced on a third machine never become cards.
 
-A dashboard whose own `AGENT_COORD_MACHINE_ID` is unset or unrecognised is a
+A dashboard whose own `AGENT_COORD_MACHINE_ID` is unset or unrecognized is a
 separate case, and a milder one: every card is still returned. What it loses is
 the ability to say which cards are answerable where it is running, so the
 payload reports `dashboard_host: "UNKNOWN"`, marks every card `host_matches:
