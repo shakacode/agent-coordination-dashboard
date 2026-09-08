@@ -215,13 +215,17 @@ A request builds the payload on demand behind a 60-second cache with an
 in-flight guard, so concurrent requests share one read and an idle dashboard
 reads nothing; there is no background timer. A successful `PUT /api/settings`
 drops the cached payload immediately, so a scope change is never served from a
-stale entry. `X-Dashboard-Refresh: foreground` forces a rebuild, and only from a
-loopback address; from anywhere else the header is ignored and the cached
-payload is served.
+stale entry. `X-Dashboard-Refresh: foreground` bypasses an otherwise-valid cache
+entry, and only from a loopback address; from anywhere else the header is
+ignored. It is a bypass rather than a forced rebuild: a request arriving while a
+build is already in flight joins that build, and a request arriving with no
+fresh entry starts an ordinary build whether or not it carries the header.
 
-Data problems are reported inside a `200` rather than as an error: a repository
-that cannot be read arrives with its own source status and diagnostics. The only
-`5xx` is a build that threw, and it carries no detail.
+A repository the reader cannot reach or parse is reported inside a `200`, with
+its own source status and diagnostics, rather than as an error. That covers the
+record and backend problems the reader represents. A failure before any
+repository is read — most plainly a settings file that exists but cannot be
+parsed — is a `500` carrying no detail at all.
 
 Records name the machine they came from, and the dashboard recognizes the host
 identifiers `M5` and `M1`. A record naming any other host is suppressed with a
@@ -231,7 +235,8 @@ A dashboard whose own `AGENT_COORD_MACHINE_ID` is unset or unrecognized is a
 separate case, and a milder one: every card is still returned. What it loses is
 the ability to say which cards are answerable where it is running, so the
 payload reports `dashboard_host: "UNKNOWN"`, marks every card `host_matches:
-false`, and adds `dashboard_host_unknown` and `cross_host_count` diagnostics.
+false`, and adds a `dashboard_host_unknown` diagnostic, plus `cross_host_count`
+when at least one card renders.
 
 ## Configuration
 
