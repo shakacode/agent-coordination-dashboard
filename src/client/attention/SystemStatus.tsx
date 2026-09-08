@@ -14,8 +14,10 @@
  * validators have already reduced `target`, `walkthrough_url`, and
  * `source.open_uri` to an accepted URL or `null`. Text that never passed
  * through the projection — a diagnostic message, a source's repository or
- * message — is capped here with {@link truncateForRender}, the same bound the
- * projection applies. No raw record text reaches the DOM by another path, and
+ * message, a card's host — is capped here with {@link truncateForRender}, the
+ * same bound the projection applies. The client's own guard checks `host` only
+ * for being a string, so the cap does not rest on the server keeping it to `M5`
+ * or `M1`. No raw record text reaches the DOM by another path, and
  * the `codex://` launch URI stays copyable text, never a link, exactly as it
  * is on a card.
  *
@@ -31,7 +33,7 @@ import type {
   AttentionPayload,
   AttentionSourcePayload
 } from "../api";
-import { LOADING_LINE, MISSING_SCOPE_MESSAGE, NO_PAYLOAD_LINE } from "./AttentionView";
+import { LOADING_LINE, MISSING_SCOPE_MESSAGE, NO_PAYLOAD_LINE, staleMarkerLine } from "./AttentionView";
 import "./attention.css";
 
 /**
@@ -160,9 +162,29 @@ function Diagnostics({ entries }: { entries: readonly AttentionDiagnosticPayload
   );
 }
 
-/** A source's read state as one line: mode, status, when, and either bound it hit. */
+/**
+ * The source's resolved-record count, when it is a number worth showing.
+ *
+ * Read back as `unknown` on purpose. The payload guard in `src/client/api.ts`
+ * deliberately does not check this field, because that guard is all-or-nothing:
+ * a value that failed validation would reject the whole payload and blank the
+ * page over an advisory count, the hazard filed as
+ * shakacode/agent-coordination-dashboard#146 and #166. So the type is a claim
+ * nothing verifies, and the render site is what has to be total. An unusable
+ * value simply goes unreported, exactly as an unreadable timestamp does.
+ */
+function resolvedTotal(source: AttentionSourcePayload): number | null {
+  const value: unknown = source.resolved_total;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** A source's read state as one line: mode, status, when, how many resolved, and either bound it hit. */
 function sourceState(source: AttentionSourcePayload): string {
   const parts = [`mode ${source.mode}`, `status ${source.status}`, `checked ${textOrUnknown(source.checked_at)}`];
+  const resolved = resolvedTotal(source);
+  if (resolved !== null) {
+    parts.push(`${resolved} resolved`);
+  }
   if (source.partial) {
     parts.push("partial read");
   }
@@ -188,12 +210,14 @@ function CardEntry({ card, detail }: { card: AttentionCardPayload; detail: strin
 export interface SystemStatusProps {
   /** The last good payload, or `null` before the first successful fetch. */
   payload: AttentionPayload | null;
+  /** Local instant of the last successful fetch, for the stale marker. */
+  lastSuccessAt: number | null;
   /** Message of the most recent failed fetch since the last success. */
   failure: string | null;
   onBack: () => void;
 }
 
-export function SystemStatus({ payload, failure, onBack }: SystemStatusProps): ReactNode {
+export function SystemStatus({ payload, lastSuccessAt, failure, onBack }: SystemStatusProps): ReactNode {
   const header = (
     <header className="attention__header">
       <h1 className="attention__heading">{SYSTEM_STATUS_TITLE}</h1>
@@ -213,6 +237,7 @@ export function SystemStatus({ payload, failure, onBack }: SystemStatusProps): R
     );
   }
 
+  const staleMarker = staleMarkerLine(failure, lastSuccessAt);
   const { cards, diagnostics, sources } = payload;
   const partialSources = sources.filter((source) => source.partial);
   const truncatedSources = sources.filter((source) => source.truncated);
@@ -231,6 +256,10 @@ export function SystemStatus({ payload, failure, onBack }: SystemStatusProps): R
       <p className="system-status__no-action">{NO_ACTION_LINE}</p>
       {header}
       <p className="system-status__generated">{`Payload generated at ${textOrUnknown(payload.generated_at)}`}</p>
+      {/* The page whose subject is backend health may not be the one page that
+          forgets the backend is unreachable right now. Everything below
+          describes the payload above, which is the last read that succeeded. */}
+      {staleMarker === null ? null : <p className="attention__stale">{staleMarker}</p>}
 
       <Section id="system-status-dashboard-host" title="Dashboard host">
         <Summary text={`This dashboard reports its host as ${textOrUnknown(payload.dashboard_host)}.`} />
@@ -302,9 +331,12 @@ export function SystemStatus({ payload, failure, onBack }: SystemStatusProps): R
       </Section>
 
       <Section id="system-status-resolved" title="Resolved records (newest 20 per repository)">
-        {/* The resolved total reaches the client only through
-            `resolved_total_warning`, which names the count and the threshold it
-            crossed; the trail below is the newest 20 the model kept. */}
+        {/* Every source carries `resolved_total`, and Backend source health
+            above reports it per repository; this section holds the newest 20
+            the model kept and the warning raised once a repository crosses the
+            500-record threshold. What kept the count out of reach was the
+            client's duplicate copy of the payload types, and removing that
+            duplication is issue #165's job. */}
         <Diagnostics entries={ofKinds(diagnostics, RESOLVED_KINDS)} />
       </Section>
 
@@ -314,7 +346,7 @@ export function SystemStatus({ payload, failure, onBack }: SystemStatusProps): R
           <ul className="system-status__cards">
             {crossHostCards.map((card, index) => (
               <li className="system-status__card" key={`${index}-${card.repository}#${card.id}`}>
-                <CardEntry card={card} detail={`answerable on ${card.host}`} />
+                <CardEntry card={card} detail={`answerable on ${truncateForRender(card.host)}`} />
               </li>
             ))}
           </ul>
@@ -337,7 +369,10 @@ export function SystemStatus({ payload, failure, onBack }: SystemStatusProps): R
               const openUri = card.record.source?.open_uri;
               return (
                 <li className="system-status__card" key={`${index}-${card.repository}#${card.id}`}>
-                  <CardEntry card={card} detail={`native open ${card.native_open} on ${card.host}`} />
+                  <CardEntry
+                    card={card}
+                    detail={`native open ${card.native_open} on ${truncateForRender(card.host)}`}
+                  />
                   {SEPARATOR}
                   {typeof openUri === "string" ? (
                     <code className="system-status__uri">{openUri}</code>

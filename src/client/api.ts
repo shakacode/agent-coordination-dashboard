@@ -116,6 +116,16 @@ export interface AttentionSourcePayload {
   checked_at: string;
   partial: boolean;
   truncated: boolean;
+  /**
+   * Resolved records the read returned, whether or not they are in the trail.
+   *
+   * Advisory, and optional here even though `src/shared/attention.ts` declares
+   * it required and the model sets it on every source: {@link isSource} does
+   * not check it, so nothing verifies this type, and a reader must test it for
+   * a finite number before showing it.
+   * @see isSource
+   */
+  resolved_total?: number;
   message?: string;
 }
 
@@ -286,6 +296,20 @@ function isCard(value: unknown): value is AttentionCardPayload {
   );
 }
 
+/**
+ * The fields a source must have to be one.
+ *
+ * `resolved_total` is deliberately absent from this list. Rejection here is
+ * all-or-nothing — one bad field fails {@link isAttentionPayload} and the view
+ * renders no page at all — so the check has to be reserved for values the page
+ * cannot be right without. The resolved count is not one of them: it is a
+ * number beside a source line, and losing it costs a reader that number, while
+ * rejecting the payload over it costs them every card, every diagnostic, and
+ * the backend health this page exists to show. Issues
+ * shakacode/agent-coordination-dashboard#146 and #166 track making the guard
+ * degrade per field instead of per payload; until then, an advisory field is
+ * checked where it is rendered, not here.
+ */
 function isSource(value: unknown): value is AttentionSourcePayload {
   if (!isObject(value)) {
     return false;

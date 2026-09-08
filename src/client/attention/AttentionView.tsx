@@ -84,6 +84,21 @@ export function formatClockTime(instantMs: number): string {
   return `${hours}:${minutes}`;
 }
 
+/**
+ * The marker both views show while the latest fetch is failing: what is on
+ * screen is the last good payload, and the backend has not answered since.
+ *
+ * Exported so System Status states the state in the same words rather than
+ * inventing a second vocabulary for it. `null` when there is nothing to mark:
+ * either the last fetch succeeded, or none ever has, in which case there is no
+ * payload to call stale.
+ */
+export function staleMarkerLine(failure: string | null, lastSuccessAt: number | null): string | null {
+  return failure !== null && lastSuccessAt !== null
+    ? `last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`
+    : null;
+}
+
 /** The count headline, with a verb that agrees with a single action. */
 function countHeadline(total: number): string {
   return total === 1 ? `1 action needs ${OPERATOR_NAME}` : `${total} actions need ${OPERATOR_NAME}`;
@@ -225,10 +240,7 @@ export function AttentionView({
     degradation !== null && (total > 0 || degradation.kind === "incomplete")
       ? degradationNotice(degradation, sinceMs)
       : null;
-  const staleMarker =
-    failure !== null && lastSuccessAt !== null
-      ? `last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`
-      : null;
+  const staleMarker = staleMarkerLine(failure, lastSuccessAt);
 
   return (
     <main className="attention">

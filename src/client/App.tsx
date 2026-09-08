@@ -19,7 +19,14 @@ export function App(): ReactNode {
   const [view, setView] = useState<DashboardView>("attention");
 
   if (view === "system-status") {
-    return <SystemStatus payload={payload} failure={failure} onBack={() => setView("attention")} />;
+    return (
+      <SystemStatus
+        payload={payload}
+        lastSuccessAt={lastSuccessAt}
+        failure={failure}
+        onBack={() => setView("attention")}
+      />
+    );
   }
 
   return (

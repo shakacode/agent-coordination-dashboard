@@ -1,8 +1,13 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ATTENTION_TEXT_LIMIT, ATTENTION_TRUNCATION_MARKER, truncateForRender } from "../../shared/attention";
-import type { AttentionDiagnosticPayload, AttentionPayload } from "../api";
-import { MISSING_SCOPE_MESSAGE } from "./AttentionView";
+import {
+  isAttentionPayload,
+  type AttentionDiagnosticPayload,
+  type AttentionPayload,
+  type AttentionSourcePayload
+} from "../api";
+import { MISSING_SCOPE_MESSAGE, formatClockTime } from "./AttentionView";
 import {
   BACK_LABEL,
   DASHBOARD_SCOPE,
@@ -15,6 +20,7 @@ import {
 import {
   FIXTURE_MARKDOWN_QUESTION,
   FIXTURE_NOW_ISO,
+  FIXTURE_NOW_MS,
   FIXTURE_OPEN_URI,
   FIXTURE_OTHER_HOST,
   authErrorSource,
@@ -33,10 +39,12 @@ import {
 
 function renderStatus(
   payload: AttentionPayload | null,
-  overrides: { failure?: string | null; onBack?: () => void } = {}
+  overrides: { failure?: string | null; lastSuccessAt?: number | null; onBack?: () => void } = {}
 ) {
-  const { failure = null, onBack = () => {} } = overrides;
-  return render(<SystemStatus payload={payload} failure={failure} onBack={onBack} />);
+  const { failure = null, lastSuccessAt = FIXTURE_NOW_MS, onBack = () => {} } = overrides;
+  return render(
+    <SystemStatus payload={payload} lastSuccessAt={lastSuccessAt} failure={failure} onBack={onBack} />
+  );
 }
 
 /** One diagnostic of a given kind, so a test names only what it is about. */
@@ -86,6 +94,33 @@ describe("the first line", () => {
     renderStatus(null);
 
     expect(screen.getByText("Loading actions…")).toBeVisible();
+  });
+});
+
+describe("a failing fetch", () => {
+  it("marks the payload stale while the backend is unreachable, in the Attention view's words", () => {
+    // useAttention keeps the last good payload across a failed poll, so this is
+    // the ordinary state after the backend dies: a full page describing a read
+    // that is no longer current. The page whose subject is backend health may
+    // not be the one page that forgets it.
+    const lastSuccessAt = FIXTURE_NOW_MS - 5 * 60 * 1000;
+    renderStatus(withDiagnostics(diagnostic("invalid_json", "a record that could not be parsed")), {
+      failure: "attention request failed: network",
+      lastSuccessAt
+    });
+
+    expect(screen.getByText(`last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`)).toBeVisible();
+    // The last good payload still renders in full behind the marker.
+    expect(
+      within(section("Invalid or unknown-class records")).getByText("a record that could not be parsed")
+    ).toBeVisible();
+    expect(screen.getByText(`Payload generated at ${FIXTURE_NOW_ISO}`)).toBeVisible();
+  });
+
+  it("shows no stale marker while the backend is answering", () => {
+    renderStatus(withDiagnostics());
+
+    expect(screen.queryByText(/backend unreachable$/)).toBeNull();
   });
 });
 
@@ -328,6 +363,53 @@ describe("backend source health", () => {
     expect(within(sources).getByText("Coordination API did not answer the attention prefix")).toBeVisible();
   });
 
+  it("reports each source's resolved-record count, warning or no warning", () => {
+    renderStatus(
+      makeAttentionPayload([], {
+        sources: [
+          { ...okSource, resolved_total: 300 },
+          { ...unreachableSource, repository: "shakacode/agent-coordination-dashboard", resolved_total: 0 }
+        ]
+      })
+    );
+
+    const sources = section("Backend source health");
+    // 300 is under the 500-record threshold, so no diagnostic names it; the
+    // source line is the only place the count appears.
+    expect(
+      within(sources).getByText(`mode fs · status ok · checked ${FIXTURE_NOW_ISO} · 300 resolved`)
+    ).toBeVisible();
+    expect(
+      within(sources).getByText(
+        `mode api · status unreachable · checked ${FIXTURE_NOW_ISO} · 0 resolved`
+      )
+    ).toBeVisible();
+    expect(within(section("Resolved records (newest 20 per repository)")).getByText(NONE_TEXT)).toBeVisible();
+  });
+
+  it("renders the whole page when a source's resolved_total is not a number", () => {
+    // The payload guard is all-or-nothing, so an advisory count must never be a
+    // new way to reject the payload and blank the page (#146, #166).
+    const hostile = { ...okSource, resolved_total: "many" } as unknown as AttentionSourcePayload;
+    const payload = makeAttentionPayload([], { sources: [hostile] });
+
+    expect(isAttentionPayload(payload)).toBe(true);
+
+    renderStatus(payload);
+
+    const sources = section("Backend source health");
+    expect(within(sources).getByText(`mode fs · status ok · checked ${FIXTURE_NOW_ISO}`)).toBeVisible();
+    expect(within(sources).queryByText(/resolved$/)).toBeNull();
+  });
+
+  it("omits the count entirely when a source carries none", () => {
+    renderStatus(makeAttentionPayload([], { sources: [okSource] }));
+
+    expect(
+      within(section("Backend source health")).getByText(`mode fs · status ok · checked ${FIXTURE_NOW_ISO}`)
+    ).toBeVisible();
+  });
+
   it("marks an unreadable check time UNKNOWN rather than leaving it blank", () => {
     renderStatus(makeAttentionPayload([], { sources: [{ ...okSource, checked_at: "" }] }));
 
@@ -424,6 +506,30 @@ describe("literal text", () => {
     expect(shown).toHaveLength(ATTENTION_TEXT_LIMIT);
     expect(shown.endsWith(ATTENTION_TRUNCATION_MARKER)).toBe(true);
     expect(shown).toEqual(truncateForRender(message));
+  });
+
+  it("caps a cross-host card's host at the shared render bound", () => {
+    // The client's own guard checks `host` for being a string and nothing more,
+    // so the cap may not rest on the server keeping it to M5 or M1.
+    const host = "M".repeat(ATTENTION_TEXT_LIMIT + 50);
+    const { container } = renderStatus(
+      makeAttentionPayload([{ ...crossHostCard, host }], { sources: [okSource] })
+    );
+
+    const detail = container.querySelector(".system-status__card-detail")?.textContent ?? "";
+    expect(detail).toEqual(`answerable on ${truncateForRender(host)}`);
+    expect(detail.endsWith(ATTENTION_TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it("caps a capability-unknown card's host at the shared render bound", () => {
+    const host = "U".repeat(ATTENTION_TEXT_LIMIT + 50);
+    const { container } = renderStatus(
+      makeAttentionPayload([{ ...nativeOpenUnknownCard, host }], { sources: [okSource] })
+    );
+
+    const detail = container.querySelector(".system-status__card-detail")?.textContent ?? "";
+    expect(detail).toEqual(`native open unknown on ${truncateForRender(host)}`);
+    expect(detail.endsWith(ATTENTION_TRUNCATION_MARKER)).toBe(true);
   });
 
   it("never renders a record field the shared allowlist excludes", () => {
