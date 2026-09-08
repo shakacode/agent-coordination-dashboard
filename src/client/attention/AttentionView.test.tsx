@@ -20,6 +20,7 @@ import {
   deskPayload,
   diagnosticsOnlyEmptyPayload,
   diagnosticsOnlyPayload,
+  diagnosticsTruncatedPayload,
   emptyPayload,
   fullCard,
   fullRecord,
@@ -34,6 +35,7 @@ import {
   openAgeRecord,
   partialSourceEmptyPayload,
   partialSourcePayload,
+  partialSourceWithInformationalDiagnosticsPayload,
   reducedCard,
   reducedRecord,
   samePrPayload,
@@ -41,6 +43,7 @@ import {
   singleOpenDayCard,
   truncatedSourceEmptyPayload,
   truncatedSourcePayload,
+  unknownDiagnosticKindPayload,
   unreachableAndIncompletePayload,
   unreachablePayload
 } from "./fixtures";
@@ -338,13 +341,45 @@ describe("empty and degraded states", () => {
     ).toBeVisible();
   });
 
-  it("warns that records may be missing when only diagnostics report losses", () => {
+  it("keeps the ordinary view when a healthy read carries only informational diagnostics", () => {
+    // The state observed against the merged route: sources ok, nothing partial
+    // or truncated, and several diagnostics the model emits informationally.
+    expect(diagnosticsOnlyPayload.sources.every((source) => source.status === "ok")).toBe(true);
+    expect(diagnosticsOnlyPayload.sources.some((source) => source.partial || source.truncated)).toBe(false);
+    expect(diagnosticsOnlyPayload.diagnostics.map((entry) => entry.kind)).toContain("dashboard_host_unknown");
+
     renderView(diagnosticsOnlyPayload);
 
     expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+    expect(screen.queryByText(/^Some records may be missing/)).toBeNull();
+    expect(screen.queryByText(/^Attention data incomplete/)).toBeNull();
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+  });
+
+  it("still counts every diagnostic in the notice once a source reports an incomplete read", () => {
+    renderView(partialSourceWithInformationalDiagnosticsPayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "2 actions need Justin" })).toBeVisible();
     expect(
-      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 1 diagnostics")
+      screen.getByText("Some records may be missing: 1 repositories reported incomplete reads and 3 diagnostics")
     ).toBeVisible();
+  });
+
+  it("warns that records may be missing when the payload dropped diagnostics it could not fit", () => {
+    renderView(diagnosticsTruncatedPayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 4 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("treats a diagnostic kind it has never seen as informational", () => {
+    renderView(unknownDiagnosticKindPayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+    expect(screen.queryByText(/^Some records may be missing/)).toBeNull();
+    expect(screen.queryByText(/^Attention data incomplete/)).toBeNull();
   });
 
   it("never claims zero actions when a partial read produced no cards", () => {
@@ -370,16 +405,13 @@ describe("empty and degraded states", () => {
     expect(screen.queryByText(EMPTY_STATE_LINE)).toBeNull();
   });
 
-  it("never claims zero actions when diagnostics alone report losses", () => {
+  it("shows the decided empty state when a clean read carries only informational diagnostics", () => {
     renderView(diagnosticsOnlyEmptyPayload);
 
-    expect(screen.queryByText("0 actions need Justin")).toBeNull();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      `Attention data incomplete since ${formatClockTime(FIXTURE_NOW_MS)}`
-    );
-    expect(
-      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 2 diagnostics")
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "0 actions need Justin" })).toBeVisible();
+    expect(screen.getByText(EMPTY_STATE_LINE)).toBeVisible();
+    expect(screen.queryByText(/^Attention data incomplete/)).toBeNull();
+    expect(screen.queryByText(/^Some records may be missing/)).toBeNull();
   });
 
   it("speaks for the unreachable source when incompleteness applies too", () => {

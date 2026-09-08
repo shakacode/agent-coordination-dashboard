@@ -24,6 +24,22 @@ export const LOADING_LINE = "Loading actions…";
 /** Shown when the first fetch failed and there is no last good payload to keep. */
 export const NO_PAYLOAD_LINE = "Backend unreachable";
 
+/**
+ * The one diagnostic kind that is itself evidence of missing data: the model
+ * appends it when a diagnostic block hit its cap, so the payload really did
+ * drop entries it meant to carry.
+ *
+ * Every other kind is informational, including kinds added after this file was
+ * written. The rule is deliberately open: the model emits `resolved_recent`,
+ * `cross_host_count`, `open_age_flagged`, `dashboard_host_unknown`, and others
+ * on healthy reads, and `dashboard_host_unknown` is present on every machine
+ * whose `AGENT_COORD_MACHINE_ID` is not exactly `M5` or `M1`, so counting any
+ * diagnostic as missing data left the notice permanently on. Naming the
+ * informational kinds instead would put a copy of the model's vocabulary in the
+ * client and drift the moment a kind is added.
+ */
+export const DIAGNOSTICS_TRUNCATED_KIND = "diagnostics_truncated";
+
 /** The operator name is the decided literal for 1a; PR 1b makes it a setting. */
 const OPERATOR_NAME = "Justin";
 
@@ -53,8 +69,13 @@ type Degradation =
  * the scope answer, and either of those hides whether the rest of the read was
  * complete, so the worse fact is the one that gets the line.
  *
- * Incomplete covers a source that read only part of its records and a payload
- * that reports diagnostics: in both the card count is a floor, not a total.
+ * Incomplete means the server said data is missing, not that it said anything
+ * at all: a source that read only part of its records, one whose read was
+ * truncated, or a payload that dropped diagnostics it could not fit. In each the
+ * card count is a floor, not a total. A payload carrying only informational
+ * diagnostics is not incomplete, so a clean read with nothing to decide still
+ * reaches the empty state.
+ * @see DIAGNOSTICS_TRUNCATED_KIND
  */
 function findDegradation(payload: AttentionPayload | null): Degradation | null {
   if (payload === null) {
@@ -69,8 +90,11 @@ function findDegradation(payload: AttentionPayload | null): Degradation | null {
     return { kind: "auth_error", source: authError };
   }
   const incompleteSources = payload.sources.filter((source) => source.partial || source.truncated).length;
+  // Every diagnostic still counts in the notice once incompleteness is
+  // established: the trigger changed, the count did not.
   const diagnostics = payload.diagnostics.length;
-  if (incompleteSources > 0 || diagnostics > 0) {
+  const droppedDiagnostics = payload.diagnostics.some((entry) => entry.kind === DIAGNOSTICS_TRUNCATED_KIND);
+  if (incompleteSources > 0 || droppedDiagnostics) {
     return { kind: "incomplete", incompleteSources, diagnostics };
   }
   return null;

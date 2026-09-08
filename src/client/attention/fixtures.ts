@@ -79,17 +79,51 @@ export const truncatedSource: AttentionSourcePayload = {
   message: "Stopped after the first page of attention records"
 };
 
-export const unreadableRecordDiagnostic: AttentionDiagnosticPayload = {
+/**
+ * Informational diagnostics, spelled with the kinds the merged model actually
+ * emits (`src/server/attention/buildAttentionModel.ts`). None of them means a
+ * record went missing, and `dashboard_host_unknown` is on every machine whose
+ * `AGENT_COORD_MACHINE_ID` is not exactly `M5` or `M1`, so a healthy read
+ * normally carries several.
+ */
+export const resolvedRecentDiagnostic: AttentionDiagnosticPayload = {
   repository: attentionRepository,
-  kind: "record_unreadable",
-  message: "One attention record failed to parse and was skipped"
+  kind: "resolved_recent",
+  message: "Resolved agent-coordination-pr284-desk-card at \"2026-09-06T09:00:00Z\": no valid target."
 };
 
-export const unknownRepositoryDiagnostic: AttentionDiagnosticPayload = {
+export const crossHostCountDiagnostic: AttentionDiagnosticPayload = {
   repository: null,
-  kind: "state_root_missing",
-  message: "A configured state root does not exist"
+  kind: "cross_host_count",
+  message: "1 of 5 rendered cards belong to another host."
 };
+
+export const dashboardHostUnknownDiagnostic: AttentionDiagnosticPayload = {
+  repository: null,
+  kind: "dashboard_host_unknown",
+  message: "The dashboard machine id is not set, so the dashboard host is UNKNOWN."
+};
+
+/** The one kind that is itself evidence of missing data. */
+export const diagnosticsTruncatedDiagnostic: AttentionDiagnosticPayload = {
+  repository: null,
+  kind: "diagnostics_truncated",
+  message: "The payload raised 12 more diagnostics than the 200 shown."
+};
+
+/** A kind this client has never heard of, which must read as informational. */
+export const futureKindDiagnostic: AttentionDiagnosticPayload = {
+  repository: attentionRepository,
+  kind: "some_kind_added_after_this_client_shipped",
+  message: "A diagnostic kind the model gained after this view was written"
+};
+
+/** Three informational diagnostics, the shape a healthy read normally carries. */
+export const informationalDiagnostics: AttentionDiagnosticPayload[] = [
+  resolvedRecentDiagnostic,
+  crossHostCountDiagnostic,
+  dashboardHostUnknownDiagnostic
+];
 
 export const authErrorSourceWithMessage: AttentionSourcePayload = {
   ...authErrorSource,
@@ -304,11 +338,33 @@ export const truncatedSourcePayload: AttentionPayload = makeAttentionPayload([fu
   sources: [truncatedSource]
 });
 
-/** Every source read cleanly, yet the payload still reports lost records. */
+/**
+ * Every source read cleanly and the payload carries only informational
+ * diagnostics, which is what the merged route serves on a healthy read: the
+ * ordinary view, with no claim that records are missing.
+ */
 export const diagnosticsOnlyPayload: AttentionPayload = makeAttentionPayload([fullCard], {
   sources: [okSource],
-  diagnostics: [unreadableRecordDiagnostic]
+  diagnostics: informationalDiagnostics
 });
+
+/** The same clean read, plus the one kind that does mean entries were dropped. */
+export const diagnosticsTruncatedPayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [okSource],
+  diagnostics: [...informationalDiagnostics, diagnosticsTruncatedDiagnostic]
+});
+
+/** A clean read whose only diagnostic is a kind this client does not know. */
+export const unknownDiagnosticKindPayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [okSource],
+  diagnostics: [futureKindDiagnostic]
+});
+
+/** A genuinely incomplete read that also carries informational diagnostics. */
+export const partialSourceWithInformationalDiagnosticsPayload: AttentionPayload = makeAttentionPayload(
+  [fullCard, reducedCard],
+  { sources: [okSource, partialSource], diagnostics: informationalDiagnostics }
+);
 
 export const partialSourceEmptyPayload: AttentionPayload = makeAttentionPayload([], {
   sources: [okSource, partialSource]
@@ -318,15 +374,16 @@ export const truncatedSourceEmptyPayload: AttentionPayload = makeAttentionPayloa
   sources: [truncatedSource]
 });
 
+/** Nothing to decide, and only informational diagnostics: the decided empty state. */
 export const diagnosticsOnlyEmptyPayload: AttentionPayload = makeAttentionPayload([], {
   sources: [okSource],
-  diagnostics: [unreadableRecordDiagnostic, unknownRepositoryDiagnostic]
+  diagnostics: informationalDiagnostics
 });
 
 /** Unreachable outranks both auth_error and incomplete when all three apply. */
 export const unreachableAndIncompletePayload: AttentionPayload = makeAttentionPayload([], {
   sources: [partialSource, authErrorSource, unreachableSource],
-  diagnostics: [unreadableRecordDiagnostic]
+  diagnostics: [diagnosticsTruncatedDiagnostic]
 });
 
 export const emptyPayload: AttentionPayload = makeAttentionPayload([], { sources: [emptySource] });
