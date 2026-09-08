@@ -154,13 +154,23 @@ malformed or redirected health response is `failed`. The command only observes
 the installed package and running service; it does not start the dashboard or
 change coordination state.
 
-`/api/doctor` reports backend reachability only. In filesystem mode it counts
-directory entries for each resource without reading or parsing records: a
+`/api/doctor` reports backend reachability per resource. In filesystem mode it
+counts directory entries for each resource without reading or parsing records: a
 populated directory is `ok`, an absent or empty one is `empty`, and an
 unreadable one is `unreachable`. In API mode it issues one bounded authenticated
 list request per resource: `200` is `ok`, `401` and `403` are `auth_error`, any
 other status or a network failure is `unreachable`, and the configured token is
 never echoed in the response.
+
+It also reports the attention read scope as `attention`: the read `mode` and
+`workspace`, one status per configured repository, and `settings`, which says
+whether that scope came from the saved settings file (`saved`), from
+`TARGET_REPOS` because no settings file exists yet (`first_run_default`), or
+from nowhere because the settings file exists but could not be read
+(`unreadable`). Deriving a per-repository status means actually reading, so this
+section runs the attention reader and discards the records, bounded by the
+reader's per-repository entry, time, and byte budgets. It reports statuses only:
+no record content, target, question, or diagnostic text appears in the report.
 
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
 To inspect an existing coordination run, point `AGENT_COORD_STATE_ROOT` at the
@@ -192,6 +202,30 @@ API mode keeps file mode as the fallback when `AGENT_COORD_API_URL` is unset.
 with any embedded credentials, query string, and fragment stripped; an
 unparseable URL is reported as `UNKNOWN`. The token is never echoed.
 
+## Human attention
+
+`GET /api/attention` answers the one payload the attention view renders: the
+cards that need a person, the reporting `dashboard_host`, one source entry per
+configured repository, and any diagnostics. It is read-only and served to any
+allowed host.
+
+A request builds the payload on demand behind a 60-second cache with an
+in-flight guard, so concurrent requests share one read and an idle dashboard
+reads nothing; there is no background timer. A successful `PUT /api/settings`
+drops the cached payload immediately, so a scope change is never served from a
+stale entry. `X-Dashboard-Refresh: foreground` forces a rebuild, and only from a
+loopback address; from anywhere else the header is ignored and the cached
+payload is served.
+
+Data problems are reported inside a `200` rather than as an error: a repository
+that cannot be read arrives with its own source status and diagnostics. The only
+`5xx` is a build that threw, and it carries no detail.
+
+Records name the machine they came from, and the dashboard recognises the host
+identifiers `M5` and `M1`. A record naming any other host is suppressed with a
+diagnostic, and a dashboard whose `AGENT_COORD_MACHINE_ID` is neither reports
+`dashboard_host: "UNKNOWN"`, which leaves the view empty on any other machine.
+
 ## Configuration
 
 | Variable | Default |
@@ -202,6 +236,8 @@ unparseable URL is reported as `UNKNOWN`. The token is never echoed.
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
 | `AGENT_COORD_API_URL` | unset; when set, probe the HTTP backend instead of the state root |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
+| `AGENT_COORD_TOKEN` | fallback bearer token when `AGENT_COORD_API_TOKEN` is unset |
+| `AGENT_COORD_MACHINE_ID` | unset; the machine identifier this dashboard reports as `dashboard_host` (`M5` or `M1`) |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
