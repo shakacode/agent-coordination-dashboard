@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readDoctorReport } from "./doctor";
+import { ATTENTION_WORKSPACE } from "./attention/readAttentionRecords";
+import { attentionRepository, openAttentionRecord } from "../shared/attention.fixtures";
+
+const OTHER_REPOSITORY = "shakacode/agent-coordination-dashboard";
+/** Any ISO 8601 instant; the reader stamps its own clock, not the doctor's. */
+const ANY_INSTANT = expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/);
+/** The attention scope reported when no target repositories are configured. */
+const NO_ATTENTION_SCOPE = { mode: "fs", workspace: ATTENTION_WORKSPACE, settings: "saved", repositories: [] };
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -57,7 +65,8 @@ describe("readDoctorReport", () => {
         mode: "fs",
         status: "empty",
         checkedAt: checkedAt.toISOString()
-      }))
+      })),
+      attention: NO_ATTENTION_SCOPE
     });
   });
 
@@ -110,7 +119,8 @@ describe("readDoctorReport", () => {
       stateRoot: "/unused/state/root",
       perResource: ["claims", "heartbeats", "batches", "events"].map((resource) =>
         expect.objectContaining({ resource, mode: "api", status: "auth_error", httpStatus: 401 })
-      )
+      ),
+      attention: { mode: "api", workspace: ATTENTION_WORKSPACE, settings: "saved", repositories: [] }
     });
     expect(JSON.stringify(report)).not.toContain("secret-token-value");
   });
@@ -224,7 +234,46 @@ describe("readDoctorReport", () => {
     expect(report.apiUrl).toBe("https://coord.example.test/path");
     expect(JSON.stringify(report)).not.toContain("URLSECRET");
     expect(JSON.stringify(report)).not.toContain("user");
-    expect(report.perResource.every((status) => status.status === "ok")).toBe(true);
+  });
+
+  it.each([
+    ["a query string", "https://coord.example.test/?tenant=a"],
+    ["a fragment", "https://coord.example.test/#tenant"]
+  ])("refuses a base URL carrying %s rather than misrouting the state request", async (_label, apiUrl) => {
+    let requests = 0;
+
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl,
+      token: "api-token",
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response("{}", { status: 200 });
+      }
+    });
+
+    expect(requests).toBe(0);
+    expect(report.perResource.every((status) => status.status === "unreachable")).toBe(true);
+  });
+
+  it.each([
+    ["a username and password", "https://user:pass@coord.example.test"],
+    ["a username alone", "https://user@coord.example.test"]
+  ])("refuses a base URL carrying %s rather than sending it beside the token", async (_label, apiUrl) => {
+    let requests = 0;
+
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl,
+      token: "api-token",
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response("{}", { status: 200 });
+      }
+    });
+
+    expect(requests).toBe(0);
+    expect(report.perResource.every((status) => status.status === "unreachable")).toBe(true);
   });
 
   it("reports an unparseable coordination API URL as UNKNOWN", async () => {
@@ -242,5 +291,133 @@ describe("readDoctorReport", () => {
     expect(report.apiUrl).toBeNull();
     expect(report.stateRoot).toBe(stateRoot);
     expect(report.perResource.every((status) => status.mode === "fs")).toBe(true);
+    expect(report.attention.mode).toBe("fs");
+  });
+
+  it("reports one attention status per configured repository in filesystem mode", async () => {
+    const stateRoot = await stateRootWithResourceDirectories();
+    const [owner, name] = attentionRepository.split("/");
+    const recordDirectory = join(stateRoot, "attention", ATTENTION_WORKSPACE, owner, name);
+    await mkdir(recordDirectory, { recursive: true });
+    await writeFile(join(recordDirectory, `${openAttentionRecord.id}.json`), JSON.stringify(openAttentionRecord), "utf8");
+
+    const report = await readDoctorReport({
+      stateRoot,
+      targetRepos: [attentionRepository, OTHER_REPOSITORY],
+      settings: "saved"
+    });
+
+    expect(report.attention).toEqual({
+      mode: "fs",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "saved",
+      repositories: [
+        { repository: attentionRepository, status: "ok", checkedAt: ANY_INSTANT, partial: false },
+        // A repository with no attention directory yet is a normal first-run
+        // state, not a failure.
+        { repository: OTHER_REPOSITORY, status: "empty", checkedAt: ANY_INSTANT, partial: false }
+      ]
+    });
+    // Statuses only: the record was read to learn the status and then dropped.
+    expect(JSON.stringify(report)).not.toContain(openAttentionRecord.question);
+    expect(JSON.stringify(report)).not.toContain(openAttentionRecord.target);
+  });
+
+  it("reports one attention status per configured repository in API mode", async () => {
+    const prefixes: (string | null)[] = [];
+    const apiUrl = await listenCoordinationApi((req, res) => {
+      prefixes.push(new URL(req.url || "/", "http://127.0.0.1").searchParams.get("prefix"));
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ entries: [] }));
+    });
+
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl,
+      token: "api-token",
+      targetRepos: [attentionRepository]
+    });
+
+    expect(report.attention).toEqual({
+      mode: "api",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "saved",
+      repositories: [
+        { repository: attentionRepository, status: "empty", checkedAt: ANY_INSTANT, partial: false, httpStatus: 200 }
+      ]
+    });
+    expect(prefixes).toContain(`attention/${ATTENTION_WORKSPACE}/${attentionRepository}`);
+  });
+
+  it("reports a first-run scope built from the configured targets as such", async () => {
+    const stateRoot = await stateRootWithResourceDirectories();
+
+    const report = await readDoctorReport({
+      stateRoot,
+      targetRepos: [attentionRepository],
+      settings: "first_run_default"
+    });
+
+    // The configured targets stand in only until settings are saved, so the
+    // report says the scope is a first-run default rather than a saved one.
+    expect(report.attention).toEqual({
+      mode: "fs",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "first_run_default",
+      repositories: [{ repository: attentionRepository, status: "empty", checkedAt: ANY_INSTANT, partial: false }]
+    });
+  });
+
+  it("reports an unreadable settings scope as empty and probes no repository", async () => {
+    const stateRoot = await stateRootWithResourceDirectories();
+    let reads = 0;
+
+    const report = await readDoctorReport({
+      stateRoot,
+      // A caller that could not read the saved settings has no scope to hand
+      // over; the configured targets must not be substituted for it.
+      targetRepos: [],
+      settings: "unreadable",
+      readAttentionRecords: async () => {
+        reads += 1;
+        throw new Error("the doctor must not read an unreadable scope");
+      }
+    });
+
+    expect(report.attention).toEqual({
+      mode: "fs",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "unreadable",
+      repositories: []
+    });
+    expect(reads).toBe(0);
+    // The rest of the report is unchanged: the resource probes still run.
+    expect(report.perResource.map((status) => status.resource)).toEqual(["claims", "heartbeats", "batches", "events"]);
+  });
+
+  it("reports an attention scope the coordination token cannot read as an auth error", async () => {
+    const report = await readDoctorReport({
+      stateRoot: "/unused/state/root",
+      apiUrl: "https://coord.example.test",
+      token: "api-token",
+      targetRepos: [attentionRepository],
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: "attention prefix is out of scope for this token" }), {
+          status: 403,
+          headers: { "content-type": "application/json" }
+        })
+    });
+
+    expect(report.attention).toEqual({
+      mode: "api",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "saved",
+      repositories: [
+        { repository: attentionRepository, status: "auth_error", checkedAt: ANY_INSTANT, partial: false, httpStatus: 403 }
+      ]
+    });
+    // The reader's warning text stays with `/api/attention`; the doctor reports
+    // the status alone.
+    expect(JSON.stringify(report)).not.toContain("out of scope for this token");
   });
 });
