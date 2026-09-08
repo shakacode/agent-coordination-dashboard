@@ -223,8 +223,13 @@ that cannot be read arrives with its own source status and diagnostics. The only
 
 Records name the machine they came from, and the dashboard recognises the host
 identifiers `M5` and `M1`. A record naming any other host is suppressed with a
-diagnostic, and a dashboard whose `AGENT_COORD_MACHINE_ID` is neither reports
-`dashboard_host: "UNKNOWN"`, which leaves the view empty on any other machine.
+diagnostic, so records produced on a third machine never become cards.
+
+A dashboard whose own `AGENT_COORD_MACHINE_ID` is unset or unrecognised is a
+separate case, and a milder one: every card is still returned. What it loses is
+the ability to say which cards are answerable where it is running, so the
+payload reports `dashboard_host: "UNKNOWN"`, marks every card `host_matches:
+false`, and adds `dashboard_host_unknown` and `cross_host_count` diagnostics.
 
 ## Configuration
 
@@ -237,7 +242,7 @@ diagnostic, and a dashboard whose `AGENT_COORD_MACHINE_ID` is neither reports
 | `AGENT_COORD_API_URL` | unset; when set, probe the HTTP backend instead of the state root |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
 | `AGENT_COORD_TOKEN` | fallback bearer token when `AGENT_COORD_API_TOKEN` is unset |
-| `AGENT_COORD_MACHINE_ID` | unset; the machine identifier this dashboard reports as `dashboard_host` (`M5` or `M1`) |
+| `AGENT_COORD_MACHINE_ID` | unset; the machine this dashboard runs on (`M5` or `M1`), reported as `dashboard_host`; unset means no card can be marked answerable here |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
