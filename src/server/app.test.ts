@@ -15,6 +15,7 @@ import {
   type AttentionRepositoryRead,
   type ReadAttentionRecordsOptions
 } from "./attention/readAttentionRecords";
+import { ATTENTION_SAMPLE_INTERVAL_MS, ATTENTION_SAMPLES_FILENAME } from "./attention/sampler";
 import type { ServerConfig } from "./config";
 import type { AttentionPayload } from "../shared/attention";
 import { attentionRepository, makeAttentionRecord, openAttentionRecord } from "../shared/attention.fixtures";
@@ -26,6 +27,9 @@ const roots: string[] = [];
 const NOW = new Date("2026-09-03T09:30:00.000Z");
 const CHECKED_AT = NOW.toISOString();
 const ATTENTION_PREFIX = `attention/${ATTENTION_WORKSPACE}/${attentionRepository}`;
+
+/** The `Accept` header a browser sends when it navigates to a page. */
+const DOCUMENT_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
 
 function emptyCounts(): AttentionReadCounts {
   const outcomes = {} as AttentionReadCounts["outcomes"];
@@ -112,7 +116,11 @@ async function listen(
   overrides: Partial<ServerConfig> = {},
   appOptions: NonNullable<Parameters<typeof createDashboardApp>[1]> = {}
 ): Promise<string> {
-  const app = await createDashboardApp(testConfig(stateRoot, overrides), { serveFrontend: false, ...appOptions });
+  const app = await createDashboardApp(testConfig(stateRoot, overrides), {
+    serveFrontend: false,
+    attentionSampler: false,
+    ...appOptions
+  });
   return listenServer(app.listen(0, "127.0.0.1"));
 }
 
@@ -123,7 +131,11 @@ async function listenForPeer(
   overrides: Partial<ServerConfig> = {},
   appOptions: NonNullable<Parameters<typeof createDashboardApp>[1]> = {}
 ): Promise<string> {
-  const app = await createDashboardApp(testConfig(stateRoot, overrides), { serveFrontend: false, ...appOptions });
+  const app = await createDashboardApp(testConfig(stateRoot, overrides), {
+    serveFrontend: false,
+    attentionSampler: false,
+    ...appOptions
+  });
   return listenServer(
     createServer((req, res) => {
       Object.defineProperty(req.socket, "remoteAddress", { value: remoteAddress });
@@ -279,7 +291,7 @@ describe("dashboard app", () => {
 
   it("rejects coordination diagnostics requested from a non-loopback client", async () => {
     const stateRoot = await coordinationRoot("coord-doctor-remote-");
-    const app = await createDashboardApp(testConfig(stateRoot), { serveFrontend: false });
+    const app = await createDashboardApp(testConfig(stateRoot), { serveFrontend: false, attentionSampler: false });
     const baseUrl = await listenServer(
       createServer((req, res) => {
         Object.defineProperty(req.socket, "remoteAddress", { value: "203.0.113.8" });
@@ -330,7 +342,7 @@ describe("dashboard app", () => {
 
   it("rejects settings writes from remote viewers", async () => {
     const stateRoot = await coordinationRoot("coord-settings-remote-");
-    const app = await createDashboardApp(testConfig(stateRoot), { serveFrontend: false });
+    const app = await createDashboardApp(testConfig(stateRoot), { serveFrontend: false, attentionSampler: false });
     const baseUrl = await listenServer(
       createServer((req, res) => {
         Object.defineProperty(req.socket, "remoteAddress", { value: "203.0.113.8" });
@@ -354,6 +366,7 @@ describe("dashboard app", () => {
     const stateRoot = await coordinationRoot("coord-machine-local-writes-");
     const appOptions = {
       serveFrontend: false,
+      attentionSampler: false as const,
       machineInterfaces: {
         ethernet: [{ address: "192.168.7.26" }],
         bridge: [{ address: "fe80::1" }],
@@ -460,6 +473,7 @@ describe("GET /api/attention", () => {
     };
     const app = await createDashboardApp(testConfig(stateRoot, attentionConfig(stateRoot)), {
       serveFrontend: false,
+      attentionSampler: false,
       readAttentionRecords: read,
       now: () => NOW
     });
@@ -820,18 +834,98 @@ describe("GET /api/attention", () => {
     try {
       const app = await createDashboardApp(testConfig(stateRoot, attentionConfig(stateRoot)), {
         serveFrontend: false,
+        attentionSampler: false,
         readAttentionRecords: reader.read,
         now: () => NOW
       });
       const response = await requestDirectly(app, "/api/attention");
 
       expect(response.status).toBe(200);
+      // The cache is a TTL and an in-flight guard: no timer ever rebuilds it,
+      // and the sampling job is the only timer the dashboard runs at all.
       expect(interval).not.toHaveBeenCalled();
       expect(timeout).not.toHaveBeenCalled();
     } finally {
       interval.mockRestore();
       timeout.mockRestore();
     }
+  });
+
+  it("starts the hourly sampler by default, and nothing else on the render path", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-sampler-default-");
+    const reader = countingReader();
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+
+    try {
+      const app = await createDashboardApp(testConfig(stateRoot, attentionConfig(stateRoot)), {
+        serveFrontend: false,
+        readAttentionRecords: reader.read,
+        now: () => NOW
+      });
+      const response = await requestDirectly(app, "/api/attention");
+
+      expect(response.status).toBe(200);
+      // Production gets the sampling job without index.ts asking for it, and
+      // gets exactly one interval: the hourly sample, and no cache refresh.
+      expect(interval).toHaveBeenCalledTimes(1);
+      expect(interval.mock.calls[0][1]).toBe(ATTENTION_SAMPLE_INTERVAL_MS);
+      expect(timeout).not.toHaveBeenCalled();
+      // Unref'd, so the sampling job never holds a process open by itself.
+      const handle = interval.mock.results[0].value as ReturnType<typeof setInterval>;
+      expect(handle.hasRef()).toBe(false);
+      clearInterval(handle);
+    } finally {
+      interval.mockRestore();
+      timeout.mockRestore();
+    }
+  });
+
+  it("counts a document load and a foreground refresh, and never a poll, in the hourly sample", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-document-loads-");
+    const reader = countingReader();
+    const ticks: { tick: () => Promise<void>; delayMs: number }[] = [];
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW,
+      attentionSampler: {
+        schedule: (tick, delayMs) => {
+          ticks.push({ tick, delayMs });
+          return () => {};
+        }
+      }
+    });
+
+    // A navigation: the browser names the document media type outright.
+    await fetch(baseUrl, { headers: { accept: DOCUMENT_ACCEPT } });
+    // The client's own poll, exactly as src/client/api.ts sends it.
+    await fetch(`${baseUrl}/api/attention`, { headers: { accept: "application/json" } });
+    await fetch(`${baseUrl}/api/attention`, { headers: { accept: "application/json" } });
+    // The operator pressing Refresh: a loopback foreground request.
+    await fetch(`${baseUrl}/api/attention`, {
+      headers: { accept: "application/json", "X-Dashboard-Refresh": "foreground" }
+    });
+    // A script and a stylesheet the page pulls in behind the document.
+    await fetch(`${baseUrl}/assets/index.js`, { headers: { accept: "*/*" } });
+    await fetch(`${baseUrl}/assets/index.css`, { headers: { accept: "text/css,*/*;q=0.1" } });
+    // Reading an endpoint by hand in an address bar is not a page load.
+    await fetch(`${baseUrl}/api/health`, { headers: { accept: DOCUMENT_ACCEPT } });
+
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0].delayMs).toBe(ATTENTION_SAMPLE_INTERVAL_MS);
+    // One build for the first poll and one for the foreground refresh.
+    expect(reader.calls).toHaveLength(2);
+    await ticks[0].tick();
+    // The sample reads through the same cache the route does, so an hourly job
+    // never doubles the read load.
+    expect(reader.calls).toHaveLength(2);
+
+    const rows = (await readFile(join(stateRoot, ATTENTION_SAMPLES_FILENAME), "utf8"))
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ts: NOW.toISOString(), open: 1, document_loads_since_last: 2 });
   });
 
   it("serves every card through the record projection, so an unsafe target arrives as null", async () => {
