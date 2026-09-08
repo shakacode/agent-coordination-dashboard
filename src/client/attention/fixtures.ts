@@ -111,7 +111,25 @@ export const diagnosticsTruncatedDiagnostic: AttentionDiagnosticPayload = {
   message: "The payload raised 12 more diagnostics than the 200 shown."
 };
 
-/** A kind this client has never heard of, which must read as informational. */
+/**
+ * Kinds that report a real loss while the source still reads `ok` and
+ * non-partial: the model suppressing a card, and the reader forwarding a file
+ * it could not parse. Neither shows up in `partial` or `truncated`, so the
+ * diagnostic is the only evidence the payload is short.
+ */
+export const staleRecordDiagnostic: AttentionDiagnosticPayload = {
+  repository: attentionRepository,
+  kind: "stale_source",
+  message: 'Record agent-coordination-pr284-desk-card has an unreadable refreshed_at "not-a-date"; the card is suppressed.'
+};
+
+export const invalidJsonDiagnostic: AttentionDiagnosticPayload = {
+  repository: attentionRepository,
+  kind: "invalid_json",
+  message: "attention/default/shakacode/agent-coordination/broken.json: The record is not valid JSON."
+};
+
+/** A kind this client has never heard of, which must read as a possible loss. */
 export const futureKindDiagnostic: AttentionDiagnosticPayload = {
   repository: attentionRepository,
   kind: "some_kind_added_after_this_client_shipped",
@@ -358,6 +376,27 @@ export const diagnosticsTruncatedPayload: AttentionPayload = makeAttentionPayloa
 export const unknownDiagnosticKindPayload: AttentionPayload = makeAttentionPayload([fullCard], {
   sources: [okSource],
   diagnostics: [futureKindDiagnostic]
+});
+
+/**
+ * Every source read cleanly, yet a record was suppressed or dropped. These are
+ * the cases the source flags cannot express, so the diagnostic has to carry the
+ * warning on its own.
+ */
+export const staleRecordDiagnosticPayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [okSource],
+  diagnostics: [staleRecordDiagnostic]
+});
+
+export const invalidJsonDiagnosticPayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [okSource],
+  diagnostics: [invalidJsonDiagnostic]
+});
+
+/** Informational noise around one real loss: still incomplete, and all four count. */
+export const mixedDiagnosticsPayload: AttentionPayload = makeAttentionPayload([fullCard], {
+  sources: [okSource],
+  diagnostics: [...informationalDiagnostics, staleRecordDiagnostic]
 });
 
 /** A genuinely incomplete read that also carries informational diagnostics. */

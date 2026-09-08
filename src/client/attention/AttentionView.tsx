@@ -25,20 +25,38 @@ export const LOADING_LINE = "Loading actions…";
 export const NO_PAYLOAD_LINE = "Backend unreachable";
 
 /**
- * The one diagnostic kind that is itself evidence of missing data: the model
- * appends it when a diagnostic block hit its cap, so the payload really did
- * drop entries it meant to carry.
+ * The diagnostic kinds that describe the payload rather than report a loss.
  *
- * Every other kind is informational, including kinds added after this file was
- * written. The rule is deliberately open: the model emits `resolved_recent`,
- * `cross_host_count`, `open_age_flagged`, `dashboard_host_unknown`, and others
- * on healthy reads, and `dashboard_host_unknown` is present on every machine
- * whose `AGENT_COORD_MACHINE_ID` is not exactly `M5` or `M1`, so counting any
- * diagnostic as missing data left the notice permanently on. Naming the
- * informational kinds instead would put a copy of the model's vocabulary in the
- * client and drift the moment a kind is added.
+ * The set is closed and everything outside it counts as missing data, including
+ * kinds added after this client ships. The direction is the point. An unknown
+ * kind that is really harmless produces a warning the operator did not need,
+ * and the cure is one line here once someone notices. The opposite default —
+ * treating an unknown kind as harmless — hides a record the server dropped,
+ * and nobody ever notices, because the whole symptom is an absence: the reader
+ * suppresses a record with `stale_source` or `invalid_json` while the source
+ * stays `ok` and not partial, and the page then says "0 actions need Justin"
+ * with data genuinely missing. AGENTS.md line 32 asks for `UNKNOWN` or a
+ * visible warning when state cannot be read, so the recoverable failure is the
+ * only acceptable one.
+ *
+ * These six are what the model emits on healthy reads, and
+ * `dashboard_host_unknown` is present on every machine whose
+ * `AGENT_COORD_MACHINE_ID` is not exactly `M5` or `M1`, so counting them would
+ * leave the notice permanently on and unread.
+ *
+ * The list is a stopgap: it is a copy of part of the model's vocabulary and it
+ * will drift. Issue #164 is the durable answer — a server-side count of
+ * suppressed records on the source, after which the client needs no vocabulary
+ * at all and this set can go.
  */
-export const DIAGNOSTICS_TRUNCATED_KIND = "diagnostics_truncated";
+export const INFORMATIONAL_DIAGNOSTIC_KINDS: readonly string[] = [
+  "resolved_recent",
+  "cross_host_count",
+  "dashboard_host_unknown",
+  "open_age_flagged",
+  "producer_duplicate",
+  "resolved_total_warning"
+];
 
 /** The operator name is the decided literal for 1a; PR 1b makes it a setting. */
 const OPERATOR_NAME = "Justin";
@@ -69,13 +87,12 @@ type Degradation =
  * the scope answer, and either of those hides whether the rest of the read was
  * complete, so the worse fact is the one that gets the line.
  *
- * Incomplete means the server said data is missing, not that it said anything
- * at all: a source that read only part of its records, one whose read was
- * truncated, or a payload that dropped diagnostics it could not fit. In each the
- * card count is a floor, not a total. A payload carrying only informational
- * diagnostics is not incomplete, so a clean read with nothing to decide still
- * reaches the empty state.
- * @see DIAGNOSTICS_TRUNCATED_KIND
+ * Incomplete means records may be missing: a source that read only part of its
+ * records, one whose read was truncated, or any diagnostic that is not purely
+ * descriptive. In each the card count is a floor, not a total. A payload
+ * carrying only informational diagnostics is not incomplete, so a clean read
+ * with nothing to decide still reaches the empty state.
+ * @see INFORMATIONAL_DIAGNOSTIC_KINDS
  */
 function findDegradation(payload: AttentionPayload | null): Degradation | null {
   if (payload === null) {
@@ -90,11 +107,11 @@ function findDegradation(payload: AttentionPayload | null): Degradation | null {
     return { kind: "auth_error", source: authError };
   }
   const incompleteSources = payload.sources.filter((source) => source.partial || source.truncated).length;
-  // Every diagnostic still counts in the notice once incompleteness is
-  // established: the trigger changed, the count did not.
+  // Every diagnostic counts in the notice once incompleteness is established,
+  // informational ones included: the trigger is narrow, the count is not.
   const diagnostics = payload.diagnostics.length;
-  const droppedDiagnostics = payload.diagnostics.some((entry) => entry.kind === DIAGNOSTICS_TRUNCATED_KIND);
-  if (incompleteSources > 0 || droppedDiagnostics) {
+  const lostRecords = payload.diagnostics.some((entry) => !INFORMATIONAL_DIAGNOSTIC_KINDS.includes(entry.kind));
+  if (incompleteSources > 0 || lostRecords) {
     return { kind: "incomplete", incompleteSources, diagnostics };
   }
   return null;

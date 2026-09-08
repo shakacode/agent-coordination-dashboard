@@ -24,8 +24,10 @@ import {
   emptyPayload,
   fullCard,
   fullRecord,
+  invalidJsonDiagnosticPayload,
   invalidLinksCard,
   makeAttentionPayload,
+  mixedDiagnosticsPayload,
   markdownQuestionPayload,
   markdownQuestionRecord,
   nativeOpenUnavailableCard,
@@ -41,6 +43,7 @@ import {
   samePrPayload,
   sharedIdPayload,
   singleOpenDayCard,
+  staleRecordDiagnosticPayload,
   truncatedSourceEmptyPayload,
   truncatedSourcePayload,
   unknownDiagnosticKindPayload,
@@ -374,12 +377,47 @@ describe("empty and degraded states", () => {
     ).toBeVisible();
   });
 
-  it("treats a diagnostic kind it has never seen as informational", () => {
+  it("warns when a record was suppressed even though its source read cleanly", () => {
+    // claude-review's and Codex's shared case: an unreadable refreshed_at
+    // suppresses the card, and neither partial nor truncated records that.
+    expect(staleRecordDiagnosticPayload.sources.every((source) => source.status === "ok")).toBe(true);
+    expect(staleRecordDiagnosticPayload.sources.some((source) => source.partial || source.truncated)).toBe(false);
+
+    renderView(staleRecordDiagnosticPayload);
+
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 1 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("warns when the reader forwarded a record it could not parse", () => {
+    renderView(invalidJsonDiagnosticPayload);
+
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 1 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("treats a diagnostic kind it has never seen as a possible loss", () => {
+    // Deliberately inverted from the previous round. An unknown kind that turns
+    // out to be harmless costs one unnecessary warning, curable by adding it to
+    // INFORMATIONAL_DIAGNOSTIC_KINDS; the old default hid real losses instead,
+    // and an absence is not something anyone notices.
     renderView(unknownDiagnosticKindPayload);
 
     expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
-    expect(screen.queryByText(/^Some records may be missing/)).toBeNull();
-    expect(screen.queryByText(/^Attention data incomplete/)).toBeNull();
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 1 diagnostics")
+    ).toBeVisible();
+  });
+
+  it("counts informational diagnostics in the notice when one real loss triggers it", () => {
+    renderView(mixedDiagnosticsPayload);
+
+    expect(screen.getByRole("heading", { level: 1, name: "1 action needs Justin" })).toBeVisible();
+    expect(
+      screen.getByText("Some records may be missing: 0 repositories reported incomplete reads and 4 diagnostics")
+    ).toBeVisible();
   });
 
   it("never claims zero actions when a partial read produced no cards", () => {
