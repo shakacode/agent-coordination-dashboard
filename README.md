@@ -224,6 +224,16 @@ Sampling failures produce a server warning without failing a page request.
 An unreachable or unauthorized source, unreadable record, partial read, or
 truncated diagnostic list skips the sample and retains the previous timestamp
 and pending visit count until a readable snapshot is available.
+The fixed eight-column sample rows belong to one normalized repository set.
+`attention-samples.scope.json` records that set; repository order and letter
+case do not change it. A scope change starts a new 336-sample assessment and a
+new visit bucket. Before the next successful sample, the prior rows and their
+scope metadata are preserved as uniquely named `attention-samples.*.archive`
+files. A restart with the same scope continues its period; changed scope or
+missing/malformed legacy metadata starts a fresh period without mixing old
+history. Failed settings saves leave the period unchanged. Pending work from a
+previous scope cannot consume visits collected for the new scope.
+
 A successful `PUT /api/settings`
 drops the cached payload immediately, so a scope change is never served from a
 stale entry. `X-Dashboard-Refresh: foreground` bypasses an otherwise-valid cache

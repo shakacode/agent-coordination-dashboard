@@ -930,6 +930,49 @@ describe("GET /api/attention", () => {
     expect(rows[0]).toMatchObject({ ts: NOW.toISOString(), open: 1, document_loads_since_last: 2 });
   });
 
+  it("does not sample an old pending scope or consume new-scope visits after settings change", async () => {
+    const root = await coordinationRoot("coord-sampler-pending-scope-");
+    const ticks: (() => Promise<void>)[] = [];
+    let releaseOld!: () => void;
+    let startedOld!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { startedOld = resolve; });
+    const oldReleased = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const baseUrl = await listen(root, attentionConfig(root), {
+      now: () => NOW,
+      readAttentionRecords: async ({ targetRepos }) => {
+        if (targetRepos[0] === attentionRepository) {
+          startedOld();
+          await oldReleased;
+        }
+        return attentionRead(...targetRepos.map((repository) => repositoryRead({
+          repository,
+          records: [makeAttentionRecord({
+            repository, target: `https://github.com/${repository}/pull/1`,
+            priority_class: "urgent-risk", created_at: "2026-09-01T09:00:00Z"
+          })]
+        })));
+      },
+      attentionSampler: { schedule: (tick) => { ticks.push(tick); return () => {}; }, logger: { warn: () => {} } }
+    });
+    await fetch(baseUrl, { headers: { accept: DOCUMENT_ACCEPT } });
+    const pending = ticks[0]();
+    await oldStarted;
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["example/new-repo"] })
+    });
+    expect(saved.status).toBe(200);
+    await fetch(baseUrl, { headers: { accept: DOCUMENT_ACCEPT } });
+    releaseOld();
+    await pending;
+    await expect(readFile(join(root, ATTENTION_SAMPLES_FILENAME))).rejects.toMatchObject({ code: "ENOENT" });
+    await ticks[0]();
+    const rows = (await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ urgent: 1, new_urgent_since_last: 1, document_loads_since_last: 1 });
+  });
+
   it("does not count a foreground HEAD request as an operator arrival", async () => {
     const stateRoot = await coordinationRoot("coord-attention-head-refresh-");
     const ticks: (() => Promise<void>)[] = [];

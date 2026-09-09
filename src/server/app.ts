@@ -191,8 +191,10 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
    * re-reading it is what makes a `PUT /api/settings` change show up at the
    * next expiry or foreground refresh without restarting the server.
    */
-  async function buildAttentionPayload(): Promise<AttentionPayload> {
+  async function buildAttentionPayload(generation: number): Promise<AttentionPayload> {
     const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
+    // A replaced in-flight build must never restore its old visit bucket.
+    if (generation === attentionScopeGeneration) attentionSampler.setScope(settings.targetRepos);
     const read = await readAttentionRecords({
       stateRoot: config.stateRoot,
       coordApiUrl: config.coordApiUrl,
@@ -214,7 +216,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   function startAttentionBuild(): Promise<AttentionPayload> {
     const expiresAt = now().getTime() + attentionTtlMs;
     const generation = attentionScopeGeneration;
-    const build = buildAttentionPayload()
+    const build = buildAttentionPayload(generation)
       .then((payload) => {
         // A settings write landed while this build was reading, so the payload
         // describes a scope that is no longer saved: the requests waiting on
@@ -256,10 +258,21 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
    */
   const attentionSampler = createAttentionSampler({
     settingsFilePath: persistedSettingsPath,
-    readPayload: () => readAttentionPayload(false),
+    readPayload: async () => {
+      const generation = attentionScopeGeneration;
+      const payload = await readAttentionPayload(false);
+      if (generation !== attentionScopeGeneration) {
+        throw new Error("Attention scope changed while the sample was being read.");
+      }
+      return payload;
+    },
     now,
     ...(options.attentionSampler || {})
   });
+
+  // Attribute visits before the first payload read. An unreadable scope starts
+  // empty, so repairing settings never assigns old unknown visits to it.
+  attentionSampler.setScope((await resolveDoctorSettingsScope()).targetRepos);
 
   app.use(createHostGuard(config.allowedHosts));
   // After the host guard, so a request the dashboard refused to serve is not
@@ -355,6 +368,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     // authorization or an invalid body returns above and leaves the cache
     // alone.
     invalidateAttentionScope();
+    attentionSampler.setScope(saved.targetRepos);
     res.json(saved);
   });
 

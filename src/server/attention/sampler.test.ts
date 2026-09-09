@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import {
 } from "./readAttentionRecords";
 import {
   ATTENTION_SAMPLE_INTERVAL_MS,
+  ATTENTION_SAMPLE_SCOPE_FILENAME,
   ATTENTION_SAMPLES_FILENAME,
   attentionSamplesPath,
   createAttentionSampler,
@@ -205,6 +206,113 @@ describe("attention sampler", () => {
     });
   });
 
+  it("starts a separate period for a changed repository scope across restart", async () => {
+    const root = await stateRoot("attention-sampler-scope-restart-");
+    await samplerFor(root, NOW, { readPayload: async () => payloadAt([urgentRecord(NOW)], NOW) }).sample();
+    const oldText = await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8");
+    const later = new Date(NOW.getTime() + 10 * MINUTE_MS);
+    const changed = payloadAt([urgentRecord(later)], later);
+    changed.sources[0].repository = "example/new-repo";
+    changed.cards[0].repository = "example/new-repo";
+
+    await samplerFor(root, later, { readPayload: async () => changed }).sample();
+
+    const rows = await readRows(root);
+    // The old urgent card is new to this population even though it predates
+    // the previous population's last row. Never combine the two assessments.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].new_urgent_since_last).toBe(1);
+    const archives = (await readdir(root)).filter((name) => name.endsWith(".archive.jsonl"));
+    expect(archives).toHaveLength(1);
+    expect(await readFile(join(root, archives[0]), "utf8")).toBe(oldText);
+  });
+
+  it("restarts the assessment after changing scope away and back before the next tick", async () => {
+    const root = await stateRoot("attention-sampler-returned-scope-");
+    const sampler = samplerFor(root, NOW, { readPayload: async () => payloadAt([urgentRecord(NOW)], NOW) });
+    sampler.setScope([attentionRepository]);
+    await sampler.sample();
+    sampler.setScope(["example/other"]);
+    sampler.setScope([attentionRepository]);
+    await sampler.sample();
+    expect(await readRows(root)).toHaveLength(1);
+    expect((await readRows(root))[0].new_urgent_since_last).toBe(1);
+    expect((await readdir(root)).filter((name) => name.endsWith(".archive.jsonl"))).toHaveLength(1);
+  });
+
+  it("keeps one period for a reordered and differently cased repository set across restart", async () => {
+    const root = await stateRoot("attention-sampler-equivalent-scope-");
+    const payload = payloadAt([urgentRecord(NOW)], NOW);
+    payload.sources.push({ ...payload.sources[0], repository: "example/second" });
+    const sampler = samplerFor(root, NOW, { readPayload: async () => payload });
+    sampler.setScope([attentionRepository, "example/second"]);
+    await sampler.sample();
+    sampler.countDocumentLoad();
+    sampler.setScope(["EXAMPLE/SECOND", attentionRepository.toUpperCase()]);
+    await sampler.sample();
+    payload.sources.reverse();
+    await samplerFor(root, NOW, { readPayload: async () => payload }).sample();
+    expect((await readRows(root)).map((row) => row.new_urgent_since_last)).toEqual([1, 0, 0]);
+    expect((await readRows(root))[1].document_loads_since_last).toBe(1);
+    expect((await readdir(root)).filter((name) => name.endsWith(".archive.jsonl"))).toEqual([]);
+  });
+
+  it.each([null, "{broken"])("archives history whose scope is unknown: %s", async (metadata) => {
+    const root = await stateRoot("attention-sampler-legacy-scope-");
+    const history = '{"ts":"2026-09-03T09:30:00Z","open":999}\n';
+    await writeFile(join(root, ATTENTION_SAMPLES_FILENAME), history);
+    if (metadata !== null) await writeFile(join(root, ATTENTION_SAMPLE_SCOPE_FILENAME), metadata);
+    await samplerFor(root, NOW, { readPayload: async () => payloadAt([urgentRecord(NOW)], NOW) }).sample();
+    expect((await readRows(root))[0]).toMatchObject({ open: 1, new_urgent_since_last: 1 });
+    const archive = (await readdir(root)).find((name) => name.endsWith(".archive.jsonl"))!;
+    expect(await readFile(join(root, archive), "utf8")).toBe(history);
+  });
+
+  it("skips sampling when the scope sidecar cannot be read and preserves visits", async () => {
+    const root = await stateRoot("attention-sampler-scope-read-failure-");
+    const sampler = samplerFor(root, NOW, { logger: { warn: vi.fn() } });
+    await sampler.sample();
+    const previous = await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8");
+    const scopePath = join(root, ATTENTION_SAMPLE_SCOPE_FILENAME);
+    const metadata = await readFile(scopePath, "utf8");
+    await rm(scopePath);
+    await mkdir(scopePath);
+    sampler.countDocumentLoad();
+    await sampler.sample();
+    expect(await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8")).toBe(previous);
+    await rm(scopePath, { recursive: true });
+    await writeFile(scopePath, metadata);
+    await sampler.sample();
+    expect((await readRows(root))[1].document_loads_since_last).toBe(1);
+  });
+
+  it.each(["archive directory", "active sidecar"] as const)("recovers a failed scope transition at the %s without mixing history", async (operation) => {
+    const root = await stateRoot("attention-sampler-scope-transition-failure-");
+    await samplerFor(root, NOW).sample();
+    const previous = await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8");
+    const payload = payloadAt([urgentRecord(NOW)], NOW);
+    payload.sources[0].repository = "example/new";
+    const warn = vi.fn();
+    const sampler = samplerFor(root, NOW, { readPayload: async () => payload, logger: { warn } });
+    // A read-only directory prevents archive creation/rotation; a read-only
+    // sidecar lets rotation finish but prevents assigning the new active scope.
+    const protectedPath = operation === "archive directory" ? root : join(root, ATTENTION_SAMPLE_SCOPE_FILENAME);
+    await chmod(protectedPath, operation === "archive directory" ? 0o500 : 0o400);
+    sampler.countDocumentLoad();
+    try {
+      await expect(sampler.sample()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      await chmod(protectedPath, operation === "archive directory" ? 0o700 : 0o600);
+    }
+    sampler.countDocumentLoad();
+    await sampler.sample();
+    expect(await readRows(root)).toMatchObject([{ urgent: 1, new_urgent_since_last: 1, document_loads_since_last: 2 }]);
+    const archives = (await readdir(root)).filter((name) => name.endsWith(".archive.jsonl"));
+    expect(archives).toHaveLength(1);
+    expect(await readFile(join(root, archives[0]), "utf8")).toBe(previous);
+  });
+
   it("writes the file beside settings.json, creating the state directory when it is missing", async () => {
     const root = await stateRoot("attention-sampler-mkdir-");
     const stateDirectory = join(root, "nested", "state");
@@ -372,6 +480,7 @@ describe("attention sampler", () => {
 
   it("takes the boundary from the newest readable row when the file ends in a torn line", async () => {
     const root = await stateRoot("attention-sampler-torn-");
+    await samplerFor(root, NOW).sample();
     const complete: AttentionSampleRow = {
       ts: NOW.toISOString(),
       open: 1,

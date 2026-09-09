@@ -22,8 +22,10 @@
  * blank page.
  */
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { normalizeTargetRepos } from "../settings";
 import type { AttentionModelDiagnosticKind } from "./buildAttentionModel";
 import type { AttentionPayload } from "../../shared/attention";
 
@@ -32,6 +34,12 @@ export const ATTENTION_SAMPLE_INTERVAL_MS = 3600000;
 
 /** The samples file, written beside `settings.json` in the state directory. */
 export const ATTENTION_SAMPLES_FILENAME = "attention-samples.jsonl";
+export const ATTENTION_SAMPLE_SCOPE_FILENAME = "attention-samples.scope.json";
+
+/** Repository spelling/order is not a change of measurement population. */
+function normalizedScope(repositories: readonly string[]): string[] {
+  return normalizeTargetRepos(repositories.map((repository) => repository.toLowerCase()));
+}
 
 /**
  * The suppression kinds the row counts, pinned to the model's own vocabulary so
@@ -106,6 +114,8 @@ export interface AttentionSampler {
    * foreground refresh. Never a poll.
    */
   countDocumentLoad(): void;
+  /** Start a new visit bucket only when the normalized repository set changes. */
+  setScope(repositories: readonly string[]): void;
   /** Append one row now. Never throws and never rejects. */
   sample: AttentionSampleTick;
   /** Begin sampling every interval. Idempotent. */
@@ -172,6 +182,7 @@ function previousSampleInstant(text: string): number | null {
 }
 
 interface PreviousSample {
+  exists: boolean;
   /** The newest readable `ts` as an instant, or `null` when the file has none. */
   instant: number | null;
   /** True when the file does not end in a newline, so the next row needs one. */
@@ -185,8 +196,8 @@ interface PreviousSample {
  * That is the whole point of the column: a restart loses in-memory state, and a
  * counter that reset with the process would either recount every open urgent
  * record or, if it were persisted separately, drift out of step with the rows
- * it describes. The file is the only state, so the boundary is exactly the last
- * row that was actually written.
+ * it describes. Within a scope period, the boundary is exactly the last row
+ * that was actually written.
  *
  * A missing file is the first sample, not a failure. Any other read failure is
  * raised: writing a row whose boundary could not be established would report a
@@ -198,16 +209,61 @@ async function readPreviousSample(samplesPath: string): Promise<PreviousSample> 
     text = await readFile(samplesPath, "utf8");
   } catch (error) {
     if (isEnoent(error)) {
-      return { instant: null, needsSeparator: false };
+      return { instant: null, needsSeparator: false, exists: false };
     }
     throw error;
   }
   return {
+    exists: true,
     instant: previousSampleInstant(text),
     // A row cut short by a half-finished append is one unreadable line; it must
     // not take the next row down with it by having it appended onto its tail.
     needsSeparator: text !== "" && !text.endsWith("\n")
   };
+}
+
+/**
+ * A row boundary is meaningful only within one repository population. Read the
+ * sidecar on every tick, including after restart. Unknown legacy history is
+ * preserved, never silently attributed to the currently configured targets.
+ *
+ * Move old rows before replacing metadata: a crash or metadata-write failure
+ * can leave an empty active period, but cannot relabel old rows as a new scope.
+ * This runs inside the same single-flight operation as the append.
+ */
+async function prepareSamplePeriod(samplesPath: string, scope: readonly string[], restart: boolean): Promise<PreviousSample> {
+  const previous = await readPreviousSample(samplesPath);
+  const scopePath = join(dirname(samplesPath), ATTENTION_SAMPLE_SCOPE_FILENAME);
+  let metadata: string | null;
+  try {
+    metadata = await readFile(scopePath, "utf8");
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    metadata = null;
+  }
+  let savedScope: string | null = null;
+  try {
+    const parsed = JSON.parse(metadata ?? "null");
+    if (parsed?.version === 1 && Array.isArray(parsed.targetRepos) &&
+      parsed.targetRepos.every((value: unknown) => typeof value === "string") &&
+      normalizedScope(parsed.targetRepos).length === parsed.targetRepos.length) {
+      savedScope = JSON.stringify(normalizedScope(parsed.targetRepos));
+    }
+  } catch {
+    // Malformed metadata makes the history unknown, not a new empty history.
+  }
+  if (!restart && savedScope === JSON.stringify(scope)) return previous;
+
+  await mkdir(dirname(samplesPath), { recursive: true });
+  if (previous.exists) {
+    const archiveStem = join(dirname(samplesPath), `attention-samples.${randomUUID()}.archive`);
+    // Write the archive's attribution before moving its data. An exclusive
+    // unique filename never overwrites a previous measurement period.
+    await writeFile(`${archiveStem}.scope.json`, metadata ?? '{"scope":"UNKNOWN"}\n', { flag: "wx" });
+    await rename(samplesPath, `${archiveStem}.jsonl`);
+  }
+  await writeFile(scopePath, `${JSON.stringify({ version: 1, targetRepos: scope })}\n`, "utf8");
+  return { instant: null, needsSeparator: false, exists: false };
 }
 
 function isUrgent(priorityClass: unknown): boolean {
@@ -274,7 +330,20 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
   const schedule = options.schedule ?? scheduleHourly;
   const logger = options.logger ?? console;
 
-  let documentLoads = 0;
+  let period: { scope: string | null; documentLoads: number; restart: boolean } = {
+    scope: null, documentLoads: 0, restart: false
+  };
+
+  function setScope(repositories: readonly string[]): void {
+    const scope = JSON.stringify(normalizedScope(repositories));
+    if (period.scope === null) {
+      period.scope = scope;
+    } else if (period.scope !== scope) {
+      // Visits in the old population cannot be combined with the new one.
+      // Keep the old object alive for a write that already claimed its loads.
+      period = { scope, documentLoads: 0, restart: true };
+    }
+  }
   let cancel: (() => void) | null = null;
   let inFlight: Promise<void> | null = null;
 
@@ -284,8 +353,14 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     // being built belongs to the next row; one this row never managed to write
     // stays owed. Subtracting the claim rather than zeroing the counter is what
     // makes both true, so no arrival is dropped and none is reported twice.
-    const claimed = documentLoads;
+    const claimedPeriod = period;
+    const claimed = claimedPeriod.documentLoads;
     const payload = await options.readPayload();
+    const scope = normalizedScope(payload.sources.map((source) => source.repository));
+    if (period.scope === null) setScope(scope);
+    if (claimedPeriod !== period || period.scope !== JSON.stringify(scope)) {
+      throw new Error("Attention scope changed while the sample was being read.");
+    }
     // The route represents backend failures as payloads, not rejections. A
     // failed source is unknown, not zero, and must not advance the boundary
     // past urgent records we could not read. Keep visits owed until recovery.
@@ -295,7 +370,6 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     ) {
       throw new Error("Attention sources could not all be read.");
     }
-    const previous = await readPreviousSample(samplesPath);
     // Persist the snapshot boundary, not the write time. The route may return
     // a cached payload; advancing past it would skip urgent records created
     // after that snapshot but before this sample on every subsequent restart.
@@ -303,11 +377,16 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     if (!(snapshot.getTime() <= now().getTime())) {
       throw new Error("Attention snapshot timestamp is invalid or in the future.");
     }
+    const previous = await prepareSamplePeriod(samplesPath, scope, claimedPeriod.restart);
+    claimedPeriod.restart = false;
+    if (claimedPeriod !== period) {
+      throw new Error("Attention scope changed before the sample could be appended.");
+    }
     const ts = snapshot.toISOString();
     const row = buildSampleRow(payload, ts, previous.instant, claimed);
     await mkdir(dirname(samplesPath), { recursive: true });
     await appendFile(samplesPath, `${previous.needsSeparator ? "\n" : ""}${JSON.stringify(row)}\n`, "utf8");
-    documentLoads -= claimed;
+    claimedPeriod.documentLoads -= claimed;
   }
 
   /**
@@ -336,8 +415,9 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
 
   return {
     countDocumentLoad(): void {
-      documentLoads += 1;
+      period.documentLoads += 1;
     },
+    setScope,
     sample,
     start(): void {
       if (cancel === null) {
