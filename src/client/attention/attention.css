@@ -81,6 +81,10 @@ body {
   color: var(--attention-muted);
 }
 
+.system-status {
+  overflow-wrap: anywhere;
+}
+
 .attention__notice,
 .attention__stale,
 .attention__status {
