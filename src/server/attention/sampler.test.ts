@@ -337,6 +337,39 @@ describe("attention sampler", () => {
     }
   );
 
+  it.each(["unreadable", "partial", "diagnostics_truncated"])(
+    "preserves sampling state when source status is ok but the read is %s",
+    async (kind) => {
+      const root = await stateRoot("attention-sampler-incomplete-read-");
+      let at = NOW;
+      let payload = payloadAt([], at);
+      const warnings: string[] = [];
+      const sampler = samplerFor(root, at, {
+        now: () => at, readPayload: async () => payload,
+        logger: { warn: (message) => warnings.push(message) }
+      });
+      await sampler.sample();
+      const before = await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8");
+      at = new Date(NOW.getTime() + 10 * MINUTE_MS);
+      payload = payloadAt([], at);
+      if (kind === "partial") payload.sources[0].partial = true;
+      else payload.diagnostics.push({ repository: attentionRepository, kind, message: "Read incomplete" });
+      sampler.countDocumentLoad();
+      await expect(sampler.sample()).resolves.toBeUndefined();
+      expect(warnings).toHaveLength(1);
+      expect(await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8")).toBe(before);
+      at = new Date(NOW.getTime() + 20 * MINUTE_MS);
+      payload = payloadAt([recordAt({
+        id: "urgent-unread", pull: 308, priority_class: "urgent-risk",
+        created_at: new Date(NOW.getTime() + 5 * MINUTE_MS).toISOString()
+      }, at)], at);
+      await sampler.sample();
+      expect((await readRows(root))[1]).toMatchObject({
+        urgent: 1, new_urgent_since_last: 1, document_loads_since_last: 1
+      });
+    }
+  );
+
   it("takes the boundary from the newest readable row when the file ends in a torn line", async () => {
     const root = await stateRoot("attention-sampler-torn-");
     const complete: AttentionSampleRow = {

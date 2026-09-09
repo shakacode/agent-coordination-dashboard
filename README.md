@@ -221,8 +221,9 @@ file for the Human Attention kill test. Each row's `ts` is the payload snapshot
 time, which can precede the hourly write by the cache's age. Document loads and
 loopback foreground GET refreshes count as visits; background polls do not.
 Sampling failures produce a server warning without failing a page request.
-An unreachable or unauthorized source skips the sample and retains the previous
-timestamp and pending visit count until a readable snapshot is available.
+An unreachable or unauthorized source, unreadable record, partial read, or
+truncated diagnostic list skips the sample and retains the previous timestamp
+and pending visit count until a readable snapshot is available.
 A successful `PUT /api/settings`
 drops the cached payload immediately, so a scope change is never served from a
 stale entry. `X-Dashboard-Refresh: foreground` bypasses an otherwise-valid cache

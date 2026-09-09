@@ -289,7 +289,10 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     // The route represents backend failures as payloads, not rejections. A
     // failed source is unknown, not zero, and must not advance the boundary
     // past urgent records we could not read. Keep visits owed until recovery.
-    if (payload.sources.some((source) => source.status !== "ok" && source.status !== "empty")) {
+    if (
+      payload.sources.some((source) => (source.status !== "ok" && source.status !== "empty") || source.partial) ||
+      payload.diagnostics.some((entry) => entry.kind === "unreadable" || entry.kind === "diagnostics_truncated")
+    ) {
       throw new Error("Attention sources could not all be read.");
     }
     const previous = await readPreviousSample(samplesPath);
