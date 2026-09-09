@@ -286,6 +286,12 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     // makes both true, so no arrival is dropped and none is reported twice.
     const claimed = documentLoads;
     const payload = await options.readPayload();
+    // The route represents backend failures as payloads, not rejections. A
+    // failed source is unknown, not zero, and must not advance the boundary
+    // past urgent records we could not read. Keep visits owed until recovery.
+    if (payload.sources.some((source) => source.status !== "ok" && source.status !== "empty")) {
+      throw new Error("Attention sources could not all be read.");
+    }
     const previous = await readPreviousSample(samplesPath);
     // Persist the snapshot boundary, not the write time. The route may return
     // a cached payload; advancing past it would skip urgent records created
