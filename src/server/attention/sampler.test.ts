@@ -255,6 +255,52 @@ describe("attention sampler", () => {
     expect(rows[2]).toMatchObject({ urgent: 2, new_urgent_since_last: 0 });
   });
 
+  it("keeps a cached snapshot from skipping an urgent record across a restart", async () => {
+    const root = await stateRoot("attention-sampler-cached-boundary-");
+    const sampledAt = new Date(NOW.getTime() + 30000);
+    await samplerFor(root, sampledAt, { readPayload: async () => payloadAt([], NOW) }).sample();
+
+    const later = new Date(NOW.getTime() + 3600000);
+    const arrived = recordAt({
+      id: "arrived-after-snapshot",
+      pull: 306,
+      priority_class: "urgent-risk",
+      created_at: new Date(NOW.getTime() + 15000).toISOString()
+    }, later);
+    await samplerFor(root, later, { readPayload: async () => payloadAt([arrived], later) }).sample();
+    const laterStill = new Date(later.getTime() + 3600000);
+    await samplerFor(root, laterStill, {
+      readPayload: async () => payloadAt([recordAt({
+        id: arrived.id, pull: 306, priority_class: "urgent-risk", created_at: arrived.created_at
+      }, laterStill)], laterStill)
+    }).sample();
+
+    const rows = await readRows(root);
+    expect(rows[0].ts).toBe(NOW.toISOString());
+    expect(rows.map((row) => row.urgent)).toEqual([0, 1, 1]);
+    expect(rows.map((row) => row.new_urgent_since_last)).toEqual([0, 1, 0]);
+  });
+
+  it.each(["invalid", new Date(NOW.getTime() + MINUTE_MS).toISOString()])(
+    "preserves arrivals when the snapshot timestamp cannot be used: %s",
+    async (generatedAt) => {
+      const root = await stateRoot("attention-sampler-invalid-snapshot-");
+      let payload = { ...payloadAt([], NOW), generated_at: generatedAt };
+      const warnings: string[] = [];
+      const sampler = samplerFor(root, NOW, {
+        readPayload: async () => payload,
+        logger: { warn: (message) => warnings.push(message) }
+      });
+      sampler.countDocumentLoad();
+      await expect(sampler.sample()).resolves.toBeUndefined();
+      await expect(readFile(join(root, ATTENTION_SAMPLES_FILENAME))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(warnings).toHaveLength(1);
+      payload = payloadAt([], NOW);
+      await sampler.sample();
+      expect((await readRows(root))[0].document_loads_since_last).toBe(1);
+    }
+  );
+
   it("takes the boundary from the newest readable row when the file ends in a torn line", async () => {
     const root = await stateRoot("attention-sampler-torn-");
     const complete: AttentionSampleRow = {

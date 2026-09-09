@@ -48,7 +48,7 @@ const URGENT_PRIORITY_CLASS = "urgent-risk";
  * fixed reader, so an added or renamed column is a breaking change to it.
  */
 export interface AttentionSampleRow {
-  /** The dashboard clock when the row was written, ISO 8601. */
+  /** The payload snapshot time, ISO 8601; it can precede the hourly write. */
   ts: string;
   /** Rendered open cards at that instant. */
   open: number;
@@ -287,11 +287,14 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     const claimed = documentLoads;
     const payload = await options.readPayload();
     const previous = await readPreviousSample(samplesPath);
-    // The clock is read after the payload, never before: a record created
-    // while this sample was reading is absent from the payload but earlier
-    // than a `ts` taken up front, so an up-front `ts` would report it in this
-    // row's boundary and count it again in the next one.
-    const ts = now().toISOString();
+    // Persist the snapshot boundary, not the write time. The route may return
+    // a cached payload; advancing past it would skip urgent records created
+    // after that snapshot but before this sample on every subsequent restart.
+    const snapshot = new Date(payload.generated_at);
+    if (!(snapshot.getTime() <= now().getTime())) {
+      throw new Error("Attention snapshot timestamp is invalid or in the future.");
+    }
+    const ts = snapshot.toISOString();
     const row = buildSampleRow(payload, ts, previous.instant, claimed);
     await mkdir(dirname(samplesPath), { recursive: true });
     await appendFile(samplesPath, `${previous.needsSeparator ? "\n" : ""}${JSON.stringify(row)}\n`, "utf8");

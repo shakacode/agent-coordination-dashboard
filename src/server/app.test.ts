@@ -910,6 +910,8 @@ describe("GET /api/attention", () => {
     await fetch(`${baseUrl}/assets/index.css`, { headers: { accept: "text/css,*/*;q=0.1" } });
     // Reading an endpoint by hand in an address bar is not a page load.
     await fetch(`${baseUrl}/api/health`, { headers: { accept: DOCUMENT_ACCEPT } });
+    // Express routes are case-insensitive, so these still serve API JSON.
+    await fetch(`${baseUrl}/API/attention`, { headers: { accept: DOCUMENT_ACCEPT } });
 
     expect(ticks).toHaveLength(1);
     expect(ticks[0].delayMs).toBe(ATTENTION_SAMPLE_INTERVAL_MS);
@@ -926,6 +928,25 @@ describe("GET /api/attention", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ ts: NOW.toISOString(), open: 1, document_loads_since_last: 2 });
+  });
+
+  it("does not count a foreground HEAD request as an operator arrival", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-head-refresh-");
+    const ticks: (() => Promise<void>)[] = [];
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: countingReader().read,
+      now: () => NOW,
+      attentionSampler: { schedule: (tick) => { ticks.push(tick); return () => {}; } }
+    });
+    const response = await fetch(`${baseUrl}/api/attention`, {
+      method: "HEAD",
+      headers: { "X-Dashboard-Refresh": "foreground" }
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("");
+    await ticks[0]();
+    const row = JSON.parse((await readFile(join(stateRoot, ATTENTION_SAMPLES_FILENAME), "utf8")).trim());
+    expect(row.document_loads_since_last).toBe(0);
   });
 
   it("serves every card through the record projection, so an unsafe target arrives as null", async () => {

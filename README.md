@@ -214,8 +214,14 @@ configured repository, and any diagnostics. It is read-only and served to any
 allowed host.
 
 A request builds the payload on demand behind a 60-second cache with an
-in-flight guard, so concurrent requests share one read and an idle dashboard
-reads nothing; there is no background timer. A successful `PUT /api/settings`
+in-flight guard, so concurrent requests share one read. An hourly server-side
+sampler also reads through that cache, including while the dashboard is idle.
+It appends aggregate counts to `attention-samples.jsonl` beside the settings
+file for the Human Attention kill test. Each row's `ts` is the payload snapshot
+time, which can precede the hourly write by the cache's age. Document loads and
+loopback foreground GET refreshes count as visits; background polls do not.
+Sampling failures produce a server warning without failing a page request.
+A successful `PUT /api/settings`
 drops the cached payload immediately, so a scope change is never served from a
 stale entry. `X-Dashboard-Refresh: foreground` bypasses an otherwise-valid cache
 entry, and only from a loopback address; from anywhere else the header is

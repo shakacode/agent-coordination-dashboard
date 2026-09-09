@@ -110,7 +110,8 @@ function isAttentionDocumentLoad(method: string | undefined, path: string, accep
   if (method !== "GET") {
     return false;
   }
-  if (path === "/api" || path.startsWith("/api/")) {
+  const routePath = path.toLowerCase();
+  if (routePath === "/api" || routePath.startsWith("/api/")) {
     return false;
   }
   return acceptsDocument(accept);
@@ -319,7 +320,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     res.set("Cache-Control", "no-store");
     try {
       const bypassCache = canBypassAttentionCache(req.get("X-Dashboard-Refresh"), req.socket.remoteAddress);
-      if (bypassCache) {
+      if (bypassCache && req.method === "GET") {
         // The only foreground refresh the view sends is the operator asking for
         // one, so it is a return to the page exactly as a document load is. A
         // poll never reaches here: it sends no bypass header.
