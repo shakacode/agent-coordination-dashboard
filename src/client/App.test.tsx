@@ -1,12 +1,13 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { EMPTY_STATE_LINE, SYSTEM_STATUS_LINK_LABEL } from "./attention/AttentionView";
 import { BACK_LABEL, NO_ACTION_LINE } from "./attention/SystemStatus";
-import { emptyPayload } from "./attention/fixtures";
+import { emptyPayload, unreachablePayload } from "./attention/fixtures";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function stubAttentionFetch() {
@@ -69,5 +70,22 @@ it("carries the stale marker across to System Status when the backend dies", asy
   fireEvent.click(screen.getAllByRole("button", { name: SYSTEM_STATUS_LINK_LABEL })[0]);
 
   expect(screen.getByRole("heading", { level: 1, name: "System Status" })).toBeVisible();
-  expect(screen.getByText(/backend unreachable$/)).toBeVisible();
+  expect(within(screen.getByRole("main")).getByText(/backend unreachable$/)).toBeVisible();
+});
+
+it("preserves the outage start time while visiting System Status", async () => {
+  const started = new Date(2026, 8, 8, 10, 0).getTime();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(started);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: true, status: 200, json: async () => unreachablePayload
+  }));
+  render(<App />);
+  const headline = "Backend unreachable since 10:00";
+  await screen.findByRole("heading", { level: 1, name: headline });
+  fireEvent.click(screen.getByRole("button", { name: SYSTEM_STATUS_LINK_LABEL }));
+  expect(screen.queryByRole("heading", { name: headline })).not.toBeInTheDocument();
+  clock.mockReturnValue(started + 10 * 60000);
+  fireEvent.click(screen.getByRole("button", { name: BACK_LABEL }));
+  expect(screen.getByRole("heading", { level: 1, name: headline })).toBeVisible();
+  expect(screen.getAllByRole("main")).toHaveLength(1);
 });

@@ -18,25 +18,28 @@ export function App(): ReactNode {
   const { payload, lastSuccessAt, failure, refresh } = useAttention();
   const [view, setView] = useState<DashboardView>("attention");
 
-  if (view === "system-status") {
-    return (
-      <SystemStatus
-        payload={payload}
-        lastSuccessAt={lastSuccessAt}
-        failure={failure}
-        onBack={() => setView("attention")}
-      />
-    );
-  }
-
   return (
-    <AttentionView
-      payload={payload}
-      lastSuccessAt={lastSuccessAt}
-      failure={failure}
-      onRefresh={refresh}
-      onOpenSystemStatus={() => setView("system-status")}
-      now={Date.now}
-    />
+    <>
+      {/* Keep outage tracking alive while diagnostics are visible. The hidden
+          view also observes recovery or a new degradation during that visit. */}
+      <div hidden={view !== "attention"}>
+        <AttentionView
+          payload={payload}
+          lastSuccessAt={lastSuccessAt}
+          failure={failure}
+          onRefresh={refresh}
+          onOpenSystemStatus={() => setView("system-status")}
+          now={Date.now}
+        />
+      </div>
+      {view === "system-status" ? (
+        <SystemStatus
+          payload={payload}
+          lastSuccessAt={lastSuccessAt}
+          failure={failure}
+          onBack={() => setView("attention")}
+        />
+      ) : null}
+    </>
   );
 }
