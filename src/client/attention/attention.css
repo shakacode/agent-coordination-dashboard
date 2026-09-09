@@ -1,0 +1,229 @@
+/* Human Attention view. Plain CSS, no dependencies: the page has to read
+   clearly in a 1280x800 viewport for the QA screenshots. */
+
+:root {
+  color-scheme: light;
+  --attention-ink: #10151c;
+  --attention-muted: #4d5a68;
+  --attention-line: #d5dbe2;
+  --attention-surface: #ffffff;
+  --attention-page: #f4f6f8;
+  --attention-flag: #7a3d00;
+  --attention-flag-surface: #fdf0e3;
+  --attention-warning: #8a1f11;
+}
+
+body {
+  margin: 0;
+  background: var(--attention-page);
+  color: var(--attention-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.attention {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 1120px;
+  padding: 32px 24px 64px;
+}
+
+.attention__header {
+  align-items: baseline;
+  border-bottom: 1px solid var(--attention-line);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding-bottom: 16px;
+}
+
+.attention__heading {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.attention__refresh {
+  background: var(--attention-surface);
+  border: 1px solid var(--attention-line);
+  border-radius: 6px;
+  color: var(--attention-ink);
+  cursor: pointer;
+  flex: none;
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 14px;
+}
+
+.attention__refresh:hover {
+  border-color: var(--attention-muted);
+}
+
+/* The System Status control is a button because the app has no router and there
+   is no route for an anchor to name, but it has to read as the link the
+   empty-state sentence puts mid-line: inherited type and colour, no chrome, no
+   metrics of its own. In the header it then sits beside Refresh as text rather
+   than as a second, differently drawn control. */
+.attention__system-status {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.attention__system-status:hover {
+  color: var(--attention-muted);
+}
+
+.system-status {
+  overflow-wrap: anywhere;
+}
+
+.attention__notice,
+.attention__stale,
+.attention__status {
+  color: var(--attention-warning);
+  font-size: 15px;
+  margin: 16px 0 0;
+}
+
+.attention__status {
+  color: var(--attention-muted);
+}
+
+.attention__empty {
+  color: var(--attention-muted);
+  margin: 16px 0 0;
+}
+
+.attention__cards {
+  display: grid;
+  gap: 16px;
+  list-style: none;
+  margin: 24px 0 0;
+  padding: 0;
+}
+
+.attention-card {
+  background: var(--attention-surface);
+  border: 1px solid var(--attention-line);
+  border-radius: 10px;
+  padding: 20px 24px;
+}
+
+.attention-card__label {
+  color: var(--attention-muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.attention-card__title {
+  font-size: 19px;
+  font-weight: 620;
+  margin: 4px 0 0;
+}
+
+.attention-card__meta {
+  color: var(--attention-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 12px;
+  margin: 8px 0 0;
+}
+
+.attention-card__flag {
+  background: var(--attention-flag-surface);
+  border-radius: 4px;
+  color: var(--attention-flag);
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.attention-card__fields {
+  display: grid;
+  gap: 4px 16px;
+  grid-template-columns: 150px minmax(0, 1fr);
+  margin: 16px 0 0;
+}
+
+.attention-field__term {
+  color: var(--attention-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding-top: 2px;
+}
+
+.attention-field__value {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.attention-choices {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.attention-card__links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 16px 0 0;
+}
+
+.attention-card__link {
+  overflow-wrap: anywhere;
+}
+
+.attention-card__missing-link {
+  color: var(--attention-muted);
+}
+
+.attention-card__open {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.attention-card__open-hint {
+  color: var(--attention-muted);
+  font-size: 14px;
+}
+
+.attention-card__uri {
+  background: var(--attention-page);
+  border: 1px solid var(--attention-line);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  padding: 1px 6px;
+  user-select: all;
+}
+
+.attention-card__details {
+  border-top: 1px solid var(--attention-line);
+  margin-top: 20px;
+  padding-top: 12px;
+}
+
+.attention-card__details summary {
+  color: var(--attention-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.attention-card__details .attention-card__fields {
+  margin-top: 12px;
+}

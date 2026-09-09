@@ -1,4 +1,5 @@
 import type { ServerConfig } from "./config";
+import { API_FETCH_TIMEOUT_MS, apiStateListUrl, parseApiBaseUrl } from "./security/coordinationApiUrl";
 
 /**
  * Read client for the coordination Worker's `attention` state prefixes.
@@ -56,9 +57,6 @@ export interface CoordinationApiOptions
   now?: () => Date;
 }
 
-const API_FETCH_TIMEOUT_MS = 5000;
-// `URL.hostname` keeps the brackets on IPv6 literals per the WHATWG URL spec, so `[::1]` is deliberate, not a typo.
-const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const DEFAULT_TOKEN_ENV_VAR = "AGENT_COORD_API_TOKEN";
 const PREFIX_SEGMENT_PATTERN = /^[^/\s]+$/;
 
@@ -92,40 +90,6 @@ function isAbortError(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseApiBaseUrl(apiUrl: string): URL {
-  const url = new URL(apiUrl);
-  if (!["http:", "https:"].includes(url.protocol) || !url.host) {
-    throw new Error("expected http(s) URL with host");
-  }
-  if (url.protocol === "http:" && !LOOPBACK_API_HOSTS.has(url.hostname)) {
-    throw new Error("HTTP coordination API URLs must use https unless they point at localhost");
-  }
-  // `apiStateListUrl` appends `/v1/state` to the base as text. A base that
-  // already carries a query string or fragment would swallow that suffix into
-  // the query (or hash) and send an authenticated request to the origin root
-  // instead, so the misconfiguration is refused here rather than misrouted.
-  // The test is on the serialized URL, not on `url.search`/`url.hash`: both
-  // read as "" for a bare `?` or `#`, which `toString()` still preserves and
-  // the concatenation still swallows. A path may only hold `?`/`#`
-  // percent-encoded, so this cannot reject an otherwise valid base.
-  if (/[?#]/.test(url.toString())) {
-    throw new Error("expected an http(s) URL with no query string or fragment");
-  }
-  // Same reasoning one step further: userinfo in the base would ride along in
-  // every state request URL beside the bearer token, so an operator who pasted
-  // credentials into AGENT_COORD_API_URL is told rather than quietly obeyed.
-  if (url.username || url.password) {
-    throw new Error("expected an http(s) URL with no embedded username or password");
-  }
-  return url;
-}
-
-function apiStateListUrl(baseUrl: URL, prefix: AttentionPrefix): URL {
-  const url = new URL(`${baseUrl.toString().replace(/\/+$/, "")}/v1/state`);
-  url.searchParams.set("prefix", prefix);
-  return url;
 }
 
 function sourceStatus(

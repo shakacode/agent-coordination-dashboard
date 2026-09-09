@@ -1,13 +1,79 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+/// <reference types="vite/client" />
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, IncomingMessage, ServerResponse, type Server } from "node:http";
+import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { createDashboardApp } from "./app";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ATTENTION_CACHE_TTL_MS, createDashboardApp } from "./app";
+import appModuleSource from "./app.ts?raw";
+import {
+  ATTENTION_READ_OUTCOME_KINDS,
+  ATTENTION_WORKSPACE,
+  type AttentionReadCounts,
+  type AttentionReadResult,
+  type AttentionRepositoryRead,
+  type ReadAttentionRecordsOptions
+} from "./attention/readAttentionRecords";
 import type { ServerConfig } from "./config";
+import type { AttentionPayload } from "../shared/attention";
+import { attentionRepository, makeAttentionRecord, openAttentionRecord } from "../shared/attention.fixtures";
 
 const servers: Server[] = [];
 const roots: string[] = [];
+
+/** The model's clock for every attention test; the shared fixtures are fresh against it. */
+const NOW = new Date("2026-09-03T09:30:00.000Z");
+const CHECKED_AT = NOW.toISOString();
+const ATTENTION_PREFIX = `attention/${ATTENTION_WORKSPACE}/${attentionRepository}`;
+
+function emptyCounts(): AttentionReadCounts {
+  const outcomes = {} as AttentionReadCounts["outcomes"];
+  for (const kind of ATTENTION_READ_OUTCOME_KINDS) {
+    outcomes[kind] = 0;
+  }
+  return { seen: 0, read: 0, skipped: 0, outcomes };
+}
+
+function repositoryRead(overrides: Partial<AttentionRepositoryRead> = {}): AttentionRepositoryRead {
+  return {
+    repository: attentionRepository,
+    workspace: ATTENTION_WORKSPACE,
+    mode: "fs",
+    prefix: ATTENTION_PREFIX,
+    sourceStatus: { status: "ok", checkedAt: CHECKED_AT },
+    records: [openAttentionRecord],
+    diagnostics: [],
+    partial: false,
+    counts: emptyCounts(),
+    ...overrides
+  };
+}
+
+function attentionRead(...repositories: AttentionRepositoryRead[]): AttentionReadResult {
+  const reads = repositories.length > 0 ? repositories : [repositoryRead()];
+  return { workspace: ATTENTION_WORKSPACE, mode: reads[0].mode, checkedAt: CHECKED_AT, repositories: reads };
+}
+
+/** A reader seam that records every call, so a test can count reads rather than infer them. */
+function countingReader(result: AttentionReadResult = attentionRead()) {
+  const calls: ReadAttentionRecordsOptions[] = [];
+  return {
+    calls,
+    read: async (options: ReadAttentionRecordsOptions): Promise<AttentionReadResult> => {
+      calls.push(options);
+      return result;
+    }
+  };
+}
+
+async function attentionPayloadOf(response: Response): Promise<AttentionPayload> {
+  return (await response.json()) as AttentionPayload;
+}
+
+function attentionConfig(stateRoot: string, overrides: Partial<ServerConfig> = {}): Partial<ServerConfig> {
+  return { targetRepos: [attentionRepository], settingsPath: join(stateRoot, "settings.json"), ...overrides };
+}
 
 async function coordinationRoot(prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
@@ -50,6 +116,64 @@ async function listen(
   return listenServer(app.listen(0, "127.0.0.1"));
 }
 
+/** The same app behind a server that reports a fixed peer address. */
+async function listenForPeer(
+  stateRoot: string,
+  remoteAddress: string,
+  overrides: Partial<ServerConfig> = {},
+  appOptions: NonNullable<Parameters<typeof createDashboardApp>[1]> = {}
+): Promise<string> {
+  const app = await createDashboardApp(testConfig(stateRoot, overrides), { serveFrontend: false, ...appOptions });
+  return listenServer(
+    createServer((req, res) => {
+      Object.defineProperty(req.socket, "remoteAddress", { value: remoteAddress });
+      app(req, res);
+    }).listen(0, "127.0.0.1")
+  );
+}
+
+interface DirectResponse {
+  status: number;
+  body: string;
+}
+
+/**
+ * Dispatch one request straight into the app, with no socket server and no HTTP
+ * client.
+ *
+ * The timer test needs it: client and server share this process, so an HTTP
+ * client's own connection timers would land in a `setTimeout` spy and make the
+ * assertion about the app unreadable. Every other test uses a real server.
+ */
+function requestDirectly(app: Awaited<ReturnType<typeof createDashboardApp>>, path: string): Promise<DirectResponse> {
+  const socket = new Socket();
+  Object.defineProperty(socket, "remoteAddress", { value: "127.0.0.1" });
+  const req = new IncomingMessage(socket);
+  req.method = "GET";
+  req.url = path;
+  req.headers = { host: "127.0.0.1" };
+  const res = new ServerResponse(req);
+  const chunks: string[] = [];
+  const capture = (chunk: unknown) => {
+    if (typeof chunk === "string" || Buffer.isBuffer(chunk)) {
+      chunks.push(chunk.toString());
+    }
+  };
+  res.write = ((chunk: unknown) => {
+    capture(chunk);
+    return true;
+  }) as typeof res.write;
+  return new Promise((resolve) => {
+    res.end = ((chunk?: unknown) => {
+      capture(chunk);
+      resolve({ status: res.statusCode, body: chunks.join("") });
+      return res;
+    }) as typeof res.end;
+    app(req, res);
+    req.push(null);
+  });
+}
+
 describe("dashboard app", () => {
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -83,8 +207,74 @@ describe("dashboard app", () => {
         mode: "fs",
         status: "empty",
         checkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/)
-      }))
+      })),
+      attention: {
+        mode: "fs",
+        workspace: ATTENTION_WORKSPACE,
+        // No settings file exists yet, so the configured targets stand in and
+        // the report says so.
+        settings: "first_run_default",
+        repositories: [
+          {
+            // The scope comes from the saved settings, which fall back to the
+            // configured targets on first run.
+            repository: "shakacode/react_on_rails",
+            status: "empty",
+            checkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+            partial: false
+          }
+        ]
+      }
     });
+  });
+
+  it("still answers a report when the saved settings cannot be read", async () => {
+    const stateRoot = await coordinationRoot("coord-doctor-corrupt-settings-");
+    const corruptSettingsPath = join(stateRoot, "settings.json");
+    await writeFile(corruptSettingsPath, "{ this is not json", "utf8");
+    const baseUrl = await listen(stateRoot);
+
+    const response = await fetch(`${baseUrl}/api/doctor`);
+    const text = await response.text();
+    const body = JSON.parse(text) as Record<string, unknown>;
+
+    // The endpoint an operator reaches when the configuration is broken keeps
+    // answering a report, and the report leaks neither the settings path, the
+    // parser message, nor a stack.
+    expect(response.status).toBe(200);
+    expect(text).not.toContain(corruptSettingsPath);
+    expect(text).not.toContain("Could not read dashboard settings");
+    expect(text).not.toContain("src/server/settings.ts");
+    expect(text).not.toContain("<!DOCTYPE html>");
+    // The configured targets are a first-run fallback only. A settings file
+    // that exists but cannot be read is not a first run, so the scope is
+    // reported as unreadable rather than silently replaced by repositories the
+    // operator never saved.
+    expect(body.attention).toEqual({
+      mode: "fs",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "unreadable",
+      repositories: []
+    });
+    expect(JSON.stringify(body)).not.toContain("shakacode/react_on_rails");
+  });
+
+  it("scopes the reported attention read to the saved settings", async () => {
+    const stateRoot = await coordinationRoot("coord-doctor-saved-settings-");
+    await writeFile(join(stateRoot, "settings.json"), JSON.stringify({ targetRepos: ["repo-a/app"] }), "utf8");
+    const baseUrl = await listen(stateRoot);
+
+    const body = (await (await fetch(`${baseUrl}/api/doctor`)).json()) as Record<string, unknown>;
+
+    // Saved settings win over the configured targets, and the report says the
+    // scope came from them.
+    expect(body.attention).toEqual({
+      mode: "fs",
+      workspace: ATTENTION_WORKSPACE,
+      settings: "saved",
+      repositories: [{ repository: "repo-a/app", status: "empty", checkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), partial: false }]
+    });
+    expect(JSON.stringify(body)).not.toContain("shakacode/react_on_rails");
   });
 
   it("rejects coordination diagnostics requested from a non-loopback client", async () => {
@@ -201,5 +391,469 @@ describe("dashboard app", () => {
         expect(response.status, `${peer.label} should stay read-only`).toBe(403);
       }
     }
+  });
+});
+
+describe("GET /api/attention", () => {
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+    await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
+  });
+
+  it("builds the payload once and serves the cached copy inside the TTL", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-hit-");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot, { machineId: "m5" }), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    const first = await fetch(`${baseUrl}/api/attention`);
+    const firstBody = await attentionPayloadOf(first);
+    const second = await fetch(`${baseUrl}/api/attention`);
+
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    expect(firstBody.cards).toHaveLength(1);
+    // The configured machine id reaches the model, so the payload names this
+    // dashboard's host instead of falling back to UNKNOWN.
+    expect(firstBody.dashboard_host).toBe("M5");
+    expect(firstBody.sources).toEqual([expect.objectContaining({ repository: attentionRepository, status: "ok" })]);
+    await expect(second.json()).resolves.toEqual(firstBody);
+    expect(reader.calls).toHaveLength(1);
+    // The scope comes from the saved settings, which fall back to the configured
+    // targets on first run.
+    expect(reader.calls[0]).toMatchObject({ stateRoot, targetRepos: [attentionRepository] });
+  });
+
+  it("rebuilds on the first request after the TTL expires", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-expiry-");
+    const reader = countingReader();
+    const clock = { value: NOW };
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => clock.value
+    });
+
+    await fetch(`${baseUrl}/api/attention`);
+    clock.value = new Date(NOW.getTime() + ATTENTION_CACHE_TTL_MS - 1);
+    await fetch(`${baseUrl}/api/attention`);
+    expect(reader.calls).toHaveLength(1);
+
+    clock.value = new Date(NOW.getTime() + ATTENTION_CACHE_TTL_MS);
+    await fetch(`${baseUrl}/api/attention`);
+
+    expect(reader.calls).toHaveLength(2);
+  });
+
+  it("coalesces concurrent misses into one read", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-inflight-");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reads: string[] = [];
+    const read = async (): Promise<AttentionReadResult> => {
+      reads.push("start");
+      await gate;
+      return attentionRead();
+    };
+    const app = await createDashboardApp(testConfig(stateRoot, attentionConfig(stateRoot)), {
+      serveFrontend: false,
+      readAttentionRecords: read,
+      now: () => NOW
+    });
+    let arrived = 0;
+    const baseUrl = await listenServer(
+      createServer((req, res) => {
+        arrived += 1;
+        app(req, res);
+      }).listen(0, "127.0.0.1")
+    );
+
+    const pending = Promise.all([
+      fetch(`${baseUrl}/api/attention`),
+      fetch(`${baseUrl}/api/attention`),
+      fetch(`${baseUrl}/api/attention`)
+    ]);
+    // The build stays open until all three requests are inside the app, so none
+    // of them can be answered from a cache that does not exist yet.
+    while (arrived < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    release();
+    const bodies = await Promise.all((await pending).map(attentionPayloadOf));
+
+    expect(reads).toHaveLength(1);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
+  });
+
+  it("rebuilds inside the TTL for a loopback foreground refresh", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-bypass-");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    await fetch(`${baseUrl}/api/attention`);
+    const refreshed = await fetch(`${baseUrl}/api/attention`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+    expect(refreshed.status).toBe(200);
+    expect(reader.calls).toHaveLength(2);
+
+    // The refresh repopulated the cache rather than disabling it.
+    await fetch(`${baseUrl}/api/attention`);
+    expect(reader.calls).toHaveLength(2);
+  });
+
+  it.each([
+    ["an unrelated header value", "background"],
+    ["no header at all", undefined]
+  ])("ignores %s from a loopback client", async (_label, headerValue) => {
+    const stateRoot = await coordinationRoot("coord-attention-header-");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    await fetch(`${baseUrl}/api/attention`);
+    await fetch(`${baseUrl}/api/attention`, {
+      headers: headerValue === undefined ? {} : { "X-Dashboard-Refresh": headerValue }
+    });
+
+    expect(reader.calls).toHaveLength(1);
+  });
+
+  it("ignores the foreground refresh header from a non-loopback address", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-remote-refresh-");
+    const reader = countingReader();
+    const baseUrl = await listenForPeer(stateRoot, "203.0.113.8", attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    const first = await fetch(`${baseUrl}/api/attention`);
+    const firstBody = await attentionPayloadOf(first);
+    const second = await fetch(`${baseUrl}/api/attention`, { headers: { "X-Dashboard-Refresh": "foreground" } });
+
+    // A remote viewer still reads the payload; it just cannot force a rebuild.
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toEqual(firstBody);
+    expect(reader.calls).toHaveLength(1);
+  });
+
+  it("rebuilds against the new scope after a settings write, inside the TTL", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-settings-write-");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    await fetch(`${baseUrl}/api/attention`);
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.status).toBe(200);
+
+    // The clock never moves, so the entry is still inside its TTL: the write is
+    // the only thing that can have dropped it. A remote viewer cannot force a
+    // refresh, so a stale scope would keep serving records from a repository
+    // that is no longer saved.
+    await fetch(`${baseUrl}/api/attention`);
+
+    expect(reader.calls).toHaveLength(2);
+    expect(reader.calls[0].targetRepos).toEqual([attentionRepository]);
+    expect(reader.calls[1].targetRepos).toEqual(["repo-a/app"]);
+  });
+
+  it("does not cache a payload whose scope a settings write replaced mid-build", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-write-in-flight-");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reads: ReadAttentionRecordsOptions[] = [];
+    const read = async (options: ReadAttentionRecordsOptions): Promise<AttentionReadResult> => {
+      reads.push(options);
+      if (reads.length === 1) {
+        await gate;
+      }
+      return attentionRead();
+    };
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: read,
+      now: () => NOW
+    });
+
+    const pending = fetch(`${baseUrl}/api/attention`);
+    while (reads.length < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.status).toBe(200);
+    release();
+
+    // The request that was already waiting still gets the build it joined; what
+    // must not happen is that build becoming the cached answer for the new
+    // scope.
+    expect((await pending).status).toBe(200);
+    await fetch(`${baseUrl}/api/attention`);
+
+    expect(reads).toHaveLength(2);
+    expect(reads[1].targetRepos).toEqual(["repo-a/app"]);
+  });
+
+  it("does not join a request arriving after a settings write to the build reading the replaced scope", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-write-join-");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let secondReadStarted!: () => void;
+    const secondRead = new Promise<void>((resolve) => {
+      secondReadStarted = resolve;
+    });
+    const reads: ReadAttentionRecordsOptions[] = [];
+    // Each read reports the scope it was asked for, so a payload can be traced
+    // back to the settings it was built from.
+    const read = async (options: ReadAttentionRecordsOptions): Promise<AttentionReadResult> => {
+      reads.push(options);
+      if (reads.length === 1) {
+        await gate;
+      } else {
+        secondReadStarted();
+      }
+      return attentionRead(repositoryRead({ repository: options.targetRepos[0] }));
+    };
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: read,
+      now: () => NOW
+    });
+
+    const joinedBeforeWrite = fetch(`${baseUrl}/api/attention`);
+    while (reads.length < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const saved = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetRepos: ["repo-a/app"] })
+    });
+    expect(saved.status).toBe(200);
+
+    // This request arrives after the write, so it must read the saved scope
+    // rather than join the build that is still reading the replaced one. The
+    // race is bounded rather than spun on, so a regression fails here instead
+    // of hanging.
+    const afterWrite = fetch(`${baseUrl}/api/attention`);
+    await Promise.race([secondRead, new Promise((resolve) => setTimeout(resolve, 250))]);
+    release();
+
+    const afterWriteBody = await attentionPayloadOf(await afterWrite);
+    expect(afterWriteBody.sources).toEqual([expect.objectContaining({ repository: "repo-a/app" })]);
+    expect(reads).toHaveLength(2);
+    expect(reads[1].targetRepos).toEqual(["repo-a/app"]);
+
+    // The request that had already joined the old build still gets the old
+    // payload: cancelling a read in progress is the only alternative, and it is
+    // out of scope here.
+    const joinedBody = await attentionPayloadOf(await joinedBeforeWrite);
+    expect(joinedBody.sources).toEqual([expect.objectContaining({ repository: attentionRepository })]);
+  });
+
+  it("answers 500 without detail when the saved settings cannot be read, and recovers once they are repaired", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-corrupt-settings-");
+    const settingsFile = join(stateRoot, "settings.json");
+    await writeFile(settingsFile, "{ this is not json", "utf8");
+    const reader = countingReader();
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    const failure = await fetch(`${baseUrl}/api/attention`);
+    const failureText = await failure.text();
+
+    // Falling back to the configured targets here would serve cards for
+    // repositories the operator never saved, so the route reports the failure
+    // and reads nothing.
+    expect(failure.status).toBe(500);
+    expect(JSON.parse(failureText)).toEqual({ error: "Attention payload could not be built." });
+    expect(failureText).not.toContain(settingsFile);
+    expect(failureText).not.toContain("Could not read dashboard settings");
+    expect(failureText).not.toContain("src/server/settings.ts");
+    expect(failureText).not.toContain("<!DOCTYPE html>");
+    expect(failureText).not.toContain(attentionRepository);
+    expect(reader.calls).toHaveLength(0);
+
+    await writeFile(settingsFile, JSON.stringify({ targetRepos: [attentionRepository] }), "utf8");
+    const repaired = await fetch(`${baseUrl}/api/attention`);
+
+    // The failure poisoned nothing: the next request builds normally.
+    expect(repaired.status).toBe(200);
+    expect((await attentionPayloadOf(repaired)).cards).toHaveLength(1);
+    expect(reader.calls).toHaveLength(1);
+  });
+
+  it("answers 200 with source statuses and diagnostics when every repository is unreachable", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-unreachable-");
+    const reader = countingReader(
+      attentionRead(
+        repositoryRead({
+          mode: "api",
+          sourceStatus: { status: "unreachable", checkedAt: CHECKED_AT, httpStatus: 503 },
+          records: [],
+          diagnostics: [
+            {
+              repository: attentionRepository,
+              workspace: ATTENTION_WORKSPACE,
+              mode: "api",
+              kind: "unreadable",
+              path: ATTENTION_PREFIX,
+              reason: `Could not read coordination API ${ATTENTION_PREFIX}: 503 unavailable`
+            }
+          ]
+        })
+      )
+    );
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    const response = await fetch(`${baseUrl}/api/attention`);
+    const body = await attentionPayloadOf(response);
+
+    expect(response.status).toBe(200);
+    expect(body.cards).toEqual([]);
+    expect(body.sources).toEqual([
+      expect.objectContaining({ repository: attentionRepository, mode: "api", status: "unreachable" })
+    ]);
+    expect(body.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ repository: attentionRepository, kind: "unreadable" })])
+    );
+  });
+
+  it("answers 500 without detail only when the read throws, and retries on the next request", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-throw-");
+    let attempts = 0;
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("reader exploded at /Users/someone/secret/path");
+        }
+        return attentionRead();
+      },
+      now: () => NOW
+    });
+
+    const failure = await fetch(`${baseUrl}/api/attention`);
+    const failureText = await failure.text();
+
+    expect(failure.status).toBe(500);
+    expect(JSON.parse(failureText)).toEqual({ error: "Attention payload could not be built." });
+    expect(failureText).not.toContain("reader exploded");
+    expect(failureText).not.toContain("/Users/someone/secret/path");
+
+    // Nothing was cached and the in-flight guard was cleared, so the next
+    // request builds again instead of inheriting the failure.
+    const recovered = await fetch(`${baseUrl}/api/attention`);
+    expect(recovered.status).toBe(200);
+    expect((await attentionPayloadOf(recovered)).cards).toHaveLength(1);
+    expect(attempts).toBe(2);
+  });
+
+  it("reaches only the configured coordination API while building in API mode", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-no-github-");
+    const requested: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      requested.push(input instanceof URL ? input.href : typeof input === "string" ? input : input.url);
+      return new Response(JSON.stringify({ entries: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    const baseUrl = await listen(
+      stateRoot,
+      attentionConfig(stateRoot, { coordApiUrl: "https://coord.example.test", coordApiToken: "api-token" }),
+      { fetchImpl, now: () => NOW }
+    );
+
+    const response = await fetch(`${baseUrl}/api/attention`);
+    const body = await attentionPayloadOf(response);
+
+    expect(response.status).toBe(200);
+    expect(requested).toHaveLength(1);
+    expect(requested.map((url) => new URL(url).host)).toEqual(["coord.example.test"]);
+    expect(requested.some((url) => new URL(url).host === "api.github.com")).toBe(false);
+    expect(new URL(requested[0]).searchParams.get("prefix")).toBe(ATTENTION_PREFIX);
+    expect(body.sources).toEqual([
+      expect.objectContaining({ repository: attentionRepository, mode: "api", status: "empty" })
+    ]);
+  });
+
+  it("imports nothing from the GitHub client into the app module", () => {
+    const staticImports = [...appModuleSource.matchAll(/^import\s[\s\S]*?from\s+"([^"]+)";$/gm)].map((match) => match[1]);
+    const dynamicImports = [...appModuleSource.matchAll(/\bimport\(\s*"([^"]+)"\s*\)/g)].map((match) => match[1]);
+
+    // The regex is load-bearing, so prove it actually found the module's imports.
+    expect(staticImports).toContain("./attention/readAttentionRecords");
+    expect([...staticImports, ...dynamicImports].filter((specifier) => /github/i.test(specifier))).toEqual([]);
+  });
+
+  it("schedules no timer while creating the app or serving the route", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-timers-");
+    const reader = countingReader();
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+
+    try {
+      const app = await createDashboardApp(testConfig(stateRoot, attentionConfig(stateRoot)), {
+        serveFrontend: false,
+        readAttentionRecords: reader.read,
+        now: () => NOW
+      });
+      const response = await requestDirectly(app, "/api/attention");
+
+      expect(response.status).toBe(200);
+      expect(interval).not.toHaveBeenCalled();
+      expect(timeout).not.toHaveBeenCalled();
+    } finally {
+      interval.mockRestore();
+      timeout.mockRestore();
+    }
+  });
+
+  it("serves every card through the record projection, so an unsafe target arrives as null", async () => {
+    const stateRoot = await coordinationRoot("coord-attention-projection-");
+    const record = {
+      ...makeAttentionRecord({ id: "unsafe-target-record", target: "javascript:alert(document.domain)" }),
+      prompt: "Full agent prompt that must never reach a card"
+    } as ReturnType<typeof makeAttentionRecord>;
+    const reader = countingReader(attentionRead(repositoryRead({ records: [record] })));
+    const baseUrl = await listen(stateRoot, attentionConfig(stateRoot), {
+      readAttentionRecords: reader.read,
+      now: () => NOW
+    });
+
+    const body = await attentionPayloadOf(await fetch(`${baseUrl}/api/attention`));
+
+    expect(body.cards).toHaveLength(1);
+    // The route forwards the projection the model produced and nothing else:
+    // the client relies on this being the one validation point.
+    expect(body.cards[0].record.target).toBeNull();
+    expect(JSON.stringify(body)).not.toContain("javascript:");
+    expect(JSON.stringify(body)).not.toContain("Full agent prompt");
+    expect(Object.hasOwn(body.cards[0].record, "prompt")).toBe(false);
   });
 });

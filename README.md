@@ -154,13 +154,27 @@ malformed or redirected health response is `failed`. The command only observes
 the installed package and running service; it does not start the dashboard or
 change coordination state.
 
-`/api/doctor` reports backend reachability only. In filesystem mode it counts
-directory entries for each resource without reading or parsing records: a
+`/api/doctor` reports backend reachability per resource. In filesystem mode it
+counts directory entries for each resource without reading or parsing records: a
 populated directory is `ok`, an absent or empty one is `empty`, and an
 unreadable one is `unreachable`. In API mode it issues one bounded authenticated
 list request per resource: `200` is `ok`, `401` and `403` are `auth_error`, any
 other status or a network failure is `unreachable`, and the configured token is
 never echoed in the response.
+
+It also reports the attention read scope as `attention`: the read `mode` and
+`workspace`, one status per configured repository, and `settings`, which says
+whether that scope came from the saved settings file (`saved`), from
+`TARGET_REPOS` because no settings file exists yet (`first_run_default`), or
+from nowhere because the settings file exists but could not be read
+(`unreadable`). Deriving a per-repository status means actually reading, so this
+section runs the attention reader and discards the records. The reader bounds
+the work with a per-repository entry count and time budget, applied as it walks
+the listing, and a per-file size cap. Those are processing limits rather than a
+bound on the listing itself: the directory listing, or the API list response, is
+materialized in full before they apply, so a very large coordination root still
+costs memory here. It reports statuses only:
+no record content, target, question, or diagnostic text appears in the report.
 
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
 To inspect an existing coordination run, point `AGENT_COORD_STATE_ROOT` at the
@@ -192,6 +206,40 @@ API mode keeps file mode as the fallback when `AGENT_COORD_API_URL` is unset.
 with any embedded credentials, query string, and fragment stripped; an
 unparseable URL is reported as `UNKNOWN`. The token is never echoed.
 
+## Human attention
+
+`GET /api/attention` answers the one payload the attention view renders: the
+cards that need a person, the reporting `dashboard_host`, one source entry per
+configured repository, and any diagnostics. It is read-only and served to any
+allowed host.
+
+A request builds the payload on demand behind a 60-second cache with an
+in-flight guard, so concurrent requests share one read and an idle dashboard
+reads nothing; there is no background timer. A successful `PUT /api/settings`
+drops the cached payload immediately, so a scope change is never served from a
+stale entry. `X-Dashboard-Refresh: foreground` bypasses an otherwise-valid cache
+entry, and only from a loopback address; from anywhere else the header is
+ignored. It is a bypass rather than a forced rebuild: a request arriving while a
+build is already in flight joins that build, and a request arriving with no
+fresh entry starts an ordinary build whether or not it carries the header.
+
+A repository the reader cannot reach or parse is reported inside a `200`, with
+its own source status and diagnostics, rather than as an error. That covers the
+record and backend problems the reader represents. A failure before any
+repository is read — most plainly a settings file that exists but cannot be
+parsed — is a `500` carrying no detail at all.
+
+Records name the machine they came from, and the dashboard recognizes the host
+identifiers `M5` and `M1`. A record naming any other host is suppressed with a
+diagnostic, so records produced on a third machine never become cards.
+
+A dashboard whose own `AGENT_COORD_MACHINE_ID` is unset or unrecognized is a
+separate case, and a milder one: every card is still returned. What it loses is
+the ability to say which cards are answerable where it is running, so the
+payload reports `dashboard_host: "UNKNOWN"`, marks every card `host_matches:
+false`, and adds a `dashboard_host_unknown` diagnostic, plus `cross_host_count`
+when at least one card renders.
+
 ## Configuration
 
 | Variable | Default |
@@ -202,6 +250,8 @@ unparseable URL is reported as `UNKNOWN`. The token is never echoed.
 | `AGENT_COORD_STATE_ROOT` | `~/.local/state/agent-coordination` |
 | `AGENT_COORD_API_URL` | unset; when set, probe the HTTP backend instead of the state root |
 | `AGENT_COORD_API_TOKEN` | bearer token for `AGENT_COORD_API_URL` |
+| `AGENT_COORD_TOKEN` | fallback bearer token when `AGENT_COORD_API_TOKEN` is unset |
+| `AGENT_COORD_MACHINE_ID` | unset; the machine this dashboard runs on (`M5` or `M1`), reported as `dashboard_host`; unset means no card can be marked answerable here |
 | `TARGET_REPOS` | empty first-run fallback |
 | `DASHBOARD_SETTINGS_PATH` | `~/.local/state/agents-coordination-dashboard/settings.json` |
 
