@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { AttentionCapabilityState } from "../../shared/attention";
 import type { AttentionCardPayload, AttentionPayload } from "../api";
 import { MISSING_TARGET_TEXT, formatAge } from "./AttentionCard";
-import { AttentionView, EMPTY_STATE_LINE, MISSING_SCOPE_MESSAGE, formatClockTime } from "./AttentionView";
+import {
+  AttentionView,
+  EMPTY_STATE_LINE,
+  MISSING_SCOPE_MESSAGE,
+  SYSTEM_STATUS_LINK_LABEL,
+  formatClockTime
+} from "./AttentionView";
 import {
   FIXTURE_HOST,
   FIXTURE_MARKDOWN_QUESTION,
@@ -61,17 +67,48 @@ function must(value: string | undefined, label: string): string {
 
 function renderView(
   payload: AttentionPayload | null,
-  overrides: { failure?: string | null; lastSuccessAt?: number | null; onRefresh?: () => void } = {}
+  overrides: {
+    failure?: string | null;
+    lastSuccessAt?: number | null;
+    onRefresh?: () => void;
+    onOpenSystemStatus?: () => void;
+  } = {}
 ) {
-  const { failure = null, lastSuccessAt = FIXTURE_NOW_MS, onRefresh = () => {} } = overrides;
+  const {
+    failure = null,
+    lastSuccessAt = FIXTURE_NOW_MS,
+    onRefresh = () => {},
+    onOpenSystemStatus = () => {}
+  } = overrides;
   return render(
     <AttentionView
       payload={payload}
       lastSuccessAt={lastSuccessAt}
       failure={failure}
       onRefresh={onRefresh}
+      onOpenSystemStatus={onOpenSystemStatus}
       now={() => FIXTURE_NOW_MS}
     />
+  );
+}
+
+/**
+ * The empty-state paragraph, matched on its whole text.
+ *
+ * The line now wraps "System Status" in a control, so it spans three nodes and
+ * `getByText` — which matches an element's own text nodes — would no longer see
+ * the sentence. Matching the paragraph's `textContent` keeps the assertion on
+ * the exact line rather than on a fragment of it.
+ */
+function queryEmptyStateLine(): HTMLElement | null {
+  return screen.queryByText(
+    (_content, element) => element?.tagName === "P" && element.textContent === EMPTY_STATE_LINE
+  );
+}
+
+function emptyStateLine(): HTMLElement {
+  return screen.getByText(
+    (_content, element) => element?.tagName === "P" && element.textContent === EMPTY_STATE_LINE
   );
 }
 
@@ -284,7 +321,7 @@ describe("empty and degraded states", () => {
     renderView(emptyPayload);
 
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("0 actions need Justin");
-    expect(screen.getByText(EMPTY_STATE_LINE)).toBeVisible();
+    expect(emptyStateLine()).toBeVisible();
     expect(screen.queryAllByRole("article")).toHaveLength(0);
 
     const main = screen.getByRole("main");
@@ -299,7 +336,7 @@ describe("empty and degraded states", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
       `Backend unreachable since ${formatClockTime(FIXTURE_NOW_MS)}`
     );
-    expect(screen.queryByText(EMPTY_STATE_LINE)).toBeNull();
+    expect(queryEmptyStateLine()).toBeNull();
   });
 
   it("never claims zero actions while the coordination token lacks the read scope", () => {
@@ -430,7 +467,7 @@ describe("empty and degraded states", () => {
     expect(
       screen.getByText("Some records may be missing: 1 repositories reported incomplete reads and 0 diagnostics")
     ).toBeVisible();
-    expect(screen.queryByText(EMPTY_STATE_LINE)).toBeNull();
+    expect(queryEmptyStateLine()).toBeNull();
   });
 
   it("never claims zero actions when a truncated read produced no cards", () => {
@@ -440,14 +477,14 @@ describe("empty and degraded states", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
       `Attention data incomplete since ${formatClockTime(FIXTURE_NOW_MS)}`
     );
-    expect(screen.queryByText(EMPTY_STATE_LINE)).toBeNull();
+    expect(queryEmptyStateLine()).toBeNull();
   });
 
   it("shows the decided empty state when a clean read carries only informational diagnostics", () => {
     renderView(diagnosticsOnlyEmptyPayload);
 
     expect(screen.getByRole("heading", { level: 1, name: "0 actions need Justin" })).toBeVisible();
-    expect(screen.getByText(EMPTY_STATE_LINE)).toBeVisible();
+    expect(emptyStateLine()).toBeVisible();
     expect(screen.queryByText(/^Attention data incomplete/)).toBeNull();
     expect(screen.queryByText(/^Some records may be missing/)).toBeNull();
   });
@@ -481,7 +518,7 @@ describe("empty and degraded states", () => {
     // Zero cards is still the truth, but a dead backend may not be hidden with it.
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("0 actions need Justin");
     expect(screen.getByText(`last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`)).toBeVisible();
-    expect(screen.getByText(EMPTY_STATE_LINE)).toBeVisible();
+    expect(emptyStateLine()).toBeVisible();
 
     const main = screen.getByRole("main");
     expect(main.children).toHaveLength(3);
@@ -538,6 +575,48 @@ describe("refresh control", () => {
     screen.getByRole("button", { name: "Refresh now" }).click();
 
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("System Status link", () => {
+  it("offers System Status from the header and from the empty-state line", () => {
+    const onOpenSystemStatus = vi.fn();
+    renderView(emptyPayload, { onOpenSystemStatus });
+
+    const controls = screen.getAllByRole("button", { name: SYSTEM_STATUS_LINK_LABEL });
+    expect(controls).toHaveLength(2);
+    // The line still reads as one sentence, with its own name for the view now
+    // clickable rather than plain text.
+    expect(within(emptyStateLine()).getByRole("button", { name: SYSTEM_STATUS_LINK_LABEL })).toBeVisible();
+
+    for (const control of controls) {
+      control.click();
+    }
+
+    expect(onOpenSystemStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the header control when there is no empty state to carry one", () => {
+    const onOpenSystemStatus = vi.fn();
+    renderView(makeAttentionPayload([fullCard]), { onOpenSystemStatus });
+
+    const control = screen.getByRole("button", { name: SYSTEM_STATUS_LINK_LABEL });
+    control.click();
+
+    expect(queryEmptyStateLine()).toBeNull();
+    expect(onOpenSystemStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the header control before the first payload arrives", () => {
+    renderView(null, { lastSuccessAt: null });
+
+    expect(screen.getAllByRole("button", { name: SYSTEM_STATUS_LINK_LABEL })).toHaveLength(1);
+  });
+
+  it("renders the control as a button, not an anchor: the app has no route for it", () => {
+    renderView(emptyPayload);
+
+    expect(screen.queryByRole("link", { name: SYSTEM_STATUS_LINK_LABEL })).toBeNull();
   });
 });
 
