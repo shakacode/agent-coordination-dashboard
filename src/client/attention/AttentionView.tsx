@@ -12,8 +12,23 @@ import type { AttentionPayload, AttentionSourcePayload } from "../api";
 import { AttentionCard } from "./AttentionCard";
 import "./attention.css";
 
-/** The one line the empty state adds under the header. */
-export const EMPTY_STATE_LINE = "Nothing needs a decision. Backend health is on System Status.";
+/** Label of the control that opens the System Status view, in both places. */
+export const SYSTEM_STATUS_LINK_LABEL = "System Status";
+
+/**
+ * The one line the empty state adds under the header, in the two halves that
+ * surround the System Status control.
+ *
+ * The app has no router, so the control is a button rather than an anchor: it
+ * switches the view the client entry renders, and an `href` would claim a route
+ * that does not exist. The whole line is still one sentence, and
+ * {@link EMPTY_STATE_LINE} is built from the same pieces so its text cannot
+ * drift from what the paragraph renders.
+ */
+const EMPTY_STATE_LEAD = "Nothing needs a decision. Backend health is on ";
+const EMPTY_STATE_TAIL = ".";
+
+export const EMPTY_STATE_LINE = `${EMPTY_STATE_LEAD}${SYSTEM_STATUS_LINK_LABEL}${EMPTY_STATE_TAIL}`;
 
 /** Fallback for an `auth_error` source that carries no message. */
 export const MISSING_SCOPE_MESSAGE = "Coordination token lacks the attention read scope";
@@ -67,6 +82,21 @@ export function formatClockTime(instantMs: number): string {
   const hours = String(at.getHours()).padStart(2, "0");
   const minutes = String(at.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+
+/**
+ * The marker both views show while the latest fetch is failing: what is on
+ * screen is the last good payload, and the backend has not answered since.
+ *
+ * Exported so System Status states the state in the same words rather than
+ * inventing a second vocabulary for it. `null` when there is nothing to mark:
+ * either the last fetch succeeded, or none ever has, in which case there is no
+ * payload to call stale.
+ */
+export function staleMarkerLine(failure: string | null, lastSuccessAt: number | null): string | null {
+  return failure !== null && lastSuccessAt !== null
+    ? `last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`
+    : null;
 }
 
 /** The count headline, with a verb that agrees with a single action. */
@@ -149,11 +179,20 @@ export interface AttentionViewProps {
   /** Message of the most recent failed fetch since the last success. */
   failure: string | null;
   onRefresh: () => void;
+  /** Switches the client entry to the System Status view; there is no route. */
+  onOpenSystemStatus: () => void;
   /** Injected clock, so ages and wall-clock times are deterministic in tests. */
   now: () => number;
 }
 
-export function AttentionView({ payload, lastSuccessAt, failure, onRefresh, now }: AttentionViewProps): ReactNode {
+export function AttentionView({
+  payload,
+  lastSuccessAt,
+  failure,
+  onRefresh,
+  onOpenSystemStatus,
+  now
+}: AttentionViewProps): ReactNode {
   const degradation = findDegradation(payload);
   const degradationKind: DegradationKind | null = degradation === null ? null : degradation.kind;
   // "since HH:MM" is when this run first saw this degradation, so the instant is
@@ -172,12 +211,18 @@ export function AttentionView({ payload, lastSuccessAt, failure, onRefresh, now 
       Refresh now
     </button>
   );
+  const systemStatusLink = (
+    <button className="attention__system-status" type="button" onClick={onOpenSystemStatus}>
+      {SYSTEM_STATUS_LINK_LABEL}
+    </button>
+  );
 
   if (payload === null) {
     return (
       <main className="attention">
         <header className="attention__header">
           <h1 className="attention__heading">Human attention</h1>
+          {systemStatusLink}
           {refreshButton}
         </header>
         <p className="attention__status">{failure === null ? LOADING_LINE : NO_PAYLOAD_LINE}</p>
@@ -195,20 +240,24 @@ export function AttentionView({ payload, lastSuccessAt, failure, onRefresh, now 
     degradation !== null && (total > 0 || degradation.kind === "incomplete")
       ? degradationNotice(degradation, sinceMs)
       : null;
-  const staleMarker =
-    failure !== null && lastSuccessAt !== null
-      ? `last refresh ${formatClockTime(lastSuccessAt)}, backend unreachable`
-      : null;
+  const staleMarker = staleMarkerLine(failure, lastSuccessAt);
 
   return (
     <main className="attention">
       <header className="attention__header">
         <h1 className="attention__heading">{headline}</h1>
+        {systemStatusLink}
         {refreshButton}
       </header>
       {notice === null ? null : <p className="attention__notice">{notice}</p>}
       {staleMarker === null ? null : <p className="attention__stale">{staleMarker}</p>}
-      {total === 0 && degradation === null ? <p className="attention__empty">{EMPTY_STATE_LINE}</p> : null}
+      {total === 0 && degradation === null ? (
+        <p className="attention__empty">
+          {EMPTY_STATE_LEAD}
+          {systemStatusLink}
+          {EMPTY_STATE_TAIL}
+        </p>
+      ) : null}
       {total === 0 ? null : (
         <ol className="attention__cards">
           {cards.map((card, index) => (

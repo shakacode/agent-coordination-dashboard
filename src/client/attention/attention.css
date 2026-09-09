@@ -61,6 +61,30 @@ body {
   border-color: var(--attention-muted);
 }
 
+/* The System Status control is a button because the app has no router and there
+   is no route for an anchor to name, but it has to read as the link the
+   empty-state sentence puts mid-line: inherited type and colour, no chrome, no
+   metrics of its own. In the header it then sits beside Refresh as text rather
+   than as a second, differently drawn control. */
+.attention__system-status {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.attention__system-status:hover {
+  color: var(--attention-muted);
+}
+
+.system-status {
+  overflow-wrap: anywhere;
+}
+
 .attention__notice,
 .attention__stale,
 .attention__status {
