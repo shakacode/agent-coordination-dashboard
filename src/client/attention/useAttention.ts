@@ -1,27 +1,21 @@
 /**
- * Polling for the Human Attention view.
+ * Manual refresh lifecycle for the Human Attention view.
  *
- * Fetches on mount when the tab is visible, then every
- * {@link ATTENTION_POLL_INTERVAL_MS} for as long as it stays visible. A hidden
- * tab asks the backend for nothing at all, including at mount: a tab restored
- * into the background, or opened behind the current one, waits for its first
- * visibilitychange, where the stale-on-return rule fires the first fetch because
- * there is no last success yet. A failed poll keeps the last good payload so the
- * view can stay useful behind a stale marker instead of blanking the desk.
+ * A visible mount performs one initial load. A hidden mount waits for its first
+ * visible state before performing that load. Afterward, only an explicit visible
+ * "Refresh now" action asks the backend for fresh data; timers and later
+ * visibility changes never do.
  *
  * Every request is owned by an `AbortController`: starting a new one cancels the
  * request it supersedes, and the effect cleanup cancels whatever is in flight,
  * so React StrictMode's setup/cleanup/setup preflight and an unmount leave no
  * duplicate and no orphaned request behind. An abort is not a failure and never
- * raises the stale marker.
+ * raises the stale marker. A failed request keeps the last good payload so the
+ * view remains useful behind a stale marker.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchAttention as fetchAttentionOverHttp, type AttentionPayload } from "../api";
-
-export const ATTENTION_POLL_INTERVAL_MS = 60_000;
-
-export type AttentionTimerHandle = ReturnType<typeof setTimeout>;
 
 export interface AttentionRequest {
   foreground: boolean;
@@ -36,8 +30,6 @@ export interface UseAttentionOptions {
   fetchAttention?: AttentionFetcher;
   /** Injectable clock; defaults to `Date.now`. */
   now?: () => number;
-  setTimer?: (handler: () => void, delayMs: number) => AttentionTimerHandle;
-  clearTimer?: (handle: AttentionTimerHandle) => void;
 }
 
 export interface AttentionSnapshot {
@@ -47,7 +39,7 @@ export interface AttentionSnapshot {
   lastSuccessAt: number | null;
   /** Message of the most recent failure since that success, else `null`. */
   failure: string | null;
-  /** Foreground refresh: sends the bypass header and restarts the timer. */
+  /** Foreground refresh: sends the bypass header when the document is visible. */
   refresh: () => void;
 }
 
@@ -62,21 +54,12 @@ const INITIAL_STATE: AttentionFetchState = { payload: null, lastSuccessAt: null,
 interface ResolvedOptions {
   fetchAttention: AttentionFetcher;
   now: () => number;
-  setTimer: (handler: () => void, delayMs: number) => AttentionTimerHandle;
-  clearTimer: (handle: AttentionTimerHandle) => void;
 }
 
-// Resolved per call so fake timers installed after mount still take effect.
 function resolveOptions(options: UseAttentionOptions): ResolvedOptions {
   return {
     fetchAttention: options.fetchAttention ?? ((request) => fetchAttentionOverHttp(request)),
-    now: options.now ?? (() => Date.now()),
-    setTimer: options.setTimer ?? ((handler, delayMs) => setTimeout(handler, delayMs)),
-    clearTimer:
-      options.clearTimer ??
-      ((handle) => {
-        clearTimeout(handle);
-      })
+    now: options.now ?? (() => Date.now())
   };
 }
 
@@ -89,25 +72,15 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
   optionsRef.current = options;
 
   const [state, setState] = useState<AttentionFetchState>(INITIAL_STATE);
-  // Refs, not state: the poll loop reads these without re-subscribing.
-  const lastSuccessRef = useRef<number | null>(null);
-  const lastAttemptRef = useRef<number | null>(null);
   const runRef = useRef<(foreground: boolean) => void>(() => {});
 
   useEffect(() => {
     let disposed = false;
-    let handle: AttentionTimerHandle | null = null;
     let activeController: AbortController | null = null;
-    // Only the newest request may write state, so a slow poll cannot land on top
-    // of a foreground refresh the operator asked for later.
+    let initialLoadStarted = false;
+    // Only the newest request may write state, so a slow initial load cannot land
+    // on top of a foreground refresh the operator asked for later.
     let sequence = 0;
-
-    const clearPendingTimer = (): void => {
-      if (handle !== null) {
-        resolveOptions(optionsRef.current).clearTimer(handle);
-        handle = null;
-      }
-    };
 
     const abortActiveRequest = (): void => {
       if (activeController !== null) {
@@ -118,30 +91,10 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
 
     const isVisible = (): boolean => document.visibilityState === "visible";
 
-    const schedule = (): void => {
-      clearPendingTimer();
-      if (disposed || !isVisible()) {
-        return;
-      }
-      const { now, setTimer } = resolveOptions(optionsRef.current);
-      const lastAttemptAt = lastAttemptRef.current;
-      // Time already served against the interval counts, so returning to a
-      // visible tab does not restart a full minute of waiting.
-      const delayMs =
-        lastAttemptAt === null
-          ? ATTENTION_POLL_INTERVAL_MS
-          : Math.max(0, ATTENTION_POLL_INTERVAL_MS - (now() - lastAttemptAt));
-      handle = setTimer(() => {
-        handle = null;
-        run(false);
-      }, delayMs);
-    };
-
     const run = (foreground: boolean): void => {
       if (disposed) {
         return;
       }
-      clearPendingTimer();
       // One request at a time: whatever is still in flight is superseded.
       abortActiveRequest();
       const controller = new AbortController();
@@ -162,58 +115,51 @@ export function useAttention(options: UseAttentionOptions = {}): AttentionSnapsh
             return;
           }
           const at = now();
-          lastSuccessRef.current = at;
-          lastAttemptRef.current = at;
           setState({ payload, lastSuccessAt: at, failure: null });
-          schedule();
         },
         (error: unknown) => {
           if (!settled()) {
             return;
           }
           // Keep the last good payload; the view marks it stale.
-          lastAttemptRef.current = now();
           setState((previous) => ({ ...previous, failure: failureMessage(error) }));
-          schedule();
         }
       );
     };
 
     runRef.current = run;
 
+    const runInitialLoad = (): void => {
+      if (initialLoadStarted || !isVisible()) {
+        return;
+      }
+      initialLoadStarted = true;
+      run(false);
+    };
+
     const onVisibilityChange = (): void => {
       if (disposed) {
         return;
       }
-      if (!isVisible()) {
-        clearPendingTimer();
-        return;
-      }
-      const { now } = resolveOptions(optionsRef.current);
-      const lastSuccessAt = lastSuccessRef.current;
-      if (lastSuccessAt === null || now() - lastSuccessAt >= ATTENTION_POLL_INTERVAL_MS) {
-        run(false);
-        return;
-      }
-      schedule();
+      runInitialLoad();
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    // A hidden tab issues no request at all; onVisibilityChange runs the first
-    // fetch when it is shown, because a null last success is always stale.
-    if (isVisible()) {
-      run(false);
-    }
+    // A hidden tab issues no request at all; its first visible state starts the
+    // one initial load. Later visibility changes are inert.
+    runInitialLoad();
 
     return () => {
       disposed = true;
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      clearPendingTimer();
       abortActiveRequest();
     };
   }, []);
 
   const refresh = useCallback(() => {
+    if (document.visibilityState !== "visible") {
+      return;
+    }
     runRef.current(true);
   }, []);
 

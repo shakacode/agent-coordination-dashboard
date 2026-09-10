@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionPayload } from "../api";
 import { DASHBOARD_REFRESH_HEADER, fetchAttention } from "../api";
 import { deskPayload, emptyPayload, fullCard, FIXTURE_NOW_MS, FIXTURE_OPEN_URI, makeAttentionPayload } from "./fixtures";
-import { ATTENTION_POLL_INTERVAL_MS, useAttention } from "./useAttention";
+import { useAttention } from "./useAttention";
 
 /** Minimal `Response` stand-in: jsdom does not implement fetch. */
 function jsonResponse(body: unknown, status = 200): Response {
@@ -186,14 +186,13 @@ describe("useAttention", () => {
     expect(fetchAttentionMock).not.toHaveBeenCalled();
     expect(result.current.payload).toBeNull();
 
-    clock += ATTENTION_POLL_INTERVAL_MS * 2;
+    clock += 120_000;
     await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS * 2);
+      vi.advanceTimersByTime(120_000);
     });
     expect(fetchAttentionMock).not.toHaveBeenCalled();
 
-    // No last success means the payload is stale on arrival, so showing the tab
-    // is what issues the first request.
+    // The first visible state issues the deferred initial request.
     await act(async () => {
       setVisibility("visible");
     });
@@ -203,56 +202,20 @@ describe("useAttention", () => {
     expect(result.current.payload).toEqual(deskPayload);
   });
 
-  it("polls again one interval later while the tab stays visible", async () => {
+  it("does not fetch again after time passes while the tab stays visible", async () => {
     const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
 
     renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
     await flush();
 
-    clock += ATTENTION_POLL_INTERVAL_MS - 1;
+    clock += 120_000;
     await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS - 1);
+      vi.advanceTimersByTime(120_000);
     });
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
-
-    clock += 1;
-    await act(async () => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("runs no fetch while the tab is hidden and clears the pending timer", async () => {
-    const clearTimer = vi.fn();
-    const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
-
-    renderHook(() =>
-      useAttention({
-        fetchAttention: fetchAttentionMock,
-        now,
-        setTimer: (handler, delayMs) => setTimeout(handler, delayMs),
-        clearTimer: (handle) => {
-          clearTimer(handle);
-          clearTimeout(handle);
-        }
-      })
-    );
-    await flush();
-
-    await act(async () => {
-      setVisibility("hidden");
-    });
-    expect(clearTimer).toHaveBeenCalled();
-
-    clock += ATTENTION_POLL_INTERVAL_MS * 3;
-    await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS * 3);
-    });
-
     expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
   });
 
-  it("fetches immediately when a hidden tab returns and the payload is stale", async () => {
+  it("does not fetch again when a tab returns after its initial load", async () => {
     const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
 
     renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
@@ -262,38 +225,29 @@ describe("useAttention", () => {
       setVisibility("hidden");
     });
 
-    clock += ATTENTION_POLL_INTERVAL_MS;
+    clock += 120_000;
     await act(async () => {
       setVisibility("visible");
     });
 
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
+    expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
   });
 
-  it("waits out the remaining interval when a returning tab is not stale", async () => {
+  it("does not refresh explicitly while the tab is hidden", async () => {
     const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
 
-    renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
+    const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
     await flush();
 
-    clock += 20_000;
     await act(async () => {
       setVisibility("hidden");
+      result.current.refresh();
     });
-    await act(async () => {
-      setVisibility("visible");
-    });
+
     expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
-
-    clock += ATTENTION_POLL_INTERVAL_MS - 20_000;
-    await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS - 20_000);
-    });
-
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the last good payload and records the failure when a poll fails", async () => {
+  it("keeps the last good payload and records a manual refresh failure", async () => {
     const fetchAttentionMock = vi
       .fn()
       .mockResolvedValueOnce(deskPayload)
@@ -302,9 +256,8 @@ describe("useAttention", () => {
     const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
     await flush();
 
-    clock += ATTENTION_POLL_INTERVAL_MS;
     await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS);
+      result.current.refresh();
     });
 
     expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
@@ -313,7 +266,7 @@ describe("useAttention", () => {
     expect(result.current.failure).toMatch(/network/);
   });
 
-  it("clears the failure once a later poll succeeds", async () => {
+  it("clears the failure once a later manual refresh succeeds", async () => {
     const fetchAttentionMock = vi
       .fn()
       .mockResolvedValueOnce(deskPayload)
@@ -323,23 +276,22 @@ describe("useAttention", () => {
     const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
     await flush();
 
-    clock += ATTENTION_POLL_INTERVAL_MS;
     await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS);
+      result.current.refresh();
     });
     expect(result.current.failure).toMatch(/network/);
 
-    clock += ATTENTION_POLL_INTERVAL_MS;
+    clock += 1;
     await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS);
+      result.current.refresh();
     });
 
     expect(result.current.failure).toBeNull();
     expect(result.current.payload).toEqual(emptyPayload);
-    expect(result.current.lastSuccessAt).toEqual(FIXTURE_NOW_MS + 2 * ATTENTION_POLL_INTERVAL_MS);
+    expect(result.current.lastSuccessAt).toEqual(FIXTURE_NOW_MS + 1);
   });
 
-  it("refreshes in the foreground and restarts the interval", async () => {
+  it("refreshes explicitly in the foreground while the tab is visible", async () => {
     const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
 
     const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
@@ -347,25 +299,31 @@ describe("useAttention", () => {
 
     clock += 30_000;
     await act(async () => {
-      vi.advanceTimersByTime(30_000);
       result.current.refresh();
     });
 
     expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
     expect(fetchAttentionMock).toHaveBeenLastCalledWith({ foreground: true, signal: expect.any(AbortSignal) });
 
-    // The interval restarts from the refresh, not from the original mount.
-    clock += 30_000;
-    await act(async () => {
-      vi.advanceTimersByTime(30_000);
-    });
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(2);
+    expect(result.current.lastSuccessAt).toEqual(FIXTURE_NOW_MS + 30_000);
+  });
 
-    clock += 30_000;
+  it("does not retry automatically after the initial load fails", async () => {
+    const fetchAttentionMock = vi.fn().mockRejectedValue(new Error("attention request failed: network"));
+
+    const { result } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
+    await flush();
+    expect(result.current.failure).toMatch(/network/);
+
+    clock += 120_000;
     await act(async () => {
-      vi.advanceTimersByTime(30_000);
+      vi.advanceTimersByTime(120_000);
+      setVisibility("hidden");
+      setVisibility("visible");
     });
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(3);
+
+    expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
+    expect(result.current.payload).toBeNull();
   });
 
   it("aborts the in-flight request on cleanup without recording a failure", async () => {
@@ -412,7 +370,7 @@ describe("useAttention", () => {
     expect(result.current.failure).toBeNull();
   });
 
-  it("cancels a poll that a foreground refresh supersedes", async () => {
+  it("cancels an initial load that a foreground refresh supersedes", async () => {
     const signals: AbortSignal[] = [];
     const fetchAttentionMock = vi.fn(
       ({ signal }: { signal: AbortSignal }) =>
@@ -437,18 +395,19 @@ describe("useAttention", () => {
     expect(result.current.failure).toBeNull();
   });
 
-  it("stops polling once the view unmounts", async () => {
+  it("does not run a deferred initial load after the view unmounts", async () => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     const fetchAttentionMock = vi.fn().mockResolvedValue(deskPayload);
 
     const { unmount } = renderHook(() => useAttention({ fetchAttention: fetchAttentionMock, now }));
     await flush();
+    expect(fetchAttentionMock).not.toHaveBeenCalled();
     unmount();
 
-    clock += ATTENTION_POLL_INTERVAL_MS * 2;
     await act(async () => {
-      vi.advanceTimersByTime(ATTENTION_POLL_INTERVAL_MS * 2);
+      setVisibility("visible");
     });
 
-    expect(fetchAttentionMock).toHaveBeenCalledTimes(1);
+    expect(fetchAttentionMock).not.toHaveBeenCalled();
   });
 });
