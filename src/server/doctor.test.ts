@@ -386,7 +386,7 @@ describe("readDoctorReport", () => {
 
     expect(report.attention).toEqual({
       mode: "fs",
-      workspace: ATTENTION_WORKSPACE,
+      workspace: "UNKNOWN",
       settings: "unreadable",
       repositories: []
     });

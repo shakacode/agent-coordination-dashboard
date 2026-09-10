@@ -201,7 +201,7 @@ async function readAttentionScope(options: DoctorOptions): Promise<DoctorAttenti
     // operator never saved. The same rule the reader and `config.ts` use
     // decides the mode, which is configuration rather than a read.
     const mode: DoctorResourceMode = (options.apiUrl || "").trim() === "" ? "fs" : "api";
-    return { mode, workspace: options.attentionWorkspace ?? ATTENTION_WORKSPACE, settings, repositories: [] };
+    return { mode, workspace: "UNKNOWN", settings, repositories: [] };
   }
 
   const read = await (options.readAttentionRecords || readAttentionRecordsImpl)({

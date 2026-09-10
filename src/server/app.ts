@@ -181,7 +181,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
         ? { settings: "saved", targetRepos: saved.targetRepos, attentionWorkspace: saved.attentionWorkspace }
         : { settings: "first_run_default", targetRepos: config.targetRepos, attentionWorkspace: saved.attentionWorkspace };
     } catch {
-      return { settings: "unreadable", targetRepos: [], attentionWorkspace: "default" };
+      return { settings: "unreadable", targetRepos: [], attentionWorkspace: "UNKNOWN" };
     }
   }
 

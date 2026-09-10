@@ -265,7 +265,7 @@ describe("dashboard app", () => {
     // operator never saved.
     expect(body.attention).toEqual({
       mode: "fs",
-      workspace: ATTENTION_WORKSPACE,
+      workspace: "UNKNOWN",
       settings: "unreadable",
       repositories: []
     });
@@ -1124,4 +1124,24 @@ it("allows a later settings update after a queued filesystem failure", async () 
   await rm(path, { recursive: true });
   expect((await put({ targetRepos: ["example/app"], attentionWorkspace: "Desk" })).status).toBe(200);
   expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(normalizeDashboardSettings({ targetRepos: ["example/app"], attentionWorkspace: "Desk" }));
+});
+
+it("reports UNKNOWN workspace for corrupted nondefault settings and recovers the saved scope after repair", async () => {
+  const root = await coordinationRoot("doctor-workspace-recovery-");
+  const path = join(root, "settings.json");
+  const settings = { targetRepos: ["example/app"], attentionWorkspace: "Desk.east" };
+  await writeFile(path, JSON.stringify(settings));
+  const baseUrl = await listen(root);
+  const doctor = async () => (await fetch(`${baseUrl}/api/doctor`)).json();
+  expect(await doctor()).toMatchObject({ attention: { workspace: "Desk.east", settings: "saved" } });
+
+  await writeFile(path, JSON.stringify(settings).slice(0, -1));
+  const unreadable = await doctor();
+  expect(unreadable).toMatchObject({ attention: { workspace: "UNKNOWN", settings: "unreadable", repositories: [] } });
+  expect(JSON.stringify(unreadable)).not.toContain("example/app");
+  expect(JSON.stringify(unreadable)).not.toContain("Desk.east");
+
+  const response = await fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
+  expect(response.status).toBe(200);
+  expect(await doctor()).toMatchObject({ attention: { workspace: "Desk.east", settings: "saved", repositories: [{ repository: "example/app" }] } });
 });
