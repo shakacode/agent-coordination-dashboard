@@ -313,6 +313,59 @@ describe("attention sampler", () => {
     expect(await readFile(join(root, archives[0]), "utf8")).toBe(previous);
   });
 
+  it("archives a same-repository workspace transition and starts new visits, including empty sources", async () => {
+    const root = await stateRoot("attention-sampler-workspace-");
+    let payload = { ...payloadAt([], NOW), sources: [], workspace: "default" };
+    const sampler = samplerFor(root, NOW, { readPayload: async () => payload });
+    sampler.setScope([], "default");
+    sampler.countDocumentLoad();
+    await sampler.sample();
+    const previous = await readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8");
+    sampler.countDocumentLoad();
+    sampler.setScope([], "Desk");
+    payload = { ...payload, workspace: "Desk" };
+    sampler.countDocumentLoad();
+    await sampler.sample();
+    expect(await readRows(root)).toMatchObject([{ document_loads_since_last: 1 }]);
+    expect(Object.keys((await readRows(root))[0])).toEqual(SAMPLE_COLUMNS);
+    const archives = (await readdir(root)).filter((name) => name.endsWith(".archive.jsonl"));
+    expect(archives).toHaveLength(1);
+    expect(await readFile(join(root, archives[0]), "utf8")).toBe(previous);
+    expect(JSON.parse(await readFile(join(root, ATTENTION_SAMPLE_SCOPE_FILENAME), "utf8"))).toEqual({ version: 2, targetRepos: [], workspace: "Desk" });
+  });
+
+  it("rejects an old in-flight workspace payload without consuming new-workspace visits", async () => {
+    const root = await stateRoot("attention-sampler-workspace-flight-");
+    let finish!: (payload: AttentionPayload) => void;
+    let pending = true;
+    const sampler = samplerFor(root, NOW, { logger: { warn: vi.fn() }, readPayload: () => pending
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ ...payloadAt([], NOW), workspace: "Desk" }) });
+    sampler.setScope([attentionRepository], "default");
+    sampler.countDocumentLoad();
+    const sampling = sampler.sample();
+    sampler.setScope([attentionRepository], "Desk");
+    sampler.countDocumentLoad();
+    finish(payloadAt([], NOW));
+    await sampling;
+    await expect(readFile(join(root, ATTENTION_SAMPLES_FILENAME), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    pending = false;
+    await sampler.sample();
+    expect(await readRows(root)).toMatchObject([{ document_loads_since_last: 1 }]);
+  });
+
+  it.each(["default", "Desk"])("interprets a legacy v1 period as default when starting workspace %s", async (workspace) => {
+    const root = await stateRoot("attention-sampler-workspace-legacy-");
+    await samplerFor(root, NOW).sample();
+    await writeFile(join(root, ATTENTION_SAMPLE_SCOPE_FILENAME), JSON.stringify({ version: 1, targetRepos: [attentionRepository] }));
+    const payload = { ...payloadAt([], NOW), workspace };
+    const sampler = samplerFor(root, NOW, { readPayload: async () => payload });
+    sampler.setScope([attentionRepository], workspace);
+    await sampler.sample();
+    expect(await readRows(root)).toHaveLength(workspace === "default" ? 2 : 1);
+    expect((await readdir(root)).filter((name) => name.endsWith(".archive.jsonl"))).toHaveLength(workspace === "default" ? 0 : 1);
+  });
+
   it("writes the file beside settings.json, creating the state directory when it is missing", async () => {
     const root = await stateRoot("attention-sampler-mkdir-");
     const stateDirectory = join(root, "nested", "state");

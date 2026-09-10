@@ -572,6 +572,8 @@ export interface AttentionDiagnosticPayload {
 
 /** Everything the read-only attention view renders, and nothing else. */
 export interface AttentionPayload {
+  /** Measurement scope; absent legacy payloads belong to the default workspace. */
+  workspace?: string;
   /** The model's clock as ISO 8601. */
   generated_at: string;
   dashboard_host: AttentionDashboardHost;

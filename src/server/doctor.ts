@@ -74,6 +74,7 @@ export interface DoctorOptions {
    * than an error.
    */
   targetRepos?: readonly string[];
+  attentionWorkspace?: string;
   /**
    * How the caller resolved {@link DoctorOptions.targetRepos}. Defaults to
    * `saved`, the state a caller that hands over a scope is in; `unreadable`
@@ -200,7 +201,7 @@ async function readAttentionScope(options: DoctorOptions): Promise<DoctorAttenti
     // operator never saved. The same rule the reader and `config.ts` use
     // decides the mode, which is configuration rather than a read.
     const mode: DoctorResourceMode = (options.apiUrl || "").trim() === "" ? "fs" : "api";
-    return { mode, workspace: ATTENTION_WORKSPACE, settings, repositories: [] };
+    return { mode, workspace: "UNKNOWN", settings, repositories: [] };
   }
 
   const read = await (options.readAttentionRecords || readAttentionRecordsImpl)({
@@ -209,6 +210,7 @@ async function readAttentionScope(options: DoctorOptions): Promise<DoctorAttenti
     coordApiToken: options.token,
     coordApiTokenEnvVar: coordTokenEnvVar(options.tokenEnvVar),
     targetRepos: options.targetRepos || [],
+    workspace: options.attentionWorkspace ?? ATTENTION_WORKSPACE,
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.now ? { now: options.now } : {})
   });

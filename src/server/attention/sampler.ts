@@ -41,6 +41,15 @@ function normalizedScope(repositories: readonly string[]): string[] {
   return normalizeTargetRepos(repositories.map((repository) => repository.toLowerCase()));
 }
 
+interface SampleScope {
+  targetRepos: string[];
+  workspace: string;
+}
+
+function sampleScope(repositories: readonly string[], workspace: string): SampleScope {
+  return { targetRepos: normalizedScope(repositories), workspace };
+}
+
 /**
  * The suppression kinds the row counts, pinned to the model's own vocabulary so
  * renaming one upstream fails this build instead of silently zeroing a column.
@@ -114,8 +123,8 @@ export interface AttentionSampler {
    * foreground refresh. Never a poll.
    */
   countDocumentLoad(): void;
-  /** Start a new visit bucket only when the normalized repository set changes. */
-  setScope(repositories: readonly string[]): void;
+  /** Start a new visit bucket when the repository set or workspace changes. */
+  setScope(repositories: readonly string[], workspace?: string): void;
   /** Append one row now. Never throws and never rejects. */
   sample: AttentionSampleTick;
   /** Begin sampling every interval. Idempotent. */
@@ -231,7 +240,7 @@ async function readPreviousSample(samplesPath: string): Promise<PreviousSample> 
  * can leave an empty active period, but cannot relabel old rows as a new scope.
  * This runs inside the same single-flight operation as the append.
  */
-async function prepareSamplePeriod(samplesPath: string, scope: readonly string[], restart: boolean): Promise<PreviousSample> {
+async function prepareSamplePeriod(samplesPath: string, scope: SampleScope, restart: boolean): Promise<PreviousSample> {
   const previous = await readPreviousSample(samplesPath);
   const scopePath = join(dirname(samplesPath), ATTENTION_SAMPLE_SCOPE_FILENAME);
   let metadata: string | null;
@@ -244,10 +253,10 @@ async function prepareSamplePeriod(samplesPath: string, scope: readonly string[]
   let savedScope: string | null = null;
   try {
     const parsed = JSON.parse(metadata ?? "null");
-    if (parsed?.version === 1 && Array.isArray(parsed.targetRepos) &&
+    if ((parsed?.version === 1 || (parsed?.version === 2 && typeof parsed.workspace === "string")) && Array.isArray(parsed.targetRepos) &&
       parsed.targetRepos.every((value: unknown) => typeof value === "string") &&
       normalizedScope(parsed.targetRepos).length === parsed.targetRepos.length) {
-      savedScope = JSON.stringify(normalizedScope(parsed.targetRepos));
+      savedScope = JSON.stringify(sampleScope(parsed.targetRepos, parsed.version === 1 ? "default" : parsed.workspace));
     }
   } catch {
     // Malformed metadata makes the history unknown, not a new empty history.
@@ -262,7 +271,7 @@ async function prepareSamplePeriod(samplesPath: string, scope: readonly string[]
     await writeFile(`${archiveStem}.scope.json`, metadata ?? '{"scope":"UNKNOWN"}\n', { flag: "wx" });
     await rename(samplesPath, `${archiveStem}.jsonl`);
   }
-  await writeFile(scopePath, `${JSON.stringify({ version: 1, targetRepos: scope })}\n`, "utf8");
+  await writeFile(scopePath, `${JSON.stringify({ version: 2, ...scope })}\n`, "utf8");
   return { instant: null, needsSeparator: false, exists: false };
 }
 
@@ -334,8 +343,8 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     scope: null, documentLoads: 0, restart: false
   };
 
-  function setScope(repositories: readonly string[]): void {
-    const scope = JSON.stringify(normalizedScope(repositories));
+  function setScope(repositories: readonly string[], workspace = "default"): void {
+    const scope = JSON.stringify(sampleScope(repositories, workspace));
     if (period.scope === null) {
       period.scope = scope;
     } else if (period.scope !== scope) {
@@ -356,8 +365,8 @@ export function createAttentionSampler(options: AttentionSamplerOptions): Attent
     const claimedPeriod = period;
     const claimed = claimedPeriod.documentLoads;
     const payload = await options.readPayload();
-    const scope = normalizedScope(payload.sources.map((source) => source.repository));
-    if (period.scope === null) setScope(scope);
+    const scope = sampleScope(payload.sources.map((source) => source.repository), payload.workspace ?? "default");
+    if (period.scope === null) setScope(scope.targetRepos, scope.workspace);
     if (claimedPeriod !== period || period.scope !== JSON.stringify(scope)) {
       throw new Error("Attention scope changed while the sample was being read.");
     }
