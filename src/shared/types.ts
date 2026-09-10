@@ -28,6 +28,16 @@ export interface GitHubQuotaStatus {
   message: string;
 }
 
+export type AttentionSourceIntervalSeconds = number | {
+  default: number;
+  repositories?: Record<string, number>;
+};
+
 export interface DashboardSettings {
   targetRepos: string[];
+  attentionWorkspace?: string;
+  attentionSourceIntervalSeconds?: AttentionSourceIntervalSeconds;
+  attentionOpenAgeDays?: number;
+  /** Preserve file-only settings when older clients save their known fields. */
+  [key: string]: unknown;
 }

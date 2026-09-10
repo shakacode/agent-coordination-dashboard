@@ -9,7 +9,7 @@ import { readDoctorReport, type DoctorSettingsStatus } from "./doctor";
 import { createHostGuard } from "./security/hostGuard";
 import { isLoopbackAddress } from "./security/loopback";
 import { isMachineLocalAddress, type MachineInterfaceMap } from "./security/machineLocal";
-import { normalizeTargetRepos, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
+import { DashboardSettingsContentsError, DashboardSettingsValidationError, normalizeDashboardSettings, readDashboardSettings, settingsPath, writeDashboardSettings } from "./settings";
 import type { AttentionPayload } from "../shared/attention";
 
 /**
@@ -173,14 +173,15 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   async function resolveDoctorSettingsScope(): Promise<{
     settings: DoctorSettingsStatus;
     targetRepos: readonly string[];
+    attentionWorkspace: string;
   }> {
     try {
       const saved = await readDashboardSettings(persistedSettingsPath, { targetRepos: [] });
       return saved.targetRepos.length > 0
-        ? { settings: "saved", targetRepos: saved.targetRepos }
-        : { settings: "first_run_default", targetRepos: config.targetRepos };
+        ? { settings: "saved", targetRepos: saved.targetRepos, attentionWorkspace: saved.attentionWorkspace }
+        : { settings: "first_run_default", targetRepos: config.targetRepos, attentionWorkspace: saved.attentionWorkspace };
     } catch {
-      return { settings: "unreadable", targetRepos: [] };
+      return { settings: "unreadable", targetRepos: [], attentionWorkspace: "default" };
     }
   }
 
@@ -194,16 +195,21 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
   async function buildAttentionPayload(generation: number): Promise<AttentionPayload> {
     const settings = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
     // A replaced in-flight build must never restore its old visit bucket.
-    if (generation === attentionScopeGeneration) attentionSampler.setScope(settings.targetRepos);
+    if (generation === attentionScopeGeneration) attentionSampler.setScope(settings.targetRepos, settings.attentionWorkspace);
     const read = await readAttentionRecords({
       stateRoot: config.stateRoot,
       coordApiUrl: config.coordApiUrl,
       coordApiToken: config.coordApiToken,
       coordApiTokenEnvVar: config.coordApiTokenEnvVar,
       targetRepos: settings.targetRepos,
+      workspace: settings.attentionWorkspace,
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {})
     });
-    return buildAttentionModel(read, { now: now(), machineId: config.machineId });
+    return buildAttentionModel(read, {
+      now: now(), machineId: config.machineId,
+      sourceIntervalSeconds: settings.attentionSourceIntervalSeconds,
+      openAgeFlagDays: settings.attentionOpenAgeDays
+    });
   }
 
   /**
@@ -272,7 +278,8 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
 
   // Attribute visits before the first payload read. An unreadable scope starts
   // empty, so repairing settings never assigns old unknown visits to it.
-  attentionSampler.setScope((await resolveDoctorSettingsScope()).targetRepos);
+  const initialScope = await resolveDoctorSettingsScope();
+  attentionSampler.setScope(initialScope.targetRepos, initialScope.attentionWorkspace);
 
   app.use(createHostGuard(config.allowedHosts));
   // After the host guard, so a request the dashboard refused to serve is not
@@ -309,6 +316,7 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       token: config.coordApiToken,
       tokenEnvVar: config.coordApiTokenEnvVar,
       targetRepos: scope.targetRepos,
+      attentionWorkspace: scope.attentionWorkspace,
       settings: scope.settings
     }));
   });
@@ -349,6 +357,9 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
     res.json(await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos }));
   });
 
+  // A partial PUT must read the preceding successful update, and its cache
+  // and sampler scope must advance in the same order as persisted settings.
+  let settingsUpdate: Promise<void> = Promise.resolve();
   app.put("/api/settings", async (req, res) => {
     if (!isMachineLocalAddress(req.socket.remoteAddress, options.machineInterfaces)) {
       res.status(403).json({
@@ -357,19 +368,37 @@ export async function createDashboardApp(config: ServerConfig, options: CreateDa
       return;
     }
 
-    const targetRepos = normalizeTargetRepos(req.body?.targetRepos);
-    if (targetRepos.length === 0) {
-      res.status(400).json({ error: "At least one owner/repo target is required." });
-      return;
+    const update = settingsUpdate.then(async () => {
+      if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)) {
+        throw new DashboardSettingsValidationError("settings: must be an object.");
+      }
+      let normalized;
+      let current;
+      try {
+        current = await readDashboardSettings(persistedSettingsPath, { targetRepos: config.targetRepos });
+      } catch (error) {
+        // Keep the existing repair path for malformed contents, but only a
+        // complete target-bearing request can establish a replacement scope.
+        // Access failures never authorize discarding saved settings.
+        if (!(error instanceof DashboardSettingsContentsError)) throw error;
+        normalized = normalizeDashboardSettings(req.body);
+      }
+      normalized = normalized ?? normalizeDashboardSettings({ ...current, ...req.body });
+      const saved = await writeDashboardSettings(persistedSettingsPath, normalized);
+      // Only a write that actually landed changes the scope.
+      invalidateAttentionScope();
+      attentionSampler.setScope(saved.targetRepos, saved.attentionWorkspace);
+      return saved;
+    });
+    // A failed request still reports its own error, but cannot poison the
+    // queue and prevent a subsequent valid update or repaired filesystem.
+    settingsUpdate = update.then(() => undefined, () => undefined);
+    try {
+      res.json(await update);
+    } catch (error) {
+      if (!(error instanceof DashboardSettingsValidationError)) throw error;
+      res.status(400).json({ error: error.message });
     }
-
-    const saved = await writeDashboardSettings(persistedSettingsPath, { targetRepos });
-    // Only a write that actually landed changes the scope; a rejected
-    // authorization or an invalid body returns above and leaves the cache
-    // alone.
-    invalidateAttentionScope();
-    attentionSampler.setScope(saved.targetRepos);
-    res.json(saved);
   });
 
   if (options.serveFrontend !== false) {

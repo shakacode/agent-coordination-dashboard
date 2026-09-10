@@ -30,8 +30,7 @@ import type { AttentionRecord } from "../../shared/attention";
  */
 
 /**
- * The only workspace the dashboard reads today. PR 1b turns it into a setting;
- * until then every prefix and every result carries this constant.
+ * The first-run workspace when no attentionWorkspace setting is supplied.
  */
 export const ATTENTION_WORKSPACE = "default";
 
@@ -203,6 +202,7 @@ export interface ReadAttentionRecordsOptions extends CoordinationApiOptions {
   stateRoot: string;
   /** `owner/name` strings as `normalizeTargetRepos` produces them. */
   targetRepos: readonly string[];
+  workspace?: string;
   /** Injectable for tests; defaults to {@link ATTENTION_READ_ENTRY_LIMIT}. */
   maxEntriesPerRepository?: number;
   /** Injectable for tests; defaults to {@link ATTENTION_READ_TIME_BUDGET_MS}. */
@@ -356,6 +356,7 @@ function isCandidateName(name: string): boolean {
 /** One repository's read in progress. */
 interface RepositoryRead {
   repository: string;
+  workspace: string;
   prefix: string;
   mode: AttentionReadMode;
   records: AttentionRecord[];
@@ -365,14 +366,14 @@ interface RepositoryRead {
   read: number;
 }
 
-function startRead(repository: string, prefix: string, mode: AttentionReadMode): RepositoryRead {
-  return { repository, prefix, mode, records: [], diagnostics: [], outcomes: emptyOutcomes(), read: 0 };
+function startRead(repository: string, prefix: string, mode: AttentionReadMode, workspace: string): RepositoryRead {
+  return { repository, workspace, prefix, mode, records: [], diagnostics: [], outcomes: emptyOutcomes(), read: 0 };
 }
 
 function report(read: RepositoryRead, kind: AttentionReadDiagnosticKind, path: string, reason: string): void {
   read.diagnostics.push({
     repository: read.repository,
-    workspace: ATTENTION_WORKSPACE,
+    workspace: read.workspace,
     mode: read.mode,
     kind,
     path,
@@ -411,13 +412,13 @@ function ingest(read: RepositoryRead, path: string, value: unknown): void {
     outcome(read, "repository_mismatch", path, `Record does not name repository ${read.repository}.`);
     return;
   }
-  if (record.workspace !== ATTENTION_WORKSPACE) {
+  if (record.workspace !== read.workspace) {
     // Same rule one axis over: the prefix and the directory both fix the
     // workspace, so a record that names another one is another workspace's
     // state and must not be mixed into this result. Workspace names are exact,
     // not case-folded like GitHub owner and repository names, and the claimed
     // one is withheld from the reason for the reason given above.
-    outcome(read, "workspace_mismatch", path, `Record does not name workspace ${ATTENTION_WORKSPACE}.`);
+    outcome(read, "workspace_mismatch", path, `Record does not name workspace ${read.workspace}.`);
     return;
   }
   if (path !== storageKey(read.prefix, record.id)) {
@@ -444,7 +445,7 @@ function finish(
 ): AttentionRepositoryRead {
   return {
     repository: read.repository,
-    workspace: ATTENTION_WORKSPACE,
+    workspace: read.workspace,
     mode: read.mode,
     prefix: read.prefix,
     sourceStatus: { status, checkedAt, ...(httpStatus === undefined ? {} : { httpStatus }) },
@@ -477,25 +478,26 @@ function resolveBudget(options: ReadAttentionRecordsOptions): ResolvedBudget {
  * rejects the empty, `.`, `..`, and slash- or whitespace-bearing segments that
  * would otherwise be joined into a filesystem path and escape the state root.
  */
-function repositoryPrefix(repository: string): AttentionPrefix | null {
+function repositoryPrefix(repository: string, workspace: string): AttentionPrefix | null {
   const [owner, name, ...rest] = repository.split("/");
   if (rest.length > 0 || !owner || !name) {
     return null;
   }
-  return toAttentionPrefix(ATTENTION_WORKSPACE, owner, name);
+  return toAttentionPrefix(workspace, owner, name);
 }
 
 /** The prefix a repository would have, for reporting when it cannot have one. */
-function candidatePrefix(repository: string): string {
-  return `attention/${ATTENTION_WORKSPACE}/${repository}`;
+function candidatePrefix(repository: string, workspace: string): string {
+  return `attention/${workspace}/${repository}`;
 }
 
 function unusableRepository(
   repository: string,
   mode: AttentionReadMode,
-  checkedAt: string
+  checkedAt: string,
+  workspace: string
 ): AttentionRepositoryRead {
-  const read = startRead(repository, candidatePrefix(repository), mode);
+  const read = startRead(repository, candidatePrefix(repository, workspace), mode, workspace);
   report(
     read,
     "unreadable",
@@ -511,9 +513,10 @@ async function readRepositoryFromFilesystem(
   stateRoot: string,
   fileSystem: AttentionFileSystem,
   budget: ResolvedBudget,
-  checkedAt: string
+  checkedAt: string,
+  workspace: string
 ): Promise<AttentionRepositoryRead> {
-  const read = startRead(repository, prefix, "fs");
+  const read = startRead(repository, prefix, "fs", workspace);
   // Every segment came through `toAttentionPrefix`, so none of them can be
   // empty, `.`, `..`, or contain a separator: the join stays under the root.
   const directory = join(stateRoot, ...prefix.split("/"));
@@ -634,9 +637,10 @@ function readRepositoryFromApi(
   repository: string,
   prefix: AttentionPrefix,
   result: StatePrefixReadResult,
-  budget: ResolvedBudget
+  budget: ResolvedBudget,
+  workspace: string
 ): AttentionRepositoryRead {
-  const read = startRead(repository, prefix, "api");
+  const read = startRead(repository, prefix, "api", workspace);
   // Every warning the client raised for this prefix belongs to this
   // repository: a dropped entry, a malformed wrapper, or the auth failure whose
   // text names the `attention` read scope the token is missing.
@@ -674,7 +678,7 @@ function readRepositoryFromApi(
 }
 
 /**
- * Read every configured repository's attention records for the `default`
+ * Read every configured repository's attention records for the configured
  * workspace. Never throws.
  *
  * Repositories are read concurrently, but each one's budget, counts, `partial`
@@ -687,6 +691,7 @@ function readRepositoryFromApi(
  * applies the open filter downstream.
  */
 export async function readAttentionRecords(options: ReadAttentionRecordsOptions): Promise<AttentionReadResult> {
+  const workspace = options.workspace ?? ATTENTION_WORKSPACE;
   const checkedAtDate = options.now?.() ?? new Date();
   const checkedAt = checkedAtDate.toISOString();
   const budget = resolveBudget(options);
@@ -698,21 +703,21 @@ export async function readAttentionRecords(options: ReadAttentionRecordsOptions)
   if (mode === "fs") {
     const fileSystem = options.fileSystem ?? nodeAttentionFileSystem;
     return {
-      workspace: ATTENTION_WORKSPACE,
+      workspace,
       mode,
       checkedAt,
       repositories: await Promise.all(
         repositories.map(async (repository) => {
-          const prefix = repositoryPrefix(repository);
+          const prefix = repositoryPrefix(repository, workspace);
           return prefix === null
-            ? unusableRepository(repository, mode, checkedAt)
-            : readRepositoryFromFilesystem(repository, prefix, options.stateRoot, fileSystem, budget, checkedAt);
+            ? unusableRepository(repository, mode, checkedAt, workspace)
+            : readRepositoryFromFilesystem(repository, prefix, options.stateRoot, fileSystem, budget, checkedAt, workspace);
         })
       )
     };
   }
 
-  const prefixes = repositories.map(repositoryPrefix);
+  const prefixes = repositories.map((repository) => repositoryPrefix(repository, workspace));
   const readable = prefixes.filter((prefix): prefix is AttentionPrefix => prefix !== null);
   // Exactly one prefix read per readable repository, in one batch so they share
   // a single `checkedAt`. The client never throws and never reads the disk.
@@ -729,15 +734,15 @@ export async function readAttentionRecords(options: ReadAttentionRecordsOptions)
   const byPrefix = new Map(results.map((result) => [result.sourceStatus.prefix, result] as const));
 
   return {
-    workspace: ATTENTION_WORKSPACE,
+    workspace,
     mode,
     checkedAt,
     repositories: repositories.map((repository, index) => {
       const prefix = prefixes[index];
       const result = prefix === null ? undefined : byPrefix.get(prefix);
       return prefix === null || result === undefined
-        ? unusableRepository(repository, mode, checkedAt)
-        : readRepositoryFromApi(repository, prefix, result, budget);
+        ? unusableRepository(repository, mode, checkedAt, workspace)
+        : readRepositoryFromApi(repository, prefix, result, budget, workspace);
     })
   };
 }

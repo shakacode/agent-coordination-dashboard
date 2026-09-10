@@ -1315,3 +1315,23 @@ describe("shared module hygiene", () => {
     expect(attentionModuleSource).not.toMatch(/\brequire\s*\(/);
   });
 });
+
+describe("configured attention freshness", () => {
+  it.each(["source", "companion"] as const)("uses record then repository then global interval for %s", (timestamp) => {
+    const record = freshRecord({ refresh_interval_seconds: undefined,
+      ...(timestamp === "source" ? { refreshed_at: at(-300_000) } : { source: sourceWith({ last_seen_at: at(-300_000) }) }) });
+    const options = { sourceIntervalSeconds: { default: 600, repositories: { [REPOSITORY.toUpperCase()]: 120 } } };
+    expect(cardIds(build(readOf(record), options))).toEqual([]);
+    expect(kindsOf(build(readOf(record), options))).toContain(timestamp === "source" ? "stale_source" : "stale_companion");
+    expect(build(readOf({ ...record, refresh_interval_seconds: 300 }), options).cards).toHaveLength(1);
+    expect(build(readOf(record), { sourceIntervalSeconds: { default: 600, repositories: { "other/repo": 120 } } }).cards).toHaveLength(1);
+    expect(build(readOf(record), { sourceIntervalSeconds: 120 }).cards).toHaveLength(0);
+    expect(build(readOf({ ...record, refresh_interval_seconds: 604801 }), options).cards).toHaveLength(0);
+  });
+
+  it("uses the configured open age threshold", () => {
+    const read = readOf(freshRecord({ created_at: at(-3 * MS_PER_DAY) }));
+    expect(build(read, { openAgeFlagDays: 2 }).cards[0].verify_open_age).toBe(true);
+    expect(build(read, { openAgeFlagDays: 4 }).cards[0].verify_open_age).toBe(false);
+  });
+});

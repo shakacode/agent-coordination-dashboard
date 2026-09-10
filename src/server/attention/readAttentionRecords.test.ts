@@ -1293,3 +1293,36 @@ describe("readAttentionRecords API mode", () => {
     expect(withUrl.repositories[0].records).toEqual([]);
   });
 });
+
+describe("configured workspace", () => {
+  it("isolates filesystem records and diagnostics to the exact workspace", async () => {
+    const root = await stateRoot();
+    await seedRepository(root, REPOSITORY, { "default.json": recordFor("default") });
+    const directory = join(root, "attention", "Desk.east", REPOSITORY);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "saved.json"), recordFor("saved", { workspace: "Desk.east" }));
+    await writeFile(join(directory, "wrong.json"), recordFor("wrong", { workspace: "desk.east" }));
+    const result = await readAttentionRecords({ stateRoot: root, targetRepos: [REPOSITORY], workspace: "Desk.east" });
+    expect(result.workspace).toBe("Desk.east");
+    expect(only(result).records.map((record) => record.id)).toEqual(["saved"]);
+    expect(only(result).diagnostics).toMatchObject([{ kind: "workspace_mismatch", workspace: "Desk.east", path: `attention/Desk.east/${REPOSITORY}/wrong.json` }]);
+  });
+
+  it("requests only the configured API workspace and rejects other workspace identities", async () => {
+    const prefix = `attention/Desk.east/${REPOSITORY}`;
+    const requested: string[] = [];
+    const fetchImpl = apiFetch({ [prefix]: { body: { entries: [
+      { path: `${prefix}/saved.json`, data: JSON.parse(recordFor("saved", { workspace: "Desk.east" })) },
+      { path: `${prefix}/wrong.json`, data: JSON.parse(recordFor("wrong")) }
+    ] } } });
+    const result = await readAttentionRecords(apiOptions({ workspace: "Desk.east", fetchImpl: (async (...args: Parameters<typeof fetch>) => {
+      requested.push(String(args[0]));
+      return fetchImpl(...args);
+    }) as typeof fetch }));
+    expect(requested).toHaveLength(1);
+    expect(new URL(requested[0]).searchParams.get("prefix")).toBe(prefix);
+    expect(result.workspace).toBe("Desk.east");
+    expect(only(result).records.map((record) => record.id)).toEqual(["saved"]);
+    expect(only(result).diagnostics).toMatchObject([{ kind: "workspace_mismatch", workspace: "Desk.east" }]);
+  });
+});

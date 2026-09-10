@@ -11,6 +11,7 @@ import {
   type AttentionRecord,
   type AttentionSourcePayload
 } from "../../shared/attention";
+import type { AttentionSourceIntervalSeconds } from "../../shared/types";
 import type { AttentionReadResult, AttentionRepositoryRead } from "./readAttentionRecords";
 
 /**
@@ -31,7 +32,7 @@ import type { AttentionReadResult, AttentionRepositoryRead } from "./readAttenti
  * reason, so the view can show a warning instead of a shorter list.
  */
 
-/** Fallback refresh interval when a record does not carry one; PR 1b makes it a setting. */
+/** Fallback refresh interval when neither record nor settings supplies one. */
 export const ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS = 900;
 
 /**
@@ -110,6 +111,7 @@ export interface BuildAttentionModelOptions {
   machineId?: string;
   /** Injectable for tests; defaults to {@link ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS}. */
   defaultRefreshIntervalSeconds?: number;
+  sourceIntervalSeconds?: AttentionSourceIntervalSeconds;
   /** Injectable for tests; defaults to {@link ATTENTION_OPEN_AGE_FLAG_DAYS}. */
   openAgeFlagDays?: number;
   /** Injectable for tests; defaults to {@link ATTENTION_CARD_CAP_PER_REPOSITORY}. */
@@ -125,6 +127,7 @@ export interface BuildAttentionModelOptions {
 interface ModelSettings {
   nowMs: number;
   defaultRefreshIntervalSeconds: number;
+  repositoryIntervals: Record<string, number>;
   openAgeFlagDays: number;
   cardCapPerRepository: number;
   resolvedTotalWarningThreshold: number;
@@ -155,10 +158,13 @@ const KEY_SEPARATOR = "\u0000";
 const PULL_URL_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/;
 
 function resolveSettings(options: BuildAttentionModelOptions): ModelSettings {
+  const interval = options.sourceIntervalSeconds;
+  const globalInterval = typeof interval === "number" ? interval : interval?.default;
   return {
     nowMs: options.now instanceof Date ? options.now.getTime() : Number.NaN,
     defaultRefreshIntervalSeconds:
-      positiveFinite(options.defaultRefreshIntervalSeconds) ?? ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS,
+      positiveFinite(globalInterval) ?? positiveFinite(options.defaultRefreshIntervalSeconds) ?? ATTENTION_DEFAULT_REFRESH_INTERVAL_SECONDS,
+    repositoryIntervals: Object.fromEntries(Object.entries(typeof interval === "object" ? interval?.repositories ?? {} : {}).map(([repository, seconds]) => [repository.toLowerCase(), seconds])),
     openAgeFlagDays: options.openAgeFlagDays ?? ATTENTION_OPEN_AGE_FLAG_DAYS,
     cardCapPerRepository: options.cardCapPerRepository ?? ATTENTION_CARD_CAP_PER_REPOSITORY,
     resolvedTotalWarningThreshold:
@@ -334,11 +340,12 @@ interface Suppression {
  * default, which {@link resolveSettings} has already made positive and finite,
  * so the window is always finite.
  */
-function refreshIntervalSeconds(value: unknown, settings: ModelSettings): number {
+function refreshIntervalSeconds(value: unknown, repository: unknown, settings: ModelSettings): number {
   const seconds = positiveFinite(value);
+  const override = positiveFinite(typeof repository === "string" ? settings.repositoryIntervals[repository.toLowerCase()] : undefined);
   return seconds !== null && seconds <= ATTENTION_MAX_REFRESH_INTERVAL_SECONDS
     ? seconds
-    : settings.defaultRefreshIntervalSeconds;
+    : override !== null && override <= ATTENTION_MAX_REFRESH_INTERVAL_SECONDS ? override : settings.defaultRefreshIntervalSeconds;
 }
 
 /**
@@ -370,7 +377,7 @@ function freshnessSuppressions(record: AttentionRecord, settings: ModelSettings)
     ];
   }
 
-  const intervalSeconds = refreshIntervalSeconds(own.refresh_interval_seconds, settings);
+  const intervalSeconds = refreshIntervalSeconds(own.refresh_interval_seconds, own.repository, settings);
   const staleAfterMs = intervalSeconds * ATTENTION_STALE_INTERVAL_MULTIPLE * MS_PER_SECOND;
   const skewToleranceMs = ATTENTION_CLOCK_SKEW_TOLERANCE_SECONDS * MS_PER_SECOND;
   const suppressions: Suppression[] = [];
@@ -894,6 +901,7 @@ export function buildAttentionModel(
     // A clock that is not a usable date leaves the field empty rather than
     // throwing; the view renders UNKNOWN for it, as it does for any value it
     // cannot read.
+    workspace: input?.workspace ?? "default",
     generated_at: Number.isFinite(settings.nowMs) ? new Date(settings.nowMs).toISOString() : "",
     dashboard_host: dashboardHost,
     cards,

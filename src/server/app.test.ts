@@ -5,6 +5,7 @@ import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizeDashboardSettings } from "./settings";
 import { ATTENTION_CACHE_TTL_MS, createDashboardApp } from "./app";
 import appModuleSource from "./app.ts?raw";
 import {
@@ -312,7 +313,7 @@ describe("dashboard app", () => {
     const baseUrl = await listen(stateRoot);
 
     const initial = await fetch(`${baseUrl}/api/settings`);
-    await expect(initial.json()).resolves.toEqual({ targetRepos: ["shakacode/react_on_rails"] });
+    await expect(initial.json()).resolves.toEqual(normalizeDashboardSettings({ targetRepos: ["shakacode/react_on_rails"] }));
 
     const saved = await fetch(`${baseUrl}/api/settings`, {
       method: "PUT",
@@ -321,9 +322,9 @@ describe("dashboard app", () => {
     });
 
     expect(saved.status).toBe(200);
-    await expect(saved.json()).resolves.toEqual({ targetRepos: ["repo-a/app"] });
+    await expect(saved.json()).resolves.toEqual(normalizeDashboardSettings({ targetRepos: ["repo-a/app"] }));
     await expect(readFile(join(stateRoot, "settings.json"), "utf8")).resolves.toContain("repo-a/app");
-    await expect((await fetch(`${baseUrl}/api/settings`)).json()).resolves.toEqual({ targetRepos: ["repo-a/app"] });
+    await expect((await fetch(`${baseUrl}/api/settings`)).json()).resolves.toEqual(normalizeDashboardSettings({ targetRepos: ["repo-a/app"] }));
   });
 
   it.each(["./app", "repo/..", ".../repo"])("rejects a dot-only GitHub repository segment in settings: %s", async (targetRepo) => {
@@ -337,7 +338,7 @@ describe("dashboard app", () => {
     });
 
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({ error: "At least one owner/repo target is required." });
+    await expect(response.json()).resolves.toEqual({ error: "targetRepos: At least one owner/repo target is required." });
   });
 
   it("rejects settings writes from remote viewers", async () => {
@@ -1014,4 +1015,113 @@ describe("GET /api/attention", () => {
     expect(JSON.stringify(body)).not.toContain("Full agent prompt");
     expect(Object.hasOwn(body.cards[0].record, "prompt")).toBe(false);
   });
+});
+
+describe("attention settings HTTP integration", () => {
+  it("preserves every saved property through full and legacy target-only PUTs", async () => {
+    const root = await coordinationRoot("settings-roundtrip-");
+    const baseUrl = await listen(root);
+    const settings = { targetRepos: ["example/app"], attentionWorkspace: "Desk.east", attentionOpenAgeDays: 2,
+      attentionSourceIntervalSeconds: { default: 600, repositories: { "example/app": 120 } }, future: { nested: [true, null] } };
+    const put = (body: unknown) => fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    expect(await (await put(settings)).json()).toEqual(settings);
+    const expected = { ...settings, targetRepos: ["other/app"] };
+    expect(await (await put({ targetRepos: expected.targetRepos })).json()).toEqual(expected);
+    expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(expected);
+    expect(JSON.parse(await readFile(join(root, "settings.json"), "utf8"))).toEqual(expected);
+    const report = await (await fetch(`${baseUrl}/api/doctor`)).json();
+    expect(report).toMatchObject({ attention: { workspace: "Desk.east" } });
+  });
+
+  it("rejects named invalid settings without changing disk or the attention cache", async () => {
+    const root = await coordinationRoot("settings-invalid-attention-");
+    const reader = vi.fn(async () => attentionRead());
+    const baseUrl = await listen(root, attentionConfig(root), { readAttentionRecords: reader, now: () => NOW });
+    await writeFile(join(root, "settings.json"), JSON.stringify({ targetRepos: [attentionRepository] }));
+    await fetch(`${baseUrl}/api/attention`);
+    const before = await readFile(join(root, "settings.json"), "utf8");
+    for (const [key, value] of [["attentionWorkspace", "../escape"], ["attentionOpenAgeDays", 0], ["attentionOpenAgeDays", 2.5], ["attentionSourceIntervalSeconds", { default: 600, repositories: { "example/app": 0 } }]] as const) {
+      const response = await fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [key]: value }) });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining(key) });
+      expect(await readFile(join(root, "settings.json"), "utf8")).toBe(before);
+      await fetch(`${baseUrl}/api/attention`);
+      expect(reader).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each(["{broken", '{"targetRepos":["example/app"],"attentionWorkspace":"../escape"}'])("repairs malformed saved contents only with a complete valid PUT: %s", async (contents) => {
+    const root = await coordinationRoot("settings-repair-");
+    const baseUrl = await listen(root);
+    await writeFile(join(root, "settings.json"), contents);
+    const put = (body: unknown) => fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    expect((await put({ attentionWorkspace: "Desk" })).status).toBe(400);
+    expect(await readFile(join(root, "settings.json"), "utf8")).toBe(contents);
+    expect((await put({ targetRepos: ["example/app"], attentionWorkspace: "Desk" })).status).toBe(200);
+    expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(normalizeDashboardSettings({ targetRepos: ["example/app"], attentionWorkspace: "Desk" }));
+  });
+});
+
+it("applies saved workspace, interval overrides and open age to the HTTP model", async () => {
+  const root = await coordinationRoot("settings-model-http-");
+  const reader = vi.fn(async (options: ReadAttentionRecordsOptions) => {
+    const result = attentionRead(repositoryRead({ records: [makeAttentionRecord({
+      workspace: options.workspace, refresh_interval_seconds: undefined,
+      created_at: "2026-08-31T09:30:00Z", refreshed_at: "2026-09-03T09:25:00Z",
+      source: { ...openAttentionRecord.source, last_seen_at: "2026-09-03T09:29:00Z" }
+    })] }));
+    return { ...result, workspace: options.workspace ?? "default" };
+  });
+  const baseUrl = await listen(root, attentionConfig(root), { readAttentionRecords: reader, now: () => NOW });
+  const put = (body: unknown) => fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  expect((await put({ attentionWorkspace: "Desk", attentionOpenAgeDays: 2,
+    attentionSourceIntervalSeconds: { default: 60, repositories: { [attentionRepository]: 600 } } })).status).toBe(200);
+  const fresh = await (await fetch(`${baseUrl}/api/attention`)).json() as AttentionPayload;
+  expect(fresh.workspace).toBe("Desk");
+  expect(fresh.cards).toHaveLength(1);
+  expect(fresh.cards[0].verify_open_age).toBe(true);
+  expect(reader.mock.calls[0][0].workspace).toBe("Desk");
+  expect((await put({ attentionSourceIntervalSeconds: 120 })).status).toBe(200);
+  const stale = await (await fetch(`${baseUrl}/api/attention`)).json() as AttentionPayload;
+  expect(stale.cards).toHaveLength(0);
+  expect(stale.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "stale_source" })]));
+});
+
+it("does not treat a filesystem settings failure as permission to overwrite saved contents", async () => {
+  const root = await coordinationRoot("settings-io-failure-");
+  const baseUrl = await listen(root);
+  await mkdir(join(root, "settings.json"));
+  const response = await fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targetRepos: ["example/app"] }) });
+  expect(response.status).toBe(500);
+  // If the directory were removed or replaced, this succeeds unexpectedly.
+  await expect(readFile(join(root, "settings.json"), "utf8")).rejects.toMatchObject({ code: "EISDIR" });
+});
+
+it("preserves disjoint concurrent partial settings updates and continues after a rejected update", async () => {
+  const root = await coordinationRoot("settings-concurrent-");
+  const baseUrl = await listen(root);
+  await writeFile(join(root, "settings.json"), JSON.stringify({ targetRepos: ["example/app"] }));
+  const put = (body: unknown) => fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const responses = await Promise.all([
+    put({ attentionWorkspace: "Desk" }),
+    put({ attentionOpenAgeDays: 0 }),
+    put({ attentionSourceIntervalSeconds: 120 }),
+    put({ attentionOpenAgeDays: 3 })
+  ]);
+  expect(responses.map((response) => response.status)).toEqual([200, 400, 200, 200]);
+  const expected = normalizeDashboardSettings({ targetRepos: ["example/app"], attentionWorkspace: "Desk", attentionSourceIntervalSeconds: 120, attentionOpenAgeDays: 3 });
+  expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(expected);
+  expect(JSON.parse(await readFile(join(root, "settings.json"), "utf8"))).toEqual(expected);
+});
+
+it("allows a later settings update after a queued filesystem failure", async () => {
+  const root = await coordinationRoot("settings-queue-recovery-");
+  const baseUrl = await listen(root);
+  const path = join(root, "settings.json");
+  await mkdir(path);
+  const put = (body: unknown) => fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  expect((await put({ targetRepos: ["example/app"] })).status).toBe(500);
+  await rm(path, { recursive: true });
+  expect((await put({ targetRepos: ["example/app"], attentionWorkspace: "Desk" })).status).toBe(200);
+  expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(normalizeDashboardSettings({ targetRepos: ["example/app"], attentionWorkspace: "Desk" }));
 });
