@@ -97,8 +97,8 @@ function acceptsDocument(accept: string | undefined): boolean {
  * The sampler's `document_loads_since_last` measures returns to the page, so it
  * counts the request that fetches the HTML document and nothing else. The view's
  * normal JSON request asks `/api/attention` for `application/json`, so it
- * fails both halves of this test. A loopback foreground refresh is counted
- * separately below as a return. `/api` is
+ * fails both halves of this test. A loopback foreground refresh is
+ * intentionally counted separately below as a return. `/api` is
  * excluded outright: opening an endpoint in an address bar sends a document
  * `Accept`, and reading JSON by hand is not a page load.
  *

@@ -1,8 +1,10 @@
 # GitHub REST quota exhaustion — 2026-08-10
 
 This is a historical incident record. It describes the deleted lane-inference
-dashboard. Its `/api/dashboard` surface and the `GITHUB_REFRESH_MS` and
-`DASHBOARD_REFRESH_MS` settings were removed in PR #135.
+dashboard. PR #135 disconnected its `/api/dashboard` surface and the
+`GITHUB_REFRESH_MS` and `DASHBOARD_REFRESH_MS` settings from the current
+Human Attention app. The lifecycle CLI retains compatibility validation for
+those setting names.
 
 ## Summary
 
