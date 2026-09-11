@@ -2,8 +2,7 @@
 
 This is a historical incident record. It describes the deleted lane-inference
 dashboard. Its `/api/dashboard` surface and the `GITHUB_REFRESH_MS` and
-`DASHBOARD_REFRESH_MS` settings were removed in PR 0 of the Human Attention
-view.
+`DASHBOARD_REFRESH_MS` settings were removed in PR #135.
 
 ## Summary
 
