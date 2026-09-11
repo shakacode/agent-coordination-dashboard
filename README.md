@@ -1,21 +1,22 @@
 # Agent Coordination Dashboard
 
-Local dashboard service for agent coordination state: a detached lifecycle CLI,
-machine-local security boundaries, target repository settings, and component
+Local dashboard service for Human Attention records: a detached lifecycle CLI,
+machine-local settings boundary, target repository scope, and component
 diagnostics over the coordination backend.
 
 [![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
 
 **[Documentation →](https://agents.shakacode.com)**
 
-The browser page currently renders a placeholder. The read-only Human Attention
-view over agent-coordination attention records lands in later pull requests;
-see tracker issue #134.
+The browser page renders a read-only Human Attention view over scoped
+agent-coordination attention records. It shows items that need a person, source
+status, and diagnostics when a source cannot be read.
 
 ## License
 
 This local/protocol dashboard is part of the Agent Coordination MIT License
-protocol plane while it remains a local operator view over coordination state.
+protocol plane while it remains a local Human Attention view over coordination
+state.
 Future hosted or monetized ShakaStack product-plane dashboards can use a
 separate repository and license boundary while consuming the same protocol API.
 
@@ -143,9 +144,10 @@ deadline, and accept at most 256 KiB per response.
 `agent-coordination-dashboard` and the stable checks `dashboard.package`,
 `dashboard.health`, and `dashboard.resources`. Default mode marks the resource
 check `skipped`; `--deep` reads fresh `/api/doctor` evidence and exposes only
-normalized states for the registered `claims`, `heartbeats`, `batches`, and
-`events` resources. Endpoint configuration, timestamps, unknown fields, and
-secret-bearing values are not copied into the contract.
+normalized states for the coordination backend's `claims`, `heartbeats`,
+`batches`, and `events` resources. These are diagnostics, not the Human
+Attention view's data model. Endpoint configuration, timestamps, unknown
+fields, and secret-bearing values are not copied into the contract.
 
 Statuses are `healthy`, `degraded`, and `failed`; individual checks may also be
 `skipped`. The process exits `0`, `1`, or `2` to match the aggregate status. A
@@ -177,8 +179,8 @@ costs memory here. It reports statuses only:
 no record content, target, question, or diagnostic text appears in the report.
 
 The default `~/.local/state/agent-coordination` path is a safe local sandbox.
-To inspect an existing coordination run, point `AGENT_COORD_STATE_ROOT` at the
-data root that already contains `claims/`, `heartbeats/`, and `batches/`:
+To read Human Attention records and diagnose an existing coordination run, point
+`AGENT_COORD_STATE_ROOT` at its data root:
 
 ```bash
 AGENT_COORD_STATE_ROOT="$HOME/Documents/agent-coordination/agent-coordination-pr2" \
@@ -284,15 +286,19 @@ Target repositories are persisted across restarts in the settings file.
 when no settings file exists yet.
 
 The coordination root is data only. This repo owns the dashboard code; the
-coordination data root owns runtime records such as `claims/`, `heartbeats/`,
+coordination data root owns runtime records. The Human Attention view renders
+only scoped attention records. Its doctor diagnostics can separately report the
+availability of coordination resources such as `claims/`, `heartbeats/`,
 `batches/`, `events/`, and `history/`.
 
 ## Data And Tooling Boundary
 
-The coordination root should trend toward data-only: `claims/`, `heartbeats/`,
-`batches/`, `events/`, `history/`, and small state metadata. Executable helper
-scripts such as `agent-coord` should live in a tool repository, not copied into
-every coordination-state root. Keeping scripts in a tool repo and data in the
+The coordination root should trend toward data-only: attention records,
+`claims/`, `heartbeats/`, `batches/`, `events/`, `history/`, and small state
+metadata. Executable helper scripts such as `agent-coord` should live in a tool
+repository, not copied into every coordination-state root. The dashboard reads
+only scoped attention records for its view; it uses the other resources only for
+coordination diagnostics. Keeping scripts in a tool repo and data in the
 coordination root makes dashboard scoping, backup, and audit behavior clearer.
 
 The current filesystem JSON/JSONL store is still the simplest fit for local,
@@ -316,8 +322,8 @@ The npm scripts call package entrypoints through `node` directly for consistent
 local execution.
 
 `npm run demo` starts a disposable local dashboard over an empty temporary
-coordination state root, so it serves the placeholder page and `/api/doctor`
-reports every resource as `empty`. The installed equivalent is:
+coordination state root, so the Human Attention view has no records and
+`/api/doctor` reports every coordination resource as `empty`. The installed equivalent is:
 
 ```bash
 npx agent-coordination-dashboard --demo
