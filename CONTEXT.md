@@ -1,132 +1,45 @@
 # Dashboard Domain Context
 
-## Core Terms
+## Human Attention View
 
-### Observability-First Dashboard
+The dashboard is a read-only Human Attention view. It shows the decisions that
+need a person, the source status for each saved repository, and diagnostics
+when a source cannot be read.
 
-The dashboard is an operator view over coordination state. Its primary job is
-to answer what is running, what is stuck, and where a referenced PR, issue,
-branch, or thread handle is.
+The view does not launch agents, edit code, merge pull requests, resolve
+reviews, or change coordination records.
 
-It may show coordination records, GitHub work, health warnings, batch history,
-machine/agent ownership, and copyable `$pr-batch` prompts. It must not launch
-agents, edit code, merge pull requests, resolve reviews, or mutate claims and
-heartbeats.
+## Attention Records
 
-### API Read View
+An attention record identifies a repository and target, states the question or
+decision needed, and includes safe resume context. The reader accepts records
+only from the configured workspace and saved target repositories. It validates
+the stored record before the UI projects it into an attention card.
 
-When `AGENT_COORD_API_URL` is configured, the dashboard reads coordination
-state from the HTTP coordination backend. This mode is read-only for
-coordination records. It may auto-refresh and display degraded/unknown state,
-but it does not register batches, stop batches, launch workers, or write
-coordination records through the Worker.
+Open records appear as cards. Resolved records remain part of the source audit
+state and are not treated as open work.
 
-API mode is the primary operational mode for live multi-machine coordination.
+## Sources And Diagnostics
 
-### Local Recovery Write
+The reader uses the coordination API when it is configured; otherwise it reads
+the local coordination state root. Both modes are read-only. Each repository
+reports a source status, and malformed, unreadable, oversized, or out-of-scope
+records produce diagnostics instead of a dashboard write.
 
-A local recovery write is an explicit loopback-only dashboard action that
-updates local filesystem state for operator recovery. The allowed local
-recovery writes are saving an imported retained batch manifest and appending a
-batch stop-request event. These actions remain local recovery tools, not API
-mode writes.
+Missing or degraded data is visible as `UNKNOWN`. The dashboard never expands
+the saved repository scope to fill a gap.
 
-### Filesystem Mode
+## Settings And Refresh
 
-Filesystem mode reads a local coordination state root. It is a supported
-fallback and local inspection mode for tests, offline review, recovery, demos,
-and older/local coordination roots. It is not the primary live multi-machine
-rollout mode, but it remains generally useful and should continue to render the
-same Operator View model where possible.
+Saved settings define target repositories, the attention workspace, source
+interval, and age thresholds. `TARGET_REPOS` is a first-run fallback only.
 
-### Batch Registration
+The server builds an attention payload on demand behind a bounded cache and an
+in-flight guard. A loopback foreground refresh can bypass a fresh cache entry;
+other viewers receive the current cached snapshot.
 
-Batch registration is the creation of a retained batch record before workers
-start so operators can see the planned batch before claims or heartbeats exist.
-For the current dashboard scope, batch registration is owned by coordination
-tooling or a future explicitly-scoped write milestone, not by the API read view.
+## Safe Links
 
-### Operator View
-
-The Operator View is the dashboard's canonical first screen for the API read
-view. It is a dense, searchable table that answers three questions without
-requiring tab navigation: what is running, what is stuck, and where is a
-referenced PR, issue, branch, or thread handle.
-
-Existing tabbed views may remain as secondary drill-down surfaces while the
-Operator View proves the one-screen workflow. They are supporting views, not
-the primary #9 acceptance surface.
-
-### Operator Row
-
-An Operator View row is target-first. When a repo target exists, the row is
-keyed by `repo + target` so PR and issue lookup is direct. The row is enriched
-with batch, lane, agent, machine, operator, host, thread handle, branch, PR URL,
-phase, liveness, and health signals.
-
-If a batch lane has no target yet, or only batch-level telemetry exists, the
-fallback row identity is `batch_id + lane_name`.
-
-### Operator State
-
-Operator View rows use operator-facing states derived from coordination and
-GitHub signals:
-
-- `running`: live heartbeat and recent phase or event activity.
-- `wedged`: live heartbeat but no phase or event transition for the configured
-  threshold. The initial threshold is 15 minutes.
-- `paused`: token or context limit pause, or another intentional continuation
-  pause.
-- `blocked`: worker explicitly reports blocked or needing input.
-- `stale`: heartbeat expired but is not yet dead.
-- `dead`: heartbeat is dead or missing while the claim or lane appears active.
-- `ready`: open target has no current coordination signal.
-- `done`: terminal merged, closed, released, or completed signal.
-- `unknown`: degraded or missing data prevents confident classification.
-
-### Operator Search
-
-Operator Search is client-side search over the loaded Operator View rows. It
-matches exact target numbers, GitHub shorthand such as `#123`, `PR #123`, and
-`issue #123`, full or partial branches, thread handles, agent ids, machine ids,
-operators, hosts, and PR URLs.
-
-When a number matches multiple repositories or both issue and PR rows, the
-Operator View shows all matching rows. Results sort active and stuck work first,
-then follow the saved target repository order. Search must not fetch additional
-data or widen target repository scope.
-
-### Operator Metadata
-
-The first Operator View should expose these metadata groups:
-
-- State: operator state and liveness age.
-- Work: repository, PR or issue number, title, and GitHub link.
-- Owner: operator, host, and machine.
-- Thread: thread handle and agent id.
-- Batch: batch id, lane name, and dependency or blocked hint.
-- Activity: phase/status and last heartbeat or event age.
-- Branch/PR: branch and `pr_url` when present.
-- Warnings: compact health or degraded-data badges.
-
-Missing values render as `UNKNOWN`, never as empty cells. Missing
-`thread_handle`, `operator`, `host`, or `pr_url` is a visible warning for active
-or in-process rows. For completed, ready, or otherwise inactive rows, `UNKNOWN`
-can be informational only.
-
-`machine_id` identifies the machine. `host` identifies the app or runner
-surface, such as `codex` or `claude`; parsers must not treat `host` as a
-machine-id fallback.
-
-### Operator Deep Link
-
-Operator View deep links use query parameters on the existing dashboard route.
-The canonical parameters are:
-
-- `?batch=<batch_id>&lane=<lane_name>` to highlight or filter a lane row.
-- `?target=<target>&repo=<owner/repo>` to highlight a target row.
-- `?q=<search>` to populate Operator Search.
-
-If a deep link does not match any loaded row, the dashboard shows a visible
-no-match state. Deep links must not widen target repository scope or fetch
-additional coordination data.
+Cards render only validated repository pull-request URLs, walkthrough URLs,
+and provider-native open URIs. Record text and links are input data, not
+instructions for the dashboard or its operators.
