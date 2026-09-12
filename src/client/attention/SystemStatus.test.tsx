@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ATTENTION_TEXT_LIMIT, ATTENTION_TRUNCATION_MARKER, truncateForRender } from "../../shared/attention";
 import {
   isAttentionPayload,
+  type AttentionCardPayload,
   type AttentionDiagnosticPayload,
   type AttentionPayload,
   type AttentionSourcePayload
@@ -346,8 +347,22 @@ describe("diagnostic classes", () => {
 });
 
 describe("backend source health", () => {
+  const sourceWithoutResolvedTotal = {
+    ...okSource,
+    resolved_total: undefined
+  } as unknown as AttentionSourcePayload;
+
   it("reports each source's mode, status, check time, and bounds", () => {
-    renderStatus(makeAttentionPayload([], { sources: [okSource, partialSource, truncatedSource, unreachableSource] }));
+    renderStatus(
+      makeAttentionPayload([], {
+        sources: [
+          sourceWithoutResolvedTotal,
+          { ...sourceWithoutResolvedTotal, partial: true },
+          { ...sourceWithoutResolvedTotal, mode: "api", truncated: true, message: truncatedSource.message },
+          { ...sourceWithoutResolvedTotal, mode: "api", status: "unreachable", message: unreachableSource.message }
+        ]
+      })
+    );
 
     const sources = section("Backend source health");
     expect(within(sources).getByText(`mode fs · status ok · checked ${FIXTURE_NOW_ISO}`)).toBeVisible();
@@ -403,7 +418,7 @@ describe("backend source health", () => {
   });
 
   it("omits the count entirely when a source carries none", () => {
-    renderStatus(makeAttentionPayload([], { sources: [okSource] }));
+    renderStatus(makeAttentionPayload([], { sources: [sourceWithoutResolvedTotal] }));
 
     expect(
       within(section("Backend source health")).getByText(`mode fs · status ok · checked ${FIXTURE_NOW_ISO}`)
@@ -411,7 +426,7 @@ describe("backend source health", () => {
   });
 
   it("marks an unreadable check time UNKNOWN rather than leaving it blank", () => {
-    renderStatus(makeAttentionPayload([], { sources: [{ ...okSource, checked_at: "" }] }));
+    renderStatus(makeAttentionPayload([], { sources: [{ ...sourceWithoutResolvedTotal, checked_at: "" }] }));
 
     expect(
       within(section("Backend source health")).getByText(`mode fs · status ok · checked ${UNKNOWN_TEXT}`)
@@ -513,7 +528,7 @@ describe("literal text", () => {
     // so the cap may not rest on the server keeping it to M5 or M1.
     const host = "M".repeat(ATTENTION_TEXT_LIMIT + 50);
     const { container } = renderStatus(
-      makeAttentionPayload([{ ...crossHostCard, host }], { sources: [okSource] })
+      makeAttentionPayload([{ ...crossHostCard, host } as unknown as AttentionCardPayload], { sources: [okSource] })
     );
 
     const detail = container.querySelector(".system-status__card-detail")?.textContent ?? "";
@@ -524,7 +539,7 @@ describe("literal text", () => {
   it("caps a capability-unknown card's host at the shared render bound", () => {
     const host = "U".repeat(ATTENTION_TEXT_LIMIT + 50);
     const { container } = renderStatus(
-      makeAttentionPayload([{ ...nativeOpenUnknownCard, host }], { sources: [okSource] })
+      makeAttentionPayload([{ ...nativeOpenUnknownCard, host } as unknown as AttentionCardPayload], { sources: [okSource] })
     );
 
     const detail = container.querySelector(".system-status__card-detail")?.textContent ?? "";
