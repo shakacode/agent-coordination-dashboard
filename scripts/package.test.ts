@@ -1,5 +1,9 @@
 import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+
+const execFileAsync = promisify(execFile);
 
 interface PackageManifest {
   name: string;
@@ -27,7 +31,9 @@ describe("public package manifest", () => {
       "scripts/demo.ts",
       "src/server",
       "src/shared",
-      "!src/**/*.test.ts"
+      "!src/**/*.test.ts",
+      "!src/**/fixtures/**",
+      "!src/**/*.fixtures.ts"
     ]);
     expect(manifest.scripts?.prepack).toBe("npm run build");
     expect(manifest.publishConfig).toEqual({ access: "public" });
@@ -38,5 +44,18 @@ describe("public package manifest", () => {
     expect(Object.keys(manifest.devDependencies || {})).toEqual(
       expect.arrayContaining(["@vitejs/plugin-react", "react", "react-dom", "vite"])
     );
+  });
+
+  it("publishes runtime schema artifacts without attention fixtures", async () => {
+    const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      maxBuffer: 1024 * 1024,
+    });
+    const packResult = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
+    const paths = packResult[0]?.files.map(({ path }) => path) ?? [];
+
+    expect(paths.some((path) => path.includes("fixtures"))).toBe(false);
+    expect(paths.some((path) => path.endsWith("src/shared/attention.fixtures.ts"))).toBe(false);
+    expect(paths).toContain("src/server/attention/attention-record.schema.json");
+    expect(paths).toContain("src/server/attention/SCHEMA_SOURCE.md");
   });
 });
