@@ -21,7 +21,9 @@
     "scripts/demo.ts",
     "src/server",
     "src/shared",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.ts",
+    "!src/**/fixtures/**",
+    "!src/**/*.fixtures.ts"
   ],
   "publishConfig": {
     "access": "public"
