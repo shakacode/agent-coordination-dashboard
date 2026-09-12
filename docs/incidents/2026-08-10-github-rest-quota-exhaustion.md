@@ -3,8 +3,7 @@
 This is a historical incident record. It describes the deleted lane-inference
 dashboard. PR #135 disconnected its `/api/dashboard` surface and the
 `GITHUB_REFRESH_MS` and `DASHBOARD_REFRESH_MS` settings from the current
-Human Attention app. The lifecycle CLI retains compatibility validation for
-those setting names.
+Human Attention app. The lifecycle CLI ignores those retired setting names.
 
 ## Summary
 
