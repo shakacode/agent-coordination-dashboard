@@ -49,6 +49,7 @@ describe("public package manifest", () => {
   it("publishes runtime schema artifacts without attention fixtures", async () => {
     const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
       maxBuffer: 1024 * 1024,
+      shell: process.platform === "win32",
     });
     const packResult = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
     const paths = packResult[0]?.files.map(({ path }) => path) ?? [];
