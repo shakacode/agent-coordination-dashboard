@@ -1422,15 +1422,6 @@ async function stopDashboard(context, paths, { quiet = false } = {}) {
   return true;
 }
 
-function validateOptionalIntegerEnv(env, name, allowZero = false) {
-  const value = env[name]?.trim();
-  if (!value) return;
-  const parsed = Number(value);
-  if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || (allowZero ? parsed < 0 : parsed <= 0)) {
-    throw new Error(`${name} must be ${allowZero ? "a non-negative" : "a positive"} integer.`);
-  }
-}
-
 async function prepareStart(options) {
   const fileEnv = await readProtectedEnv(options.envFile, options.envFileRequired);
   if (Object.hasOwn(fileEnv, "NODE_OPTIONS")) {
@@ -1445,17 +1436,6 @@ async function prepareStart(options) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT in the environment file must be an integer from 1 through 65535.");
   }
-  const refreshValue = childEnv.DASHBOARD_REFRESH_MS?.trim();
-  if (refreshValue) {
-    const refreshIntervalMs = Number(refreshValue);
-    if (!Number.isFinite(refreshIntervalMs) || refreshIntervalMs < 0) {
-      throw new Error("DASHBOARD_REFRESH_MS must be a non-negative number.");
-    }
-  }
-  validateOptionalIntegerEnv(childEnv, "GITHUB_REFRESH_MS", true);
-  validateOptionalIntegerEnv(childEnv, "GITHUB_REQUEST_BUDGET_PER_HOUR");
-  validateOptionalIntegerEnv(childEnv, "GITHUB_REQUESTS_PER_REFRESH");
-  validateOptionalIntegerEnv(childEnv, "GITHUB_QUOTA_SAFETY_THRESHOLD", true);
   const bindHost = validateLifecycleHost(childEnv.HOST);
   const allowedHosts = String(childEnv.ALLOWED_HOSTS || "").split(",");
   if (
