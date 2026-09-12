@@ -344,7 +344,6 @@ describe("portable dashboard lifecycle", () => {
           AGENT_COORD_API_URL: "",
           AGENT_COORD_TOKEN: "",
           AGENT_COORD_STATE_ROOT: join(root, "coordination-state"),
-          DASHBOARD_REFRESH_MS: "0",
           DASHBOARD_SETTINGS_PATH: join(root, "settings.json"),
           HOST: "127.0.0.1",
           PORT: String(address.port)
@@ -1224,31 +1223,6 @@ describe("portable dashboard lifecycle", () => {
     { label: "unsafe mode", fixture: "mode", message: "must use mode 0600" },
     { label: "invalid port", fixture: "port", message: "must be an integer" },
     {
-      label: "invalid refresh interval",
-      fixture: "refresh",
-      message: "DASHBOARD_REFRESH_MS must be a non-negative number"
-    },
-    {
-      label: "invalid GitHub refresh interval",
-      fixture: "github_refresh",
-      message: "GITHUB_REFRESH_MS must be a non-negative integer"
-    },
-    {
-      label: "invalid GitHub hourly request budget",
-      fixture: "github_hourly_budget",
-      message: "GITHUB_REQUEST_BUDGET_PER_HOUR must be a positive integer"
-    },
-    {
-      label: "invalid GitHub per-refresh request limit",
-      fixture: "github_refresh_limit",
-      message: "GITHUB_REQUESTS_PER_REFRESH must be a positive integer"
-    },
-    {
-      label: "invalid GitHub quota safety threshold",
-      fixture: "github_safety_threshold",
-      message: "GITHUB_QUOTA_SAFETY_THRESHOLD must be a non-negative integer"
-    },
-    {
       label: "unassigned IP host",
       fixture: "unassigned_host",
       message: "HOST must be a loopback address or an IP address assigned to this machine"
@@ -1316,16 +1290,6 @@ describe("portable dashboard lifecycle", () => {
         await writeFile(envFile, "not an assignment\n", "utf8");
       } else if (fixture === "mode") {
         await chmod(envFile, 0o400);
-      } else if (fixture === "refresh") {
-        await writeFile(envFile, `PORT=${port}\nDASHBOARD_REFRESH_MS=Infinity\n`, "utf8");
-      } else if (fixture === "github_refresh") {
-        await writeFile(envFile, `PORT=${port}\nGITHUB_REFRESH_MS=-1\n`, "utf8");
-      } else if (fixture === "github_hourly_budget") {
-        await writeFile(envFile, `PORT=${port}\nGITHUB_REQUEST_BUDGET_PER_HOUR=0\n`, "utf8");
-      } else if (fixture === "github_refresh_limit") {
-        await writeFile(envFile, `PORT=${port}\nGITHUB_REQUESTS_PER_REFRESH=1.5\n`, "utf8");
-      } else if (fixture === "github_safety_threshold") {
-        await writeFile(envFile, `PORT=${port}\nGITHUB_QUOTA_SAFETY_THRESHOLD=-1\n`, "utf8");
       } else if (fixture === "unassigned_host") {
         await writeFile(envFile, `HOST=192.0.2.10\nPORT=${port}\n`, "utf8");
       } else if (fixture === "node_options") {
