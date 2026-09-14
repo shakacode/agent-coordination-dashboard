@@ -54,7 +54,8 @@ export const okSource: AttentionSourcePayload = {
   status: "ok",
   checked_at: FIXTURE_NOW_ISO,
   partial: false,
-  truncated: false
+  truncated: false,
+  resolved_total: 0
 };
 
 export const emptySource: AttentionSourcePayload = { ...okSource, status: "empty" };

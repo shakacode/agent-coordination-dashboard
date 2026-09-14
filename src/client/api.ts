@@ -16,11 +16,22 @@ import {
   validateOpenUri,
   validateWalkthroughUrl,
   type AttentionCapabilityState,
+  type AttentionCardPayload,
+  type AttentionDiagnosticPayload,
+  type AttentionPayload,
   type AttentionPriorityClass,
   type AttentionRenderView,
   type AttentionSource,
+  type AttentionSourcePayload,
   type AttentionStatus,
   type AttentionWalkthroughMode
+} from "../shared/attention";
+
+export type {
+  AttentionCardPayload,
+  AttentionDiagnosticPayload,
+  AttentionPayload,
+  AttentionSourcePayload
 } from "../shared/attention";
 
 /** Same-origin path; the dev server proxies `/api` to the dashboard server. */
@@ -82,68 +93,6 @@ const RECORD_NUMBER_FIELDS = ["unlocks_count", "refresh_interval_seconds"] as co
 
 /** Allowlisted source fields whose value is plain text when present. */
 const SOURCE_TEXT_FIELDS = ["provider", "host_id", "task_id", "last_seen_at"] as const;
-
-export interface AttentionCardPayload {
-  /**
-   * Server-assigned position, `1..N` and contiguous in payload order. The view
-   * labels cards by list position instead, so a gap can never break numbering.
-   */
-  number: number;
-  id: string;
-  /** `owner/name` the record belongs to. */
-  repository: string;
-  /**
-   * `projectAttentionRecord` output: `target`, `walkthrough_url`, and
-   * `source.open_uri` arrive validated or `null`, never as raw record text.
-   */
-  record: AttentionRenderView;
-  /** Normalized host that owns the agent session: `M5` or `M1`. */
-  host: string;
-  /** True when {@link AttentionPayload.dashboard_host} equals {@link host}. */
-  host_matches: boolean;
-  native_open: AttentionCapabilityState;
-  /** Another card in this payload points at the same pull request. */
-  same_pr: boolean;
-  open_days: number;
-  /** The record has been open long enough that the age deserves a check. */
-  verify_open_age: boolean;
-}
-
-export interface AttentionSourcePayload {
-  repository: string;
-  mode: AttentionSourceMode;
-  status: AttentionSourceStatus;
-  checked_at: string;
-  partial: boolean;
-  truncated: boolean;
-  /**
-   * Resolved records the read returned, whether or not they are in the trail.
-   *
-   * Advisory, and optional here even though `src/shared/attention.ts` declares
-   * it required and the model sets it on every source: {@link isSource} does
-   * not check it, so nothing verifies this type, and a reader must test it for
-   * a finite number before showing it.
-   * @see isSource
-   */
-  resolved_total?: number;
-  message?: string;
-}
-
-export interface AttentionDiagnosticPayload {
-  /** `null` when the diagnostic is not about one repository. */
-  repository: string | null;
-  kind: string;
-  message: string;
-}
-
-export interface AttentionPayload {
-  generated_at: string;
-  /** Host the dashboard itself runs on: normalized `M5`, `M1`, or `UNKNOWN`. */
-  dashboard_host: string;
-  cards: AttentionCardPayload[];
-  sources: AttentionSourcePayload[];
-  diagnostics: AttentionDiagnosticPayload[];
-}
 
 export type AttentionFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
